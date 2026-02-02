@@ -97,7 +97,7 @@
                     <select id="entryMonth" class="w-full p-2 bg-slate-50 border border-slate-200 rounded font-bold text-sm outline-none"></select>
                 </div>
                 <div>
-                    <label class="block text-[10px] font-bold text-slate-400 mb-1">IJARACHI</label>
+                    <label class="block text-[10px] font-bold text-slate-400 mb-1">KIMDAN / QAYERDAN</label>
                     <select id="entryTenant" class="w-full p-2 bg-slate-50 border border-slate-200 rounded font-bold text-sm outline-none"></select>
                 </div>
             </div>
@@ -155,7 +155,6 @@
     </div>
 
     <script>
-        // --- MA'LUMOTLAR BAZASI ---
         let app = {
             rate: 12500,
             tenants: ["Tehnopark", "Bunyodbek", "Apteka", "Dilyoraka"],
@@ -170,7 +169,7 @@
             syncData();
         };
 
-        // --- BULUTLI XOTIRA (CLOUD) ---
+        // --- CLOUD ---
         async function syncData() {
             showLoader(true);
             try {
@@ -179,7 +178,7 @@
                     const data = await res.json();
                     if(data && data.transactions) app = data; 
                 }
-            } catch (e) { console.log("Offline yoki yangi hisob"); }
+            } catch (e) { console.log("Offline"); }
             renderAll();
             showLoader(false);
         }
@@ -188,27 +187,25 @@
             showLoader(true);
             try {
                 await fetch(STORAGE_URL, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(app) });
-            } catch(e) { alert("Saqlashda xatolik (Internetni tekshiring)"); }
+            } catch(e) { alert("Saqlashda xatolik"); }
             showLoader(false);
             renderAll();
         }
 
-        // --- INTERFEYSNI CHIZISH ---
+        // --- RENDER ---
         function renderAll() {
             document.getElementById('headerRate').innerText = app.rate.toLocaleString();
             document.getElementById('settingRate').value = app.rate;
+            // Dropdownni yangilashda hozirgi turga qaraymiz
+            renderDropdowns(); 
             renderDashboard();
             renderHistory();
-            renderDropdowns();
         }
 
         function renderDashboard() {
             const period = document.getElementById('dashMonthSelect').value;
-            
-            // 1. FILTRLASH
             const txs = app.transactions.filter(t => period === "Jami Davr" || t.month === period);
 
-            // 2. KIRIM VA CHIQIM (Tanlangan Davr)
             let inc = 0, exp = 0;
             txs.forEach(t => {
                 let val = (t.currency === 'USD') ? (t.amount * app.rate) : t.amount;
@@ -218,60 +215,40 @@
             document.getElementById('dash-income').innerText = inc.toLocaleString();
             document.getElementById('dash-expense').innerText = exp.toLocaleString();
 
-            // 3. BALANS (Har doim umumiy)
             let cashVal = 0, bankVal = 0;
             app.transactions.forEach(t => {
                 let val = t.amount; 
-                let isInc = t.type === 'Income';
-                let mod = isInc ? 1 : -1;
-                
+                let mod = t.type === 'Income' ? 1 : -1;
                 let finalUzs = (t.currency === 'USD') ? (val * app.rate) : val;
 
-                if(t.method === 'Bank') {
-                    bankVal += (finalUzs * mod);
-                } else {
-                    cashVal += (finalUzs * mod);
-                }
+                if(t.method === 'Bank') bankVal += (finalUzs * mod);
+                else cashVal += (finalUzs * mod);
             });
 
             document.getElementById('dash-cash-total').innerText = cashVal.toLocaleString();
             document.getElementById('dash-bank').innerText = bankVal.toLocaleString();
             document.getElementById('dash-net').innerText = (cashVal + bankVal).toLocaleString();
 
-            // 4. IJARACHILAR STATISTIKASI
             const list = document.getElementById('tenantStatsList');
             list.innerHTML = "";
             
+            // Faqat daromad (Kirim) bo'lgan ijarachilarni ko'rsatamiz
             app.tenants.forEach(tenant => {
                 const relevant = txs.filter(t => t.tenant === tenant && t.type === 'Income');
-                
                 if(relevant.length > 0) {
-                    let totalPaid = relevant.reduce((acc, t) => {
-                        return acc + ((t.currency === 'USD') ? (t.amount * app.rate) : t.amount);
-                    }, 0);
-
+                    let totalPaid = relevant.reduce((acc, t) => acc + ((t.currency === 'USD') ? (t.amount * app.rate) : t.amount), 0);
                     const div = document.createElement('div');
                     div.className = "bg-white border border-slate-100 rounded-lg p-3 flex justify-between items-center";
                     div.innerHTML = `
                         <div class="flex items-center gap-3">
-                            <div class="bg-blue-50 text-blue-600 w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold">
-                                ${tenant.charAt(0)}
-                            </div>
-                            <div>
-                                <p class="font-bold text-sm text-slate-700">${tenant}</p>
-                                <p class="text-[10px] text-slate-400">${relevant.length} ta to'lov</p>
-                            </div>
+                            <div class="bg-blue-50 text-blue-600 w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold">${tenant.charAt(0)}</div>
+                            <div><p class="font-bold text-sm text-slate-700">${tenant}</p><p class="text-[10px] text-slate-400">${relevant.length} ta to'lov</p></div>
                         </div>
-                        <div class="text-right">
-                            <p class="font-bold text-slate-800 text-sm">${totalPaid.toLocaleString()} <span class="text-[10px] text-slate-400">UZS</span></p>
-                            <button onclick="showTenantDetails('${tenant}', '${period}')" class="text-[10px] text-blue-500 font-bold mt-1">Batafsil</button>
-                        </div>
-                    `;
+                        <div class="text-right"><p class="font-bold text-slate-800 text-sm">${totalPaid.toLocaleString()} <span class="text-[10px] text-slate-400">UZS</span></p></div>`;
                     list.appendChild(div);
                 }
             });
-            
-            if(list.innerHTML === "") list.innerHTML = `<div class="text-center text-slate-400 text-xs py-6">Bu davr uchun kirim yo'q</div>`;
+            if(list.innerHTML === "") list.innerHTML = `<div class="text-center text-slate-400 text-xs py-6">Kirim mavjud emas</div>`;
         }
 
         function renderHistory() {
@@ -283,33 +260,22 @@
                 div.innerHTML = `
                     <div class="flex items-center gap-3">
                         <div class="w-1 h-8 rounded-full ${t.type === 'Income' ? 'bg-green-400' : 'bg-red-400'}"></div>
-                        <div>
-                            <p class="font-bold text-slate-700 text-sm">${t.tenant}</p>
-                            <p class="text-[10px] text-slate-400">${t.date} • ${t.month}</p>
-                        </div>
+                        <div><p class="font-bold text-slate-700 text-sm">${t.tenant}</p><p class="text-[10px] text-slate-400">${t.date} • ${t.month}</p></div>
                     </div>
                     <div class="flex items-center gap-3">
-                        <div class="text-right">
-                            <p class="font-bold text-slate-700 text-sm">${t.amount.toLocaleString()} ${t.currency}</p>
-                            <p class="text-[10px] text-slate-400">${t.method}</p>
-                        </div>
+                        <div class="text-right"><p class="font-bold text-slate-700 text-sm">${t.amount.toLocaleString()} ${t.currency}</p><p class="text-[10px] text-slate-400">${t.method}</p></div>
                         <button onclick="editTx('${t.id}')" class="bg-slate-50 p-2 rounded text-slate-400 hover:text-blue-600"><i class="fas fa-pen text-xs"></i></button>
                         <button onclick="deleteTx('${t.id}')" class="bg-slate-50 p-2 rounded text-slate-400 hover:text-red-500"><i class="fas fa-trash text-xs"></i></button>
-                    </div>
-                `;
+                    </div>`;
                 list.appendChild(div);
             });
         }
 
-        // --- FUNKSIYALAR ---
+        // --- ACTIONS ---
         function addToCart() {
             const amt = document.getElementById('tempAmount').value;
             if(!amt) return;
-            cart.push({
-                amount: parseFloat(amt),
-                currency: document.getElementById('tempCurr').value,
-                method: document.getElementById('tempMethod').value
-            });
+            cart.push({ amount: parseFloat(amt), currency: document.getElementById('tempCurr').value, method: document.getElementById('tempMethod').value });
             document.getElementById('tempAmount').value = "";
             renderCart();
         }
@@ -322,19 +288,16 @@
                 <div class="flex justify-between items-center text-xs border-b border-blue-200 last:border-0 pb-1 mb-1">
                     <span class="font-bold text-slate-700">${item.amount.toLocaleString()} ${item.currency} <span class="text-slate-400 font-normal">(${item.method})</span></span>
                     <button onclick="cart.splice(${i},1); renderCart()" class="text-red-400"><i class="fas fa-times"></i></button>
-                </div>
-            `).join('');
+                </div>`).join('');
         }
 
         async function submitAll() {
-            if(cart.length === 0) return alert("Avval summani kiriting");
+            if(cart.length === 0) return alert("Summani kiriting");
             const btn = document.getElementById('submitBtn');
-            btn.disabled = true; btn.innerText = "Bajarilmoqda...";
+            btn.disabled = true; btn.innerText = "Yuborilmoqda...";
 
             const editId = document.getElementById('editId').value;
-            if(editId) {
-                app.transactions = app.transactions.filter(t => !t.id.startsWith(editId.split('_')[0]));
-            }
+            if(editId) app.transactions = app.transactions.filter(t => !t.id.startsWith(editId.split('_')[0]));
 
             const baseId = editId ? editId.split('_')[0] : Date.now();
             const common = {
@@ -345,32 +308,19 @@
             };
 
             cart.forEach((item, i) => {
-                app.transactions.push({
-                    id: baseId + "_" + i,
-                    ...common,
-                    type: currentType,
-                    amount: item.amount,
-                    currency: item.currency,
-                    method: item.method
-                });
+                app.transactions.push({ id: baseId + "_" + i, ...common, type: currentType, amount: item.amount, currency: item.currency, method: item.method });
             });
 
             await saveCloud();
             
-            // Telegramga yuborish
             let breakdown = cart.map(i => `${i.method === 'Naqd' ? "💵" : "💳"} ${i.amount.toLocaleString()} ${i.currency}`).join("%0A");
             let totalVal = cart.reduce((acc, i) => acc + (i.currency === 'USD' ? i.amount * app.rate : i.amount), 0);
             const emoji = currentType === 'Income' ? "🟢" : "🔴";
             const typeText = currentType === 'Income' ? "KIRIM" : "CHIQIM";
             
-            const msg = `<b>${emoji} ${typeText} ${editId ? "(TAHRIRLANDI)" : ""}</b>%0A` +
-                        `👤 <b>${common.tenant}</b>%0A🗓 ${common.month}%0A` +
-                        `──────────────%0A${breakdown}%0A──────────────%0A` +
-                        `📊 Jami: ${totalVal.toLocaleString()} UZS%0A📝 ${common.comment}`;
-            
+            const msg = `<b>${emoji} ${typeText} ${editId ? "(TAHRIR)" : ""}</b>%0A👤 <b>${common.tenant}</b>%0A🗓 ${common.month}%0A──────────────%0A${breakdown}%0A──────────────%0A📊 Jami: ${totalVal.toLocaleString()} UZS%0A📝 ${common.comment}`;
             fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage?chat_id=${CHAT_ID}&text=${msg}&parse_mode=HTML`).catch(e=>console.log(e));
 
-            // Tozalash
             cart = []; 
             document.getElementById('entryComment').value = "";
             document.getElementById('editId').value = "";
@@ -383,16 +333,16 @@
         function editTx(id) {
             const tx = app.transactions.find(t => t.id === id);
             if(!tx) return;
-            
             setType(tx.type);
+            // Dropdown ro'yxatini to'g'irlash (masalan, agar Chiqim bo'lsa, umumiy opsiyalar chiqishi kerak)
+            renderDropdowns(); 
+            
             document.getElementById('entryTenant').value = tx.tenant;
             document.getElementById('entryMonth').value = tx.month;
             document.getElementById('entryComment').value = tx.comment;
             document.getElementById('editId').value = id;
-            
             cart = [{ amount: tx.amount, currency: tx.currency, method: tx.method }];
             renderCart();
-            
             document.getElementById('submitBtn').innerText = "O'ZGARTIRISHNI SAQLASH";
             document.getElementById('cancelEditBtn').classList.remove('hidden');
             switchTab('entry');
@@ -402,25 +352,12 @@
             cart = []; renderCart();
             document.getElementById('editId').value = "";
             document.getElementById('entryComment').value = "";
-            document.getElementById('submitBtn').innerText = "KIRIMNI TASDIQLASH";
+            document.getElementById('submitBtn').innerText = currentType === 'Income' ? "KIRIMNI TASDIQLASH" : "CHIQIMNI TASDIQLASH";
             document.getElementById('cancelEditBtn').classList.add('hidden');
         }
 
         function deleteTx(id) {
-            if(confirm("Bu o'tkazmani o'chirmoqchimisiz?")) {
-                app.transactions = app.transactions.filter(t => t.id !== id);
-                saveCloud();
-            }
-        }
-
-        function showTenantDetails(tenant, period) {
-            const txs = app.transactions.filter(t => t.tenant === tenant && (period === "Jami Davr" || t.month === period) && t.type === 'Income');
-            
-            const total = txs.reduce((acc, t) => acc + ((t.currency === 'USD') ? t.amount * app.rate : t.amount), 0);
-            
-            alert(`TARIX: ${tenant}\nDavr: ${period}\n\n` + 
-                  txs.map(t => `${t.date}: ${t.amount} ${t.currency} (${t.method})`).join('\n') + 
-                  `\n\nJAMI QIYMAT: ${total.toLocaleString()} UZS`);
+            if(confirm("O'chirmoqchimisiz?")) { app.transactions = app.transactions.filter(t => t.id !== id); saveCloud(); }
         }
 
         // --- YORDAMCHILAR ---
@@ -430,6 +367,7 @@
             const btnEx = document.getElementById('btn-expense');
             const sub = document.getElementById('submitBtn');
             
+            // 1. Tugma dizayni
             if(type === 'Income') {
                 btnIn.className = "flex-1 py-2 rounded-md font-bold text-sm bg-white text-green-600 shadow-sm transition-all";
                 btnEx.className = "flex-1 py-2 rounded-md font-bold text-sm text-slate-500 transition-all";
@@ -441,6 +379,28 @@
                 sub.className = "w-full bg-red-600 text-white py-3 rounded-lg font-bold text-sm shadow-lg shadow-red-200 active:scale-95 transition-all";
                 if(!document.getElementById('editId').value) sub.innerText = "CHIQIMNI TASDIQLASH";
             }
+            // 2. Ro'yxatni yangilash
+            renderDropdowns();
+        }
+
+        function renderDropdowns() {
+            const select = document.getElementById('entryTenant');
+            let options = [...app.tenants];
+            
+            // Agar Chiqim bo'lsa, maxsus variantlarni qo'shamiz
+            if(currentType === 'Expense') {
+                options.push("Umumiy Naqd Puldan");
+                options.push("Umumiy Bankdan");
+            }
+
+            select.innerHTML = options.map(t => `<option>${t}</option>`).join('');
+            
+            // Sozlamalar menyusi (faqat ijarachilar)
+            document.getElementById('settingsTenantList').innerHTML = app.tenants.map(t => `
+                <div class="flex justify-between bg-slate-50 p-2 rounded text-xs mb-1 border">
+                    <span>${t}</span> <button onclick="removeTenant('${t}')" class="text-red-400"><i class="fas fa-times"></i></button>
+                </div>
+            `).join('');
         }
 
         function switchTab(t) {
@@ -455,34 +415,14 @@
         function initDateSelectors() {
             const now = new Date();
             const currentM = months[now.getMonth()];
-            
             const dSel = document.getElementById('dashMonthSelect');
             dSel.innerHTML = `<option>Jami Davr</option>` + months.map(m => `<option ${m===currentM ? 'selected' : ''}>${m}</option>`).join('');
-            
             document.getElementById('entryMonth').innerHTML = months.map(m => `<option ${m===currentM ? 'selected' : ''}>${m}</option>`).join('');
         }
 
-        function saveSettings() {
-            app.rate = parseFloat(document.getElementById('settingRate').value);
-            saveCloud();
-        }
-
-        function renderDropdowns() {
-            document.getElementById('entryTenant').innerHTML = app.tenants.map(t => `<option>${t}</option>`).join('');
-            document.getElementById('settingsTenantList').innerHTML = app.tenants.map(t => `
-                <div class="flex justify-between bg-slate-50 p-2 rounded text-xs mb-1 border">
-                    <span>${t}</span> <button onclick="removeTenant('${t}')" class="text-red-400"><i class="fas fa-times"></i></button>
-                </div>
-            `).join('');
-        }
-
-        function addTenantPrompt() {
-            const n = prompt("Ijarachi Ismi:");
-            if(n) { app.tenants.push(n); saveCloud(); }
-        }
-        function removeTenant(n) {
-            if(confirm("O'chirmoqchimisiz: " + n + "?")) { app.tenants = app.tenants.filter(t => t !== n); saveCloud(); }
-        }
+        function saveSettings() { app.rate = parseFloat(document.getElementById('settingRate').value); saveCloud(); }
+        function addTenantPrompt() { const n = prompt("Ism:"); if(n) { app.tenants.push(n); saveCloud(); } }
+        function removeTenant(n) { if(confirm("O'chirmoqchimisiz?")) { app.tenants = app.tenants.filter(t => t !== n); saveCloud(); } }
     </script>
 </body>
 </html>
