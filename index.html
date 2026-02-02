@@ -3,21 +3,29 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Biznes Boshqaruv</title>
+    <title>"Omad-D" X/F Ijara To'lovlari</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
-        body { background-color: #f8fafc; -webkit-tap-highlight-color: transparent; font-family: sans-serif; }
+        body { background-color: #f1f5f9; -webkit-tap-highlight-color: transparent; font-family: sans-serif; }
         .tab-content { display: none; }
-        .tab-content.active { display: block; animation: fadeIn 0.2s; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+        .tab-content.active { display: block; animation: slideUp 0.2s; }
+        @keyframes slideUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
         .nav-item.active { color: #2563eb; }
-        .card { background: white; border-radius: 16px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; margin-bottom: 12px; }
+        .card { background: white; border-radius: 16px; padding: 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; margin-bottom: 12px; }
         #loader { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.95); z-index: 100; justify-content: center; align-items: center; flex-direction: column; }
+        
+        /* Modal Animation */
+        #detailModal { transition: opacity 0.2s; }
+        #detailModal.hidden { pointer-events: none; opacity: 0; }
+        #detailModal:not(.hidden) { pointer-events: auto; opacity: 1; }
+        #detailCard { transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1); transform: translateY(100%); }
+        #detailModal:not(.hidden) #detailCard { transform: translateY(0); }
     </style>
 </head>
 <body class="pb-24 select-none text-slate-800">
 
+    <!-- SOZLAMALAR -->
     <script>
         const BOT_TOKEN = "7752185432:AAFBCdMTrgiRmtAaiGu-9FQsVgakdlO8RkM"; 
         const CHAT_ID = "-5124753855"; 
@@ -25,63 +33,71 @@
         const STORAGE_URL = `https://getpantry.cloud/apiv1/pantry/${PANTRY_ID}/basket/BizDataV3`; 
     </script>
 
+    <!-- YUKLANMOQDA -->
     <div id="loader">
         <i class="fas fa-circle-notch fa-spin text-4xl text-blue-600 mb-4"></i>
         <p class="text-gray-500 font-bold text-sm" id="loaderMsg">Yuklanmoqda...</p>
     </div>
 
-    <div class="bg-white px-4 py-3 sticky top-0 z-40 border-b flex justify-between items-center">
+    <!-- HEADER -->
+    <div class="bg-white px-4 py-3 sticky top-0 z-40 border-b flex justify-between items-center shadow-sm">
         <div class="flex items-center gap-2">
-            <div class="bg-blue-600 text-white w-8 h-8 rounded-lg flex items-center justify-center font-bold">B</div>
-            <h1 class="font-bold text-lg tracking-tight">Boshqaruv</h1>
+            <div class="bg-blue-600 text-white w-8 h-8 rounded-lg flex items-center justify-center font-bold">OD</div>
+            <h1 class="font-bold text-sm tracking-tight leading-tight">"Omad-D" X/F<br>Ijara To'lovlari</h1>
         </div>
         <div class="text-[10px] font-bold bg-slate-100 px-2 py-1 rounded text-slate-500 border">
-            Kurs: $1 = <span id="headerRate">...</span>
+            <span id="headerMonth">...</span>: $1 = <span id="headerRate">...</span>
         </div>
     </div>
 
+    <!-- 1-TAB: ASOSIY (DASHBOARD) -->
     <div id="tab-dash" class="tab-content active p-4">
         
+        <!-- Vaqtni Tanlash -->
         <div class="flex justify-between items-center mb-4">
-            <h2 class="font-bold text-slate-700">Umumiy Hisobot</h2>
-            <select id="dashMonthSelect" class="bg-white border border-slate-300 text-slate-600 text-xs font-bold rounded-lg px-2 py-1 outline-none" onchange="renderDashboard()">
-                <option value="Jami Davr">Jami Davr</option>
+            <h2 class="font-bold text-slate-700 text-lg">Hisobot</h2>
+            <select id="dashMonthSelect" class="bg-white border border-slate-300 text-slate-600 text-xs font-bold rounded-lg px-2 py-1 outline-none shadow-sm" onchange="renderDashboard()">
+                <!-- JS to'ldiradi -->
             </select>
         </div>
 
+        <!-- Umumiy Qarz -->
+        <div id="totalDebtCard" class="hidden card !p-3 !mb-4 border-l-4 border-l-red-500 bg-red-50">
+            <p class="text-[10px] text-red-400 font-bold uppercase tracking-wider mb-1">Jami Ijarachilar Qarzi</p>
+            <p class="text-xl font-bold text-red-600 truncate" id="dash-total-debt">0</p>
+        </div>
+
+        <!-- Kirim / Chiqim -->
         <div class="grid grid-cols-2 gap-3 mb-4">
             <div class="card !p-3 !mb-0 border-l-4 border-l-green-500">
-                <p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">Jami Kirim</p>
+                <p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">Kirim</p>
                 <p class="text-lg font-bold text-slate-800 truncate" id="dash-income">0</p>
             </div>
             <div class="card !p-3 !mb-0 border-l-4 border-l-red-500">
-                <p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">Jami Chiqim</p>
+                <p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">Chiqim</p>
                 <p class="text-lg font-bold text-slate-800 truncate" id="dash-expense">0</p>
             </div>
         </div>
 
+        <!-- Hamyon Holati -->
         <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 mt-6">Mavjud Balans (UZS)</h3>
-        <div class="card bg-slate-800 text-white !border-none !mb-2">
-            <p class="text-xs text-slate-400 font-medium mb-1">SOF BALANS</p>
-            <p class="text-3xl font-mono font-bold tracking-tight" id="dash-net">0</p>
-            <p class="text-[10px] text-slate-500 mt-2 text-right">Bank + Naqd (Hisoblangan)</p>
-        </div>
-        
-        <div class="grid grid-cols-2 gap-2 mb-6">
-            <div class="bg-white border rounded-xl p-3">
+        <div class="grid grid-cols-2 gap-2 mb-2">
+            <div class="bg-white border rounded-xl p-3 shadow-sm">
                 <p class="text-[10px] text-slate-400 font-bold uppercase">Naqd (Seif)</p>
                 <p class="font-bold text-slate-700" id="dash-cash-total">0</p>
             </div>
-            <div class="bg-white border rounded-xl p-3">
+            <div class="bg-white border rounded-xl p-3 shadow-sm">
                 <p class="text-[10px] text-slate-400 font-bold uppercase">Bank</p>
                 <p class="font-bold text-blue-600" id="dash-bank">0</p>
             </div>
         </div>
 
-        <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Ijarachi To'lovlari</h3>
-        <div id="tenantStatsList" class="space-y-2 pb-8"></div>
+        <!-- Ijarachilar Holati (SMART) -->
+        <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 mt-4">Ijara Holati (<span id="statusMonthLabel"></span>)</h3>
+        <div id="tenantStatusList" class="space-y-2 pb-8"></div>
     </div>
 
+    <!-- 2-TAB: YANGI (ENTRY) -->
     <div id="tab-entry" class="tab-content p-4">
         <div class="flex bg-slate-200 rounded-lg p-1 mb-4">
             <button onclick="setType('Income')" id="btn-income" class="flex-1 py-2 rounded-md font-bold text-sm bg-white text-green-600 shadow-sm transition-all">Kirim</button>
@@ -90,6 +106,7 @@
 
         <div class="card">
             <input type="hidden" id="editId" value="">
+            <input type="hidden" id="msgId" value="">
 
             <div class="grid grid-cols-2 gap-3 mb-4">
                 <div>
@@ -97,12 +114,12 @@
                     <select id="entryMonth" class="w-full p-2 bg-slate-50 border border-slate-200 rounded font-bold text-sm outline-none"></select>
                 </div>
                 <div>
-                    <label class="block text-[10px] font-bold text-slate-400 mb-1">KIMDAN / QAYERDAN</label>
+                    <label class="block text-[10px] font-bold text-slate-400 mb-1">OBYEKT</label>
                     <select id="entryTenant" class="w-full p-2 bg-slate-50 border border-slate-200 rounded font-bold text-sm outline-none"></select>
                 </div>
             </div>
 
-            <label class="block text-[10px] font-bold text-slate-400 mb-1">TO'LOV TAFSILOTLARI</label>
+            <label class="block text-[10px] font-bold text-slate-400 mb-1">SUMMA VA VALYUTA</label>
             <div class="flex gap-2 mb-2">
                 <input type="number" id="tempAmount" placeholder="0" class="flex-1 p-2 border border-slate-200 rounded text-lg font-bold outline-none">
                 <select id="tempCurr" class="w-20 p-2 border border-slate-200 rounded bg-white font-bold text-xs"><option>UZS</option><option>USD</option></select>
@@ -114,39 +131,90 @@
 
             <div id="cartList" class="hidden mb-4 bg-blue-50 border border-blue-100 rounded p-2 space-y-1"></div>
 
-            <textarea id="entryComment" placeholder="Izoh (ixtiyoriy)..." class="w-full p-3 border border-slate-200 rounded mb-4 text-sm h-20 outline-none resize-none"></textarea>
+            <textarea id="entryComment" placeholder="Izoh..." class="w-full p-3 border border-slate-200 rounded mb-4 text-sm h-20 outline-none resize-none"></textarea>
 
             <button onclick="submitAll()" id="submitBtn" class="w-full bg-green-600 text-white py-3 rounded-lg font-bold text-sm shadow-lg shadow-green-200 active:scale-95 transition-all">
-                KIRIMNI TASDIQLASH
+                KIRIMNI SAQLASH
             </button>
-            <button onclick="cancelEdit()" id="cancelEditBtn" class="hidden w-full mt-2 py-2 text-red-400 text-xs font-bold">Tahrirni Bekor Qilish</button>
+            <button onclick="cancelEdit()" id="cancelEditBtn" class="hidden w-full mt-2 py-2 text-red-400 text-xs font-bold">Bekor Qilish</button>
         </div>
     </div>
 
+    <!-- 3-TAB: TARIX -->
     <div id="tab-history" class="tab-content p-4">
         <div class="flex justify-between items-center mb-4">
-            <h3 class="font-bold text-slate-700">Tarix</h3>
-            <button onclick="syncData()" class="text-blue-500 text-xs font-bold"><i class="fas fa-sync-alt"></i> Yangilash</button>
+            <h3 class="font-bold text-slate-700">O'tkazmalar Tarixi</h3>
+            <button onclick="syncData()" class="text-blue-500 text-xs font-bold"><i class="fas fa-sync-alt"></i></button>
         </div>
         <div id="historyList" class="space-y-3 pb-10"></div>
     </div>
 
+    <!-- 4-TAB: SOZLAMALAR -->
     <div id="tab-settings" class="tab-content p-4">
+        <!-- Oylik Kurslar -->
         <div class="card">
-            <h3 class="font-bold mb-4 text-slate-700">Sozlamalar</h3>
-            <div class="mb-4">
-                <label class="block text-[10px] text-slate-400 font-bold mb-1">VALYUTA KURSI ($1)</label>
-                <div class="flex gap-2">
-                    <input type="number" id="settingRate" class="flex-1 p-2 border rounded font-mono text-sm">
-                    <button onclick="saveSettings()" class="bg-blue-600 text-white px-4 rounded font-bold text-xs">Saqlash</button>
-                </div>
+            <h3 class="font-bold mb-4 text-slate-700">Oylik Kurslar ($1)</h3>
+            <div class="flex gap-2 mb-2">
+                <select id="settingMonth" class="flex-1 p-2 border rounded text-sm font-bold"></select>
+                <input type="number" id="settingRateInput" placeholder="12500" class="w-24 p-2 border rounded text-sm">
+                <button onclick="saveRate()" class="bg-blue-600 text-white px-3 rounded font-bold text-xs">OK</button>
             </div>
-            <label class="block text-[10px] text-slate-400 font-bold mb-1">IJARACHILAR RO'YXATI</label>
-            <div id="settingsTenantList" class="space-y-1 mb-3"></div>
-            <button onclick="addTenantPrompt()" class="w-full py-2 border border-dashed border-slate-300 rounded text-slate-400 text-xs font-bold hover:bg-slate-50">+ Ijarachi Qo'shish</button>
+            <div id="ratesList" class="text-xs text-slate-500 space-y-1 mt-2"></div>
+        </div>
+
+        <!-- Ijarachilar -->
+        <div class="card">
+            <h3 class="font-bold mb-4 text-slate-700">Ijarachilar & Ijara Narxi</h3>
+            <div id="settingsTenantList" class="space-y-2 mb-3"></div>
+            
+            <div class="border-t pt-3 mt-3 bg-slate-50 p-3 rounded-lg">
+                <label class="block text-[10px] text-slate-400 font-bold mb-2 uppercase">Ijarachi Qo'shish / Tahrirlash</label>
+                <input type="text" id="newTenantName" placeholder="Ismi (Masalan: Tehnopark)" class="w-full p-2 border rounded text-sm mb-2 bg-white">
+                <div class="flex gap-2 mb-2">
+                    <input type="number" id="newTenantRent" placeholder="Ijara Narxi" class="flex-1 p-2 border rounded text-sm bg-white">
+                    <select id="newTenantCurr" class="w-20 p-2 border rounded text-sm font-bold bg-white"><option>USD</option><option>UZS</option></select>
+                </div>
+                <button onclick="addTenant()" id="addTenantBtn" class="w-full py-2 bg-slate-800 text-white rounded text-xs font-bold shadow-md active:scale-95 transition-all">+ Qo'shish</button>
+            </div>
         </div>
     </div>
 
+    <!-- DETAIL MODAL -->
+    <div id="detailModal" class="hidden fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm p-4" onclick="closeModal()">
+        <div id="detailCard" class="bg-white w-full max-w-sm rounded-2xl p-5 shadow-2xl" onclick="event.stopPropagation()">
+            <div class="flex justify-between items-center mb-2 border-b pb-3">
+                <div>
+                    <h3 class="font-bold text-lg text-slate-800" id="modalTitle">Ijarachi</h3>
+                    <p class="text-xs text-slate-400" id="modalSubtitle">Tafsilotlar</p>
+                </div>
+                <button onclick="closeModal()" class="w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:bg-red-100 hover:text-red-500"><i class="fas fa-times"></i></button>
+            </div>
+            
+            <!-- Debt Explanation Box -->
+            <div class="bg-slate-50 rounded-lg p-3 mb-4 text-sm border border-slate-100 space-y-2">
+                <div class="flex justify-between text-slate-500 items-start">
+                    <span>Ijara Narxi:</span>
+                    <div class="text-right" id="modalRent">0</div>
+                </div>
+                <div class="flex justify-between text-slate-500">
+                    <span>To'landi:</span>
+                    <span class="font-bold text-green-600" id="modalPaid">0</span>
+                </div>
+                <div class="border-t border-slate-200 my-1"></div>
+                <div class="flex justify-between font-bold text-base">
+                    <span>Farq:</span>
+                    <span id="modalDiff">0</span>
+                </div>
+            </div>
+
+            <h4 class="text-[10px] font-bold text-slate-400 uppercase mb-2">To'lovlar Tarixi</h4>
+            <div id="modalContent" class="space-y-2 max-h-[40vh] overflow-y-auto mb-2">
+                <!-- Transactions -->
+            </div>
+        </div>
+    </div>
+
+    <!-- MENU -->
     <div class="fixed bottom-0 left-0 w-full bg-white border-t border-slate-200 flex justify-between px-8 py-3 text-[10px] font-bold text-slate-400 z-50">
         <button onclick="switchTab('dash')" id="nav-dash" class="nav-item active flex flex-col items-center gap-1"><i class="fas fa-home text-lg"></i>Asosiy</button>
         <button onclick="switchTab('entry')" id="nav-entry" class="nav-item flex flex-col items-center gap-1"><i class="fas fa-plus-circle text-lg"></i>Yangi</button>
@@ -154,18 +222,22 @@
         <button onclick="switchTab('settings')" id="nav-settings" class="nav-item flex flex-col items-center gap-1"><i class="fas fa-sliders-h text-lg"></i>Sozlamalar</button>
     </div>
 
+    <!-- DASTUR MANTIQI -->
     <script>
+        // --- DATA STORE ---
         let app = {
-            rate: 12500,
-            tenants: ["Tehnopark", "Bunyodbek", "Apteka", "Dilyoraka"],
+            rates: { "Fevral": 12500 },
+            tenants: [], 
             transactions: [] 
         };
+        
         let cart = [];
         let currentType = 'Income';
+        let editingTenantIndex = null; 
         const months = ["Yanvar", "Fevral", "Mart", "Aprel", "May", "Iyun", "Iyul", "Avgust", "Sentabr", "Oktabr", "Noyabr", "Dekabr"];
 
         window.onload = () => {
-            initDateSelectors();
+            initSelectors();
             syncData();
         };
 
@@ -176,9 +248,29 @@
                 const res = await fetch(STORAGE_URL);
                 if (res.ok) {
                     const data = await res.json();
-                    if(data && data.transactions) app = data; 
+                    
+                    if(data.transactions) app.transactions = data.transactions;
+                    
+                    if(typeof data.rate === 'number') {
+                        app.rates["Fevral"] = data.rate; 
+                    } else if (data.rates) {
+                        app.rates = data.rates;
+                    }
+
+                    if(data.tenants && data.tenants.length > 0) {
+                        if(typeof data.tenants[0] === 'string') {
+                            app.tenants = data.tenants.map(t => ({ name: t, rent: 0, currency: "USD" }));
+                        } else {
+                            app.tenants = data.tenants;
+                        }
+                    } else {
+                         app.tenants = [ 
+                            {name: "Tehnopark", rent: 0, currency: "USD"},
+                            {name: "Bunyodbek", rent: 0, currency: "USD"}
+                        ];
+                    }
                 }
-            } catch (e) { console.log("Offline"); }
+            } catch (e) { console.log("Offline or Error"); }
             renderAll();
             showLoader(false);
         }
@@ -187,69 +279,448 @@
             showLoader(true);
             try {
                 await fetch(STORAGE_URL, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(app) });
-            } catch(e) { alert("Saqlashda xatolik"); }
+            } catch(e) { alert("Saqlanmadi (Internet yo'q)"); }
             showLoader(false);
             renderAll();
         }
 
         // --- RENDER ---
         function renderAll() {
-            document.getElementById('headerRate').innerText = app.rate.toLocaleString();
-            document.getElementById('settingRate').value = app.rate;
-            // Dropdownni yangilashda hozirgi turga qaraymiz
-            renderDropdowns(); 
             renderDashboard();
             renderHistory();
+            renderSettings();
+            renderEntryDropdowns();
         }
 
         function renderDashboard() {
             const period = document.getElementById('dashMonthSelect').value;
-            const txs = app.transactions.filter(t => period === "Jami Davr" || t.month === period);
+            document.getElementById('statusMonthLabel').innerText = period;
+            
+            let monthRate = app.rates[period] || 12500;
+            document.getElementById('headerMonth').innerText = period;
+            document.getElementById('headerRate').innerText = monthRate.toLocaleString();
 
+            const txs = app.transactions.filter(t => (period === "Jami Davr" || t.month === period));
+
+            // 1. P&L
             let inc = 0, exp = 0;
             txs.forEach(t => {
-                let val = (t.currency === 'USD') ? (t.amount * app.rate) : t.amount;
+                let tRate = app.rates[t.month] || 12500; 
+                let val = (t.currency === 'USD') ? (t.amount * tRate) : t.amount;
                 if(t.type === 'Income') inc += val; else exp += val;
             });
-
             document.getElementById('dash-income').innerText = inc.toLocaleString();
             document.getElementById('dash-expense').innerText = exp.toLocaleString();
 
+            // 2. Liquidity (Calculated from ALL TIME)
             let cashVal = 0, bankVal = 0;
             app.transactions.forEach(t => {
-                let val = t.amount; 
+                let tRate = app.rates[t.month] || 12500;
+                let val = (t.currency === 'USD') ? (t.amount * tRate) : t.amount;
                 let mod = t.type === 'Income' ? 1 : -1;
-                let finalUzs = (t.currency === 'USD') ? (val * app.rate) : val;
-
-                if(t.method === 'Bank') bankVal += (finalUzs * mod);
-                else cashVal += (finalUzs * mod);
+                
+                if(t.method === 'Bank') bankVal += (val * mod);
+                else cashVal += (val * mod);
             });
-
             document.getElementById('dash-cash-total').innerText = cashVal.toLocaleString();
             document.getElementById('dash-bank').innerText = bankVal.toLocaleString();
-            document.getElementById('dash-net').innerText = (cashVal + bankVal).toLocaleString();
 
-            const list = document.getElementById('tenantStatsList');
+            // 3. SMART TENANT STATUS & TOTAL DEBT
+            const list = document.getElementById('tenantStatusList');
+            list.innerHTML = "";
+            let totalPeriodDebt = 0;
+            const isAllTime = period === "Jami Davr";
+            
+            // Only show Total Debt card if a specific month is selected
+            if(isAllTime) {
+                document.getElementById('totalDebtCard').classList.add('hidden');
+            } else {
+                document.getElementById('totalDebtCard').classList.remove('hidden');
+            }
+
+            app.tenants.forEach(tenant => {
+                const relevant = txs.filter(t => t.tenant === tenant.name && t.type === 'Income');
+                let paidUZS = relevant.reduce((acc, t) => {
+                    let tRate = app.rates[t.month] || 12500;
+                    return acc + ((t.currency === 'USD') ? (t.amount * tRate) : t.amount);
+                }, 0);
+
+                let rentUZS = 0;
+                if(!isAllTime) {
+                    rentUZS = (tenant.currency === 'USD') ? (tenant.rent * monthRate) : tenant.rent;
+                }
+                
+                let status = "";
+                let diff = paidUZS - rentUZS;
+                let barColor = "bg-red-500";
+                let percent = isAllTime ? 100 : Math.min((paidUZS / rentUZS) * 100, 100);
+
+                if(isAllTime) {
+                    status = `<span class="text-blue-600 font-bold">${Math.round(paidUZS).toLocaleString()} UZS</span>`;
+                    barColor = "bg-blue-500";
+                } else if(rentUZS === 0) {
+                     status = `<span class="text-slate-400">Narx yo'q</span>`;
+                     percent = 0;
+                     barColor = "bg-slate-300";
+                } else if(diff >= -1000 && diff <= 1000) {
+                    status = `<span class="text-green-600 font-bold"><i class="fas fa-check-circle"></i> To'landi</span>`;
+                    barColor = "bg-green-500";
+                } else if(diff > 1000) {
+                    status = `<span class="text-blue-600 font-bold">+${Math.round(diff).toLocaleString()} ortiqcha</span>`;
+                    barColor = "bg-blue-500";
+                } else {
+                    status = `<span class="text-red-500 font-bold">-${Math.round(Math.abs(diff)).toLocaleString()} qarz</span>`;
+                    totalPeriodDebt += Math.abs(diff); // Add to total debt
+                }
+
+                if(paidUZS === 0) percent = 0;
+
+                const div = document.createElement('div');
+                div.className = "bg-white border border-slate-100 rounded-lg p-3 active:scale-95 transition-transform cursor-pointer";
+                div.onclick = () => openTenantModal(tenant.name, period, tenant.rent, tenant.currency, monthRate);
+                
+                div.innerHTML = `
+                    <div class="flex justify-between items-center mb-2">
+                        <div class="flex items-center gap-2">
+                            <span class="font-bold text-sm text-slate-700">${tenant.name}</span>
+                            <span class="text-[10px] bg-slate-100 px-1 rounded text-slate-500">${isAllTime ? 'Jami' : 'Ijara'}: ${isAllTime ? '-' : tenant.rent + ' ' + tenant.currency}</span>
+                        </div>
+                        <div class="text-[10px]">${status}</div>
+                    </div>
+                    <div class="w-full bg-slate-100 rounded-full h-2 mb-1">
+                        <div class="${barColor} h-2 rounded-full" style="width: ${percent}%"></div>
+                    </div>
+                    <div class="text-right text-[10px] text-slate-400">
+                        To'landi: ${(Math.round(paidUZS)).toLocaleString()} UZS
+                    </div>
+                `;
+                list.appendChild(div);
+            });
+
+            if(!isAllTime) {
+                document.getElementById('dash-total-debt').innerText = totalPeriodDebt.toLocaleString() + " UZS";
+            }
+        }
+
+        // --- NEW MODAL LOGIC ---
+        function openTenantModal(tenantName, period, rentAmount, rentCurr, monthRate) {
+            const isAllTime = period === "Jami Davr";
+            const txs = app.transactions.filter(t => t.tenant === tenantName && (isAllTime || t.month === period) && t.type === 'Income');
+            
+            let totalPaidUZS = txs.reduce((acc, t) => {
+                let tRate = app.rates[t.month] || 12500;
+                return acc + ((t.currency === 'USD') ? (t.amount * tRate) : t.amount);
+            }, 0);
+
+            let expectedRentUZS = 0;
+            if(!isAllTime) {
+                expectedRentUZS = (rentCurr === 'USD') ? (rentAmount * monthRate) : rentAmount;
+            }
+
+            // Fill Data
+            document.getElementById('modalTitle').innerText = tenantName;
+            document.getElementById('modalSubtitle').innerText = `${period} hisoboti`;
+            
+            if(isAllTime) {
+                document.getElementById('modalRent').innerText = "Hisoblanmaydi (Jami Davr)";
+                document.getElementById('modalDiff').innerText = "-";
+            } else {
+                let rateInfo = "";
+                if(rentCurr === 'USD') {
+                    rateInfo = `<div class="text-[10px] text-slate-400 font-normal">1 USD - ${monthRate.toLocaleString()} UZS</div>`;
+                }
+                document.getElementById('modalRent').innerHTML = `<div class="font-bold text-slate-700">${rentAmount} ${rentCurr}</div>${rateInfo}<div class="text-xs font-normal text-slate-500">~${Math.round(expectedRentUZS).toLocaleString()} UZS</div>`;
+                
+                let diff = totalPaidUZS - expectedRentUZS;
+                let diffEl = document.getElementById('modalDiff');
+                if(diff < -1000) {
+                    diffEl.innerText = `${Math.round(diff).toLocaleString()} UZS (QARZ)`;
+                    diffEl.className = "font-bold text-red-500";
+                } else if (diff > 1000) {
+                    diffEl.innerText = `+${Math.round(diff).toLocaleString()} UZS (ORTIQCHA)`;
+                    diffEl.className = "font-bold text-blue-500";
+                } else {
+                    diffEl.innerText = "0 UZS (TO'LANDI)";
+                    diffEl.className = "font-bold text-green-500";
+                }
+            }
+            
+            document.getElementById('modalPaid').innerText = `${Math.round(totalPaidUZS).toLocaleString()} UZS`;
+
+            const list = document.getElementById('modalContent');
             list.innerHTML = "";
             
-            // Faqat daromad (Kirim) bo'lgan ijarachilarni ko'rsatamiz
-            app.tenants.forEach(tenant => {
-                const relevant = txs.filter(t => t.tenant === tenant && t.type === 'Income');
-                if(relevant.length > 0) {
-                    let totalPaid = relevant.reduce((acc, t) => acc + ((t.currency === 'USD') ? (t.amount * app.rate) : t.amount), 0);
-                    const div = document.createElement('div');
-                    div.className = "bg-white border border-slate-100 rounded-lg p-3 flex justify-between items-center";
-                    div.innerHTML = `
+            if(txs.length === 0) {
+                list.innerHTML = `<p class="text-center text-slate-400 text-sm py-4">To'lovlar mavjud emas</p>`;
+            } else {
+                txs.forEach(t => {
+                    let detailText = "";
+                    if (t.currency === 'USD') {
+                        let tRate = app.rates[t.month] || 12500;
+                        let inUZS = t.amount * tRate;
+                        detailText = `<div class="text-[10px] text-slate-400 text-right mt-0.5">1 USD - ${tRate.toLocaleString()} UZS<br>= ${Math.round(inUZS).toLocaleString()} UZS</div>`;
+                    }
+
+                    const row = document.createElement('div');
+                    row.className = "flex justify-between items-center p-2 border-b border-slate-50 last:border-0";
+                    row.innerHTML = `
                         <div class="flex items-center gap-3">
-                            <div class="bg-blue-50 text-blue-600 w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold">${tenant.charAt(0)}</div>
-                            <div><p class="font-bold text-sm text-slate-700">${tenant}</p><p class="text-[10px] text-slate-400">${relevant.length} ta to'lov</p></div>
+                            <div class="bg-blue-50 w-8 h-8 rounded-full flex items-center justify-center text-blue-500"><i class="fas ${t.method === 'Naqd' ? 'fa-wallet' : 'fa-university'}"></i></div>
+                            <div>
+                                <p class="text-xs text-slate-400 font-bold">${t.date}</p>
+                                <p class="text-xs text-slate-500">${t.method}</p>
+                            </div>
                         </div>
-                        <div class="text-right"><p class="font-bold text-slate-800 text-sm">${totalPaid.toLocaleString()} <span class="text-[10px] text-slate-400">UZS</span></p></div>`;
-                    list.appendChild(div);
-                }
-            });
-            if(list.innerHTML === "") list.innerHTML = `<div class="text-center text-slate-400 text-xs py-6">Kirim mavjud emas</div>`;
+                        <div class="text-right">
+                            <span class="font-bold text-slate-700">${t.amount.toLocaleString()} ${t.currency}</span>
+                            ${detailText}
+                        </div>
+                    `;
+                    list.appendChild(row);
+                });
+            }
+            document.getElementById('detailModal').classList.remove('hidden');
         }
+
+        function closeModal() {
+            document.getElementById('detailModal').classList.add('hidden');
+        }
+
+        // --- TELEGRAM LOGIC (FIXED NEWLINES) ---
+        async function sendTelegram(text, replyId = null) {
+            let url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
+            let body = { chat_id: CHAT_ID, text: text, parse_mode: "HTML" };
+            const res = await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+            const data = await res.json();
+            return data.ok ? data.result.message_id : null;
+        }
+
+        async function editTelegram(msgId, text) {
+            if(!msgId) return;
+            try {
+                await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageText`, {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ chat_id: CHAT_ID, message_id: msgId, text: text, parse_mode: "HTML" })
+                });
+            } catch(e) { console.log("Too old to edit"); }
+        }
+
+        async function deleteTelegram(msgId) {
+            if(!msgId) return;
+            try {
+                await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/deleteMessage`, {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ chat_id: CHAT_ID, message_id: msgId })
+                });
+            } catch(e) { console.log("Too old to delete"); }
+        }
+
+        // --- SUBMIT LOGIC ---
+        async function submitAll() {
+            if(cart.length === 0) return alert("Summani kiriting");
+            const btn = document.getElementById('submitBtn');
+            btn.disabled = true; btn.innerText = "Bajarilmoqda...";
+
+            const editId = document.getElementById('editId').value;
+            const existingMsgId = document.getElementById('msgId').value;
+
+            const baseId = editId ? editId.split('_')[0] : Date.now();
+            const common = {
+                tenant: document.getElementById('entryTenant').value,
+                month: document.getElementById('entryMonth').value,
+                comment: document.getElementById('entryComment').value,
+                date: new Date().toLocaleDateString('en-GB')
+            };
+
+            if(editId) app.transactions = app.transactions.filter(t => !t.id.startsWith(editId.split('_')[0]));
+
+            let breakdown = cart.map(i => `${i.method === 'Naqd' ? "💵" : "💳"} ${i.amount.toLocaleString()} ${i.currency}`).join("\n");
+            let mRate = app.rates[common.month] || 12500;
+            let totalVal = cart.reduce((acc, i) => acc + (i.currency === 'USD' ? i.amount * mRate : i.amount), 0);
+            
+            const emoji = currentType === 'Income' ? "🟢" : "🔴";
+            const typeText = currentType === 'Income' ? "KIRIM" : "CHIQIM";
+            
+            // FIXED: Using \n instead of %0A
+            const msgText = `<b>${emoji} ${typeText} ${editId ? "(TAHRIRLANDI)" : ""}</b>\n👤 <b>${common.tenant}</b>\n🗓 ${common.month}\n──────────────\n${breakdown}\n──────────────\n📊 Jami: ${totalVal.toLocaleString()} UZS\n📝 ${common.comment}`;
+
+            let finalMsgId = null;
+
+            if(editId && existingMsgId) {
+                await editTelegram(existingMsgId, msgText);
+                finalMsgId = existingMsgId;
+            } else {
+                finalMsgId = await sendTelegram(msgText);
+            }
+
+            cart.forEach((item, i) => {
+                app.transactions.push({ id: baseId + "_" + i, ...common, type: currentType, amount: item.amount, currency: item.currency, method: item.method, msgId: finalMsgId });
+            });
+
+            await saveCloud();
+            
+            cart = []; 
+            document.getElementById('entryComment').value = "";
+            document.getElementById('editId').value = "";
+            document.getElementById('msgId').value = "";
+            document.getElementById('cancelEditBtn').classList.add('hidden');
+            renderCart();
+            btn.disabled = false; btn.innerText = currentType === 'Income' ? "KIRIMNI SAQLASH" : "CHIQIMNI SAQLASH";
+            switchTab('dash');
+        }
+
+        function editTx(id) {
+            const tx = app.transactions.find(t => t.id === id);
+            if(!tx) return;
+            setType(tx.type);
+            document.getElementById('entryTenant').value = tx.tenant;
+            document.getElementById('entryMonth').value = tx.month;
+            document.getElementById('entryComment').value = tx.comment;
+            document.getElementById('editId').value = id;
+            document.getElementById('msgId').value = tx.msgId || ""; 
+            cart = [{ amount: tx.amount, currency: tx.currency, method: tx.method }];
+            renderCart();
+            document.getElementById('submitBtn').innerText = "O'ZGARTIRISHNI SAQLASH";
+            document.getElementById('cancelEditBtn').classList.remove('hidden');
+            switchTab('entry');
+        }
+
+        async function deleteTx(id) {
+            if(confirm("O'chirmoqchimisiz?")) { 
+                const tx = app.transactions.find(t => t.id === id);
+                if(tx && tx.msgId) { await deleteTelegram(tx.msgId); }
+                app.transactions = app.transactions.filter(t => t.id !== id); 
+                saveCloud(); 
+            }
+        }
+
+        // --- SETTINGS LOGIC ---
+        function saveRate() {
+            const m = document.getElementById('settingMonth').value;
+            const r = parseFloat(document.getElementById('settingRateInput').value);
+            if(r) { app.rates[m] = r; saveCloud(); renderSettings(); }
+        }
+
+        function editTenant(index) {
+            const t = app.tenants[index];
+            document.getElementById('newTenantName').value = t.name;
+            document.getElementById('newTenantRent').value = t.rent;
+            document.getElementById('newTenantCurr').value = t.currency;
+            editingTenantIndex = index;
+            const btn = document.getElementById('addTenantBtn');
+            btn.innerText = "O'zgartirishni Saqlash";
+            btn.classList.remove('bg-slate-800');
+            btn.classList.add('bg-blue-600');
+            btn.scrollIntoView({behavior: "smooth"});
+        }
+
+        function addTenant() {
+            const name = document.getElementById('newTenantName').value;
+            const rent = parseFloat(document.getElementById('newTenantRent').value);
+            const curr = document.getElementById('newTenantCurr').value;
+            
+            if(!name) return alert("Ism kiriting");
+
+            if(editingTenantIndex !== null) {
+                app.tenants[editingTenantIndex] = { name: name, rent: rent || 0, currency: curr };
+                editingTenantIndex = null;
+                const btn = document.getElementById('addTenantBtn');
+                btn.innerText = "+ Qo'shish";
+                btn.classList.remove('bg-blue-600');
+                btn.classList.add('bg-slate-800');
+            } else {
+                app.tenants.push({ name: name, rent: rent || 0, currency: curr });
+            }
+            
+            saveCloud();
+            document.getElementById('newTenantName').value = "";
+            document.getElementById('newTenantRent').value = "";
+            renderSettings();
+        }
+
+        function removeTenant(index) {
+            if(confirm("O'chirmoqchimisiz?")) { app.tenants.splice(index, 1); saveCloud(); renderSettings(); }
+        }
+
+        function renderSettings() {
+            const ratesHTML = Object.entries(app.rates).map(([m, r]) => `<span>${m}: ${r}</span>`).join(" | ");
+            document.getElementById('ratesList').innerHTML = ratesHTML || "Kurslar belgilanmagan";
+            document.getElementById('settingsTenantList').innerHTML = app.tenants.map((t, i) => `
+                <div class="flex justify-between bg-slate-50 p-2 rounded text-xs mb-1 border items-center">
+                    <div><span class="font-bold">${t.name}</span> <span class="text-slate-500">(${t.rent} ${t.currency})</span></div>
+                    <div class="flex gap-3">
+                        <button onclick="editTenant(${i})" class="text-blue-400"><i class="fas fa-pen"></i></button>
+                        <button onclick="removeTenant(${i})" class="text-red-400"><i class="fas fa-times"></i></button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function renderEntryDropdowns() {
+            let options = app.tenants.map(t => t.name);
+            if(currentType === 'Expense') {
+                options.push("Umumiy Naqd Puldan");
+                options.push("Umumiy Bankdan");
+            }
+            document.getElementById('entryTenant').innerHTML = options.map(t => `<option>${t}</option>`).join('');
+        }
+
+        // --- COMMON UI ---
+        function addToCart() {
+            const amt = document.getElementById('tempAmount').value;
+            if(!amt) return;
+            cart.push({ amount: parseFloat(amt), currency: document.getElementById('tempCurr').value, method: document.getElementById('tempMethod').value });
+            document.getElementById('tempAmount').value = "";
+            renderCart();
+        }
+
+        function renderCart() {
+            const box = document.getElementById('cartList');
+            box.classList.remove('hidden');
+            if(cart.length === 0) box.classList.add('hidden');
+            box.innerHTML = cart.map((item, i) => `
+                <div class="flex justify-between items-center text-xs border-b border-blue-200 last:border-0 pb-1 mb-1">
+                    <span class="font-bold text-slate-700">${item.amount.toLocaleString()} ${item.currency} <span class="text-slate-400 font-normal">(${item.method})</span></span>
+                    <button onclick="cart.splice(${i},1); renderCart()" class="text-red-400"><i class="fas fa-times"></i></button>
+                </div>`).join('');
+        }
+        
+        function setType(type) {
+            currentType = type;
+            const btnIn = document.getElementById('btn-income');
+            const btnEx = document.getElementById('btn-expense');
+            const sub = document.getElementById('submitBtn');
+            if(type === 'Income') {
+                btnIn.className = "flex-1 py-2 rounded-md font-bold text-sm bg-white text-green-600 shadow-sm transition-all";
+                btnEx.className = "flex-1 py-2 rounded-md font-bold text-sm text-slate-500 transition-all";
+                sub.className = "w-full bg-green-600 text-white py-3 rounded-lg font-bold text-sm shadow-lg shadow-green-200 active:scale-95 transition-all";
+                if(!document.getElementById('editId').value) sub.innerText = "KIRIMNI SAQLASH";
+            } else {
+                btnIn.className = "flex-1 py-2 rounded-md font-bold text-sm text-slate-500 transition-all";
+                btnEx.className = "flex-1 py-2 rounded-md font-bold text-sm bg-white text-red-600 shadow-sm transition-all";
+                sub.className = "w-full bg-red-600 text-white py-3 rounded-lg font-bold text-sm shadow-lg shadow-red-200 active:scale-95 transition-all";
+                if(!document.getElementById('editId').value) sub.innerText = "CHIQIMNI SAQLASH";
+            }
+            renderEntryDropdowns();
+        }
+
+        function cancelEdit() {
+            cart = []; renderCart();
+            document.getElementById('editId').value = "";
+            document.getElementById('msgId').value = "";
+            document.getElementById('entryComment').value = "";
+            document.getElementById('submitBtn').innerText = currentType === 'Income' ? "KIRIMNI SAQLASH" : "CHIQIMNI SAQLASH";
+            document.getElementById('cancelEditBtn').classList.add('hidden');
+        }
+
+        function switchTab(t) {
+            document.querySelectorAll('.tab-content').forEach(e => e.classList.remove('active'));
+            document.querySelectorAll('.nav-item').forEach(e => e.classList.remove('active'));
+            document.getElementById('tab-'+t).classList.add('active');
+            document.getElementById('nav-'+t).classList.add('active');
+        }
+
+        function showLoader(show) { document.getElementById('loader').style.display = show ? 'flex' : 'none'; }
 
         function renderHistory() {
             const list = document.getElementById('historyList');
@@ -270,159 +741,15 @@
                 list.appendChild(div);
             });
         }
-
-        // --- ACTIONS ---
-        function addToCart() {
-            const amt = document.getElementById('tempAmount').value;
-            if(!amt) return;
-            cart.push({ amount: parseFloat(amt), currency: document.getElementById('tempCurr').value, method: document.getElementById('tempMethod').value });
-            document.getElementById('tempAmount').value = "";
-            renderCart();
-        }
-
-        function renderCart() {
-            const box = document.getElementById('cartList');
-            box.classList.remove('hidden');
-            if(cart.length === 0) box.classList.add('hidden');
-            box.innerHTML = cart.map((item, i) => `
-                <div class="flex justify-between items-center text-xs border-b border-blue-200 last:border-0 pb-1 mb-1">
-                    <span class="font-bold text-slate-700">${item.amount.toLocaleString()} ${item.currency} <span class="text-slate-400 font-normal">(${item.method})</span></span>
-                    <button onclick="cart.splice(${i},1); renderCart()" class="text-red-400"><i class="fas fa-times"></i></button>
-                </div>`).join('');
-        }
-
-        async function submitAll() {
-            if(cart.length === 0) return alert("Summani kiriting");
-            const btn = document.getElementById('submitBtn');
-            btn.disabled = true; btn.innerText = "Yuborilmoqda...";
-
-            const editId = document.getElementById('editId').value;
-            if(editId) app.transactions = app.transactions.filter(t => !t.id.startsWith(editId.split('_')[0]));
-
-            const baseId = editId ? editId.split('_')[0] : Date.now();
-            const common = {
-                tenant: document.getElementById('entryTenant').value,
-                month: document.getElementById('entryMonth').value,
-                comment: document.getElementById('entryComment').value,
-                date: new Date().toLocaleDateString('en-GB')
-            };
-
-            cart.forEach((item, i) => {
-                app.transactions.push({ id: baseId + "_" + i, ...common, type: currentType, amount: item.amount, currency: item.currency, method: item.method });
-            });
-
-            await saveCloud();
-            
-            let breakdown = cart.map(i => `${i.method === 'Naqd' ? "💵" : "💳"} ${i.amount.toLocaleString()} ${i.currency}`).join("%0A");
-            let totalVal = cart.reduce((acc, i) => acc + (i.currency === 'USD' ? i.amount * app.rate : i.amount), 0);
-            const emoji = currentType === 'Income' ? "🟢" : "🔴";
-            const typeText = currentType === 'Income' ? "KIRIM" : "CHIQIM";
-            
-            const msg = `<b>${emoji} ${typeText} ${editId ? "(TAHRIR)" : ""}</b>%0A👤 <b>${common.tenant}</b>%0A🗓 ${common.month}%0A──────────────%0A${breakdown}%0A──────────────%0A📊 Jami: ${totalVal.toLocaleString()} UZS%0A📝 ${common.comment}`;
-            fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage?chat_id=${CHAT_ID}&text=${msg}&parse_mode=HTML`).catch(e=>console.log(e));
-
-            cart = []; 
-            document.getElementById('entryComment').value = "";
-            document.getElementById('editId').value = "";
-            document.getElementById('cancelEditBtn').classList.add('hidden');
-            renderCart();
-            btn.disabled = false; btn.innerText = currentType === 'Income' ? "KIRIMNI TASDIQLASH" : "CHIQIMNI TASDIQLASH";
-            switchTab('dash');
-        }
-
-        function editTx(id) {
-            const tx = app.transactions.find(t => t.id === id);
-            if(!tx) return;
-            setType(tx.type);
-            // Dropdown ro'yxatini to'g'irlash (masalan, agar Chiqim bo'lsa, umumiy opsiyalar chiqishi kerak)
-            renderDropdowns(); 
-            
-            document.getElementById('entryTenant').value = tx.tenant;
-            document.getElementById('entryMonth').value = tx.month;
-            document.getElementById('entryComment').value = tx.comment;
-            document.getElementById('editId').value = id;
-            cart = [{ amount: tx.amount, currency: tx.currency, method: tx.method }];
-            renderCart();
-            document.getElementById('submitBtn').innerText = "O'ZGARTIRISHNI SAQLASH";
-            document.getElementById('cancelEditBtn').classList.remove('hidden');
-            switchTab('entry');
-        }
         
-        function cancelEdit() {
-            cart = []; renderCart();
-            document.getElementById('editId').value = "";
-            document.getElementById('entryComment').value = "";
-            document.getElementById('submitBtn').innerText = currentType === 'Income' ? "KIRIMNI TASDIQLASH" : "CHIQIMNI TASDIQLASH";
-            document.getElementById('cancelEditBtn').classList.add('hidden');
-        }
-
-        function deleteTx(id) {
-            if(confirm("O'chirmoqchimisiz?")) { app.transactions = app.transactions.filter(t => t.id !== id); saveCloud(); }
-        }
-
-        // --- YORDAMCHILAR ---
-        function setType(type) {
-            currentType = type;
-            const btnIn = document.getElementById('btn-income');
-            const btnEx = document.getElementById('btn-expense');
-            const sub = document.getElementById('submitBtn');
-            
-            // 1. Tugma dizayni
-            if(type === 'Income') {
-                btnIn.className = "flex-1 py-2 rounded-md font-bold text-sm bg-white text-green-600 shadow-sm transition-all";
-                btnEx.className = "flex-1 py-2 rounded-md font-bold text-sm text-slate-500 transition-all";
-                sub.className = "w-full bg-green-600 text-white py-3 rounded-lg font-bold text-sm shadow-lg shadow-green-200 active:scale-95 transition-all";
-                if(!document.getElementById('editId').value) sub.innerText = "KIRIMNI TASDIQLASH";
-            } else {
-                btnIn.className = "flex-1 py-2 rounded-md font-bold text-sm text-slate-500 transition-all";
-                btnEx.className = "flex-1 py-2 rounded-md font-bold text-sm bg-white text-red-600 shadow-sm transition-all";
-                sub.className = "w-full bg-red-600 text-white py-3 rounded-lg font-bold text-sm shadow-lg shadow-red-200 active:scale-95 transition-all";
-                if(!document.getElementById('editId').value) sub.innerText = "CHIQIMNI TASDIQLASH";
-            }
-            // 2. Ro'yxatni yangilash
-            renderDropdowns();
-        }
-
-        function renderDropdowns() {
-            const select = document.getElementById('entryTenant');
-            let options = [...app.tenants];
-            
-            // Agar Chiqim bo'lsa, maxsus variantlarni qo'shamiz
-            if(currentType === 'Expense') {
-                options.push("Umumiy Naqd Puldan");
-                options.push("Umumiy Bankdan");
-            }
-
-            select.innerHTML = options.map(t => `<option>${t}</option>`).join('');
-            
-            // Sozlamalar menyusi (faqat ijarachilar)
-            document.getElementById('settingsTenantList').innerHTML = app.tenants.map(t => `
-                <div class="flex justify-between bg-slate-50 p-2 rounded text-xs mb-1 border">
-                    <span>${t}</span> <button onclick="removeTenant('${t}')" class="text-red-400"><i class="fas fa-times"></i></button>
-                </div>
-            `).join('');
-        }
-
-        function switchTab(t) {
-            document.querySelectorAll('.tab-content').forEach(e => e.classList.remove('active'));
-            document.querySelectorAll('.nav-item').forEach(e => e.classList.remove('active'));
-            document.getElementById('tab-'+t).classList.add('active');
-            document.getElementById('nav-'+t).classList.add('active');
-        }
-
-        function showLoader(show) { document.getElementById('loader').style.display = show ? 'flex' : 'none'; }
-        
-        function initDateSelectors() {
+        function initSelectors() {
             const now = new Date();
             const currentM = months[now.getMonth()];
-            const dSel = document.getElementById('dashMonthSelect');
-            dSel.innerHTML = `<option>Jami Davr</option>` + months.map(m => `<option ${m===currentM ? 'selected' : ''}>${m}</option>`).join('');
+            const dashSel = document.getElementById('dashMonthSelect');
+            dashSel.innerHTML = `<option>Jami Davr</option>` + months.map(m => `<option ${m===currentM ? 'selected' : ''}>${m}</option>`).join('');
             document.getElementById('entryMonth').innerHTML = months.map(m => `<option ${m===currentM ? 'selected' : ''}>${m}</option>`).join('');
+            document.getElementById('settingMonth').innerHTML = months.map(m => `<option ${m===currentM ? 'selected' : ''}>${m}</option>`).join('');
         }
-
-        function saveSettings() { app.rate = parseFloat(document.getElementById('settingRate').value); saveCloud(); }
-        function addTenantPrompt() { const n = prompt("Ism:"); if(n) { app.tenants.push(n); saveCloud(); } }
-        function removeTenant(n) { if(confirm("O'chirmoqchimisiz?")) { app.tenants = app.tenants.filter(t => t !== n); saveCloud(); } }
     </script>
 </body>
 </html>
