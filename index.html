@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Biznes Boshqaruv</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f8fafc; -webkit-tap-highlight-color: transparent; font-family: sans-serif; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; animation: fadeIn 0.2s; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+        .nav-item.active { color: #2563eb; }
+        .card { background: white; border-radius: 16px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; margin-bottom: 12px; }
+        #loader { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.95); z-index: 100; justify-content: center; align-items: center; flex-direction: column; }
+    </style>
+</head>
+<body class="pb-24 select-none text-slate-800">
+
+    <script>
+        const BOT_TOKEN = "7752185432:AAFBCdMTrgiRmtAaiGu-9FQsVgakdlO8RkM"; 
+        const CHAT_ID = "-5124753855"; 
+        const PANTRY_ID = "85db17b1-acae-4537-953d-06480b66c159";
+        const STORAGE_URL = `https://getpantry.cloud/apiv1/pantry/${PANTRY_ID}/basket/BizDataV3`; 
+    </script>
+
+    <div id="loader">
+        <i class="fas fa-circle-notch fa-spin text-4xl text-blue-600 mb-4"></i>
+        <p class="text-gray-500 font-bold text-sm" id="loaderMsg">Yuklanmoqda...</p>
+    </div>
+
+    <div class="bg-white px-4 py-3 sticky top-0 z-40 border-b flex justify-between items-center">
+        <div class="flex items-center gap-2">
+            <div class="bg-blue-600 text-white w-8 h-8 rounded-lg flex items-center justify-center font-bold">B</div>
+            <h1 class="font-bold text-lg tracking-tight">Boshqaruv</h1>
+        </div>
+        <div class="text-[10px] font-bold bg-slate-100 px-2 py-1 rounded text-slate-500 border">
+            Kurs: $1 = <span id="headerRate">...</span>
+        </div>
+    </div>
+
+    <div id="tab-dash" class="tab-content active p-4">
+        
+        <div class="flex justify-between items-center mb-4">
+            <h2 class="font-bold text-slate-700">Umumiy Hisobot</h2>
+            <select id="dashMonthSelect" class="bg-white border border-slate-300 text-slate-600 text-xs font-bold rounded-lg px-2 py-1 outline-none" onchange="renderDashboard()">
+                <option value="Jami Davr">Jami Davr</option>
+            </select>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3 mb-4">
+            <div class="card !p-3 !mb-0 border-l-4 border-l-green-500">
+                <p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">Jami Kirim</p>
+                <p class="text-lg font-bold text-slate-800 truncate" id="dash-income">0</p>
+            </div>
+            <div class="card !p-3 !mb-0 border-l-4 border-l-red-500">
+                <p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">Jami Chiqim</p>
+                <p class="text-lg font-bold text-slate-800 truncate" id="dash-expense">0</p>
+            </div>
+        </div>
+
+        <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 mt-6">Mavjud Balans (UZS)</h3>
+        <div class="card bg-slate-800 text-white !border-none !mb-2">
+            <p class="text-xs text-slate-400 font-medium mb-1">SOF BALANS</p>
+            <p class="text-3xl font-mono font-bold tracking-tight" id="dash-net">0</p>
+            <p class="text-[10px] text-slate-500 mt-2 text-right">Bank + Naqd (Hisoblangan)</p>
+        </div>
+        
+        <div class="grid grid-cols-2 gap-2 mb-6">
+            <div class="bg-white border rounded-xl p-3">
+                <p class="text-[10px] text-slate-400 font-bold uppercase">Naqd (Seif)</p>
+                <p class="font-bold text-slate-700" id="dash-cash-total">0</p>
+            </div>
+            <div class="bg-white border rounded-xl p-3">
+                <p class="text-[10px] text-slate-400 font-bold uppercase">Bank</p>
+                <p class="font-bold text-blue-600" id="dash-bank">0</p>
+            </div>
+        </div>
+
+        <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Ijarachi To'lovlari</h3>
+        <div id="tenantStatsList" class="space-y-2 pb-8"></div>
+    </div>
+
+    <div id="tab-entry" class="tab-content p-4">
+        <div class="flex bg-slate-200 rounded-lg p-1 mb-4">
+            <button onclick="setType('Income')" id="btn-income" class="flex-1 py-2 rounded-md font-bold text-sm bg-white text-green-600 shadow-sm transition-all">Kirim</button>
+            <button onclick="setType('Expense')" id="btn-expense" class="flex-1 py-2 rounded-md font-bold text-sm text-slate-500 transition-all">Chiqim</button>
+        </div>
+
+        <div class="card">
+            <input type="hidden" id="editId" value="">
+
+            <div class="grid grid-cols-2 gap-3 mb-4">
+                <div>
+                    <label class="block text-[10px] font-bold text-slate-400 mb-1">OY</label>
+                    <select id="entryMonth" class="w-full p-2 bg-slate-50 border border-slate-200 rounded font-bold text-sm outline-none"></select>
+                </div>
+                <div>
+                    <label class="block text-[10px] font-bold text-slate-400 mb-1">IJARACHI</label>
+                    <select id="entryTenant" class="w-full p-2 bg-slate-50 border border-slate-200 rounded font-bold text-sm outline-none"></select>
+                </div>
+            </div>
+
+            <label class="block text-[10px] font-bold text-slate-400 mb-1">TO'LOV TAFSILOTLARI</label>
+            <div class="flex gap-2 mb-2">
+                <input type="number" id="tempAmount" placeholder="0" class="flex-1 p-2 border border-slate-200 rounded text-lg font-bold outline-none">
+                <select id="tempCurr" class="w-20 p-2 border border-slate-200 rounded bg-white font-bold text-xs"><option>UZS</option><option>USD</option></select>
+            </div>
+            <div class="flex gap-2 mb-4">
+                 <select id="tempMethod" class="flex-1 p-2 border border-slate-200 rounded bg-white font-medium text-sm text-slate-600"><option value="Naqd">Naqd</option><option value="Bank">Bank</option></select>
+                 <button onclick="addToCart()" class="bg-slate-800 text-white px-4 rounded shadow active:scale-95"><i class="fas fa-plus"></i></button>
+            </div>
+
+            <div id="cartList" class="hidden mb-4 bg-blue-50 border border-blue-100 rounded p-2 space-y-1"></div>
+
+            <textarea id="entryComment" placeholder="Izoh (ixtiyoriy)..." class="w-full p-3 border border-slate-200 rounded mb-4 text-sm h-20 outline-none resize-none"></textarea>
+
+            <button onclick="submitAll()" id="submitBtn" class="w-full bg-green-600 text-white py-3 rounded-lg font-bold text-sm shadow-lg shadow-green-200 active:scale-95 transition-all">
+                KIRIMNI TASDIQLASH
+            </button>
+            <button onclick="cancelEdit()" id="cancelEditBtn" class="hidden w-full mt-2 py-2 text-red-400 text-xs font-bold">Tahrirni Bekor Qilish</button>
+        </div>
+    </div>
+
+    <div id="tab-history" class="tab-content p-4">
+        <div class="flex justify-between items-center mb-4">
+            <h3 class="font-bold text-slate-700">Tarix</h3>
+            <button onclick="syncData()" class="text-blue-500 text-xs font-bold"><i class="fas fa-sync-alt"></i> Yangilash</button>
+        </div>
+        <div id="historyList" class="space-y-3 pb-10"></div>
+    </div>
+
+    <div id="tab-settings" class="tab-content p-4">
+        <div class="card">
+            <h3 class="font-bold mb-4 text-slate-700">Sozlamalar</h3>
+            <div class="mb-4">
+                <label class="block text-[10px] text-slate-400 font-bold mb-1">VALYUTA KURSI ($1)</label>
+                <div class="flex gap-2">
+                    <input type="number" id="settingRate" class="flex-1 p-2 border rounded font-mono text-sm">
+                    <button onclick="saveSettings()" class="bg-blue-600 text-white px-4 rounded font-bold text-xs">Saqlash</button>
+                </div>
+            </div>
+            <label class="block text-[10px] text-slate-400 font-bold mb-1">IJARACHILAR RO'YXATI</label>
+            <div id="settingsTenantList" class="space-y-1 mb-3"></div>
+            <button onclick="addTenantPrompt()" class="w-full py-2 border border-dashed border-slate-300 rounded text-slate-400 text-xs font-bold hover:bg-slate-50">+ Ijarachi Qo'shish</button>
+        </div>
+    </div>
+
+    <div class="fixed bottom-0 left-0 w-full bg-white border-t border-slate-200 flex justify-between px-8 py-3 text-[10px] font-bold text-slate-400 z-50">
+        <button onclick="switchTab('dash')" id="nav-dash" class="nav-item active flex flex-col items-center gap-1"><i class="fas fa-home text-lg"></i>Asosiy</button>
+        <button onclick="switchTab('entry')" id="nav-entry" class="nav-item flex flex-col items-center gap-1"><i class="fas fa-plus-circle text-lg"></i>Yangi</button>
+        <button onclick="switchTab('history')" id="nav-history" class="nav-item flex flex-col items-center gap-1"><i class="fas fa-history text-lg"></i>Tarix</button>
+        <button onclick="switchTab('settings')" id="nav-settings" class="nav-item flex flex-col items-center gap-1"><i class="fas fa-sliders-h text-lg"></i>Sozlamalar</button>
+    </div>
+
+    <script>
+        // --- MA'LUMOTLAR BAZASI ---
+        let app = {
+            rate: 12500,
+            tenants: ["Tehnopark", "Bunyodbek", "Apteka", "Dilyoraka"],
+            transactions: [] 
+        };
+        let cart = [];
+        let currentType = 'Income';
+        const months = ["Yanvar", "Fevral", "Mart", "Aprel", "May", "Iyun", "Iyul", "Avgust", "Sentabr", "Oktabr", "Noyabr", "Dekabr"];
+
+        window.onload = () => {
+            initDateSelectors();
+            syncData();
+        };
+
+        // --- BULUTLI XOTIRA (CLOUD) ---
+        async function syncData() {
+            showLoader(true);
+            try {
+                const res = await fetch(STORAGE_URL);
+                if (res.ok) {
+                    const data = await res.json();
+                    if(data && data.transactions) app = data; 
+                }
+            } catch (e) { console.log("Offline yoki yangi hisob"); }
+            renderAll();
+            showLoader(false);
+        }
+
+        async function saveCloud() {
+            showLoader(true);
+            try {
+                await fetch(STORAGE_URL, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(app) });
+            } catch(e) { alert("Saqlashda xatolik (Internetni tekshiring)"); }
+            showLoader(false);
+            renderAll();
+        }
+
+        // --- INTERFEYSNI CHIZISH ---
+        function renderAll() {
+            document.getElementById('headerRate').innerText = app.rate.toLocaleString();
+            document.getElementById('settingRate').value = app.rate;
+            renderDashboard();
+            renderHistory();
+            renderDropdowns();
+        }
+
+        function renderDashboard() {
+            const period = document.getElementById('dashMonthSelect').value;
+            
+            // 1. FILTRLASH
+            const txs = app.transactions.filter(t => period === "Jami Davr" || t.month === period);
+
+            // 2. KIRIM VA CHIQIM (Tanlangan Davr)
+            let inc = 0, exp = 0;
+            txs.forEach(t => {
+                let val = (t.currency === 'USD') ? (t.amount * app.rate) : t.amount;
+                if(t.type === 'Income') inc += val; else exp += val;
+            });
+
+            document.getElementById('dash-income').innerText = inc.toLocaleString();
+            document.getElementById('dash-expense').innerText = exp.toLocaleString();
+
+            // 3. BALANS (Har doim umumiy)
+            let cashVal = 0, bankVal = 0;
+            app.transactions.forEach(t => {
+                let val = t.amount; 
+                let isInc = t.type === 'Income';
+                let mod = isInc ? 1 : -1;
+                
+                let finalUzs = (t.currency === 'USD') ? (val * app.rate) : val;
+
+                if(t.method === 'Bank') {
+                    bankVal += (finalUzs * mod);
+                } else {
+                    cashVal += (finalUzs * mod);
+                }
+            });
+
+            document.getElementById('dash-cash-total').innerText = cashVal.toLocaleString();
+            document.getElementById('dash-bank').innerText = bankVal.toLocaleString();
+            document.getElementById('dash-net').innerText = (cashVal + bankVal).toLocaleString();
+
+            // 4. IJARACHILAR STATISTIKASI
+            const list = document.getElementById('tenantStatsList');
+            list.innerHTML = "";
+            
+            app.tenants.forEach(tenant => {
+                const relevant = txs.filter(t => t.tenant === tenant && t.type === 'Income');
+                
+                if(relevant.length > 0) {
+                    let totalPaid = relevant.reduce((acc, t) => {
+                        return acc + ((t.currency === 'USD') ? (t.amount * app.rate) : t.amount);
+                    }, 0);
+
+                    const div = document.createElement('div');
+                    div.className = "bg-white border border-slate-100 rounded-lg p-3 flex justify-between items-center";
+                    div.innerHTML = `
+                        <div class="flex items-center gap-3">
+                            <div class="bg-blue-50 text-blue-600 w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold">
+                                ${tenant.charAt(0)}
+                            </div>
+                            <div>
+                                <p class="font-bold text-sm text-slate-700">${tenant}</p>
+                                <p class="text-[10px] text-slate-400">${relevant.length} ta to'lov</p>
+                            </div>
+                        </div>
+                        <div class="text-right">
+                            <p class="font-bold text-slate-800 text-sm">${totalPaid.toLocaleString()} <span class="text-[10px] text-slate-400">UZS</span></p>
+                            <button onclick="showTenantDetails('${tenant}', '${period}')" class="text-[10px] text-blue-500 font-bold mt-1">Batafsil</button>
+                        </div>
+                    `;
+                    list.appendChild(div);
+                }
+            });
+            
+            if(list.innerHTML === "") list.innerHTML = `<div class="text-center text-slate-400 text-xs py-6">Bu davr uchun kirim yo'q</div>`;
+        }
+
+        function renderHistory() {
+            const list = document.getElementById('historyList');
+            list.innerHTML = "";
+            [...app.transactions].reverse().forEach(t => {
+                const div = document.createElement('div');
+                div.className = "bg-white p-3 rounded-lg border border-slate-100 shadow-sm flex justify-between items-center";
+                div.innerHTML = `
+                    <div class="flex items-center gap-3">
+                        <div class="w-1 h-8 rounded-full ${t.type === 'Income' ? 'bg-green-400' : 'bg-red-400'}"></div>
+                        <div>
+                            <p class="font-bold text-slate-700 text-sm">${t.tenant}</p>
+                            <p class="text-[10px] text-slate-400">${t.date} • ${t.month}</p>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <div class="text-right">
+                            <p class="font-bold text-slate-700 text-sm">${t.amount.toLocaleString()} ${t.currency}</p>
+                            <p class="text-[10px] text-slate-400">${t.method}</p>
+                        </div>
+                        <button onclick="editTx('${t.id}')" class="bg-slate-50 p-2 rounded text-slate-400 hover:text-blue-600"><i class="fas fa-pen text-xs"></i></button>
+                        <button onclick="deleteTx('${t.id}')" class="bg-slate-50 p-2 rounded text-slate-400 hover:text-red-500"><i class="fas fa-trash text-xs"></i></button>
+                    </div>
+                `;
+                list.appendChild(div);
+            });
+        }
+
+        // --- FUNKSIYALAR ---
+        function addToCart() {
+            const amt = document.getElementById('tempAmount').value;
+            if(!amt) return;
+            cart.push({
+                amount: parseFloat(amt),
+                currency: document.getElementById('tempCurr').value,
+                method: document.getElementById('tempMethod').value
+            });
+            document.getElementById('tempAmount').value = "";
+            renderCart();
+        }
+
+        function renderCart() {
+            const box = document.getElementById('cartList');
+            box.classList.remove('hidden');
+            if(cart.length === 0) box.classList.add('hidden');
+            box.innerHTML = cart.map((item, i) => `
+                <div class="flex justify-between items-center text-xs border-b border-blue-200 last:border-0 pb-1 mb-1">
+                    <span class="font-bold text-slate-700">${item.amount.toLocaleString()} ${item.currency} <span class="text-slate-400 font-normal">(${item.method})</span></span>
+                    <button onclick="cart.splice(${i},1); renderCart()" class="text-red-400"><i class="fas fa-times"></i></button>
+                </div>
+            `).join('');
+        }
+
+        async function submitAll() {
+            if(cart.length === 0) return alert("Avval summani kiriting");
+            const btn = document.getElementById('submitBtn');
+            btn.disabled = true; btn.innerText = "Bajarilmoqda...";
+
+            const editId = document.getElementById('editId').value;
+            if(editId) {
+                app.transactions = app.transactions.filter(t => !t.id.startsWith(editId.split('_')[0]));
+            }
+
+            const baseId = editId ? editId.split('_')[0] : Date.now();
+            const common = {
+                tenant: document.getElementById('entryTenant').value,
+                month: document.getElementById('entryMonth').value,
+                comment: document.getElementById('entryComment').value,
+                date: new Date().toLocaleDateString('en-GB')
+            };
+
+            cart.forEach((item, i) => {
+                app.transactions.push({
+                    id: baseId + "_" + i,
+                    ...common,
+                    type: currentType,
+                    amount: item.amount,
+                    currency: item.currency,
+                    method: item.method
+                });
+            });
+
+            await saveCloud();
+            
+            // Telegramga yuborish
+            let breakdown = cart.map(i => `${i.method === 'Naqd' ? "💵" : "💳"} ${i.amount.toLocaleString()} ${i.currency}`).join("%0A");
+            let totalVal = cart.reduce((acc, i) => acc + (i.currency === 'USD' ? i.amount * app.rate : i.amount), 0);
+            const emoji = currentType === 'Income' ? "🟢" : "🔴";
+            const typeText = currentType === 'Income' ? "KIRIM" : "CHIQIM";
+            
+            const msg = `<b>${emoji} ${typeText} ${editId ? "(TAHRIRLANDI)" : ""}</b>%0A` +
+                        `👤 <b>${common.tenant}</b>%0A🗓 ${common.month}%0A` +
+                        `──────────────%0A${breakdown}%0A──────────────%0A` +
+                        `📊 Jami: ${totalVal.toLocaleString()} UZS%0A📝 ${common.comment}`;
+            
+            fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage?chat_id=${CHAT_ID}&text=${msg}&parse_mode=HTML`).catch(e=>console.log(e));
+
+            // Tozalash
+            cart = []; 
+            document.getElementById('entryComment').value = "";
+            document.getElementById('editId').value = "";
+            document.getElementById('cancelEditBtn').classList.add('hidden');
+            renderCart();
+            btn.disabled = false; btn.innerText = currentType === 'Income' ? "KIRIMNI TASDIQLASH" : "CHIQIMNI TASDIQLASH";
+            switchTab('dash');
+        }
+
+        function editTx(id) {
+            const tx = app.transactions.find(t => t.id === id);
+            if(!tx) return;
+            
+            setType(tx.type);
+            document.getElementById('entryTenant').value = tx.tenant;
+            document.getElementById('entryMonth').value = tx.month;
+            document.getElementById('entryComment').value = tx.comment;
+            document.getElementById('editId').value = id;
+            
+            cart = [{ amount: tx.amount, currency: tx.currency, method: tx.method }];
+            renderCart();
+            
+            document.getElementById('submitBtn').innerText = "O'ZGARTIRISHNI SAQLASH";
+            document.getElementById('cancelEditBtn').classList.remove('hidden');
+            switchTab('entry');
+        }
+        
+        function cancelEdit() {
+            cart = []; renderCart();
+            document.getElementById('editId').value = "";
+            document.getElementById('entryComment').value = "";
+            document.getElementById('submitBtn').innerText = "KIRIMNI TASDIQLASH";
+            document.getElementById('cancelEditBtn').classList.add('hidden');
+        }
+
+        function deleteTx(id) {
+            if(confirm("Bu o'tkazmani o'chirmoqchimisiz?")) {
+                app.transactions = app.transactions.filter(t => t.id !== id);
+                saveCloud();
+            }
+        }
+
+        function showTenantDetails(tenant, period) {
+            const txs = app.transactions.filter(t => t.tenant === tenant && (period === "Jami Davr" || t.month === period) && t.type === 'Income');
+            
+            const total = txs.reduce((acc, t) => acc + ((t.currency === 'USD') ? t.amount * app.rate : t.amount), 0);
+            
+            alert(`TARIX: ${tenant}\nDavr: ${period}\n\n` + 
+                  txs.map(t => `${t.date}: ${t.amount} ${t.currency} (${t.method})`).join('\n') + 
+                  `\n\nJAMI QIYMAT: ${total.toLocaleString()} UZS`);
+        }
+
+        // --- YORDAMCHILAR ---
+        function setType(type) {
+            currentType = type;
+            const btnIn = document.getElementById('btn-income');
+            const btnEx = document.getElementById('btn-expense');
+            const sub = document.getElementById('submitBtn');
+            
+            if(type === 'Income') {
+                btnIn.className = "flex-1 py-2 rounded-md font-bold text-sm bg-white text-green-600 shadow-sm transition-all";
+                btnEx.className = "flex-1 py-2 rounded-md font-bold text-sm text-slate-500 transition-all";
+                sub.className = "w-full bg-green-600 text-white py-3 rounded-lg font-bold text-sm shadow-lg shadow-green-200 active:scale-95 transition-all";
+                if(!document.getElementById('editId').value) sub.innerText = "KIRIMNI TASDIQLASH";
+            } else {
+                btnIn.className = "flex-1 py-2 rounded-md font-bold text-sm text-slate-500 transition-all";
+                btnEx.className = "flex-1 py-2 rounded-md font-bold text-sm bg-white text-red-600 shadow-sm transition-all";
+                sub.className = "w-full bg-red-600 text-white py-3 rounded-lg font-bold text-sm shadow-lg shadow-red-200 active:scale-95 transition-all";
+                if(!document.getElementById('editId').value) sub.innerText = "CHIQIMNI TASDIQLASH";
+            }
+        }
+
+        function switchTab(t) {
+            document.querySelectorAll('.tab-content').forEach(e => e.classList.remove('active'));
+            document.querySelectorAll('.nav-item').forEach(e => e.classList.remove('active'));
+            document.getElementById('tab-'+t).classList.add('active');
+            document.getElementById('nav-'+t).classList.add('active');
+        }
+
+        function showLoader(show) { document.getElementById('loader').style.display = show ? 'flex' : 'none'; }
+        
+        function initDateSelectors() {
+            const now = new Date();
+            const currentM = months[now.getMonth()];
+            
+            const dSel = document.getElementById('dashMonthSelect');
+            dSel.innerHTML = `<option>Jami Davr</option>` + months.map(m => `<option ${m===currentM ? 'selected' : ''}>${m}</option>`).join('');
+            
+            document.getElementById('entryMonth').innerHTML = months.map(m => `<option ${m===currentM ? 'selected' : ''}>${m}</option>`).join('');
+        }
+
+        function saveSettings() {
+            app.rate = parseFloat(document.getElementById('settingRate').value);
+            saveCloud();
+        }
+
+        function renderDropdowns() {
+            document.getElementById('entryTenant').innerHTML = app.tenants.map(t => `<option>${t}</option>`).join('');
+            document.getElementById('settingsTenantList').innerHTML = app.tenants.map(t => `
+                <div class="flex justify-between bg-slate-50 p-2 rounded text-xs mb-1 border">
+                    <span>${t}</span> <button onclick="removeTenant('${t}')" class="text-red-400"><i class="fas fa-times"></i></button>
+                </div>
+            `).join('');
+        }
+
+        function addTenantPrompt() {
+            const n = prompt("Ijarachi Ismi:");
+            if(n) { app.tenants.push(n); saveCloud(); }
+        }
+        function removeTenant(n) {
+            if(confirm("O'chirmoqchimisiz: " + n + "?")) { app.tenants = app.tenants.filter(t => t !== n); saveCloud(); }
+        }
+    </script>
+</body>
+</html>
