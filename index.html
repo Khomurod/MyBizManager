@@ -15,12 +15,20 @@
         .card { background: white; border-radius: 16px; padding: 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; margin-bottom: 12px; }
         #loader { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.95); z-index: 100; justify-content: center; align-items: center; flex-direction: column; }
         
-        /* Modal Animation */
-        #detailModal { transition: opacity 0.2s; }
+        /* Modal Animation - Pop Scale */
+        #detailModal { transition: opacity 0.2s ease-out; }
         #detailModal.hidden { pointer-events: none; opacity: 0; }
         #detailModal:not(.hidden) { pointer-events: auto; opacity: 1; }
-        #detailCard { transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1); transform: translateY(100%); }
-        #detailModal:not(.hidden) #detailCard { transform: translateY(0); }
+        
+        #detailCard { 
+            transition: transform 0.2s ease-out, opacity 0.2s ease-out; 
+            transform: scale(0.95); 
+            opacity: 0;
+        }
+        #detailModal:not(.hidden) #detailCard { 
+            transform: scale(1); 
+            opacity: 1;
+        }
     </style>
 </head>
 <body class="pb-24 select-none text-slate-800">
@@ -179,36 +187,42 @@
         </div>
     </div>
 
-    <!-- DETAIL MODAL -->
-    <div id="detailModal" class="hidden fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm p-4" onclick="closeModal()">
-        <div id="detailCard" class="bg-white w-full max-w-sm rounded-2xl p-5 shadow-2xl" onclick="event.stopPropagation()">
-            <div class="flex justify-between items-center mb-2 border-b pb-3">
-                <div>
-                    <h3 class="font-bold text-lg text-slate-800" id="modalTitle">Ijarachi</h3>
-                    <p class="text-xs text-slate-400" id="modalSubtitle">Tafsilotlar</p>
-                </div>
-                <button onclick="closeModal()" class="w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:bg-red-100 hover:text-red-500"><i class="fas fa-times"></i></button>
-            </div>
+    <!-- DETAIL MODAL (SCROLL FIX & CENTERED) -->
+    <div id="detailModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onclick="closeModal()">
+        <div id="detailCard" class="bg-white w-full max-w-sm rounded-2xl p-5 shadow-2xl max-h-[90vh] flex flex-col" onclick="event.stopPropagation()">
             
-            <!-- Debt Explanation Box -->
-            <div class="bg-slate-50 rounded-lg p-3 mb-4 text-sm border border-slate-100 space-y-2">
-                <div class="flex justify-between text-slate-500 items-start">
-                    <span>Ijara Narxi:</span>
-                    <div class="text-right" id="modalRent">0</div>
+            <!-- Fixed Header Section -->
+            <div class="flex-none">
+                <div class="flex justify-between items-center mb-2 border-b pb-3">
+                    <div>
+                        <h3 class="font-bold text-lg text-slate-800" id="modalTitle">Ijarachi</h3>
+                        <p class="text-xs text-slate-400" id="modalSubtitle">Tafsilotlar</p>
+                    </div>
+                    <button onclick="closeModal()" class="w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:bg-red-100 hover:text-red-500"><i class="fas fa-times"></i></button>
                 </div>
-                <div class="flex justify-between text-slate-500">
-                    <span>To'landi:</span>
-                    <span class="font-bold text-green-600" id="modalPaid">0</span>
+                
+                <!-- Debt Explanation Box -->
+                <div class="bg-slate-50 rounded-lg p-3 mb-4 text-sm border border-slate-100 space-y-2">
+                    <div class="flex justify-between text-slate-500 items-start">
+                        <span>Ijara Narxi:</span>
+                        <div class="text-right" id="modalRent">0</div>
+                    </div>
+                    <div class="flex justify-between text-slate-500">
+                        <span>To'landi:</span>
+                        <span class="font-bold text-green-600" id="modalPaid">0</span>
+                    </div>
+                    <div class="border-t border-slate-200 my-1"></div>
+                    <div class="flex justify-between font-bold text-base">
+                        <span>Farq:</span>
+                        <span id="modalDiff">0</span>
+                    </div>
                 </div>
-                <div class="border-t border-slate-200 my-1"></div>
-                <div class="flex justify-between font-bold text-base">
-                    <span>Farq:</span>
-                    <span id="modalDiff">0</span>
-                </div>
+
+                <h4 class="text-[10px] font-bold text-slate-400 uppercase mb-2">To'lovlar Tarixi</h4>
             </div>
 
-            <h4 class="text-[10px] font-bold text-slate-400 uppercase mb-2">To'lovlar Tarixi</h4>
-            <div id="modalContent" class="space-y-2 max-h-[40vh] overflow-y-auto mb-2">
+            <!-- Scrollable Content Section -->
+            <div id="modalContent" class="space-y-2 overflow-y-auto pr-1 flex-1 min-h-0">
                 <!-- Transactions -->
             </div>
         </div>
