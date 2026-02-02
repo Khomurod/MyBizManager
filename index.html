@@ -15,7 +15,7 @@
         .card { background: white; border-radius: 16px; padding: 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; margin-bottom: 12px; }
         #loader { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.95); z-index: 100; justify-content: center; align-items: center; flex-direction: column; }
         
-        /* Modal Animation - Pop Scale */
+        /* Modal Animation */
         #detailModal { transition: opacity 0.2s ease-out; }
         #detailModal.hidden { pointer-events: none; opacity: 0; }
         #detailModal:not(.hidden) { pointer-events: auto; opacity: 1; }
@@ -69,10 +69,15 @@
             </select>
         </div>
 
-        <!-- Umumiy Qarz -->
-        <div id="totalDebtCard" class="hidden card !p-3 !mb-4 border-l-4 border-l-red-500 bg-red-50">
-            <p class="text-[10px] text-red-400 font-bold uppercase tracking-wider mb-1">Jami Ijarachilar Qarzi</p>
-            <p class="text-xl font-bold text-red-600 truncate" id="dash-total-debt">0</p>
+        <!-- Umumiy Qarz (Clickable) -->
+        <div id="totalDebtCard" onclick="openDebtListModal()" class="hidden card !p-3 !mb-4 border-l-4 border-l-red-500 bg-red-50 cursor-pointer active:scale-95 transition-transform">
+            <div class="flex justify-between items-center">
+                <div>
+                    <p class="text-[10px] text-red-400 font-bold uppercase tracking-wider mb-1">Jami Ijarachilar Qarzi</p>
+                    <p class="text-xl font-bold text-red-600 truncate" id="dash-total-debt">0</p>
+                </div>
+                <div class="text-red-300"><i class="fas fa-chevron-right"></i></div>
+            </div>
         </div>
 
         <!-- Kirim / Chiqim -->
@@ -187,9 +192,9 @@
         </div>
     </div>
 
-    <!-- DETAIL MODAL (SCROLL FIX & CENTERED) -->
-    <div id="detailModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onclick="closeModal()">
-        <div id="detailCard" class="bg-white w-full max-w-sm rounded-2xl p-5 shadow-2xl max-h-[90vh] flex flex-col" onclick="event.stopPropagation()">
+    <!-- DETAIL MODAL (SCROLL FIX & CENTERED, HIGH Z-INDEX) -->
+    <div id="detailModal" class="hidden fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onclick="closeModal()">
+        <div id="detailCard" class="bg-white w-full max-w-sm rounded-2xl p-5 shadow-2xl max-h-[85vh] flex flex-col" onclick="event.stopPropagation()">
             
             <!-- Fixed Header Section -->
             <div class="flex-none">
@@ -202,7 +207,7 @@
                 </div>
                 
                 <!-- Debt Explanation Box -->
-                <div class="bg-slate-50 rounded-lg p-3 mb-4 text-sm border border-slate-100 space-y-2">
+                <div id="modalSummaryBox" class="bg-slate-50 rounded-lg p-3 mb-4 text-sm border border-slate-100 space-y-2">
                     <div class="flex justify-between text-slate-500 items-start">
                         <span>Ijara Narxi:</span>
                         <div class="text-right" id="modalRent">0</div>
@@ -217,8 +222,14 @@
                         <span id="modalDiff">0</span>
                     </div>
                 </div>
+                
+                <!-- Simple Total for Debt List -->
+                <div id="modalSimpleTotalBox" class="hidden bg-red-50 rounded-lg p-3 mb-4 text-sm border border-red-100 text-center">
+                    <p class="text-xs text-red-400 font-bold uppercase mb-1">Jami Qarz Miqdori</p>
+                    <p class="text-2xl font-bold text-red-600" id="modalTotal">0</p>
+                </div>
 
-                <h4 class="text-[10px] font-bold text-slate-400 uppercase mb-2">To'lovlar Tarixi</h4>
+                <h4 class="text-[10px] font-bold text-slate-400 uppercase mb-2" id="modalListTitle">To'lovlar Tarixi</h4>
             </div>
 
             <!-- Scrollable Content Section -->
@@ -416,7 +427,74 @@
             }
         }
 
-        // --- NEW MODAL LOGIC ---
+        // --- DEBT LIST MODAL ---
+        function openDebtListModal() {
+            const period = document.getElementById('dashMonthSelect').value;
+            const monthRate = app.rates[period] || 12500;
+            const txs = app.transactions.filter(t => t.month === period);
+
+            let debtors = [];
+            let totalDebt = 0;
+
+            app.tenants.forEach(tenant => {
+                const relevant = txs.filter(t => t.tenant === tenant.name && t.type === 'Income');
+                let paidUZS = relevant.reduce((acc, t) => {
+                    let tRate = app.rates[t.month] || 12500;
+                    return acc + ((t.currency === 'USD') ? (t.amount * tRate) : t.amount);
+                }, 0);
+
+                let rentUZS = (tenant.currency === 'USD') ? (tenant.rent * monthRate) : tenant.rent;
+                let diff = paidUZS - rentUZS;
+
+                if (diff < -1000) {
+                    debtors.push({ name: tenant.name, debt: Math.abs(diff), rent: rentUZS });
+                    totalDebt += Math.abs(diff);
+                }
+            });
+
+            debtors.sort((a, b) => b.debt - a.debt);
+
+            // Configure Modal UI
+            document.getElementById('modalTitle').innerText = "Qarzdorlar";
+            document.getElementById('modalSubtitle').innerText = `${period} oyi holatiga`;
+            
+            // Show Simple Total Box, Hide Complex Box
+            document.getElementById('modalSummaryBox').classList.add('hidden');
+            document.getElementById('modalSimpleTotalBox').classList.remove('hidden');
+            document.getElementById('modalTotal').innerText = `-${totalDebt.toLocaleString()} UZS`;
+            document.getElementById('modalListTitle').innerText = "Qarzdorlar Ro'yxati";
+
+            const list = document.getElementById('modalContent');
+            list.innerHTML = "";
+
+            if (debtors.length === 0) {
+                list.innerHTML = `<p class="text-center text-slate-400 text-sm py-4">Qarzdorlik mavjud emas</p>`;
+            } else {
+                debtors.forEach(d => {
+                    const row = document.createElement('div');
+                    row.className = "flex justify-between items-center p-3 border-b border-slate-50 last:border-0 hover:bg-slate-50 rounded-lg";
+                    row.innerHTML = `
+                        <div class="flex items-center gap-3">
+                            <div class="bg-red-50 w-8 h-8 rounded-full flex items-center justify-center text-red-500 font-bold text-xs">
+                                ${d.name.charAt(0)}
+                            </div>
+                            <div>
+                                <p class="text-sm font-bold text-slate-700">${d.name}</p>
+                                <p class="text-[10px] text-slate-400">Ijara: ${Math.round(d.rent).toLocaleString()} UZS</p>
+                            </div>
+                        </div>
+                        <div class="text-right">
+                            <span class="font-bold text-red-500">-${Math.round(d.debt).toLocaleString()}</span>
+                            <p class="text-[10px] text-slate-400">Qarz</p>
+                        </div>
+                    `;
+                    list.appendChild(row);
+                });
+            }
+            document.getElementById('detailModal').classList.remove('hidden');
+        }
+
+        // --- TENANT DETAIL MODAL ---
         function openTenantModal(tenantName, period, rentAmount, rentCurr, monthRate) {
             const isAllTime = period === "Jami Davr";
             const txs = app.transactions.filter(t => t.tenant === tenantName && (isAllTime || t.month === period) && t.type === 'Income');
@@ -431,9 +509,14 @@
                 expectedRentUZS = (rentCurr === 'USD') ? (rentAmount * monthRate) : rentAmount;
             }
 
-            // Fill Data
+            // Configure Modal UI
             document.getElementById('modalTitle').innerText = tenantName;
             document.getElementById('modalSubtitle').innerText = `${period} hisoboti`;
+            
+            // Show Complex Box, Hide Simple Box
+            document.getElementById('modalSummaryBox').classList.remove('hidden');
+            document.getElementById('modalSimpleTotalBox').classList.add('hidden');
+            document.getElementById('modalListTitle').innerText = "To'lovlar Tarixi";
             
             if(isAllTime) {
                 document.getElementById('modalRent').innerText = "Hisoblanmaydi (Jami Davr)";
