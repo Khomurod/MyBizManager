@@ -29,10 +29,11 @@
   </header>
 
   <main class="p-4 space-y-3">
-    <div class="glass rounded-2xl p-1 grid grid-cols-3 gap-1">
-      <button class="tab active rounded-xl py-2 text-xs font-bold border border-transparent" onclick="switchTab('dash', this)">Kassa Holati</button>
-      <button class="tab rounded-xl py-2 text-xs font-bold border border-transparent" onclick="switchTab('inventory', this)">Ombor</button>
-      <button class="tab rounded-xl py-2 text-xs font-bold border border-transparent" onclick="switchTab('recipes', this)">Retseptlar</button>
+    <div class="glass rounded-2xl p-1 grid grid-cols-4 gap-1">
+      <button class="tab active rounded-xl py-2 text-[11px] font-bold border border-transparent" onclick="switchTab('dash', this)">Kassa</button>
+      <button class="tab rounded-xl py-2 text-[11px] font-bold border border-transparent" onclick="switchTab('inventory', this)">Ombor</button>
+      <button class="tab rounded-xl py-2 text-[11px] font-bold border border-transparent" onclick="switchTab('recipes', this)">Retseptlar</button>
+      <button class="tab rounded-xl py-2 text-[11px] font-bold border border-transparent" onclick="switchTab('categories', this)">Kategoriyalar</button>
     </div>
 
     <section id="screen-dash" class="screen active space-y-3">
@@ -55,13 +56,34 @@
     <section id="screen-inventory" class="screen space-y-3">
       <div class="glass rounded-2xl p-4">
         <h2 class="font-bold mb-3">Omborga Qo'shish</h2>
-        <input id="invName" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-2" placeholder="Masalan: Cola">
+        <input id="invName" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-2" placeholder="Masalan: Cola 0.5L">
+
+        <label class="block text-[11px] font-bold text-slate-500 mb-1">Turi</label>
+        <select id="invType" onchange="toggleInventoryForm()" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-2 bg-white">
+          <option value="product">Mahsulot (to'g'ridan sotiladi)</option>
+          <option value="ingredient">Ingredient (retseptda ishlatiladi)</option>
+        </select>
+
         <div class="grid grid-cols-2 gap-2 mb-2">
           <input id="invQty" type="number" class="rounded-xl border border-slate-200 p-3 text-sm" placeholder="Miqdor">
           <input id="invUnit" class="rounded-xl border border-slate-200 p-3 text-sm" placeholder="Birlik (dona/kg/l)">
         </div>
-        <input id="invTotal" type="number" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-3" placeholder="Jami xarajat (UZS)">
-        <button onclick="addInventory()" class="w-full rounded-xl bg-slate-800 text-white py-3 font-bold text-sm active:scale-95">Omborga Saqlash</button>
+        <input id="invTotal" type="number" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-2" placeholder="Jami xarajat (UZS)">
+
+        <div id="productExtras" class="space-y-2">
+          <select id="invCategory" class="w-full rounded-xl border border-slate-200 p-3 text-sm bg-white"></select>
+          <input id="invSellPrice" type="number" class="w-full rounded-xl border border-slate-200 p-3 text-sm" placeholder="Sotuv narxi (UZS)">
+          <label class="flex items-center gap-2 text-xs font-bold text-slate-500">
+            <input id="invIsBulk" type="checkbox" onchange="toggleInventoryForm()" class="w-4 h-4">
+            O'lchovli mahsulot (kg/l bo'yicha sotiladi)
+          </label>
+          <div id="bulkExtras" class="hidden">
+            <input id="invGramsPerServing" type="number" class="w-full rounded-xl border border-slate-200 p-3 text-sm" placeholder="1 porsiya necha gramm?">
+            <p class="text-[10px] text-slate-400 mt-1">Kun yakunida qoldiqqa qarab avtomatik kalibrlanadi.</p>
+          </div>
+        </div>
+
+        <button onclick="addInventory()" class="w-full mt-3 rounded-xl bg-slate-800 text-white py-3 font-bold text-sm active:scale-95">Omborga Saqlash</button>
       </div>
       <div id="inventoryList" class="space-y-2"></div>
     </section>
@@ -70,6 +92,10 @@
       <div class="glass rounded-2xl p-4">
         <h2 class="font-bold mb-3">Retsept Yaratish</h2>
         <input id="recipeName" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-2" placeholder="Masalan: Hot Dog">
+        <label class="block text-[11px] font-bold text-slate-500 mb-1">Kategoriya</label>
+        <select id="recipeCategory" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-3 bg-white"></select>
+
+        <label class="block text-[11px] font-bold text-slate-500 mb-1">Ingredient</label>
         <div class="flex gap-2 mb-2">
           <select id="ingredientSelect" class="flex-1 rounded-xl border border-slate-200 p-3 text-sm"></select>
           <input id="ingredientQty" type="number" class="w-24 rounded-xl border border-slate-200 p-3 text-sm" placeholder="Miqdor">
@@ -82,10 +108,55 @@
       </div>
       <div id="recipeList" class="space-y-2"></div>
     </section>
+
+    <section id="screen-categories" class="screen space-y-3">
+      <div class="glass rounded-2xl p-4">
+        <h2 class="font-bold mb-3">Kategoriya Qo'shish</h2>
+        <div class="flex gap-2 mb-3">
+          <input id="newCategoryInput" class="flex-1 rounded-xl border border-slate-200 p-3 text-sm" placeholder="Masalan: Ichimliklar">
+          <button onclick="addCategory()" class="rounded-xl bg-emerald-600 text-white px-4 font-bold text-sm active:scale-95">+ Qo'shish</button>
+        </div>
+        <p class="text-[11px] text-slate-500 mb-1">Kategoriyalar tartibini o'zgartirish POS menyuidagi tartibni ham o'zgartiradi.</p>
+      </div>
+      <div id="categoryList" class="space-y-2"></div>
+    </section>
   </main>
 
+  <div id="editInvModal" class="hidden fixed inset-0 z-40 bg-black/45 p-4 flex items-end justify-center">
+    <div class="glass w-full max-w-md rounded-2xl p-4 max-h-[90vh] overflow-y-auto" onclick="event.stopPropagation()">
+      <div class="flex justify-between items-center mb-3">
+        <h3 class="font-bold">Mahsulotni Tahrirlash</h3>
+        <button onclick="closeEditModal()" class="w-8 h-8 rounded-full bg-slate-100">✕</button>
+      </div>
+      <input id="editId" type="hidden">
+      <input id="editName" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-2" placeholder="Nomi">
+      <select id="editType" onchange="toggleEditForm()" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-2 bg-white">
+        <option value="product">Mahsulot</option>
+        <option value="ingredient">Ingredient</option>
+      </select>
+      <div class="grid grid-cols-2 gap-2 mb-2">
+        <input id="editQty" type="number" class="rounded-xl border border-slate-200 p-3 text-sm" placeholder="Miqdor">
+        <input id="editUnit" class="rounded-xl border border-slate-200 p-3 text-sm" placeholder="Birlik">
+      </div>
+      <input id="editTotal" type="number" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-2" placeholder="Jami xarajat">
+      <div id="editProductExtras" class="space-y-2">
+        <select id="editCategory" class="w-full rounded-xl border border-slate-200 p-3 text-sm bg-white"></select>
+        <input id="editSellPrice" type="number" class="w-full rounded-xl border border-slate-200 p-3 text-sm" placeholder="Sotuv narxi">
+        <label class="flex items-center gap-2 text-xs font-bold text-slate-500">
+          <input id="editIsBulk" type="checkbox" onchange="toggleEditForm()" class="w-4 h-4">
+          O'lchovli
+        </label>
+        <div id="editBulkExtras" class="hidden">
+          <input id="editGramsPerServing" type="number" class="w-full rounded-xl border border-slate-200 p-3 text-sm" placeholder="1 porsiya gr">
+        </div>
+      </div>
+      <button onclick="saveInventoryEdit()" class="w-full mt-3 rounded-xl bg-emerald-600 text-white py-3 font-bold text-sm active:scale-95">Saqlash</button>
+    </div>
+  </div>
+
   <script>
-    const state = { inventory: [], recipes: [], sales: [], recipeDraft: [] };
+    const DEFAULT_CATEGORIES = ["Ichimliklar", "Fast-Food", "Muzqaymoq"];
+    const state = { inventory: [], recipes: [], categories: [], sales: [], recipeDraft: [] };
 
     function switchTab(tab, btn) {
       document.querySelectorAll(".screen").forEach(el => el.classList.remove("active"));
@@ -94,14 +165,52 @@
       btn.classList.add("active");
     }
 
+    function toggleInventoryForm() {
+      const type = document.getElementById("invType").value;
+      const isBulk = document.getElementById("invIsBulk").checked;
+      document.getElementById("productExtras").classList.toggle("hidden", type !== "product");
+      document.getElementById("bulkExtras").classList.toggle("hidden", !(type === "product" && isBulk));
+    }
+
+    function hydrateInvCategorySelect(sel) {
+      sel.innerHTML = state.categories.length
+        ? state.categories.map(c => `<option value="${c}">${c}</option>`).join("")
+        : `<option value="">Kategoriya yo'q</option>`;
+    }
+
     function addInventory() {
       const name = document.getElementById("invName").value.trim();
+      const type = document.getElementById("invType").value;
       const qty = Number(document.getElementById("invQty").value);
       const unit = document.getElementById("invUnit").value.trim() || "dona";
       const totalCost = Number(document.getElementById("invTotal").value);
       if (!name || qty <= 0 || totalCost <= 0) return alert("Maydonlarni to'ldiring");
+
       const unitCost = Math.round(totalCost / qty);
-      state.inventory.push({ id: Date.now().toString(), name, qty, unit, totalCost, unitCost });
+      const item = { id: Date.now().toString(), name, type, qty, unit, totalCost, unitCost };
+
+      if (type === "product") {
+        item.category = document.getElementById("invCategory").value;
+        item.sellPrice = Number(document.getElementById("invSellPrice").value) || 0;
+        item.isBulk = document.getElementById("invIsBulk").checked;
+        if (item.isBulk) {
+          item.gramsPerServing = Number(document.getElementById("invGramsPerServing").value) || 0;
+        }
+        if (!item.category) return alert("Kategoriyani tanlang");
+        if (item.sellPrice <= 0) return alert("Sotuv narxini kiriting");
+        if (item.isBulk && item.gramsPerServing <= 0) return alert("1 porsiya uchun grammni kiriting");
+      }
+
+      state.inventory.push(item);
+      document.getElementById("invName").value = "";
+      document.getElementById("invQty").value = "";
+      document.getElementById("invUnit").value = "";
+      document.getElementById("invTotal").value = "";
+      document.getElementById("invSellPrice").value = "";
+      document.getElementById("invGramsPerServing").value = "";
+      document.getElementById("invIsBulk").checked = false;
+      toggleInventoryForm();
+
       renderInventory();
       hydrateIngredientSelect();
       sendToApi("save_inventory", { inventory: state.inventory });
@@ -109,17 +218,123 @@
 
     function renderInventory() {
       const box = document.getElementById("inventoryList");
-      box.innerHTML = state.inventory.map(item => `
-        <div class="glass rounded-2xl p-3">
-          <p class="font-bold text-sm">${item.name}</p>
-          <p class="text-xs text-slate-500">${item.qty} ${item.unit} • Jami: ${item.totalCost.toLocaleString()} UZS</p>
-          <p class="text-xs font-bold text-blue-600">Birlik tannarx: ${item.unitCost.toLocaleString()} UZS</p>
-        </div>`).join("");
+      if (!state.inventory.length) {
+        box.innerHTML = `<div class="glass rounded-2xl p-3 text-center text-xs font-bold text-slate-500">Ombor bo'sh</div>`;
+        return;
+      }
+      box.innerHTML = state.inventory.map(item => {
+        const typeLabel = item.type === "product"
+          ? `<span class="text-[10px] font-bold bg-emerald-100 text-emerald-600 rounded-full px-2 py-[2px]">Mahsulot</span>`
+          : `<span class="text-[10px] font-bold bg-slate-100 text-slate-500 rounded-full px-2 py-[2px]">Ingredient</span>`;
+        const catBadge = item.category ? `<span class="text-[10px] font-bold bg-blue-100 text-blue-600 rounded-full px-2 py-[2px]">${item.category}</span>` : "";
+        const bulkBadge = item.isBulk ? `<span class="text-[10px] font-bold bg-amber-100 text-amber-600 rounded-full px-2 py-[2px]">O'lchovli • ${item.gramsPerServing || 0}g</span>` : "";
+        const sell = item.type === "product" ? `<p class="text-xs text-emerald-600 font-bold">Sotuv: ${(item.sellPrice || 0).toLocaleString()} UZS</p>` : "";
+        return `
+          <div class="glass rounded-2xl p-3">
+            <div class="flex items-start justify-between gap-2">
+              <div class="flex-1">
+                <div class="flex flex-wrap items-center gap-1 mb-1">
+                  <p class="font-bold text-sm">${item.name}</p>
+                  ${typeLabel}
+                  ${catBadge}
+                  ${bulkBadge}
+                </div>
+                <p class="text-xs text-slate-500">${item.qty} ${item.unit} • Jami: ${(item.totalCost || 0).toLocaleString()} UZS</p>
+                <p class="text-xs font-bold text-blue-600">Birlik tannarx: ${(item.unitCost || 0).toLocaleString()} UZS/${item.unit}</p>
+                ${sell}
+              </div>
+              <div class="flex flex-col gap-1">
+                <button onclick="openEditModal('${item.id}')" class="text-[10px] font-bold bg-slate-100 text-slate-700 rounded-lg px-2 py-1">Tahrirlash</button>
+                <button onclick="deleteInventory('${item.id}')" class="text-[10px] font-bold bg-red-100 text-red-600 rounded-lg px-2 py-1">O'chirish</button>
+              </div>
+            </div>
+          </div>`;
+      }).join("");
     }
 
     function hydrateIngredientSelect() {
       const sel = document.getElementById("ingredientSelect");
-      sel.innerHTML = state.inventory.map(i => `<option value="${i.id}">${i.name} (${i.unitCost} UZS/${i.unit})</option>`).join("");
+      const list = state.inventory.filter(i => i.type !== "product" || i.isBulk);
+      sel.innerHTML = list.length
+        ? list.map(i => `<option value="${i.id}">${i.name} (${(i.unitCost||0)} UZS/${i.unit})</option>`).join("")
+        : `<option value="">Ombor bo'sh</option>`;
+    }
+
+    function hydrateRecipeCategorySelect() {
+      const sel = document.getElementById("recipeCategory");
+      sel.innerHTML = state.categories.length
+        ? state.categories.map(c => `<option value="${c}">${c}</option>`).join("")
+        : `<option value="">Kategoriya yo'q</option>`;
+    }
+
+    function openEditModal(id) {
+      const item = state.inventory.find(i => i.id === id);
+      if (!item) return;
+      document.getElementById("editId").value = item.id;
+      document.getElementById("editName").value = item.name;
+      document.getElementById("editType").value = item.type || "product";
+      document.getElementById("editQty").value = item.qty;
+      document.getElementById("editUnit").value = item.unit;
+      document.getElementById("editTotal").value = item.totalCost;
+      hydrateInvCategorySelect(document.getElementById("editCategory"));
+      document.getElementById("editCategory").value = item.category || "";
+      document.getElementById("editSellPrice").value = item.sellPrice || "";
+      document.getElementById("editIsBulk").checked = !!item.isBulk;
+      document.getElementById("editGramsPerServing").value = item.gramsPerServing || "";
+      toggleEditForm();
+      document.getElementById("editInvModal").classList.remove("hidden");
+    }
+
+    function closeEditModal() {
+      document.getElementById("editInvModal").classList.add("hidden");
+    }
+
+    function toggleEditForm() {
+      const type = document.getElementById("editType").value;
+      const isBulk = document.getElementById("editIsBulk").checked;
+      document.getElementById("editProductExtras").classList.toggle("hidden", type !== "product");
+      document.getElementById("editBulkExtras").classList.toggle("hidden", !(type === "product" && isBulk));
+    }
+
+    function saveInventoryEdit() {
+      const id = document.getElementById("editId").value;
+      const idx = state.inventory.findIndex(i => i.id === id);
+      if (idx === -1) return;
+      const name = document.getElementById("editName").value.trim();
+      const type = document.getElementById("editType").value;
+      const qty = Number(document.getElementById("editQty").value);
+      const unit = document.getElementById("editUnit").value.trim() || "dona";
+      const totalCost = Number(document.getElementById("editTotal").value);
+      if (!name || qty <= 0 || totalCost <= 0) return alert("Maydonlarni to'ldiring");
+
+      const updated = { ...state.inventory[idx], id, name, type, qty, unit, totalCost, unitCost: Math.round(totalCost / qty) };
+      if (type === "product") {
+        updated.category = document.getElementById("editCategory").value;
+        updated.sellPrice = Number(document.getElementById("editSellPrice").value) || 0;
+        updated.isBulk = document.getElementById("editIsBulk").checked;
+        updated.gramsPerServing = updated.isBulk ? Number(document.getElementById("editGramsPerServing").value) || 0 : 0;
+      } else {
+        delete updated.category;
+        delete updated.sellPrice;
+        delete updated.isBulk;
+        delete updated.gramsPerServing;
+      }
+
+      state.inventory[idx] = updated;
+      closeEditModal();
+      renderInventory();
+      hydrateIngredientSelect();
+      sendToApi("save_inventory", { inventory: state.inventory });
+    }
+
+    function deleteInventory(id) {
+      const item = state.inventory.find(i => i.id === id);
+      if (!item) return;
+      if (!confirm(`"${item.name}" ni o'chirishni tasdiqlaysizmi?`)) return;
+      state.inventory = state.inventory.filter(i => i.id !== id);
+      renderInventory();
+      hydrateIngredientSelect();
+      sendToApi("save_inventory", { inventory: state.inventory });
     }
 
     function addIngredient() {
@@ -128,6 +343,7 @@
       const item = state.inventory.find(i => i.id === id);
       if (!item || qty <= 0) return;
       state.recipeDraft.push({ inventoryId: item.id, name: item.name, qty, unitCost: item.unitCost, cost: Math.round(qty * item.unitCost) });
+      document.getElementById("ingredientQty").value = "";
       renderRecipeDraft();
     }
 
@@ -143,10 +359,21 @@
 
     function saveRecipe() {
       const name = document.getElementById("recipeName").value.trim();
+      const category = document.getElementById("recipeCategory").value;
       const sellPrice = Number(document.getElementById("recipeSellPrice").value);
       const baseCost = state.recipeDraft.reduce((s, i) => s + i.cost, 0);
+
       if (!name || !state.recipeDraft.length || sellPrice <= 0) return alert("Retsept to'liq emas");
-      state.recipes.push({ id: Date.now().toString(), name, ingredients: [...state.recipeDraft], baseCost, sellPrice });
+      if (!category) return alert("Iltimos, kategoriyani tanlang");
+
+      state.recipes.push({
+        id: Date.now().toString(),
+        name,
+        category,
+        ingredients: [...state.recipeDraft],
+        baseCost,
+        sellPrice
+      });
       state.recipeDraft = [];
       document.getElementById("recipeName").value = "";
       document.getElementById("recipeSellPrice").value = "";
@@ -157,21 +384,83 @@
 
     function renderRecipes() {
       const box = document.getElementById("recipeList");
+      if (!state.recipes.length) {
+        box.innerHTML = `<div class="glass rounded-2xl p-3 text-center text-xs font-bold text-slate-500">Retseptlar yo'q</div>`;
+        return;
+      }
       box.innerHTML = state.recipes.map(r => `
         <div class="glass rounded-2xl p-3">
-          <p class="font-bold text-sm">${r.name}</p>
-          <p class="text-xs text-slate-500">Tannarx: ${r.baseCost.toLocaleString()} UZS</p>
-          <p class="text-xs text-emerald-600 font-bold">Sotuv narxi: ${r.sellPrice.toLocaleString()} UZS</p>
+          <div class="flex justify-between items-center">
+            <p class="font-bold text-sm">${r.name}</p>
+            <span class="text-[10px] font-bold bg-blue-100 text-blue-600 rounded-full px-2 py-[2px]">${r.category || "—"}</span>
+          </div>
+          <p class="text-xs text-slate-500 mt-1">Tannarx: ${(r.baseCost || 0).toLocaleString()} UZS</p>
+          <p class="text-xs text-emerald-600 font-bold">Sotuv narxi: ${(r.sellPrice || 0).toLocaleString()} UZS</p>
+        </div>`).join("");
+    }
+
+    function addCategory() {
+      const input = document.getElementById("newCategoryInput");
+      const value = input.value.trim();
+      if (!value) return;
+      if (state.categories.includes(value)) return alert("Bu kategoriya allaqachon mavjud");
+      state.categories.push(value);
+      input.value = "";
+      renderCategories();
+      hydrateRecipeCategorySelect();
+      hydrateInvCategorySelect(document.getElementById("invCategory"));
+      sendToApi("save_categories", { categories: state.categories });
+    }
+
+    function moveCategory(index, direction) {
+      const target = index + direction;
+      if (target < 0 || target >= state.categories.length) return;
+      const tmp = state.categories[index];
+      state.categories[index] = state.categories[target];
+      state.categories[target] = tmp;
+      renderCategories();
+      hydrateRecipeCategorySelect();
+      hydrateInvCategorySelect(document.getElementById("invCategory"));
+      sendToApi("save_categories", { categories: state.categories });
+    }
+
+    function deleteCategory(index) {
+      const name = state.categories[index];
+      if (!confirm(`"${name}" kategoriyasini o'chirishni tasdiqlaysizmi?`)) return;
+      state.categories.splice(index, 1);
+      renderCategories();
+      hydrateRecipeCategorySelect();
+      hydrateInvCategorySelect(document.getElementById("invCategory"));
+      sendToApi("save_categories", { categories: state.categories });
+    }
+
+    function renderCategories() {
+      const box = document.getElementById("categoryList");
+      if (!state.categories.length) {
+        box.innerHTML = `<div class="glass rounded-2xl p-3 text-center text-xs font-bold text-slate-500">Kategoriyalar yo'q</div>`;
+        return;
+      }
+      box.innerHTML = state.categories.map((cat, idx) => `
+        <div class="glass rounded-2xl p-3 flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="text-[10px] font-bold text-slate-400">#${idx + 1}</span>
+            <p class="font-bold text-sm">${cat}</p>
+          </div>
+          <div class="flex items-center gap-1">
+            <button onclick="moveCategory(${idx}, -1)" class="w-9 h-9 rounded-xl bg-slate-100 active:scale-95">⬆️</button>
+            <button onclick="moveCategory(${idx}, 1)" class="w-9 h-9 rounded-xl bg-slate-100 active:scale-95">⬇️</button>
+            <button onclick="deleteCategory(${idx})" class="w-9 h-9 rounded-xl bg-red-100 text-red-600 active:scale-95">❌</button>
+          </div>
         </div>`).join("");
     }
 
     function renderDashboard() {
       const today = new Date().toISOString().slice(0, 10);
-      const todaysSales = state.sales.filter(s => s.date === today);
-      const revenue = todaysSales.reduce((s, t) => s + t.total, 0);
-      const profit = todaysSales.reduce((s, t) => s + t.profit, 0);
+      const todaysSales = state.sales.filter(s => (s.date || "").slice(0, 10) === today);
+      const revenue = todaysSales.reduce((s, t) => s + (t.total || 0), 0);
+      const profit = todaysSales.reduce((s, t) => s + (t.profit || 0), 0);
       const counter = {};
-      todaysSales.forEach(sale => sale.items.forEach(i => counter[i.name] = (counter[i.name] || 0) + i.qty));
+      todaysSales.forEach(sale => (sale.items || []).forEach(i => counter[i.name] = (counter[i.name] || 0) + i.qty));
       const top = Object.keys(counter).sort((a, b) => counter[b] - counter[a])[0] || "-";
       document.getElementById("dashRevenue").innerText = `${revenue.toLocaleString()} UZS`;
       document.getElementById("dashProfit").innerText = `${profit.toLocaleString()} UZS`;
@@ -181,24 +470,40 @@
     async function syncData() {
       const inventoryList = document.getElementById("inventoryList");
       const recipeList = document.getElementById("recipeList");
+      const categoryList = document.getElementById("categoryList");
       inventoryList.innerHTML = `<div class="glass rounded-2xl p-3 text-xs font-bold text-slate-500">Yuklanmoqda...</div>`;
       recipeList.innerHTML = `<div class="glass rounded-2xl p-3 text-xs font-bold text-slate-500">Yuklanmoqda...</div>`;
+      categoryList.innerHTML = `<div class="glass rounded-2xl p-3 text-xs font-bold text-slate-500">Yuklanmoqda...</div>`;
 
       try {
         const res = await fetch(`${GOOGLE_APP_URL}?action=get_cafe`);
         if (!res.ok) throw new Error("Ma'lumot kelmadi");
         const data = await res.json();
         const payload = data.data || data.payload || data;
-        state.inventory = Array.isArray(payload.inventory) ? payload.inventory : [];
+        state.inventory = (Array.isArray(payload.inventory) ? payload.inventory : []).map(i => ({
+          type: i.type || (i.sellPrice ? "product" : "ingredient"),
+          ...i
+        }));
         state.recipes = Array.isArray(payload.recipes) ? payload.recipes : [];
+        state.sales = Array.isArray(payload.sales) ? payload.sales : [];
+        state.categories = Array.isArray(payload.categories) && payload.categories.length
+          ? payload.categories
+          : [...DEFAULT_CATEGORIES];
       } catch (e) {
         console.error("Kafe ma'lumotlarini yuklashda xatolik:", e);
         state.inventory = [];
         state.recipes = [];
+        state.sales = [];
+        state.categories = [...DEFAULT_CATEGORIES];
       } finally {
         renderInventory();
         renderRecipes();
+        renderCategories();
         hydrateIngredientSelect();
+        hydrateRecipeCategorySelect();
+        hydrateInvCategorySelect(document.getElementById("invCategory"));
+        toggleInventoryForm();
+        renderDashboard();
       }
     }
 
@@ -213,6 +518,7 @@
     function logout() {
       localStorage.removeItem("omad_role");
       localStorage.removeItem("omad_token");
+      localStorage.removeItem("omad_user");
       window.location.href = "login.html";
     }
 
