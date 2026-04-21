@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Kafel Boshqaruv</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { background: #eef2f7; font-family: sans-serif; }
+    .glass { background: rgba(255,255,255,0.65); backdrop-filter: blur(15px); border: 1px solid rgba(255,255,255,0.8); box-shadow: 0 6px 26px rgba(15,23,42,0.10); }
+    .tab.active { color: #2563eb; border-color: #2563eb; }
+    .screen { display: none; }
+    .screen.active { display: block; }
+  </style>
+</head>
+<body class="pb-24 text-slate-800">
+  <script>
+    const GOOGLE_APP_URL = "https://script.google.com/macros/s/AKfycbx9V6RKMAIVVrnPmycNdgh4XNE4memBRsi8EL2_mpRC6ReytBebaOcnpZi1SMkdtw/exec";
+    if (localStorage.getItem("omad_role") !== "admin" || localStorage.getItem("omad_token") !== "omad_admin_active") {
+      window.location.href = "login.html";
+    }
+  </script>
+
+  <header class="sticky top-0 z-20 bg-white/80 backdrop-blur-md border-b border-slate-200 p-4">
+    <div class="flex items-center justify-between">
+      <h1 class="text-base font-bold">Kafel Boshqaruv</h1>
+      <button onclick="logout()" class="text-xs font-bold text-red-500">Chiqish</button>
+    </div>
+  </header>
+
+  <main class="p-4 space-y-3">
+    <div class="glass rounded-2xl p-1 grid grid-cols-3 gap-1">
+      <button class="tab active rounded-xl py-2 text-xs font-bold border border-transparent" onclick="switchTab('dash', this)">Kassa Holati</button>
+      <button class="tab rounded-xl py-2 text-xs font-bold border border-transparent" onclick="switchTab('inventory', this)">Ombor</button>
+      <button class="tab rounded-xl py-2 text-xs font-bold border border-transparent" onclick="switchTab('recipes', this)">Retseptlar</button>
+    </div>
+
+    <section id="screen-dash" class="screen active space-y-3">
+      <div class="glass rounded-2xl p-4">
+        <p class="text-[11px] font-bold text-slate-500 uppercase">Bugungi tushum</p>
+        <p id="dashRevenue" class="text-2xl font-bold text-blue-600 mt-1">0 UZS</p>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div class="glass rounded-2xl p-4">
+          <p class="text-[11px] font-bold text-slate-500 uppercase">Jami foyda</p>
+          <p id="dashProfit" class="text-lg font-bold text-emerald-600 mt-1">0 UZS</p>
+        </div>
+        <div class="glass rounded-2xl p-4">
+          <p class="text-[11px] font-bold text-slate-500 uppercase">Top mahsulot</p>
+          <p id="dashTop" class="text-sm font-bold mt-1">-</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="screen-inventory" class="screen space-y-3">
+      <div class="glass rounded-2xl p-4">
+        <h2 class="font-bold mb-3">Omborga Qo'shish</h2>
+        <input id="invName" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-2" placeholder="Masalan: Cola">
+        <div class="grid grid-cols-2 gap-2 mb-2">
+          <input id="invQty" type="number" class="rounded-xl border border-slate-200 p-3 text-sm" placeholder="Miqdor">
+          <input id="invUnit" class="rounded-xl border border-slate-200 p-3 text-sm" placeholder="Birlik (dona/kg/l)">
+        </div>
+        <input id="invTotal" type="number" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-3" placeholder="Jami xarajat (UZS)">
+        <button onclick="addInventory()" class="w-full rounded-xl bg-slate-800 text-white py-3 font-bold text-sm active:scale-95">Omborga Saqlash</button>
+      </div>
+      <div id="inventoryList" class="space-y-2"></div>
+    </section>
+
+    <section id="screen-recipes" class="screen space-y-3">
+      <div class="glass rounded-2xl p-4">
+        <h2 class="font-bold mb-3">Retsept Yaratish</h2>
+        <input id="recipeName" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-2" placeholder="Masalan: Hot Dog">
+        <div class="flex gap-2 mb-2">
+          <select id="ingredientSelect" class="flex-1 rounded-xl border border-slate-200 p-3 text-sm"></select>
+          <input id="ingredientQty" type="number" class="w-24 rounded-xl border border-slate-200 p-3 text-sm" placeholder="Miqdor">
+        </div>
+        <button onclick="addIngredient()" class="w-full rounded-xl bg-blue-600 text-white py-2 font-bold text-sm mb-3 active:scale-95">Ingredient Qo'shish</button>
+        <div id="recipeDraft" class="space-y-1 mb-3"></div>
+        <div class="text-sm font-bold mb-2">Tannarx: <span id="recipeCost">0</span> UZS</div>
+        <input id="recipeSellPrice" type="number" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-2" placeholder="Sotuv narxi (UZS)">
+        <button onclick="saveRecipe()" class="w-full rounded-xl bg-emerald-600 text-white py-3 font-bold text-sm active:scale-95">Retseptni Saqlash</button>
+      </div>
+      <div id="recipeList" class="space-y-2"></div>
+    </section>
+  </main>
+
+  <script>
+    const state = { inventory: [], recipes: [], sales: [], recipeDraft: [] };
+
+    function switchTab(tab, btn) {
+      document.querySelectorAll(".screen").forEach(el => el.classList.remove("active"));
+      document.querySelector(`#screen-${tab}`).classList.add("active");
+      document.querySelectorAll(".tab").forEach(el => el.classList.remove("active"));
+      btn.classList.add("active");
+    }
+
+    function addInventory() {
+      const name = document.getElementById("invName").value.trim();
+      const qty = Number(document.getElementById("invQty").value);
+      const unit = document.getElementById("invUnit").value.trim() || "dona";
+      const totalCost = Number(document.getElementById("invTotal").value);
+      if (!name || qty <= 0 || totalCost <= 0) return alert("Maydonlarni to'ldiring");
+      const unitCost = Math.round(totalCost / qty);
+      state.inventory.push({ id: Date.now().toString(), name, qty, unit, totalCost, unitCost });
+      renderInventory();
+      hydrateIngredientSelect();
+      sendToApi("save_inventory", { inventory: state.inventory });
+    }
+
+    function renderInventory() {
+      const box = document.getElementById("inventoryList");
+      box.innerHTML = state.inventory.map(item => `
+        <div class="glass rounded-2xl p-3">
+          <p class="font-bold text-sm">${item.name}</p>
+          <p class="text-xs text-slate-500">${item.qty} ${item.unit} • Jami: ${item.totalCost.toLocaleString()} UZS</p>
+          <p class="text-xs font-bold text-blue-600">Birlik tannarx: ${item.unitCost.toLocaleString()} UZS</p>
+        </div>`).join("");
+    }
+
+    function hydrateIngredientSelect() {
+      const sel = document.getElementById("ingredientSelect");
+      sel.innerHTML = state.inventory.map(i => `<option value="${i.id}">${i.name} (${i.unitCost} UZS/${i.unit})</option>`).join("");
+    }
+
+    function addIngredient() {
+      const id = document.getElementById("ingredientSelect").value;
+      const qty = Number(document.getElementById("ingredientQty").value);
+      const item = state.inventory.find(i => i.id === id);
+      if (!item || qty <= 0) return;
+      state.recipeDraft.push({ inventoryId: item.id, name: item.name, qty, unitCost: item.unitCost, cost: Math.round(qty * item.unitCost) });
+      renderRecipeDraft();
+    }
+
+    function renderRecipeDraft() {
+      const total = state.recipeDraft.reduce((s, i) => s + i.cost, 0);
+      document.getElementById("recipeDraft").innerHTML = state.recipeDraft.map((i, idx) => `
+        <div class="flex justify-between text-xs bg-slate-50 rounded-xl p-2">
+          <span>${i.name} • ${i.qty}</span>
+          <button onclick="state.recipeDraft.splice(${idx},1); renderRecipeDraft()" class="text-red-500 font-bold">O'chirish</button>
+        </div>`).join("");
+      document.getElementById("recipeCost").innerText = total.toLocaleString();
+    }
+
+    function saveRecipe() {
+      const name = document.getElementById("recipeName").value.trim();
+      const sellPrice = Number(document.getElementById("recipeSellPrice").value);
+      const baseCost = state.recipeDraft.reduce((s, i) => s + i.cost, 0);
+      if (!name || !state.recipeDraft.length || sellPrice <= 0) return alert("Retsept to'liq emas");
+      state.recipes.push({ id: Date.now().toString(), name, ingredients: [...state.recipeDraft], baseCost, sellPrice });
+      state.recipeDraft = [];
+      document.getElementById("recipeName").value = "";
+      document.getElementById("recipeSellPrice").value = "";
+      renderRecipeDraft();
+      renderRecipes();
+      sendToApi("save_recipe", { recipes: state.recipes });
+    }
+
+    function renderRecipes() {
+      const box = document.getElementById("recipeList");
+      box.innerHTML = state.recipes.map(r => `
+        <div class="glass rounded-2xl p-3">
+          <p class="font-bold text-sm">${r.name}</p>
+          <p class="text-xs text-slate-500">Tannarx: ${r.baseCost.toLocaleString()} UZS</p>
+          <p class="text-xs text-emerald-600 font-bold">Sotuv narxi: ${r.sellPrice.toLocaleString()} UZS</p>
+        </div>`).join("");
+    }
+
+    function renderDashboard() {
+      const today = new Date().toISOString().slice(0, 10);
+      const todaysSales = state.sales.filter(s => s.date === today);
+      const revenue = todaysSales.reduce((s, t) => s + t.total, 0);
+      const profit = todaysSales.reduce((s, t) => s + t.profit, 0);
+      const counter = {};
+      todaysSales.forEach(sale => sale.items.forEach(i => counter[i.name] = (counter[i.name] || 0) + i.qty));
+      const top = Object.keys(counter).sort((a, b) => counter[b] - counter[a])[0] || "-";
+      document.getElementById("dashRevenue").innerText = `${revenue.toLocaleString()} UZS`;
+      document.getElementById("dashProfit").innerText = `${profit.toLocaleString()} UZS`;
+      document.getElementById("dashTop").innerText = top;
+    }
+
+    async function sendToApi(action, payload) {
+      try {
+        await fetch(GOOGLE_APP_URL, { method: "POST", body: JSON.stringify({ action, ...payload }) });
+      } catch (e) {
+        console.error("API xatolik:", e);
+      }
+    }
+
+    function logout() {
+      localStorage.removeItem("omad_role");
+      localStorage.removeItem("omad_token");
+      window.location.href = "login.html";
+    }
+
+    hydrateIngredientSelect();
+    renderDashboard();
+  </script>
+</body>
+</html>

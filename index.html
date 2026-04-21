@@ -39,6 +39,7 @@
         const CHAT_ID = "-5124753855"; 
         const PANTRY_ID = "85db17b1-acae-4537-953d-06480b66c159";
         const STORAGE_URL = `https://getpantry.cloud/apiv1/pantry/${PANTRY_ID}/basket/BizDataV3`; 
+        const GOOGLE_APP_URL = "https://script.google.com/macros/s/AKfycbx9V6RKMAIVVrnPmycNdgh4XNE4memBRsi8EL2_mpRC6ReytBebaOcnpZi1SMkdtw/exec ";
     </script>
 
     <!-- YUKLANMOQDA -->
@@ -190,6 +191,17 @@
                 <button onclick="addTenant()" id="addTenantBtn" class="w-full py-2 bg-slate-800 text-white rounded text-xs font-bold shadow-md active:scale-95 transition-all">+ Qo'shish</button>
             </div>
         </div>
+
+        <div class="card">
+            <h3 class="font-bold mb-4 text-slate-700">Tizim Ma'lumotlari</h3>
+            <button
+                id="migrateBtn"
+                onclick="migrateToGoogleSheets()"
+                class="w-full py-3 bg-slate-800 text-white rounded-lg font-bold text-sm shadow-md active:scale-95 transition-all"
+            >
+                🗄️ Baza (Google Sheets) ga Ko'chirish
+            </button>
+        </div>
     </div>
 
     <!-- DETAIL MODAL (SCROLL FIX & CENTERED, HIGH Z-INDEX) -->
@@ -307,6 +319,47 @@
             } catch(e) { alert("Saqlanmadi (Internet yo'q)"); }
             showLoader(false);
             renderAll();
+        }
+
+        async function migrateToGoogleSheets() {
+            const confirmed = confirm("Haqiqatan ham barcha ma'lumotlarni ko'chirmoqchimisiz?");
+            if (!confirmed) return;
+
+            const loaderMsg = document.getElementById('loaderMsg');
+            const defaultLoaderText = loaderMsg.innerText;
+
+            showLoader(true);
+            loaderMsg.innerText = "Baza ko'chirilmoqda...";
+
+            try {
+                const payload = {
+                    action: "migrate_omad",
+                    transactions: app.transactions,
+                    tenants: app.tenants,
+                    rates: app.rates
+                };
+
+                const response = await fetch(GOOGLE_APP_URL.trim(), {
+                    method: 'POST',
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) throw new Error("Migration request failed");
+
+                const contentType = response.headers.get('content-type') || "";
+                if (contentType.includes('application/json')) {
+                    await response.json();
+                } else {
+                    await response.text();
+                }
+                alert("Muvaffaqiyatli yakunlandi!");
+            } catch (e) {
+                console.error("Google Sheets migration error:", e);
+                alert("Xatolik yuz berdi. Internetni tekshiring.");
+            } finally {
+                showLoader(false);
+                loaderMsg.innerText = defaultLoaderText;
+            }
         }
 
         // --- RENDER ---

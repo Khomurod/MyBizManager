@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Sotuvchi Oynasi</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { background: #edf2f7; font-family: sans-serif; }
+    .glass { background: rgba(255,255,255,0.7); backdrop-filter: blur(15px); border: 1px solid rgba(255,255,255,0.8); box-shadow: 0 6px 22px rgba(15,23,42,0.10); }
+    .item-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .modal { transition: opacity .2s ease; }
+    .pulse-ok { animation: pop .35s ease; }
+    @keyframes pop { 0%{transform:scale(.85);opacity:.3} 100%{transform:scale(1);opacity:1} }
+  </style>
+</head>
+<body class="pb-32 text-slate-800">
+  <script>
+    const GOOGLE_APP_URL = "https://script.google.com/macros/s/AKfycbx9V6RKMAIVVrnPmycNdgh4XNE4memBRsi8EL2_mpRC6ReytBebaOcnpZi1SMkdtw/exec";
+    if (localStorage.getItem("omad_role") !== "seller" || localStorage.getItem("omad_token") !== "omad_seller_active") {
+      window.location.href = "login.html";
+    }
+  </script>
+
+  <header class="sticky top-0 z-20 bg-white/80 backdrop-blur-md border-b border-slate-200 p-4">
+    <div class="flex justify-between items-center">
+      <h1 class="font-bold text-base">Kafe POS</h1>
+      <button onclick="logout()" class="text-xs font-bold text-red-500">Chiqish</button>
+    </div>
+  </header>
+
+  <main class="p-4">
+    <div id="categories" class="flex gap-2 overflow-x-auto pb-2 mb-3"></div>
+    <div id="itemsGrid" class="grid item-grid gap-3"></div>
+    <button onclick="handleBucketEmpty()" class="w-full mt-4 rounded-2xl bg-amber-500 text-white py-3 font-bold text-sm active:scale-95">Tara Tugadi</button>
+  </main>
+
+  <div id="cartModal" class="modal hidden fixed inset-0 z-30 bg-black/45 p-4 flex items-end" onclick="closeCart()">
+    <div class="glass w-full rounded-2xl p-4 max-h-[78vh] overflow-y-auto" onclick="event.stopPropagation()">
+      <div class="flex justify-between mb-3">
+        <h3 class="font-bold">Savat</h3>
+        <button class="text-sm text-slate-500" onclick="closeCart()">Yopish</button>
+      </div>
+      <div id="cartList" class="space-y-2"></div>
+    </div>
+  </div>
+
+  <footer class="fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-md border-t border-slate-200 p-3">
+    <button onclick="openCart()" class="w-full text-left mb-2 glass rounded-xl p-3">
+      <p class="text-xs text-slate-500 font-bold">Savat jami</p>
+      <p id="cartTotal" class="font-bold text-lg">0 UZS</p>
+    </button>
+    <button onclick="sell()" class="w-full rounded-2xl bg-blue-600 text-white py-4 text-base font-bold active:scale-95">Sotish</button>
+    <div id="okAnim" class="hidden mt-2 text-center text-emerald-600 text-sm font-bold">Muvaffaqiyatli sotildi!</div>
+  </footer>
+
+  <script>
+    const state = {
+      category: "Ichimliklar",
+      cart: [],
+      soldConesFromBucket: 0,
+      menu: [
+        { id: "c1", category: "Ichimliklar", name: "Cola 0.5", price: 12000, baseCost: 7000 },
+        { id: "c2", category: "Ichimliklar", name: "Fanta", price: 12000, baseCost: 7000 },
+        { id: "f1", category: "Fast-Food", name: "Hot Dog", price: 18000, baseCost: 9500 },
+        { id: "f2", category: "Fast-Food", name: "Lavash Mini", price: 24000, baseCost: 13000 },
+        { id: "m1", category: "Muzqaymoq", name: "Vafli Konus", price: 15000, baseCost: 8000 },
+        { id: "m2", category: "Muzqaymoq", name: "Stakandagi", price: 14000, baseCost: 7500 }
+      ]
+    };
+
+    function renderCategories() {
+      const cats = ["Ichimliklar", "Fast-Food", "Muzqaymoq"];
+      document.getElementById("categories").innerHTML = cats.map(c => `
+        <button onclick="setCategory('${c}')" class="shrink-0 rounded-full px-4 py-2 text-xs font-bold ${state.category === c ? 'bg-blue-600 text-white' : 'glass text-slate-700'}">${c}</button>
+      `).join("");
+    }
+
+    function renderItems() {
+      const filtered = state.menu.filter(i => i.category === state.category);
+      document.getElementById("itemsGrid").innerHTML = filtered.map(item => `
+        <button onclick="addToCart('${item.id}')" class="glass rounded-2xl p-4 text-left active:scale-95 transition-transform">
+          <p class="font-bold text-sm">${item.name}</p>
+          <p class="text-blue-600 font-bold mt-2">${item.price.toLocaleString()} UZS</p>
+        </button>
+      `).join("");
+    }
+
+    function setCategory(category) {
+      state.category = category;
+      renderCategories();
+      renderItems();
+    }
+
+    function addToCart(id) {
+      const item = state.menu.find(i => i.id === id);
+      if (!item) return;
+      const existing = state.cart.find(c => c.id === id);
+      if (existing) existing.qty += 1;
+      else state.cart.push({ ...item, qty: 1 });
+      renderCart();
+    }
+
+    function removeCartItem(id) {
+      state.cart = state.cart.filter(i => i.id !== id);
+      renderCart();
+    }
+
+    function renderCart() {
+      const total = state.cart.reduce((s, i) => s + (i.price * i.qty), 0);
+      document.getElementById("cartTotal").innerText = `${total.toLocaleString()} UZS`;
+      document.getElementById("cartList").innerHTML = state.cart.length ? state.cart.map(i => `
+        <div class="flex justify-between items-center bg-slate-50 rounded-xl p-3">
+          <div>
+            <p class="font-bold text-sm">${i.name}</p>
+            <p class="text-xs text-slate-500">${i.qty} x ${i.price.toLocaleString()} UZS</p>
+          </div>
+          <button onclick="removeCartItem('${i.id}')" class="text-red-500 text-xs font-bold">O'chirish</button>
+        </div>
+      `).join("") : `<p class="text-xs text-slate-400 font-bold">Savat bo'sh</p>`;
+    }
+
+    function openCart() { document.getElementById("cartModal").classList.remove("hidden"); }
+    function closeCart() { document.getElementById("cartModal").classList.add("hidden"); }
+
+    async function sell() {
+      if (!state.cart.length) return alert("Savat bo'sh");
+      const total = state.cart.reduce((s, i) => s + (i.price * i.qty), 0);
+      const totalCost = state.cart.reduce((s, i) => s + (i.baseCost * i.qty), 0);
+      const payload = {
+        action: "save_sale",
+        date: new Date().toISOString(),
+        seller: localStorage.getItem("omad_user") || "seller",
+        total,
+        profit: total - totalCost,
+        items: state.cart.map(i => ({ id: i.id, name: i.name, qty: i.qty, price: i.price, baseCost: i.baseCost }))
+      };
+
+      try {
+        await fetch(GOOGLE_APP_URL, { method: "POST", body: JSON.stringify(payload) });
+        const cones = state.cart.filter(i => i.category === "Muzqaymoq").reduce((s, i) => s + i.qty, 0);
+        state.soldConesFromBucket += cones;
+        state.cart = [];
+        renderCart();
+        closeCart();
+        const ok = document.getElementById("okAnim");
+        ok.classList.remove("hidden");
+        ok.classList.add("pulse-ok");
+        setTimeout(() => { ok.classList.add("hidden"); ok.classList.remove("pulse-ok"); }, 900);
+      } catch (e) {
+        alert("Sotishda xatolik. Internetni tekshiring.");
+      }
+    }
+
+    async function handleBucketEmpty() {
+      const cones = state.soldConesFromBucket;
+      if (!cones) return alert("Hali muzqaymoq sotilmadi");
+      const bucketCost = Number(prompt("Bitta to'la chelak tannarxi (UZS) ni kiriting:"));
+      if (!bucketCost || bucketCost <= 0) return;
+      const calibrated = Math.round(bucketCost / cones);
+      state.menu = state.menu.map(item => item.category === "Muzqaymoq" ? { ...item, baseCost: calibrated } : item);
+      state.soldConesFromBucket = 0;
+      renderItems();
+      await fetch(GOOGLE_APP_URL, { method: "POST", body: JSON.stringify({ action: "bucket_calibration", baseCost: calibrated }) });
+      alert(`Yangi muzqaymoq tannarxi: ${calibrated.toLocaleString()} UZS`);
+    }
+
+    function logout() {
+      localStorage.removeItem("omad_role");
+      localStorage.removeItem("omad_token");
+      window.location.href = "login.html";
+    }
+
+    renderCategories();
+    renderItems();
+    renderCart();
+  </script>
+</body>
+</html>

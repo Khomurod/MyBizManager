@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Tizimga Kirish</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { background: linear-gradient(160deg, #e2e8f0, #f8fafc); font-family: sans-serif; }
+    .glass { background: rgba(255, 255, 255, 0.55); backdrop-filter: blur(18px); border: 1px solid rgba(255,255,255,0.7); box-shadow: 0 10px 35px rgba(15,23,42,0.12); }
+  </style>
+</head>
+<body class="min-h-screen flex items-center justify-center px-4 text-slate-800">
+  <div class="w-full max-w-sm glass rounded-2xl p-5">
+    <h1 class="text-xl font-bold text-center mb-1">Biznes Ekotizim</h1>
+    <p class="text-xs text-center text-slate-500 mb-5">Tizimga kirish</p>
+
+    <label class="block text-[11px] font-bold text-slate-500 mb-1">Foydalanuvchi nomi</label>
+    <input id="username" type="text" class="w-full rounded-xl border border-slate-200 bg-white/80 p-3 text-sm outline-none mb-3" placeholder="admin yoki seller">
+
+    <label class="block text-[11px] font-bold text-slate-500 mb-1">Parol</label>
+    <input id="password" type="password" class="w-full rounded-xl border border-slate-200 bg-white/80 p-3 text-sm outline-none mb-4" placeholder="••••••">
+
+    <button onclick="login()" class="w-full rounded-2xl bg-slate-800 text-white font-bold py-3 text-sm active:scale-95 transition-transform">Kirish</button>
+
+    <div id="launchpad" class="hidden mt-4 space-y-2">
+      <p class="text-xs font-bold text-slate-500">Yo'nalishni tanlang:</p>
+      <button onclick="goTo('omad_admin.html')" class="w-full rounded-xl bg-blue-600 text-white py-3 font-bold text-sm active:scale-95">Omad-D Boshqaruv</button>
+      <button onclick="goTo('cafe_admin.html')" class="w-full rounded-xl bg-emerald-600 text-white py-3 font-bold text-sm active:scale-95">Kafel Boshqaruv</button>
+    </div>
+  </div>
+
+  <script>
+    const USERS = {
+      admin: { password: "admin123", role: "admin", token: "omad_admin_active" },
+      seller: { password: "seller123", role: "seller", token: "omad_seller_active" }
+    };
+
+    function login() {
+      const username = document.getElementById("username").value.trim().toLowerCase();
+      const password = document.getElementById("password").value.trim();
+      const user = USERS[username];
+
+      if (!user || user.password !== password) {
+        alert("Login yoki parol noto'g'ri");
+        return;
+      }
+
+      localStorage.setItem("omad_role", user.role);
+      localStorage.setItem("omad_token", user.token);
+      localStorage.setItem("omad_user", username);
+
+      if (user.role === "admin") {
+        document.getElementById("launchpad").classList.remove("hidden");
+        return;
+      }
+
+      window.location.href = "cafe_pos.html";
+    }
+
+    function goTo(path) {
+      window.location.href = path;
+    }
+  </script>
+</body>
+</html>
