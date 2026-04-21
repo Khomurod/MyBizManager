@@ -40,7 +40,7 @@
         const GOOGLE_APP_URL = "https://script.google.com/macros/s/AKfycbx9V6RKMAIVVrnPmycNdgh4XNE4memBRsi8EL2_mpRC6ReytBebaOcnpZi1SMkdtw/exec ";
         const ADMIN_TOKEN = "omad_admin_active";
 
-        if (localStorage.getItem("omad_role") !== "admin" || localStorage.getItem("omad_token") !== ADMIN_TOKEN) {
+        if (localStorage.getItem("omad_role") !== "omad_admin" || localStorage.getItem("omad_token") !== ADMIN_TOKEN) {
             window.location.href = "login.html";
         }
     </script>
@@ -57,8 +57,11 @@
             <div class="bg-blue-600 text-white w-8 h-8 rounded-lg flex items-center justify-center font-bold">OD</div>
             <h1 class="font-bold text-sm tracking-tight leading-tight">"Omad-D" X/F<br>Ijara To'lovlari</h1>
         </div>
-        <div class="text-[10px] font-bold bg-slate-100 px-2 py-1 rounded text-slate-500 border">
-            <span id="headerMonth">...</span>: $1 = <span id="headerRate">...</span>
+        <div class="flex flex-col items-end gap-1">
+            <div class="text-[10px] font-bold bg-slate-100 px-2 py-1 rounded text-slate-500 border">
+                <span id="headerMonth">...</span>: $1 = <span id="headerRate">...</span>
+            </div>
+            <button onclick="logout()" class="text-[10px] font-bold text-red-500">Chiqish</button>
         </div>
     </div>
 
@@ -889,6 +892,13 @@
             document.querySelectorAll('.nav-item').forEach(e => e.classList.remove('active'));
             document.getElementById('tab-'+t).classList.add('active');
             document.getElementById('nav-'+t).classList.add('active');
+        }
+
+        function logout() {
+            localStorage.removeItem("omad_role");
+            localStorage.removeItem("omad_token");
+            localStorage.removeItem("omad_user");
+            window.location.href = "login.html";
         }
 
         function showLoader(show) { document.getElementById('loader').style.display = show ? 'flex' : 'none'; }

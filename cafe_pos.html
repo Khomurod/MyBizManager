@@ -17,7 +17,7 @@
 <body class="pb-32 text-slate-800">
   <script>
     const GOOGLE_APP_URL = "https://script.google.com/macros/s/AKfycbx9V6RKMAIVVrnPmycNdgh4XNE4memBRsi8EL2_mpRC6ReytBebaOcnpZi1SMkdtw/exec";
-    if (localStorage.getItem("omad_role") !== "seller" || localStorage.getItem("omad_token") !== "omad_seller_active") {
+    if (localStorage.getItem("omad_role") !== "cafe_seller" || localStorage.getItem("omad_token") !== "cafe_seller_active") {
       window.location.href = "login.html";
     }
   </script>
@@ -59,18 +59,13 @@
       category: "Ichimliklar",
       cart: [],
       soldConesFromBucket: 0,
-      menu: [
-        { id: "c1", category: "Ichimliklar", name: "Cola 0.5", price: 12000, baseCost: 7000 },
-        { id: "c2", category: "Ichimliklar", name: "Fanta", price: 12000, baseCost: 7000 },
-        { id: "f1", category: "Fast-Food", name: "Hot Dog", price: 18000, baseCost: 9500 },
-        { id: "f2", category: "Fast-Food", name: "Lavash Mini", price: 24000, baseCost: 13000 },
-        { id: "m1", category: "Muzqaymoq", name: "Vafli Konus", price: 15000, baseCost: 8000 },
-        { id: "m2", category: "Muzqaymoq", name: "Stakandagi", price: 14000, baseCost: 7500 }
-      ]
+      menu: []
     };
 
     function renderCategories() {
-      const cats = ["Ichimliklar", "Fast-Food", "Muzqaymoq"];
+      const unique = [...new Set(state.menu.map(i => i.category || "Fast-Food"))];
+      const cats = unique.length ? unique : ["Fast-Food"];
+      if (!cats.includes(state.category)) state.category = cats[0];
       document.getElementById("categories").innerHTML = cats.map(c => `
         <button onclick="setCategory('${c}')" class="shrink-0 rounded-full px-4 py-2 text-xs font-bold ${state.category === c ? 'bg-blue-600 text-white' : 'glass text-slate-700'}">${c}</button>
       `).join("");
@@ -78,12 +73,41 @@
 
     function renderItems() {
       const filtered = state.menu.filter(i => i.category === state.category);
-      document.getElementById("itemsGrid").innerHTML = filtered.map(item => `
+      document.getElementById("itemsGrid").innerHTML = filtered.length ? filtered.map(item => `
         <button onclick="addToCart('${item.id}')" class="glass rounded-2xl p-4 text-left active:scale-95 transition-transform">
           <p class="font-bold text-sm">${item.name}</p>
           <p class="text-blue-600 font-bold mt-2">${item.price.toLocaleString()} UZS</p>
         </button>
-      `).join("");
+      `).join("") : `<div class="col-span-2 glass rounded-2xl p-4 text-center text-xs font-bold text-slate-500">Mahsulotlar topilmadi</div>`;
+    }
+
+    async function syncMenu() {
+      const categoriesEl = document.getElementById("categories");
+      const itemsEl = document.getElementById("itemsGrid");
+      categoriesEl.innerHTML = `<div class="glass rounded-full px-4 py-2 text-xs font-bold text-slate-500">Yuklanmoqda...</div>`;
+      itemsEl.innerHTML = `<div class="col-span-2 glass rounded-2xl p-4 text-center text-xs font-bold text-slate-500">Menyu yuklanmoqda...</div>`;
+
+      try {
+        const res = await fetch(`${GOOGLE_APP_URL}?action=get_cafe`);
+        if (!res.ok) throw new Error("Menyu kelmadi");
+        const data = await res.json();
+        const payload = data.data || data.payload || data;
+        const recipes = Array.isArray(payload.recipes) ? payload.recipes : [];
+
+        state.menu = recipes.map((recipe, idx) => ({
+          id: recipe.id || `recipe_${idx}`,
+          category: recipe.category || "Fast-Food",
+          name: recipe.name || "Nomsiz mahsulot",
+          price: Number(recipe.sellPrice || recipe.price || 0),
+          baseCost: Number(recipe.baseCost || 0)
+        })).filter(item => item.price > 0);
+      } catch (e) {
+        console.error("Menyuni yuklashda xatolik:", e);
+        state.menu = [];
+      } finally {
+        renderCategories();
+        renderItems();
+      }
     }
 
     function setCategory(category) {
@@ -171,9 +195,10 @@
       window.location.href = "login.html";
     }
 
-    renderCategories();
-    renderItems();
-    renderCart();
+    window.onload = () => {
+      renderCart();
+      syncMenu();
+    };
   </script>
 </body>
 </html>

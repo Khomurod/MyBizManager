@@ -16,7 +16,7 @@
 <body class="pb-24 text-slate-800">
   <script>
     const GOOGLE_APP_URL = "https://script.google.com/macros/s/AKfycbx9V6RKMAIVVrnPmycNdgh4XNE4memBRsi8EL2_mpRC6ReytBebaOcnpZi1SMkdtw/exec";
-    if (localStorage.getItem("omad_role") !== "admin" || localStorage.getItem("omad_token") !== "omad_admin_active") {
+    if (localStorage.getItem("omad_role") !== "cafe_admin" || localStorage.getItem("omad_token") !== "cafe_admin_active") {
       window.location.href = "login.html";
     }
   </script>
@@ -178,6 +178,30 @@
       document.getElementById("dashTop").innerText = top;
     }
 
+    async function syncData() {
+      const inventoryList = document.getElementById("inventoryList");
+      const recipeList = document.getElementById("recipeList");
+      inventoryList.innerHTML = `<div class="glass rounded-2xl p-3 text-xs font-bold text-slate-500">Yuklanmoqda...</div>`;
+      recipeList.innerHTML = `<div class="glass rounded-2xl p-3 text-xs font-bold text-slate-500">Yuklanmoqda...</div>`;
+
+      try {
+        const res = await fetch(`${GOOGLE_APP_URL}?action=get_cafe`);
+        if (!res.ok) throw new Error("Ma'lumot kelmadi");
+        const data = await res.json();
+        const payload = data.data || data.payload || data;
+        state.inventory = Array.isArray(payload.inventory) ? payload.inventory : [];
+        state.recipes = Array.isArray(payload.recipes) ? payload.recipes : [];
+      } catch (e) {
+        console.error("Kafe ma'lumotlarini yuklashda xatolik:", e);
+        state.inventory = [];
+        state.recipes = [];
+      } finally {
+        renderInventory();
+        renderRecipes();
+        hydrateIngredientSelect();
+      }
+    }
+
     async function sendToApi(action, payload) {
       try {
         await fetch(GOOGLE_APP_URL, { method: "POST", body: JSON.stringify({ action, ...payload }) });
@@ -192,8 +216,10 @@
       window.location.href = "login.html";
     }
 
-    hydrateIngredientSelect();
-    renderDashboard();
+    window.onload = () => {
+      renderDashboard();
+      syncData();
+    };
   </script>
 </body>
 </html>
