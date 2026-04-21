@@ -280,6 +280,30 @@
       }
     }
 
+    function getBulkSoldTotal(invId) {
+      let total = 0;
+
+      // Direct sales
+      const directProductId = 'product_' + invId;
+      total += (state.todaySold[directProductId] || 0);
+
+      // Recipe sales
+      if (state.recipes && state.recipes.length) {
+        state.recipes.forEach((r, idx) => {
+          if (r.ingredients && r.ingredients.length) {
+            const ingredient = r.ingredients.find(ing => ing.inventoryId === invId);
+            if (ingredient) {
+              const recipeMenuId = 'recipe_' + (r.id || idx);
+              const recipeSold = state.todaySold[recipeMenuId] || 0;
+              total += recipeSold * (ingredient.qty || 0);
+            }
+          }
+        });
+      }
+
+      return total;
+    }
+
     function openCloseDayModal() {
       renderCloseDayList();
       document.getElementById("closeDayModal").classList.remove("hidden");
@@ -296,7 +320,7 @@
         list.innerHTML = `<div class="glass rounded-2xl p-3 text-center text-xs font-bold text-slate-500">O'lchovli mahsulotlar yo'q</div>`;
       } else {
         list.innerHTML = bulkProducts.map(p => {
-          const sold = state.todaySold[p.id] || 0;
+          const sold = getBulkSoldTotal(p.inventoryId);
           const inv = state.inventory.find(i => i.id === p.inventoryId) || {};
           return `
             <div class="glass rounded-2xl p-3" data-inventory-id="${p.inventoryId}">
@@ -329,7 +353,7 @@
         const inv = state.inventory.find(i => i.id === invId);
         if (!inv) return;
         const menuItem = state.menu.find(m => m.inventoryId === invId);
-        const sold = menuItem ? (state.todaySold[menuItem.id] || 0) : 0;
+        const sold = getBulkSoldTotal(invId);
         const initial = Number(row.querySelector(".close-initial").value) || 0;
         const leftover = Number(row.querySelector(".close-leftover").value);
         const calc = row.querySelector(".close-calc");
@@ -365,7 +389,7 @@
         const idx = updatedInventory.findIndex(i => i.id === invId);
         if (idx === -1) return;
         const menuItem = state.menu.find(m => m.inventoryId === invId);
-        const sold = menuItem ? (state.todaySold[menuItem.id] || 0) : 0;
+        const sold = getBulkSoldTotal(invId);
         const initial = Number(row.querySelector(".close-initial").value) || 0;
         const leftoverRaw = row.querySelector(".close-leftover").value;
         if (leftoverRaw === "") return;
