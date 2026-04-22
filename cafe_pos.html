@@ -25,7 +25,10 @@
   <header class="sticky top-0 z-20 bg-white/80 backdrop-blur-md border-b border-slate-200 p-4">
     <div class="flex justify-between items-center">
       <h1 class="font-bold text-base">Kafe POS</h1>
-      <button onclick="logout()" class="text-xs font-bold text-red-500">Chiqish</button>
+      <div class="flex items-center gap-2">
+        <button onclick="openReceiptsModal()" class="glass rounded-full px-3 py-2 text-[11px] font-bold text-slate-700">Bugungi Cheklar</button>
+        <button onclick="logout()" class="text-xs font-bold text-red-500">Chiqish</button>
+      </div>
     </div>
   </header>
 
@@ -58,6 +61,19 @@
     </div>
   </div>
 
+  <div id="receiptsModal" class="hidden fixed inset-0 z-40 bg-black/45 p-4 flex items-end" onclick="closeReceiptsModal()">
+    <div class="glass w-full rounded-2xl p-4 max-h-[82vh] overflow-y-auto" onclick="event.stopPropagation()">
+      <div class="flex justify-between items-center mb-3">
+        <div>
+          <h3 class="font-bold">Bugungi Cheklar</h3>
+          <p class="text-[11px] text-slate-500 mt-1">Bugun ushbu qurilmada sotilgan cheklar ro'yxati.</p>
+        </div>
+        <button onclick="closeReceiptsModal()" class="w-8 h-8 rounded-full bg-slate-100">X</button>
+      </div>
+      <div id="receiptsList" class="space-y-2"></div>
+    </div>
+  </div>
+
   <footer class="fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-md border-t border-slate-200 p-3">
     <button onclick="openCart()" class="w-full text-left mb-2 glass rounded-xl p-3">
       <p class="text-xs text-slate-500 font-bold">Savat jami</p>
@@ -78,8 +94,28 @@
       recipes: [],
       todaySold: {},
       todayRevenue: 0,
-      todayProfit: 0
+      todayProfit: 0,
+      sessionSales: [],
+      openingInventory: []
     };
+
+    function cloneInventory(items) {
+      return (items || []).map(item => ({ ...item }));
+    }
+
+    function roundQuantity(value) {
+      return Math.round(Number(value || 0) * 1000) / 1000;
+    }
+
+    function formatMoney(value) {
+      return `${Number(value || 0).toLocaleString()} UZS`;
+    }
+
+    function formatReceiptTime(value) {
+      const date = value ? new Date(value) : null;
+      if (!date || Number.isNaN(date.getTime())) return "Vaqt noma'lum";
+      return date.toLocaleTimeString("uz-UZ", { hour: "2-digit", minute: "2-digit" });
+    }
 
     function computeBaseCost(item) {
       if (item.__kind === "product" && item.isBulk && item.gramsPerServing > 0) {
@@ -124,6 +160,45 @@
         }));
 
       state.menu = [...productsAsMenu, ...recipesAsMenu];
+    }
+
+    function updateInventoryBalance(inv, qtyDelta, costDelta) {
+      if (!inv) return;
+      inv.qty = roundQuantity((inv.qty || 0) + qtyDelta);
+      inv.totalCost = Math.max(0, Math.round((inv.totalCost || 0) + costDelta));
+      if (inv.qty > 0) {
+        inv.unitCost = Math.round(inv.totalCost / inv.qty);
+      } else {
+        inv.qty = 0;
+        inv.unitCost = 0;
+      }
+    }
+
+    function applySaleInventoryChanges(items, direction) {
+      (items || []).forEach(item => {
+        if (item.kind === "product") {
+          const inv = state.inventory.find(i => i.id === item.inventoryId);
+          if (!inv) return;
+          const qtyDelta = item.isBulk
+            ? (Number(item.gramsPerServing || 0) / 1000) * Number(item.qty || 0) * direction
+            : Number(item.qty || 0) * direction;
+          const costDelta = Number(item.baseCost || 0) * Number(item.qty || 0) * direction;
+          updateInventoryBalance(inv, qtyDelta, costDelta);
+          return;
+        }
+
+        if (item.kind === "recipe") {
+          const recipe = state.recipes.find(r => r.id === item.recipeId);
+          if (!recipe || !Array.isArray(recipe.ingredients)) return;
+          recipe.ingredients.forEach(ingredient => {
+            const inv = state.inventory.find(i => i.id === ingredient.inventoryId);
+            if (!inv) return;
+            const qtyDelta = Number(ingredient.qty || 0) * Number(item.qty || 0) * direction;
+            const costDelta = Number(ingredient.cost || 0) * Number(item.qty || 0) * direction;
+            updateInventoryBalance(inv, qtyDelta, costDelta);
+          });
+        }
+      });
     }
 
     function getDisplayCategories() {
@@ -180,6 +255,7 @@
         console.log("[POS] get_cafe javobi:", data);
         const payload = data.data || data.payload || data;
         state.inventory = Array.isArray(payload.inventory) ? payload.inventory : [];
+        state.openingInventory = cloneInventory(state.inventory);
         state.recipes = Array.isArray(payload.recipes) ? payload.recipes : [];
         state.categories = Array.isArray(payload.categories) && payload.categories.length
           ? payload.categories
@@ -189,6 +265,7 @@
       } catch (e) {
         console.error("Menyuni yuklashda xatolik:", e);
         state.inventory = [];
+        state.openingInventory = [];
         state.recipes = [];
         state.categories = [];
         state.menu = [];
@@ -235,12 +312,43 @@
     function openCart() { document.getElementById("cartModal").classList.remove("hidden"); }
     function closeCart() { document.getElementById("cartModal").classList.add("hidden"); }
 
+    function renderSessionSales() {
+      const box = document.getElementById("receiptsList");
+      if (!state.sessionSales.length) {
+        box.innerHTML = `<div class="glass rounded-2xl p-3 text-center text-xs font-bold text-slate-500">Bugungi cheklar hali yo'q</div>`;
+        return;
+      }
+
+      box.innerHTML = state.sessionSales.map(sale => `
+        <div class="rounded-2xl bg-white/75 p-3 shadow-sm">
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <p class="font-bold text-sm">${formatReceiptTime(sale.date)}</p>
+              <p class="text-xs text-slate-500 mt-1">Jami: ${formatMoney(sale.total)}</p>
+              <p class="text-[11px] text-slate-400 mt-1">${(sale.items || []).length} ta pozitsiya</p>
+            </div>
+            <button onclick="voidSale('${sale.id}')" class="rounded-xl bg-red-100 px-3 py-2 text-[11px] font-bold text-red-600">Bekor qilish</button>
+          </div>
+        </div>
+      `).join("");
+    }
+
+    function openReceiptsModal() {
+      renderSessionSales();
+      document.getElementById("receiptsModal").classList.remove("hidden");
+    }
+
+    function closeReceiptsModal() {
+      document.getElementById("receiptsModal").classList.add("hidden");
+    }
+
     async function sell() {
       if (!state.cart.length) return alert("Savat bo'sh");
       const total = state.cart.reduce((s, i) => s + (i.price * i.qty), 0);
       const totalCost = state.cart.reduce((s, i) => s + (i.baseCost * i.qty), 0);
       const payload = {
         action: "save_sale",
+        id: Date.now().toString(),
         date: new Date().toISOString(),
         seller: localStorage.getItem("omad_user") || "seller",
         total,
@@ -262,21 +370,87 @@
       try {
         await fetch(GOOGLE_APP_URL, { method: "POST", body: JSON.stringify(payload) });
 
+        state.sessionSales.unshift(payload);
         state.cart.forEach(i => {
           state.todaySold[i.id] = (state.todaySold[i.id] || 0) + i.qty;
         });
         state.todayRevenue += total;
         state.todayProfit += (total - totalCost);
+        applySaleInventoryChanges(payload.items, -1);
+        buildMenu();
 
         state.cart = [];
         renderCart();
+        renderItems();
+        renderSessionSales();
         closeCart();
+        if (!document.getElementById("closeDayModal").classList.contains("hidden")) {
+          renderCloseDayList();
+          recomputeCloseDay();
+        }
         const ok = document.getElementById("okAnim");
         ok.classList.remove("hidden");
         ok.classList.add("pulse-ok");
         setTimeout(() => { ok.classList.add("hidden"); ok.classList.remove("pulse-ok"); }, 900);
       } catch (e) {
         alert("Sotishda xatolik. Internetni tekshiring.");
+      }
+    }
+
+    async function voidSale(saleId) {
+      const sale = state.sessionSales.find(item => item.id === saleId);
+      if (!sale) return;
+      if (!confirm("Ushbu chekni bekor qilmoqchimisiz?")) return;
+
+      const previousState = {
+        sessionSales: [...state.sessionSales],
+        todayRevenue: state.todayRevenue,
+        todayProfit: state.todayProfit,
+        todaySold: { ...state.todaySold },
+        inventory: cloneInventory(state.inventory)
+      };
+
+      state.sessionSales = state.sessionSales.filter(item => item.id !== saleId);
+      state.todayRevenue = Math.max(0, state.todayRevenue - Number(sale.total || 0));
+      state.todayProfit = Math.max(0, state.todayProfit - Number(sale.profit || 0));
+      (sale.items || []).forEach(item => {
+        const nextQty = (state.todaySold[item.id] || 0) - Number(item.qty || 0);
+        if (nextQty > 0) state.todaySold[item.id] = nextQty;
+        else delete state.todaySold[item.id];
+      });
+      applySaleInventoryChanges(sale.items, 1);
+      buildMenu();
+      renderItems();
+      renderSessionSales();
+      if (!document.getElementById("closeDayModal").classList.contains("hidden")) {
+        renderCloseDayList();
+        recomputeCloseDay();
+      }
+
+      try {
+        await fetch(GOOGLE_APP_URL, {
+          method: "POST",
+          body: JSON.stringify({
+            action: "void_sale",
+            id: saleId,
+            inventory: state.inventory
+          })
+        });
+        alert("Chek bekor qilindi va tovarlar omborga qaytarildi.");
+      } catch (e) {
+        state.sessionSales = previousState.sessionSales;
+        state.todayRevenue = previousState.todayRevenue;
+        state.todayProfit = previousState.todayProfit;
+        state.todaySold = previousState.todaySold;
+        state.inventory = previousState.inventory;
+        buildMenu();
+        renderItems();
+        renderSessionSales();
+        if (!document.getElementById("closeDayModal").classList.contains("hidden")) {
+          renderCloseDayList();
+          recomputeCloseDay();
+        }
+        alert("Chekni bekor qilishda xatolik yuz berdi. Internetni tekshiring.");
       }
     }
 
@@ -445,6 +619,186 @@
         console.error("Kun yakunlashda xatolik:", e);
         alert("Xatolik yuz berdi. Internetni tekshiring.");
       }
+    }
+
+    function recomputeCloseDay() {
+      const rows = document.querySelectorAll("#closeDayList > div[data-inventory-id]");
+      rows.forEach(row => {
+        const invId = row.dataset.inventoryId;
+        const inv = state.inventory.find(i => i.id === invId);
+        const openingInv = state.openingInventory.find(i => i.id === invId) || inv;
+        if (!inv || !openingInv) return;
+        const menuItem = state.menu.find(m => m.inventoryId === invId);
+        const sold = getBulkSoldTotal(invId);
+        const initial = Number(row.querySelector(".close-initial").value) || 0;
+        const leftover = Number(row.querySelector(".close-leftover").value);
+        const calc = row.querySelector(".close-calc");
+
+        if (!leftover && leftover !== 0) { calc.classList.add("hidden"); return; }
+        if (initial <= 0 || leftover < 0 || leftover > initial) {
+          calc.classList.remove("hidden");
+          calc.innerText = "Noto'g'ri qoldiq";
+          calc.className = "close-calc text-[11px] font-bold text-red-500 mt-2";
+          return;
+        }
+
+        const consumed = initial - leftover;
+        const openingTotalCost = Number(openingInv.totalCost || inv.totalCost || 0);
+        const consumedCost = initial > 0 ? (consumed / initial) * openingTotalCost : 0;
+        const actualGramsPerServing = sold > 0 ? Math.round((consumed * 1000) / sold) : 0;
+        const actualCostPerServing = sold > 0 ? Math.round(consumedCost / sold) : 0;
+        const revenue = sold * (menuItem?.price || 0);
+        const netProfit = revenue - consumedCost;
+
+        calc.classList.remove("hidden");
+        calc.className = "close-calc text-[11px] font-bold text-emerald-600 mt-2";
+        calc.innerHTML = `Sarflandi: <b>${consumed.toFixed(2)} ${openingInv.unit || inv.unit || "kg"}</b> â€¢ Haqiqiy porsiya: <b>${actualGramsPerServing}g</b> â€¢ Tannarx/porsiya: <b>${actualCostPerServing.toLocaleString()} UZS</b> â€¢ Net foyda: <b>${netProfit.toLocaleString()} UZS</b>`;
+      });
+    }
+
+    function renderCloseDayList() {
+      const list = document.getElementById("closeDayList");
+      const bulkProducts = state.menu.filter(m => m.__kind === "product" && m.isBulk);
+      if (!bulkProducts.length) {
+        list.innerHTML = `<div class="glass rounded-2xl p-3 text-center text-xs font-bold text-slate-500">O'lchovli mahsulotlar yo'q</div>`;
+      } else {
+        list.innerHTML = bulkProducts.map(p => {
+          const sold = getBulkSoldTotal(p.inventoryId);
+          const openingInv = state.openingInventory.find(i => i.id === p.inventoryId) || state.inventory.find(i => i.id === p.inventoryId) || {};
+          const currentInv = state.inventory.find(i => i.id === p.inventoryId) || openingInv;
+          return `
+            <div class="glass rounded-2xl p-3" data-inventory-id="${p.inventoryId}">
+              <p class="font-bold text-sm">${p.name}</p>
+              <p class="text-[11px] text-slate-500">Boshlang'ich: ${(openingInv.qty || 0)} ${openingInv.unit || "kg"} • Hozirgi qoldiq: <b>${(currentInv.qty || 0).toLocaleString()}</b> ${currentInv.unit || "kg"} • Bugun sotildi: <b>${sold}</b> porsiya</p>
+              <div class="grid grid-cols-2 gap-2 mt-2">
+                <input type="number" class="close-initial rounded-xl border border-slate-200 p-2 text-sm bg-white" placeholder="Boshlang'ich (${openingInv.unit || "kg"})" value="${openingInv.qty || 0}">
+                <input type="number" step="0.01" class="close-leftover rounded-xl border border-slate-200 p-2 text-sm" placeholder="Qoldiq (${openingInv.unit || "kg"})">
+              </div>
+              <p class="close-calc text-[11px] font-bold text-emerald-600 mt-2 hidden"></p>
+            </div>`;
+        }).join("");
+
+        list.querySelectorAll(".close-leftover, .close-initial").forEach(el => {
+          el.addEventListener("input", recomputeCloseDay);
+        });
+      }
+
+      const sum = document.getElementById("closeDaySummary");
+      sum.innerHTML = `
+        <div class="flex justify-between"><span>Bugungi tushum</span><b>${state.todayRevenue.toLocaleString()} UZS</b></div>
+        <div class="flex justify-between"><span>Joriy foyda</span><b class="text-emerald-600">${state.todayProfit.toLocaleString()} UZS</b></div>
+      `;
+    }
+
+    async function submitCloseDay() {
+      const rows = document.querySelectorAll("#closeDayList > div[data-inventory-id]");
+      const updatedInventory = state.inventory.map(i => ({ ...i }));
+      const summary = [];
+
+      rows.forEach(row => {
+        const invId = row.dataset.inventoryId;
+        const idx = updatedInventory.findIndex(i => i.id === invId);
+        if (idx === -1) return;
+        const menuItem = state.menu.find(m => m.inventoryId === invId);
+        const sold = getBulkSoldTotal(invId);
+        const initial = Number(row.querySelector(".close-initial").value) || 0;
+        const leftoverRaw = row.querySelector(".close-leftover").value;
+        if (leftoverRaw === "") return;
+        const leftover = Number(leftoverRaw);
+        if (initial <= 0 || leftover < 0 || leftover > initial) return;
+
+        const openingInv = state.openingInventory.find(i => i.id === invId) || updatedInventory[idx];
+        const openingTotalCost = Number(openingInv.totalCost || updatedInventory[idx].totalCost || 0);
+        const consumed = initial - leftover;
+        const consumedCost = (consumed / initial) * openingTotalCost;
+        const actualGramsPerServing = sold > 0 ? Math.round((consumed * 1000) / sold) : (openingInv.gramsPerServing || updatedInventory[idx].gramsPerServing);
+        const netProfit = sold * (menuItem?.price || 0) - consumedCost;
+
+        updatedInventory[idx].qty = leftover;
+        updatedInventory[idx].totalCost = Math.round((leftover / initial) * openingTotalCost);
+        if (leftover > 0) {
+          updatedInventory[idx].unitCost = Math.round(updatedInventory[idx].totalCost / leftover);
+        } else {
+          updatedInventory[idx].unitCost = 0;
+        }
+        if (actualGramsPerServing > 0) updatedInventory[idx].gramsPerServing = actualGramsPerServing;
+
+        summary.push({
+          inventoryId: invId,
+          name: updatedInventory[idx].name,
+          unit: updatedInventory[idx].unit || "",
+          sold,
+          consumed,
+          leftover,
+          actualGramsPerServing,
+          netProfit: Math.round(netProfit)
+        });
+      });
+
+      try {
+        await fetch(GOOGLE_APP_URL, {
+          method: "POST",
+          body: JSON.stringify({
+            action: "close_day",
+            date: new Date().toISOString(),
+            seller: localStorage.getItem("omad_user") || "seller",
+            inventory: updatedInventory,
+            summary,
+            totalRevenue: state.todayRevenue,
+            totalProfit: state.todayProfit
+          })
+        });
+        state.inventory = updatedInventory;
+        state.openingInventory = cloneInventory(updatedInventory);
+        state.todaySold = {};
+        state.todayRevenue = 0;
+        state.todayProfit = 0;
+        state.sessionSales = [];
+        buildMenu();
+        renderCategories();
+        renderItems();
+        renderSessionSales();
+        closeCloseDayModal();
+        alert("Kun yakunlandi va saqlandi.");
+      } catch (e) {
+        console.error("Kun yakunlashda xatolik:", e);
+        alert("Xatolik yuz berdi. Internetni tekshiring.");
+      }
+    }
+
+    function recomputeCloseDay() {
+      const rows = document.querySelectorAll("#closeDayList > div[data-inventory-id]");
+      rows.forEach(row => {
+        const invId = row.dataset.inventoryId;
+        const inv = state.inventory.find(i => i.id === invId);
+        const openingInv = state.openingInventory.find(i => i.id === invId) || inv;
+        if (!inv || !openingInv) return;
+        const menuItem = state.menu.find(m => m.inventoryId === invId);
+        const sold = getBulkSoldTotal(invId);
+        const initial = Number(row.querySelector(".close-initial").value) || 0;
+        const leftover = Number(row.querySelector(".close-leftover").value);
+        const calc = row.querySelector(".close-calc");
+
+        if (!leftover && leftover !== 0) { calc.classList.add("hidden"); return; }
+        if (initial <= 0 || leftover < 0 || leftover > initial) {
+          calc.classList.remove("hidden");
+          calc.innerText = "Noto'g'ri qoldiq";
+          calc.className = "close-calc text-[11px] font-bold text-red-500 mt-2";
+          return;
+        }
+
+        const consumed = initial - leftover;
+        const openingTotalCost = Number(openingInv.totalCost || inv.totalCost || 0);
+        const consumedCost = initial > 0 ? (consumed / initial) * openingTotalCost : 0;
+        const actualGramsPerServing = sold > 0 ? Math.round((consumed * 1000) / sold) : 0;
+        const actualCostPerServing = sold > 0 ? Math.round(consumedCost / sold) : 0;
+        const revenue = sold * (menuItem?.price || 0);
+        const netProfit = revenue - consumedCost;
+
+        calc.classList.remove("hidden");
+        calc.className = "close-calc text-[11px] font-bold text-emerald-600 mt-2";
+        calc.innerHTML = `Sarflandi: <b>${consumed.toFixed(2)} ${openingInv.unit || inv.unit || "kg"}</b> - Haqiqiy porsiya: <b>${actualGramsPerServing}g</b> - Tannarx/porsiya: <b>${actualCostPerServing.toLocaleString()} UZS</b> - Net foyda: <b>${netProfit.toLocaleString()} UZS</b>`;
+      });
     }
 
     function logout() {

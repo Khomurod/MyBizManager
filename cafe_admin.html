@@ -29,16 +29,26 @@
   </header>
 
   <main class="p-4 space-y-3">
-    <div class="glass rounded-2xl p-1 grid grid-cols-4 gap-1">
+    <div class="glass rounded-2xl p-1 grid grid-cols-5 gap-1">
       <button class="tab active rounded-xl py-2 text-[11px] font-bold border border-transparent" onclick="switchTab('dash', this)">Kassa</button>
       <button class="tab rounded-xl py-2 text-[11px] font-bold border border-transparent" onclick="switchTab('inventory', this)">Ombor</button>
       <button class="tab rounded-xl py-2 text-[11px] font-bold border border-transparent" onclick="switchTab('recipes', this)">Retseptlar</button>
       <button class="tab rounded-xl py-2 text-[11px] font-bold border border-transparent" onclick="switchTab('categories', this)">Kategoriyalar</button>
+      <button class="tab rounded-xl py-2 text-[11px] font-bold border border-transparent" onclick="switchTab('reports', this)">Hisobotlar</button>
     </div>
 
     <section id="screen-dash" class="screen active space-y-3">
       <div class="glass rounded-2xl p-4">
-        <p class="text-[11px] font-bold text-slate-500 uppercase">Bugungi tushum</p>
+        <label for="dashFilter" class="block text-[11px] font-bold text-slate-500 uppercase mb-2">Davr filtri</label>
+        <select id="dashFilter" onchange="renderDashboard()" class="w-full rounded-xl border border-slate-200 bg-white/80 p-3 text-sm">
+          <option value="today">Bugun</option>
+          <option value="yesterday">Kecha</option>
+          <option value="month">Shu oy</option>
+          <option value="all">Jami Davr</option>
+        </select>
+      </div>
+      <div class="glass rounded-2xl p-4">
+        <p id="dashRevenueLabel" class="text-[11px] font-bold text-slate-500 uppercase">Bugungi tushum</p>
         <p id="dashRevenue" class="text-2xl font-bold text-blue-600 mt-1">0 UZS</p>
       </div>
       <div class="grid grid-cols-2 gap-3">
@@ -120,6 +130,14 @@
       </div>
       <div id="categoryList" class="space-y-2"></div>
     </section>
+
+    <section id="screen-reports" class="screen space-y-3">
+      <div class="glass rounded-2xl p-4">
+        <h2 class="font-bold text-sm">Kun Yakunlash Hisobotlari</h2>
+        <p class="text-[11px] text-slate-500 mt-1">Sotuvchilar topshirgan kunlik yakunlar shu yerda ko'rinadi.</p>
+      </div>
+      <div id="reportsList" class="space-y-2"></div>
+    </section>
   </main>
 
   <div id="editInvModal" class="hidden fixed inset-0 z-40 bg-black/45 p-4 flex items-end justify-center">
@@ -154,9 +172,104 @@
     </div>
   </div>
 
+  <div id="addStockModal" class="hidden fixed inset-0 z-40 bg-black/45 p-4 flex items-end justify-center" onclick="closeAddStockModal()">
+    <div class="glass w-full max-w-md rounded-2xl p-4 max-h-[90vh] overflow-y-auto" onclick="event.stopPropagation()">
+      <div class="flex justify-between items-center mb-3">
+        <h3 class="font-bold">Omborga Kirim Qo'shish</h3>
+        <button onclick="closeAddStockModal()" class="w-8 h-8 rounded-full bg-slate-100">X</button>
+      </div>
+      <input id="addStockId" type="hidden">
+      <p id="addStockItemName" class="text-sm font-bold text-slate-700 mb-3"></p>
+      <input id="addStockQty" type="number" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-2" placeholder="Qancha qo'shildi?">
+      <input id="addStockCost" type="number" class="w-full rounded-xl border border-slate-200 p-3 text-sm" placeholder="Ushbu partiya narxi (UZS)?">
+      <button onclick="submitAddStock()" class="w-full mt-3 rounded-xl bg-emerald-600 text-white py-3 font-bold text-sm active:scale-95">Kirimni Saqlash</button>
+    </div>
+  </div>
+
+  <div id="reportDetailModal" class="hidden fixed inset-0 z-40 bg-black/45 p-4 flex items-end justify-center" onclick="closeReportModal()">
+    <div class="glass w-full max-w-xl rounded-2xl p-4 max-h-[90vh] overflow-y-auto" onclick="event.stopPropagation()">
+      <div class="flex justify-between items-center mb-3">
+        <div>
+          <h3 class="font-bold">Hisobot Tafsiloti</h3>
+          <p id="reportDetailMeta" class="text-[11px] text-slate-500 mt-1"></p>
+        </div>
+        <button onclick="closeReportModal()" class="w-8 h-8 rounded-full bg-slate-100">X</button>
+      </div>
+      <div id="reportDetailSummary" class="space-y-2"></div>
+    </div>
+  </div>
+
   <script>
     const DEFAULT_CATEGORIES = ["Ichimliklar", "Fast-Food", "Muzqaymoq"];
-    const state = { inventory: [], recipes: [], categories: [], sales: [], recipeDraft: [] };
+    const state = {
+      inventory: [],
+      recipes: [],
+      categories: [],
+      sales: [],
+      closeReports: [],
+      recipeDraft: []
+    };
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function formatCurrency(value) {
+      return `${Number(value || 0).toLocaleString()} UZS`;
+    }
+
+    function formatDateTime(value) {
+      const date = value ? new Date(value) : null;
+      if (!date || Number.isNaN(date.getTime())) return "Sana noma'lum";
+      return date.toLocaleString("uz-UZ", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit"
+      });
+    }
+
+    function getDateKey(date) {
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, "0");
+      const day = String(date.getDate()).padStart(2, "0");
+      return `${year}-${month}-${day}`;
+    }
+
+    function getDashboardFilterMeta() {
+      const filter = document.getElementById("dashFilter")?.value || "today";
+      const now = new Date();
+      const todayKey = getDateKey(now);
+      const yesterday = new Date(now);
+      yesterday.setDate(now.getDate() - 1);
+      const yesterdayKey = getDateKey(yesterday);
+      return {
+        filter,
+        todayKey,
+        yesterdayKey,
+        year: now.getFullYear(),
+        month: now.getMonth()
+      };
+    }
+
+    function getFilteredSales() {
+      const { filter, todayKey, yesterdayKey, year, month } = getDashboardFilterMeta();
+      return state.sales.filter(sale => {
+        const saleDate = sale?.date ? new Date(sale.date) : null;
+        if (!saleDate || Number.isNaN(saleDate.getTime())) return false;
+        const saleKey = getDateKey(saleDate);
+        if (filter === "today") return saleKey === todayKey;
+        if (filter === "yesterday") return saleKey === yesterdayKey;
+        if (filter === "month") return saleDate.getFullYear() === year && saleDate.getMonth() === month;
+        return true;
+      });
+    }
 
     function switchTab(tab, btn) {
       document.querySelectorAll(".screen").forEach(el => el.classList.remove("active"));
@@ -245,6 +358,7 @@
               </div>
               <div class="flex flex-col gap-1">
                 <button onclick="openEditModal('${item.id}')" class="text-[10px] font-bold bg-slate-100 text-slate-700 rounded-lg px-2 py-1">Tahrirlash</button>
+                <button onclick="openAddStockModal('${item.id}')" class="text-[10px] font-bold bg-emerald-100 text-emerald-700 rounded-lg px-2 py-1">+ Kirim</button>
                 <button onclick="deleteInventory('${item.id}')" class="text-[10px] font-bold bg-red-100 text-red-600 rounded-lg px-2 py-1">O'chirish</button>
               </div>
             </div>
@@ -287,6 +401,46 @@
 
     function closeEditModal() {
       document.getElementById("editInvModal").classList.add("hidden");
+    }
+
+    function openAddStockModal(id) {
+      const item = state.inventory.find(i => i.id === id);
+      if (!item) return;
+      document.getElementById("addStockId").value = item.id;
+      document.getElementById("addStockItemName").innerText = item.name;
+      document.getElementById("addStockQty").value = "";
+      document.getElementById("addStockCost").value = "";
+      document.getElementById("addStockModal").classList.remove("hidden");
+    }
+
+    function closeAddStockModal() {
+      document.getElementById("addStockModal").classList.add("hidden");
+    }
+
+    function submitAddStock() {
+      const id = document.getElementById("addStockId").value;
+      const idx = state.inventory.findIndex(i => i.id === id);
+      if (idx === -1) return;
+
+      const addedQty = Number(document.getElementById("addStockQty").value);
+      const addedCost = Number(document.getElementById("addStockCost").value);
+      if (addedQty <= 0 || addedCost <= 0) return alert("Miqdor va narxni to'g'ri kiriting");
+
+      const current = state.inventory[idx];
+      const newQty = Number(current.qty || 0) + addedQty;
+      const newTotalCost = Number(current.totalCost || 0) + addedCost;
+
+      state.inventory[idx] = {
+        ...current,
+        qty: newQty,
+        totalCost: newTotalCost,
+        unitCost: Math.round(newTotalCost / newQty)
+      };
+
+      closeAddStockModal();
+      renderInventory();
+      hydrateIngredientSelect();
+      sendToApi("save_inventory", { inventory: state.inventory });
     }
 
     function toggleEditForm() {
@@ -455,16 +609,88 @@
     }
 
     function renderDashboard() {
-      const today = new Date().toISOString().slice(0, 10);
-      const todaysSales = state.sales.filter(s => (s.date || "").slice(0, 10) === today);
-      const revenue = todaysSales.reduce((s, t) => s + (t.total || 0), 0);
-      const profit = todaysSales.reduce((s, t) => s + (t.profit || 0), 0);
+      const sales = getFilteredSales();
+      const labelMap = {
+        today: "Bugungi tushum",
+        yesterday: "Kechagi tushum",
+        month: "Shu oydagi tushum",
+        all: "Jami davr tushumi"
+      };
+      const filter = document.getElementById("dashFilter")?.value || "today";
+      const revenue = sales.reduce((s, t) => s + (t.total || 0), 0);
+      const profit = sales.reduce((s, t) => s + (t.profit || 0), 0);
       const counter = {};
-      todaysSales.forEach(sale => (sale.items || []).forEach(i => counter[i.name] = (counter[i.name] || 0) + i.qty));
+      sales.forEach(sale => (sale.items || []).forEach(i => counter[i.name] = (counter[i.name] || 0) + i.qty));
       const top = Object.keys(counter).sort((a, b) => counter[b] - counter[a])[0] || "-";
+      document.getElementById("dashRevenueLabel").innerText = labelMap[filter] || labelMap.today;
       document.getElementById("dashRevenue").innerText = `${revenue.toLocaleString()} UZS`;
       document.getElementById("dashProfit").innerText = `${profit.toLocaleString()} UZS`;
       document.getElementById("dashTop").innerText = top;
+    }
+
+    function renderReports() {
+      const box = document.getElementById("reportsList");
+      const orderedReports = state.closeReports
+        .map((report, index) => ({ report, index }))
+        .sort((a, b) => new Date(b.report?.date || 0) - new Date(a.report?.date || 0));
+
+      if (!orderedReports.length) {
+        box.innerHTML = `<div class="glass rounded-2xl p-3 text-center text-xs font-bold text-slate-500">Hisobotlar hali yo'q</div>`;
+        return;
+      }
+
+      box.innerHTML = orderedReports.map(({ report, index }) => `
+        <button onclick="openReportModal(${index})" class="glass w-full rounded-2xl p-4 text-left active:scale-[0.99] transition-transform">
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <p class="font-bold text-sm">${escapeHtml(formatDateTime(report.date))}</p>
+              <p class="text-xs text-slate-500 mt-1">Sotuvchi: ${escapeHtml(report.seller || "Noma'lum")}</p>
+            </div>
+            <span class="text-[10px] font-bold bg-blue-100 text-blue-600 rounded-full px-2 py-[2px]">Ko'rish</span>
+          </div>
+          <div class="grid grid-cols-2 gap-2 mt-3 text-xs">
+            <div class="rounded-xl bg-white/70 p-3">
+              <p class="text-slate-500 font-bold uppercase text-[10px]">Jami tushum</p>
+              <p class="font-bold text-blue-600 mt-1">${formatCurrency(report.totalRevenue)}</p>
+            </div>
+            <div class="rounded-xl bg-white/70 p-3">
+              <p class="text-slate-500 font-bold uppercase text-[10px]">Jami foyda</p>
+              <p class="font-bold text-emerald-600 mt-1">${formatCurrency(report.totalProfit)}</p>
+            </div>
+          </div>
+        </button>
+      `).join("");
+    }
+
+    function openReportModal(index) {
+      const report = state.closeReports[index];
+      if (!report) return;
+      const summary = Array.isArray(report.summary) ? report.summary : [];
+      document.getElementById("reportDetailMeta").innerText = `${formatDateTime(report.date)} • ${report.seller || "Noma'lum"}`;
+
+      document.getElementById("reportDetailSummary").innerHTML = summary.length
+        ? summary.map(item => {
+            const profitValue = item.netProfit ?? item.profit ?? 0;
+            return `
+              <div class="rounded-2xl bg-white/70 p-3 shadow-sm">
+                <div class="flex items-start justify-between gap-3">
+                  <div>
+                    <p class="font-bold text-sm">${escapeHtml(item.name || "Mahsulot")}</p>
+                    <p class="text-xs text-slate-500 mt-1">Qoldiq: ${Number(item.leftover || 0).toLocaleString()} ${escapeHtml(item.unit || "")}</p>
+                    <p class="text-xs text-slate-500">Haqiqiy porsiya: ${Number(item.actualGramsPerServing || 0).toLocaleString()} g</p>
+                  </div>
+                  <p class="text-sm font-bold text-emerald-600">${formatCurrency(profitValue)}</p>
+                </div>
+              </div>
+            `;
+          }).join("")
+        : `<div class="glass rounded-2xl p-3 text-center text-xs font-bold text-slate-500">Bu hisobot uchun tafsilot topilmadi</div>`;
+
+      document.getElementById("reportDetailModal").classList.remove("hidden");
+    }
+
+    function closeReportModal() {
+      document.getElementById("reportDetailModal").classList.add("hidden");
     }
 
     async function syncData() {
@@ -486,6 +712,7 @@
         }));
         state.recipes = Array.isArray(payload.recipes) ? payload.recipes : [];
         state.sales = Array.isArray(payload.sales) ? payload.sales : [];
+        state.closeReports = Array.isArray(payload.closeReports) ? payload.closeReports : [];
         state.categories = Array.isArray(payload.categories) && payload.categories.length
           ? payload.categories
           : [...DEFAULT_CATEGORIES];
@@ -494,11 +721,13 @@
         state.inventory = [];
         state.recipes = [];
         state.sales = [];
+        state.closeReports = [];
         state.categories = [...DEFAULT_CATEGORIES];
       } finally {
         renderInventory();
         renderRecipes();
         renderCategories();
+        renderReports();
         hydrateIngredientSelect();
         hydrateRecipeCategorySelect();
         hydrateInvCategorySelect(document.getElementById("invCategory"));
