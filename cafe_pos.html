@@ -12,6 +12,51 @@
     .modal { transition: opacity .2s ease; }
     .pulse-ok { animation: pop .35s ease; }
     @keyframes pop { 0%{transform:scale(.85);opacity:.3} 100%{transform:scale(1);opacity:1} }
+    .progress-track { height: 12px; border-radius: 999px; background: rgba(148,163,184,0.22); overflow: hidden; }
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: 999px;
+      transition: width .45s ease, filter .35s ease, box-shadow .35s ease, background .35s ease;
+    }
+    .progress-orange { background: linear-gradient(90deg, #f97316, #fb923c); }
+    .progress-green { background: linear-gradient(90deg, #22c55e, #16a34a); }
+    .progress-gold { background: linear-gradient(90deg, #facc15, #f59e0b); }
+    .progress-glow { filter: saturate(1.2); box-shadow: 0 0 0 1px rgba(251,191,36,0.55), 0 0 18px rgba(250,204,21,0.75); }
+    .progress-wrap { position: relative; overflow: hidden; }
+    .progress-wrap.celebrate { animation: progress-pulse .75s ease; }
+    @keyframes progress-pulse {
+      0% { transform: scale(1); }
+      35% { transform: scale(1.01); }
+      65% { transform: scale(0.998); }
+      100% { transform: scale(1); }
+    }
+    .progress-confetti { pointer-events: none; position: absolute; inset: 0; overflow: hidden; }
+    .progress-confetti span {
+      position: absolute;
+      top: 60%;
+      width: 6px;
+      height: 10px;
+      border-radius: 2px;
+      opacity: 0;
+      transform: translateY(0) rotate(0deg);
+    }
+    .progress-wrap.celebrate .progress-confetti span { animation: confetti-burst .85s ease-out; }
+    @keyframes confetti-burst {
+      0% { opacity: 0; transform: translateY(0) rotate(0deg); }
+      15% { opacity: 1; }
+      100% { opacity: 0; transform: translateY(-52px) rotate(220deg); }
+    }
+    .progress-confetti span:nth-child(1) { left: 6%; background: #f97316; animation-delay: .02s; }
+    .progress-confetti span:nth-child(2) { left: 16%; background: #f59e0b; animation-delay: .05s; }
+    .progress-confetti span:nth-child(3) { left: 26%; background: #22c55e; animation-delay: .03s; }
+    .progress-confetti span:nth-child(4) { left: 36%; background: #38bdf8; animation-delay: .08s; }
+    .progress-confetti span:nth-child(5) { left: 46%; background: #facc15; animation-delay: .01s; }
+    .progress-confetti span:nth-child(6) { left: 56%; background: #fb7185; animation-delay: .07s; }
+    .progress-confetti span:nth-child(7) { left: 66%; background: #a78bfa; animation-delay: .04s; }
+    .progress-confetti span:nth-child(8) { left: 76%; background: #34d399; animation-delay: .06s; }
+    .progress-confetti span:nth-child(9) { left: 86%; background: #f97316; animation-delay: .02s; }
+    .progress-confetti span:nth-child(10) { left: 93%; background: #eab308; animation-delay: .09s; }
   </style>
 </head>
 <body class="pb-32 text-slate-800">
@@ -33,6 +78,20 @@
   </header>
 
   <main class="p-4">
+    <div id="dailyProgressCard" class="progress-wrap glass rounded-2xl p-3 mb-3">
+      <div class="progress-confetti" aria-hidden="true">
+        <span></span><span></span><span></span><span></span><span></span>
+        <span></span><span></span><span></span><span></span><span></span>
+      </div>
+      <div class="flex items-center justify-between gap-2 mb-2">
+        <p class="text-[11px] font-bold uppercase text-slate-500">Kunlik Tushum Maqsadi</p>
+        <p id="dailyProgressText" class="text-xs font-bold text-slate-700">0 / 0 UZS</p>
+      </div>
+      <div class="progress-track">
+        <div id="dailyProgressFill" class="progress-fill progress-orange"></div>
+      </div>
+      <p id="dailyProgressHint" class="text-[11px] font-bold text-slate-500 mt-2">Maqsad hali belgilanmagan.</p>
+    </div>
     <div id="categories" class="flex gap-2 overflow-x-auto pb-2 mb-3"></div>
     <div id="itemsGrid" class="grid item-grid gap-3"></div>
     <button onclick="openCloseDayModal()" class="w-full mt-4 rounded-2xl bg-amber-500 text-white py-3 font-bold text-sm active:scale-95">Kun Yakunlash</button>
@@ -85,6 +144,7 @@
 
   <script>
     const ALL_LABEL = "Barchasi";
+    const DEFAULT_SETTINGS = { dailyTarget: 0 };
     const state = {
       category: ALL_LABEL,
       categories: [],
@@ -92,11 +152,14 @@
       menu: [],
       inventory: [],
       recipes: [],
+      sales: [],
       todaySold: {},
       todayRevenue: 0,
       todayProfit: 0,
       sessionSales: [],
-      openingInventory: []
+      openingInventory: [],
+      settings: { ...DEFAULT_SETTINGS },
+      progressCelebrated: false
     };
 
     function cloneInventory(items) {
@@ -109,6 +172,82 @@
 
     function formatMoney(value) {
       return `${Number(value || 0).toLocaleString()} UZS`;
+    }
+
+    function getDateKey(date) {
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, "0");
+      const day = String(date.getDate()).padStart(2, "0");
+      return `${year}-${month}-${day}`;
+    }
+
+    function normalizeDailyTarget(value) {
+      const parsed = Number(String(value ?? "").replace(/[^\d.-]/g, ""));
+      if (!Number.isFinite(parsed) || parsed < 0) return 0;
+      return Math.round(parsed);
+    }
+
+    function getCurrentCashier() {
+      return localStorage.getItem("omad_user") || "seller";
+    }
+
+    function getTodaySalesForCurrentCashier() {
+      const cashier = getCurrentCashier();
+      const todayKey = getDateKey(new Date());
+      return (state.sales || []).filter(sale => {
+        if (!sale || sale.seller !== cashier) return false;
+        const saleDate = sale.date ? new Date(sale.date) : null;
+        if (!saleDate || Number.isNaN(saleDate.getTime())) return false;
+        return getDateKey(saleDate) === todayKey;
+      });
+    }
+
+    function updateProgressBar() {
+      const card = document.getElementById("dailyProgressCard");
+      const fill = document.getElementById("dailyProgressFill");
+      const text = document.getElementById("dailyProgressText");
+      const hint = document.getElementById("dailyProgressHint");
+      if (!card || !fill || !text || !hint) return;
+
+      const todaySales = getTodaySalesForCurrentCashier();
+      const todayTotal = todaySales.reduce((sum, sale) => sum + Number(sale.total || 0), 0);
+      const dailyTarget = normalizeDailyTarget(state.settings?.dailyTarget);
+      const percent = dailyTarget > 0 ? (todayTotal / dailyTarget) * 100 : 0;
+      const boundedPercent = Math.max(0, Math.min(percent, 100));
+
+      text.innerText = `${todayTotal.toLocaleString()} / ${dailyTarget.toLocaleString()} UZS`;
+      fill.style.width = `${boundedPercent}%`;
+      fill.classList.remove("progress-orange", "progress-green", "progress-gold", "progress-glow");
+
+      if (dailyTarget <= 0) {
+        hint.innerText = "Maqsad hali belgilanmagan.";
+        fill.classList.add("progress-orange");
+        state.progressCelebrated = false;
+        card.classList.remove("celebrate");
+        return;
+      }
+
+      if (percent < 50) {
+        fill.classList.add("progress-orange");
+        hint.innerText = `${Math.round(percent)}% bajarildi. Boshlanish zo'r, davom etamiz!`;
+      } else if (percent < 100) {
+        fill.classList.add("progress-green");
+        hint.innerText = `${Math.round(percent)}% bajarildi. Maqsadga juda yaqin!`;
+      } else {
+        fill.classList.add("progress-gold", "progress-glow");
+        hint.innerText = "Maqsad bajarildi! Ajoyib natija!";
+        if (!state.progressCelebrated) {
+          card.classList.remove("celebrate");
+          void card.offsetWidth;
+          card.classList.add("celebrate");
+          setTimeout(() => card.classList.remove("celebrate"), 900);
+          state.progressCelebrated = true;
+        }
+        return;
+      }
+
+      state.progressCelebrated = false;
+      card.classList.remove("celebrate");
     }
 
     function formatReceiptTime(value) {
@@ -257,9 +396,28 @@
         state.inventory = Array.isArray(payload.inventory) ? payload.inventory : [];
         state.openingInventory = cloneInventory(state.inventory);
         state.recipes = Array.isArray(payload.recipes) ? payload.recipes : [];
+        state.sales = Array.isArray(payload.sales) ? payload.sales : [];
         state.categories = Array.isArray(payload.categories) && payload.categories.length
           ? payload.categories
           : [];
+        const incomingSettings = payload.settings && typeof payload.settings === "object" ? payload.settings : {};
+        state.settings = {
+          ...DEFAULT_SETTINGS,
+          ...incomingSettings,
+          dailyTarget: normalizeDailyTarget(incomingSettings.dailyTarget ?? payload.dailyTarget ?? 0)
+        };
+
+        const todaySales = getTodaySalesForCurrentCashier();
+        state.sessionSales = [...todaySales].sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+        state.todayRevenue = todaySales.reduce((sum, sale) => sum + Number(sale.total || 0), 0);
+        state.todayProfit = todaySales.reduce((sum, sale) => sum + Number(sale.profit || 0), 0);
+        state.todaySold = {};
+        todaySales.forEach(sale => {
+          (sale.items || []).forEach(item => {
+            state.todaySold[item.id] = (state.todaySold[item.id] || 0) + Number(item.qty || 0);
+          });
+        });
+
         buildMenu();
         console.log(`[POS] ${state.menu.length} ta mahsulot yuklandi, ${state.categories.length} ta kategoriya.`);
       } catch (e) {
@@ -267,11 +425,19 @@
         state.inventory = [];
         state.openingInventory = [];
         state.recipes = [];
+        state.sales = [];
         state.categories = [];
         state.menu = [];
+        state.settings = { ...DEFAULT_SETTINGS };
+        state.todaySold = {};
+        state.todayRevenue = 0;
+        state.todayProfit = 0;
+        state.sessionSales = [];
       } finally {
         renderCategories();
         renderItems();
+        renderSessionSales();
+        updateProgressBar();
       }
     }
 
@@ -370,6 +536,7 @@
       try {
         await fetch(GOOGLE_APP_URL, { method: "POST", body: JSON.stringify(payload) });
 
+        state.sales.unshift(payload);
         state.sessionSales.unshift(payload);
         state.cart.forEach(i => {
           state.todaySold[i.id] = (state.todaySold[i.id] || 0) + i.qty;
@@ -383,6 +550,7 @@
         renderCart();
         renderItems();
         renderSessionSales();
+        updateProgressBar();
         closeCart();
         if (!document.getElementById("closeDayModal").classList.contains("hidden")) {
           renderCloseDayList();
@@ -403,6 +571,7 @@
       if (!confirm("Ushbu chekni bekor qilmoqchimisiz?")) return;
 
       const previousState = {
+        sales: [...state.sales],
         sessionSales: [...state.sessionSales],
         todayRevenue: state.todayRevenue,
         todayProfit: state.todayProfit,
@@ -410,6 +579,7 @@
         inventory: cloneInventory(state.inventory)
       };
 
+      state.sales = state.sales.filter(item => item.id !== saleId);
       state.sessionSales = state.sessionSales.filter(item => item.id !== saleId);
       state.todayRevenue = Math.max(0, state.todayRevenue - Number(sale.total || 0));
       state.todayProfit = Math.max(0, state.todayProfit - Number(sale.profit || 0));
@@ -422,6 +592,7 @@
       buildMenu();
       renderItems();
       renderSessionSales();
+      updateProgressBar();
       if (!document.getElementById("closeDayModal").classList.contains("hidden")) {
         renderCloseDayList();
         recomputeCloseDay();
@@ -438,6 +609,7 @@
         });
         alert("Chek bekor qilindi va tovarlar omborga qaytarildi.");
       } catch (e) {
+        state.sales = previousState.sales;
         state.sessionSales = previousState.sessionSales;
         state.todayRevenue = previousState.todayRevenue;
         state.todayProfit = previousState.todayProfit;
@@ -446,6 +618,7 @@
         buildMenu();
         renderItems();
         renderSessionSales();
+        updateProgressBar();
         if (!document.getElementById("closeDayModal").classList.contains("hidden")) {
           renderCloseDayList();
           recomputeCloseDay();
@@ -758,6 +931,7 @@
         renderCategories();
         renderItems();
         renderSessionSales();
+        updateProgressBar();
         closeCloseDayModal();
         alert("Kun yakunlandi va saqlandi.");
       } catch (e) {

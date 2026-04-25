@@ -29,11 +29,12 @@
   </header>
 
   <main class="p-4 space-y-3">
-    <div class="glass rounded-2xl p-1 grid grid-cols-5 gap-1">
+    <div class="glass rounded-2xl p-1 grid grid-cols-6 gap-1">
       <button class="tab active rounded-xl py-2 text-[11px] font-bold border border-transparent" onclick="switchTab('dash', this)">Kassa</button>
       <button class="tab rounded-xl py-2 text-[11px] font-bold border border-transparent" onclick="switchTab('inventory', this)">Ombor</button>
       <button class="tab rounded-xl py-2 text-[11px] font-bold border border-transparent" onclick="switchTab('recipes', this)">Retseptlar</button>
       <button class="tab rounded-xl py-2 text-[11px] font-bold border border-transparent" onclick="switchTab('categories', this)">Kategoriyalar</button>
+      <button class="tab rounded-xl py-2 text-[11px] font-bold border border-transparent" onclick="switchTab('settings', this)">Sozlamalar</button>
       <button class="tab rounded-xl py-2 text-[11px] font-bold border border-transparent" onclick="switchTab('reports', this)">Hisobotlar</button>
     </div>
 
@@ -131,6 +132,16 @@
       <div id="categoryList" class="space-y-2"></div>
     </section>
 
+    <section id="screen-settings" class="screen space-y-3">
+      <div class="glass rounded-2xl p-4">
+        <h2 class="font-bold mb-3">Sozlamalar</h2>
+        <label for="dailyRevenueTarget" class="block text-[11px] font-bold text-slate-500 uppercase mb-1">Kunlik Tushum Maqsadi (UZS)</label>
+        <input id="dailyRevenueTarget" type="number" min="0" step="1000" class="w-full rounded-xl border border-slate-200 p-3 text-sm" placeholder="Masalan: 1000000">
+        <p class="text-[11px] text-slate-500 mt-2">POS oynasida bugungi tushum ushbu maqsadga nisbatan progress sifatida ko'rsatiladi.</p>
+        <button onclick="saveCafeSettings()" class="w-full mt-3 rounded-xl bg-blue-600 text-white py-3 font-bold text-sm active:scale-95">Sozlamani Saqlash</button>
+      </div>
+    </section>
+
     <section id="screen-reports" class="screen space-y-3">
       <div class="glass rounded-2xl p-4">
         <h2 class="font-bold text-sm">Kun Yakunlash Hisobotlari</h2>
@@ -201,12 +212,14 @@
 
   <script>
     const DEFAULT_CATEGORIES = ["Ichimliklar", "Fast-Food", "Muzqaymoq"];
+    const DEFAULT_SETTINGS = { dailyTarget: 0 };
     const state = {
       inventory: [],
       recipes: [],
       categories: [],
       sales: [],
       closeReports: [],
+      settings: { ...DEFAULT_SETTINGS },
       recipeDraft: []
     };
 
@@ -233,6 +246,12 @@
         hour: "2-digit",
         minute: "2-digit"
       });
+    }
+
+    function normalizeDailyTarget(value) {
+      const parsed = Number(String(value ?? "").replace(/[^\d.-]/g, ""));
+      if (!Number.isFinite(parsed) || parsed < 0) return 0;
+      return Math.round(parsed);
     }
 
     function getDateKey(date) {
@@ -608,6 +627,34 @@
         </div>`).join("");
     }
 
+    function renderSettings() {
+      const input = document.getElementById("dailyRevenueTarget");
+      if (!input) return;
+      const dailyTarget = normalizeDailyTarget(state.settings?.dailyTarget);
+      input.value = dailyTarget > 0 ? String(dailyTarget) : "";
+    }
+
+    async function saveCafeSettings() {
+      const input = document.getElementById("dailyRevenueTarget");
+      const dailyTarget = normalizeDailyTarget(input?.value);
+      state.settings.dailyTarget = dailyTarget;
+      if (input) input.value = dailyTarget > 0 ? String(dailyTarget) : "";
+
+      try {
+        await fetch(GOOGLE_APP_URL, {
+          method: "POST",
+          body: JSON.stringify({
+            action: "save_cafe_settings",
+            settings: { ...state.settings }
+          })
+        });
+        alert("Sozlamalar saqlandi.");
+      } catch (e) {
+        console.error("Sozlamalarni saqlashda xatolik:", e);
+        alert("Sozlamalarni saqlashda xatolik yuz berdi.");
+      }
+    }
+
     function renderDashboard() {
       const sales = getFilteredSales();
       const labelMap = {
@@ -716,6 +763,12 @@
         state.categories = Array.isArray(payload.categories) && payload.categories.length
           ? payload.categories
           : [...DEFAULT_CATEGORIES];
+        const incomingSettings = payload.settings && typeof payload.settings === "object" ? payload.settings : {};
+        state.settings = {
+          ...DEFAULT_SETTINGS,
+          ...incomingSettings,
+          dailyTarget: normalizeDailyTarget(incomingSettings.dailyTarget ?? payload.dailyTarget ?? 0)
+        };
       } catch (e) {
         console.error("Kafe ma'lumotlarini yuklashda xatolik:", e);
         state.inventory = [];
@@ -723,10 +776,12 @@
         state.sales = [];
         state.closeReports = [];
         state.categories = [...DEFAULT_CATEGORIES];
+        state.settings = { ...DEFAULT_SETTINGS };
       } finally {
         renderInventory();
         renderRecipes();
         renderCategories();
+        renderSettings();
         renderReports();
         hydrateIngredientSelect();
         hydrateRecipeCategorySelect();

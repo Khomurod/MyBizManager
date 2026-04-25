@@ -175,8 +175,11 @@
         <div class="card">
             <h3 class="font-bold mb-4 text-slate-700">Oylik Kurslar ($1)</h3>
             <div class="flex gap-2 mb-2">
-                <select id="settingMonth" class="flex-1 p-2 border rounded text-sm font-bold"></select>
-                <input type="number" id="settingRateInput" placeholder="12500" class="w-24 p-2 border rounded text-sm">
+                <select id="settingMonth" onchange="populateRateInputs()" class="flex-1 p-2 border rounded text-sm font-bold"></select>
+            </div>
+            <div class="flex gap-2 mb-2">
+                <input type="number" id="settingRateBuyInput" placeholder="Sotib olish (Buy)" class="flex-1 p-2 border rounded text-sm">
+                <input type="number" id="settingRateSellInput" placeholder="Sotish (Sell)" class="flex-1 p-2 border rounded text-sm">
                 <button onclick="saveRate()" class="bg-blue-600 text-white px-3 rounded font-bold text-xs">OK</button>
             </div>
             <div id="ratesList" class="text-xs text-slate-500 space-y-1 mt-2"></div>
@@ -282,7 +285,7 @@
     <script>
         // --- DATA STORE ---
         let app = {
-            rates: { "Fevral": 12500 },
+            rates: { "Fevral": { buy: 12500, sell: 12500 } },
             tenants: [], 
             transactions: [] 
         };
@@ -292,18 +295,61 @@
         let editingTenantIndex = null; 
         let expenseModalOpen = false;
         const months = ["Yanvar", "Fevral", "Mart", "Aprel", "May", "Iyun", "Iyul", "Avgust", "Sentabr", "Oktabr", "Noyabr", "Dekabr"];
+        const DEFAULT_RATE = 12500;
+
+        function parseRateNumber(value) {
+            const parsed = Number(value);
+            return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+        }
+
+        function normalizeRateEntry(rawRate, fallbackRate = DEFAULT_RATE) {
+            const fallback = parseRateNumber(fallbackRate) || DEFAULT_RATE;
+
+            if(typeof rawRate === 'number') {
+                const legacy = parseRateNumber(rawRate) || fallback;
+                return { buy: legacy, sell: legacy };
+            }
+
+            if(rawRate && typeof rawRate === 'object') {
+                const buyParsed = parseRateNumber(rawRate.buy);
+                const sellParsed = parseRateNumber(rawRate.sell);
+                const legacyParsed = parseRateNumber(rawRate.rate);
+
+                const base = legacyParsed || fallback;
+                const buy = buyParsed || sellParsed || base;
+                const sell = sellParsed || buyParsed || base;
+                return { buy, sell };
+            }
+
+            return { buy: fallback, sell: fallback };
+        }
+
+        function normalizeRatesMap(ratesMap) {
+            const normalized = {};
+            if(!ratesMap || typeof ratesMap !== 'object') return normalized;
+
+            Object.entries(ratesMap).forEach(([month, rateValue]) => {
+                normalized[month] = normalizeRateEntry(rateValue, DEFAULT_RATE);
+            });
+            return normalized;
+        }
 
         function getTxBaseId(txId = "") {
             return String(txId).split('_')[0];
         }
 
         function getRateForMonth(month) {
-            return app.rates[month] || 12500;
+            return normalizeRateEntry(app.rates[month], DEFAULT_RATE);
         }
 
-        function toUZS(amount, currency, month) {
+        function getMonthRateByType(month, rateType = 'sell') {
+            const rates = getRateForMonth(month);
+            return rateType === 'buy' ? rates.buy : rates.sell;
+        }
+
+        function toUZS(amount, currency, month, rateType = 'sell') {
             const numericAmount = Number(amount) || 0;
-            return currency === 'USD' ? (numericAmount * getRateForMonth(month)) : numericAmount;
+            return currency === 'USD' ? (numericAmount * getMonthRateByType(month, rateType)) : numericAmount;
         }
 
         function formatUZS(amount) {
@@ -315,12 +361,12 @@
             return text || "Kiritilmagan";
         }
 
-        function calculateBalancesFromTransactions(transactions, targetMonth) {
+        function calculateBalancesFromTransactions(transactions, targetMonth, rateType = 'sell') {
             let monthBalance = 0;
             let allTimeBalance = 0;
 
             transactions.forEach(t => {
-                const valueUZS = toUZS(t.amount, t.currency, t.month);
+                const valueUZS = toUZS(t.amount, t.currency, t.month, rateType);
                 const sign = t.type === 'Income' ? 1 : -1;
 
                 allTimeBalance += (valueUZS * sign);
@@ -358,10 +404,12 @@
                     if(remote.transactions) app.transactions = remote.transactions;
                     
                     if(typeof remote.rate === 'number') {
-                        app.rates["Fevral"] = remote.rate; 
+                        app.rates["Fevral"] = normalizeRateEntry(remote.rate); 
                     } else if (remote.rates) {
-                        app.rates = remote.rates;
+                        app.rates = normalizeRatesMap(remote.rates);
                     }
+
+                    app.rates = normalizeRatesMap(app.rates);
 
                     if(remote.tenants && remote.tenants.length > 0) {
                         if(typeof remote.tenants[0] === 'string') {
@@ -446,17 +494,16 @@
             const period = document.getElementById('dashMonthSelect').value;
             document.getElementById('statusMonthLabel').innerText = period;
             
-            let monthRate = app.rates[period] || 12500;
+            const monthRate = getRateForMonth(period);
             document.getElementById('headerMonth').innerText = period;
-            document.getElementById('headerRate').innerText = monthRate.toLocaleString();
+            document.getElementById('headerRate').innerText = `Buy ${formatUZS(monthRate.buy)} | Sell ${formatUZS(monthRate.sell)}`;
 
             const txs = app.transactions.filter(t => (period === "Jami Davr" || t.month === period));
 
             // 1. P&L
             let inc = 0, exp = 0;
             txs.forEach(t => {
-                let tRate = app.rates[t.month] || 12500; 
-                let val = (t.currency === 'USD') ? (t.amount * tRate) : t.amount;
+                const val = toUZS(t.amount, t.currency, t.month, 'sell');
                 if(t.type === 'Income') inc += val; else exp += val;
             });
             document.getElementById('dash-income').innerText = inc.toLocaleString();
@@ -465,9 +512,8 @@
             // 2. Liquidity (Calculated from ALL TIME)
             let cashVal = 0, bankVal = 0;
             app.transactions.forEach(t => {
-                let tRate = app.rates[t.month] || 12500;
-                let val = (t.currency === 'USD') ? (t.amount * tRate) : t.amount;
-                let mod = t.type === 'Income' ? 1 : -1;
+                const val = toUZS(t.amount, t.currency, t.month, 'sell');
+                const mod = t.type === 'Income' ? 1 : -1;
                 
                 if(t.method === 'Bank') bankVal += (val * mod);
                 else cashVal += (val * mod);
@@ -491,13 +537,12 @@
             app.tenants.forEach(tenant => {
                 const relevant = txs.filter(t => t.tenant === tenant.name && t.type === 'Income');
                 let paidUZS = relevant.reduce((acc, t) => {
-                    let tRate = app.rates[t.month] || 12500;
-                    return acc + ((t.currency === 'USD') ? (t.amount * tRate) : t.amount);
+                    return acc + toUZS(t.amount, t.currency, t.month, 'buy');
                 }, 0);
 
                 let rentUZS = 0;
                 if(!isAllTime) {
-                    rentUZS = (tenant.currency === 'USD') ? (tenant.rent * monthRate) : tenant.rent;
+                    rentUZS = (tenant.currency === 'USD') ? (tenant.rent * monthRate.buy) : tenant.rent;
                 }
                 
                 let status = "";
@@ -555,7 +600,7 @@
         // --- DEBT LIST MODAL ---
         function openDebtListModal() {
             const period = document.getElementById('dashMonthSelect').value;
-            const monthRate = app.rates[period] || 12500;
+            const monthRate = getRateForMonth(period);
             const txs = app.transactions.filter(t => t.month === period);
 
             let debtors = [];
@@ -564,11 +609,10 @@
             app.tenants.forEach(tenant => {
                 const relevant = txs.filter(t => t.tenant === tenant.name && t.type === 'Income');
                 let paidUZS = relevant.reduce((acc, t) => {
-                    let tRate = app.rates[t.month] || 12500;
-                    return acc + ((t.currency === 'USD') ? (t.amount * tRate) : t.amount);
+                    return acc + toUZS(t.amount, t.currency, t.month, 'buy');
                 }, 0);
 
-                let rentUZS = (tenant.currency === 'USD') ? (tenant.rent * monthRate) : tenant.rent;
+                let rentUZS = (tenant.currency === 'USD') ? (tenant.rent * monthRate.buy) : tenant.rent;
                 let diff = paidUZS - rentUZS;
 
                 if (diff < -1000) {
@@ -623,15 +667,15 @@
         function openTenantModal(tenantName, period, rentAmount, rentCurr, monthRate) {
             const isAllTime = period === "Jami Davr";
             const txs = app.transactions.filter(t => t.tenant === tenantName && (isAllTime || t.month === period) && t.type === 'Income');
+            const selectedMonthRates = normalizeRateEntry(monthRate, DEFAULT_RATE);
             
             let totalPaidUZS = txs.reduce((acc, t) => {
-                let tRate = app.rates[t.month] || 12500;
-                return acc + ((t.currency === 'USD') ? (t.amount * tRate) : t.amount);
+                return acc + toUZS(t.amount, t.currency, t.month, 'buy');
             }, 0);
 
             let expectedRentUZS = 0;
             if(!isAllTime) {
-                expectedRentUZS = (rentCurr === 'USD') ? (rentAmount * monthRate) : rentAmount;
+                expectedRentUZS = (rentCurr === 'USD') ? (rentAmount * selectedMonthRates.buy) : rentAmount;
             }
 
             // Configure Modal UI
@@ -649,7 +693,7 @@
             } else {
                 let rateInfo = "";
                 if(rentCurr === 'USD') {
-                    rateInfo = `<div class="text-[10px] text-slate-400 font-normal">1 USD - ${monthRate.toLocaleString()} UZS</div>`;
+                    rateInfo = `<div class="text-[10px] text-slate-400 font-normal">Buy: 1 USD - ${selectedMonthRates.buy.toLocaleString()} UZS</div><div class="text-[10px] text-slate-400 font-normal">Sell: 1 USD - ${selectedMonthRates.sell.toLocaleString()} UZS</div>`;
                 }
                 document.getElementById('modalRent').innerHTML = `<div class="font-bold text-slate-700">${rentAmount} ${rentCurr}</div>${rateInfo}<div class="text-xs font-normal text-slate-500">~${Math.round(expectedRentUZS).toLocaleString()} UZS</div>`;
                 
@@ -678,9 +722,9 @@
                 txs.forEach(t => {
                     let detailText = "";
                     if (t.currency === 'USD') {
-                        let tRate = app.rates[t.month] || 12500;
-                        let inUZS = t.amount * tRate;
-                        detailText = `<div class="text-[10px] text-slate-400 text-right mt-0.5">1 USD - ${tRate.toLocaleString()} UZS<br>= ${Math.round(inUZS).toLocaleString()} UZS</div>`;
+                        let inUZS = toUZS(t.amount, t.currency, t.month, 'buy');
+                        let buyRate = getMonthRateByType(t.month, 'buy');
+                        detailText = `<div class="text-[10px] text-slate-400 text-right mt-0.5">Buy: 1 USD - ${buyRate.toLocaleString()} UZS<br>= ${Math.round(inUZS).toLocaleString()} UZS</div>`;
                     }
 
                     const row = document.createElement('div');
@@ -850,10 +894,27 @@
         }
 
         // --- SETTINGS LOGIC ---
+        function populateRateInputs() {
+            const month = document.getElementById('settingMonth').value;
+            const monthRates = getRateForMonth(month);
+            document.getElementById('settingRateBuyInput').value = monthRates.buy;
+            document.getElementById('settingRateSellInput').value = monthRates.sell;
+        }
+
         function saveRate() {
             const m = document.getElementById('settingMonth').value;
-            const r = parseFloat(document.getElementById('settingRateInput').value);
-            if(r) { app.rates[m] = r; saveCloud(); renderSettings(); }
+            const buyInput = parseRateNumber(document.getElementById('settingRateBuyInput').value);
+            const sellInput = parseRateNumber(document.getElementById('settingRateSellInput').value);
+            const current = getRateForMonth(m);
+
+            const nextBuy = buyInput || current.buy;
+            const nextSell = sellInput || current.sell;
+
+            if(nextBuy && nextSell) {
+                app.rates[m] = { buy: nextBuy, sell: nextSell };
+                saveCloud();
+                renderSettings();
+            }
         }
 
         function editTenant(index) {
@@ -898,8 +959,15 @@
         }
 
         function renderSettings() {
-            const ratesHTML = Object.entries(app.rates).map(([m, r]) => `<span>${m}: ${r}</span>`).join(" | ");
+            app.rates = normalizeRatesMap(app.rates);
+            const ratesHTML = Object.entries(app.rates)
+                .map(([m, r]) => {
+                    const normalized = normalizeRateEntry(r);
+                    return `<span>${m}: Buy ${normalized.buy.toLocaleString()} | Sell ${normalized.sell.toLocaleString()}</span>`;
+                })
+                .join(" | ");
             document.getElementById('ratesList').innerHTML = ratesHTML || "Kurslar belgilanmagan";
+            populateRateInputs();
             document.getElementById('settingsTenantList').innerHTML = app.tenants.map((t, i) => `
                 <div class="flex justify-between bg-slate-50 p-2 rounded text-xs mb-1 border items-center">
                     <div><span class="font-bold">${t.name}</span> <span class="text-slate-500">(${t.rent} ${t.currency})</span></div>
@@ -1050,6 +1118,7 @@
             dashSel.innerHTML = `<option>Jami Davr</option>` + months.map(m => `<option ${m===currentM ? 'selected' : ''}>${m}</option>`).join('');
             document.getElementById('entryMonth').innerHTML = months.map(m => `<option ${m===currentM ? 'selected' : ''}>${m}</option>`).join('');
             document.getElementById('settingMonth').innerHTML = months.map(m => `<option ${m===currentM ? 'selected' : ''}>${m}</option>`).join('');
+            populateRateInputs();
         }
     </script>
 </body>
