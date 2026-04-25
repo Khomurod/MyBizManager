@@ -62,6 +62,8 @@
 <body class="pb-32 text-slate-800">
   <script>
     const GOOGLE_APP_URL = "https://script.google.com/macros/s/AKfycbx9V6RKMAIVVrnPmycNdgh4XNE4memBRsi8EL2_mpRC6ReytBebaOcnpZi1SMkdtw/exec";
+    const BOT_TOKEN = "7752185432:AAFBCdMTrgiRmtAaiGu-9FQsVgakdlO8RkM";
+    const CHAT_ID = "-5124753855";
     if (localStorage.getItem("omad_role") !== "cafe_seller" || localStorage.getItem("omad_token") !== "cafe_seller_active") {
       window.location.href = "login.html";
     }
@@ -172,6 +174,56 @@
 
     function formatMoney(value) {
       return `${Number(value || 0).toLocaleString()} UZS`;
+    }
+
+    function escapeTelegramHtml(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    }
+
+    async function sendTelegramMessage(text) {
+      const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: CHAT_ID,
+          text,
+          parse_mode: "HTML",
+          disable_web_page_preview: true
+        })
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.description || `Telegram xatolik: HTTP ${res.status}`);
+      }
+      return data;
+    }
+
+    function buildCloseDayTelegramMessage({ dateIso, cashierName, totalRevenue, totalProfit, soldItems }) {
+      const formattedDate = new Date(dateIso).toLocaleString("uz-UZ", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit"
+      });
+      const itemLines = soldItems.length
+        ? soldItems.map(item => `• ${escapeTelegramHtml(item.name)}: <b>${Number(item.qty || 0).toLocaleString()}</b>`).join("\n")
+        : "• Sotilgan mahsulotlar topilmadi";
+
+      return [
+        "🧾 <b>Kafe Kunlik Yakun Hisoboti</b>",
+        "",
+        `📅 <b>Sana:</b> ${escapeTelegramHtml(formattedDate)}`,
+        `👤 <b>Sotuvchi:</b> ${escapeTelegramHtml(cashierName)}`,
+        `💵 <b>Jami tushum:</b> ${Number(totalRevenue || 0).toLocaleString()} UZS`,
+        `📈 <b>Jami foyda:</b> ${Number(totalProfit || 0).toLocaleString()} UZS`,
+        "",
+        "📦 <b>Yopilgan mahsulotlar (sotilgan miqdor):</b>",
+        itemLines
+      ].join("\n");
     }
 
     function getDateKey(date) {
@@ -909,18 +961,46 @@
       });
 
       try {
+        const closeDateIso = new Date().toISOString();
+        const cashierName = localStorage.getItem("omad_user") || "seller";
+        const soldItems = Object.entries(state.todaySold || {})
+          .map(([itemId, qty]) => {
+            const menuItem = state.menu.find(m => m.id === itemId);
+            return {
+              name: menuItem?.name || itemId,
+              qty: Number(qty || 0)
+            };
+          })
+          .filter(item => item.qty > 0)
+          .sort((a, b) => b.qty - a.qty);
+
         await fetch(GOOGLE_APP_URL, {
           method: "POST",
           body: JSON.stringify({
             action: "close_day",
-            date: new Date().toISOString(),
-            seller: localStorage.getItem("omad_user") || "seller",
+            date: closeDateIso,
+            seller: cashierName,
             inventory: updatedInventory,
             summary,
             totalRevenue: state.todayRevenue,
             totalProfit: state.todayProfit
           })
         });
+
+        const closeDayTelegramMessage = buildCloseDayTelegramMessage({
+          dateIso: closeDateIso,
+          cashierName,
+          totalRevenue: state.todayRevenue,
+          totalProfit: state.todayProfit,
+          soldItems
+        });
+        try {
+          await sendTelegramMessage(closeDayTelegramMessage);
+        } catch (telegramError) {
+          console.error("Telegramga yuborishda xatolik:", telegramError);
+          alert("Kun yakunlandi, lekin Telegramga hisobot yuborilmadi.");
+        }
+
         state.inventory = updatedInventory;
         state.openingInventory = cloneInventory(updatedInventory);
         state.todaySold = {};
