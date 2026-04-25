@@ -293,6 +293,54 @@
         let expenseModalOpen = false;
         const months = ["Yanvar", "Fevral", "Mart", "Aprel", "May", "Iyun", "Iyul", "Avgust", "Sentabr", "Oktabr", "Noyabr", "Dekabr"];
 
+        function getTxBaseId(txId = "") {
+            return String(txId).split('_')[0];
+        }
+
+        function getRateForMonth(month) {
+            return app.rates[month] || 12500;
+        }
+
+        function toUZS(amount, currency, month) {
+            const numericAmount = Number(amount) || 0;
+            return currency === 'USD' ? (numericAmount * getRateForMonth(month)) : numericAmount;
+        }
+
+        function formatUZS(amount) {
+            return Math.round(Number(amount) || 0).toLocaleString();
+        }
+
+        function normalizeComment(comment) {
+            const text = String(comment || "").trim();
+            return text || "Kiritilmagan";
+        }
+
+        function calculateBalancesFromTransactions(transactions, targetMonth) {
+            let monthBalance = 0;
+            let allTimeBalance = 0;
+
+            transactions.forEach(t => {
+                const valueUZS = toUZS(t.amount, t.currency, t.month);
+                const sign = t.type === 'Income' ? 1 : -1;
+
+                allTimeBalance += (valueUZS * sign);
+                if(t.month === targetMonth) monthBalance += (valueUZS * sign);
+            });
+
+            return { monthBalance, allTimeBalance };
+        }
+
+        function buildTelegramTransactionMessage({ type, tenant, month, comment, cartItems, transferTotal, monthBalance, allTimeBalance }) {
+            const title = type === 'Income' ? "\u{1F7E2} YANGI KIRIM" : "\u{1F534} YANGI CHIQIM";
+            const objectText = String(tenant || "").trim() || "Noma'lum";
+            const periodText = String(month || "").trim() || "Noma'lum";
+            const transferLines = cartItems
+                .map(item => `\u{1F4B5} ${formatUZS(toUZS(item.amount, item.currency, periodText))} UZS`)
+                .join('\n') || "\u{1F4B5} 0 UZS";
+
+            return `${title}\n\n\u{1F3E2} Obyekt: ${objectText}\n\u{1F4C5} Davr: ${periodText}\n\n\u{1F4B8} O'tkazma:\n${transferLines}\nJami: ${formatUZS(transferTotal)} UZS\n\n\u{1F4DD} Izoh: ${normalizeComment(comment)}\n\n\u{1F4CA} HISOBOT:\n\u{1F539} ${periodText} qoldig'i: ${formatUZS(monthBalance)} UZS\n\u{1F3E6} Umumiy balans: ${formatUZS(allTimeBalance)} UZS`;
+        }
+
         window.onload = () => {
             initSelectors();
             syncData();
@@ -663,7 +711,7 @@
         // --- TELEGRAM LOGIC (FIXED NEWLINES) ---
         async function sendTelegram(text, replyId = null) {
             let url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
-            let body = { chat_id: CHAT_ID, text: text, parse_mode: "HTML" };
+            let body = { chat_id: CHAT_ID, text: text };
             const res = await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
             const data = await res.json();
             return data.ok ? data.result.message_id : null;
@@ -674,7 +722,7 @@
             try {
                 await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageText`, {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ chat_id: CHAT_ID, message_id: msgId, text: text, parse_mode: "HTML" })
+                    body: JSON.stringify({ chat_id: CHAT_ID, message_id: msgId, text: text })
                 });
             } catch(e) { console.log("Too old to edit"); }
         }
@@ -697,29 +745,45 @@
 
             const editId = document.getElementById('editId').value;
             const existingMsgId = document.getElementById('msgId').value;
+            const editBaseId = editId ? getTxBaseId(editId) : null;
+            const baseId = editBaseId || String(Date.now());
 
-            const baseId = editId ? editId.split('_')[0] : Date.now();
             const common = {
                 tenant: document.getElementById('entryTenant').value,
                 month: document.getElementById('entryMonth').value,
-                comment: document.getElementById('entryComment').value,
+                comment: document.getElementById('entryComment').value.trim(),
                 date: new Date().toLocaleDateString('en-GB')
             };
 
-            if(editId) app.transactions = app.transactions.filter(t => !t.id.startsWith(editId.split('_')[0]));
+            const baseTransactions = editBaseId
+                ? app.transactions.filter(t => !t.id.startsWith(editBaseId + "_"))
+                : [...app.transactions];
 
-            let breakdown = cart.map(i => `${i.method === 'Naqd' ? "💵" : "💳"} ${i.amount.toLocaleString()} ${i.currency}`).join("\n");
-            let mRate = app.rates[common.month] || 12500;
-            let totalVal = cart.reduce((acc, i) => acc + (i.currency === 'USD' ? i.amount * mRate : i.amount), 0);
-            
-            const emoji = currentType === 'Income' ? "🟢" : "🔴";
-            const typeText = currentType === 'Income' ? "KIRIM" : "CHIQIM";
-            
-            // FIXED: Using \n instead of %0A
-            const msgText = `<b>${emoji} ${typeText} ${editId ? "(TAHRIRLANDI)" : ""}</b>\n👤 <b>${common.tenant}</b>\n🗓 ${common.month}\n──────────────\n${breakdown}\n──────────────\n📊 Jami: ${totalVal.toLocaleString()} UZS\n📝 ${common.comment}`;
+            const pendingTransactions = cart.map((item, i) => ({
+                id: baseId + "_" + i,
+                ...common,
+                type: currentType,
+                amount: Number(item.amount) || 0,
+                currency: item.currency,
+                method: item.method
+            }));
+
+            const totalVal = pendingTransactions.reduce((acc, tx) => acc + toUZS(tx.amount, tx.currency, tx.month), 0);
+            const projectedTransactions = [...baseTransactions, ...pendingTransactions];
+            const { monthBalance, allTimeBalance } = calculateBalancesFromTransactions(projectedTransactions, common.month);
+
+            const msgText = buildTelegramTransactionMessage({
+                type: currentType,
+                tenant: common.tenant,
+                month: common.month,
+                comment: common.comment,
+                cartItems: pendingTransactions,
+                transferTotal: totalVal,
+                monthBalance,
+                allTimeBalance
+            });
 
             let finalMsgId = null;
-
             if(editId && existingMsgId) {
                 await editTelegram(existingMsgId, msgText);
                 finalMsgId = existingMsgId;
@@ -727,9 +791,10 @@
                 finalMsgId = await sendTelegram(msgText);
             }
 
-            cart.forEach((item, i) => {
-                app.transactions.push({ id: baseId + "_" + i, ...common, type: currentType, amount: item.amount, currency: item.currency, method: item.method, msgId: finalMsgId });
-            });
+            app.transactions = [
+                ...baseTransactions,
+                ...pendingTransactions.map(tx => ({ ...tx, msgId: finalMsgId }))
+            ];
 
             await saveCloud();
             
@@ -744,15 +809,29 @@
         }
 
         function editTx(id) {
-            const tx = app.transactions.find(t => t.id === id);
+            const baseId = getTxBaseId(id);
+            const grouped = app.transactions
+                .filter(t => t.id.startsWith(baseId + "_"))
+                .sort((a, b) => {
+                    const aIndex = Number(String(a.id).split('_')[1]) || 0;
+                    const bIndex = Number(String(b.id).split('_')[1]) || 0;
+                    return aIndex - bIndex;
+                });
+
+            const tx = grouped[0];
             if(!tx) return;
+
             setType(tx.type);
             document.getElementById('entryTenant').value = tx.tenant;
             document.getElementById('entryMonth').value = tx.month;
-            document.getElementById('entryComment').value = tx.comment;
-            document.getElementById('editId').value = id;
+            document.getElementById('entryComment').value = tx.comment || "";
+            document.getElementById('editId').value = tx.id;
             document.getElementById('msgId').value = tx.msgId || ""; 
-            cart = [{ amount: tx.amount, currency: tx.currency, method: tx.method }];
+            cart = grouped.map(item => ({
+                amount: Number(item.amount) || 0,
+                currency: item.currency,
+                method: item.method
+            }));
             renderCart();
             document.getElementById('submitBtn').innerText = "O'ZGARTIRISHNI SAQLASH";
             document.getElementById('cancelEditBtn').classList.remove('hidden');
@@ -761,10 +840,12 @@
 
         async function deleteTx(id) {
             if(confirm("O'chirmoqchimisiz?")) { 
-                const tx = app.transactions.find(t => t.id === id);
-                if(tx && tx.msgId) { await deleteTelegram(tx.msgId); }
-                app.transactions = app.transactions.filter(t => t.id !== id); 
-                saveCloud(); 
+                const baseId = getTxBaseId(id);
+                const grouped = app.transactions.filter(t => t.id.startsWith(baseId + "_"));
+                const msgId = grouped.find(t => t.msgId)?.msgId;
+                if(msgId) await deleteTelegram(msgId);
+                app.transactions = app.transactions.filter(t => !t.id.startsWith(baseId + "_"));
+                await saveCloud(); 
             }
         }
 
