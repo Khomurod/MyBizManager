@@ -361,6 +361,10 @@
             return text || "Kiritilmagan";
         }
 
+        function normalizeTenantName(name) {
+            return String(name || "").trim();
+        }
+
         function calculateBalancesFromTransactions(transactions, targetMonth, rateType = 'sell') {
             let monthBalance = 0;
             let allTimeBalance = 0;
@@ -535,7 +539,8 @@
             }
 
             app.tenants.forEach(tenant => {
-                const relevant = txs.filter(t => t.tenant === tenant.name && t.type === 'Income');
+                const tenantKey = normalizeTenantName(tenant.name);
+                const relevant = txs.filter(t => normalizeTenantName(t.tenant) === tenantKey && t.type === 'Income');
                 let paidUZS = relevant.reduce((acc, t) => {
                     return acc + toUZS(t.amount, t.currency, t.month, 'buy');
                 }, 0);
@@ -607,7 +612,8 @@
             let totalDebt = 0;
 
             app.tenants.forEach(tenant => {
-                const relevant = txs.filter(t => t.tenant === tenant.name && t.type === 'Income');
+                const tenantKey = normalizeTenantName(tenant.name);
+                const relevant = txs.filter(t => normalizeTenantName(t.tenant) === tenantKey && t.type === 'Income');
                 let paidUZS = relevant.reduce((acc, t) => {
                     return acc + toUZS(t.amount, t.currency, t.month, 'buy');
                 }, 0);
@@ -666,7 +672,8 @@
         // --- TENANT DETAIL MODAL ---
         function openTenantModal(tenantName, period, rentAmount, rentCurr, monthRate) {
             const isAllTime = period === "Jami Davr";
-            const txs = app.transactions.filter(t => t.tenant === tenantName && (isAllTime || t.month === period) && t.type === 'Income');
+            const tenantKey = normalizeTenantName(tenantName);
+            const txs = app.transactions.filter(t => normalizeTenantName(t.tenant) === tenantKey && (isAllTime || t.month === period) && t.type === 'Income');
             const selectedMonthRates = normalizeRateEntry(monthRate, DEFAULT_RATE);
             
             let totalPaidUZS = txs.reduce((acc, t) => {
@@ -793,7 +800,7 @@
             const baseId = editBaseId || String(Date.now());
 
             const common = {
-                tenant: document.getElementById('entryTenant').value,
+                tenant: normalizeTenantName(document.getElementById('entryTenant').value),
                 month: document.getElementById('entryMonth').value,
                 comment: document.getElementById('entryComment').value.trim(),
                 date: new Date().toLocaleDateString('en-GB')
@@ -931,7 +938,7 @@
         }
 
         function addTenant() {
-            const name = document.getElementById('newTenantName').value;
+            const name = normalizeTenantName(document.getElementById('newTenantName').value);
             const rent = parseFloat(document.getElementById('newTenantRent').value);
             const curr = document.getElementById('newTenantCurr').value;
             
@@ -985,7 +992,7 @@
                 options.push("Umumiy Naqd Puldan");
                 options.push("Umumiy Bankdan");
             }
-            document.getElementById('entryTenant').innerHTML = options.map(t => `<option>${t}</option>`).join('');
+            document.getElementById('entryTenant').innerHTML = options.map(t => `<option>${normalizeTenantName(t)}</option>`).join('');
         }
 
         // --- COMMON UI ---
