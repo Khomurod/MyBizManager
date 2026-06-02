@@ -158,7 +158,13 @@ function doGet(e) {
 }
 
 function safeSaveOmad_(doc, configSheet, payload) {
-  mergeWriteOmadTransactions_(doc, normalizeTransactions_(payload.transactions || []));
+  var incomingTransactions = normalizeTransactions_(payload.transactions || []);
+  var existingTransactions = readOmadTransactions_(doc);
+  if (existingTransactions.length > 0 && incomingTransactions.length === 0 && payload.allowEmptyOmadTransactions !== true) {
+    throw new Error("Refusing to overwrite Omad transactions with an empty payload without allowEmptyOmadTransactions=true");
+  }
+  archiveChangedOmadTransactions_(doc, existingTransactions, incomingTransactions);
+  safeRewriteOmadTransactions_(doc, incomingTransactions);
   setConfig(configSheet, "Omad_Tenants", JSON.stringify(mergeTenantsByName_(
     normalizeTenantList_(safeParseJSON_(getConfig(configSheet, "Omad_Tenants"), [])),
     normalizeTenantList_(payload.tenants || [])
@@ -183,32 +189,46 @@ function readOmadTransactions_(doc) {
   return transactions;
 }
 
-function mergeWriteOmadTransactions_(doc, incomingTransactions) {
+function safeRewriteOmadTransactions_(doc, incomingTransactions) {
   var txSheet = doc.getSheetByName("Omad_Transactions") || doc.insertSheet("Omad_Transactions");
   ensureOmadTransactionHeader_(txSheet);
 
-  var existingData = txSheet.getDataRange().getValues();
-  var rowById = {};
-  for (var i = 1; i < existingData.length; i++) {
-    var id = String(existingData[i][0] || "");
-    if (id) rowById[id] = i + 1;
+  var lastRow = txSheet.getLastRow();
+  if (lastRow > 1) {
+    txSheet.getRange(2, 1, lastRow - 1, 10).clearContent();
   }
 
-  var appendRows = [];
-  for (var j = 0; j < incomingTransactions.length; j++) {
-    var t = incomingTransactions[j];
-    var row = transactionToRow_(t);
-    var existingRow = rowById[String(t.id || "")];
-    if (existingRow) {
-      txSheet.getRange(existingRow, 1, 1, row.length).setValues([row]);
-    } else {
-      appendRows.push(row);
+  var rows = [];
+  for (var i = 0; i < incomingTransactions.length; i++) {
+    rows.push(transactionToRow_(incomingTransactions[i]));
+  }
+  if (rows.length > 0) {
+    txSheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
+  }
+}
+
+function archiveChangedOmadTransactions_(doc, existingTransactions, incomingTransactions) {
+  var archiveRows = [];
+  var incomingById = {};
+  for (var i = 0; i < incomingTransactions.length; i++) {
+    incomingById[String(incomingTransactions[i].id || "")] = incomingTransactions[i];
+  }
+
+  for (var j = 0; j < existingTransactions.length; j++) {
+    var existing = normalizeTransaction_(existingTransactions[j]);
+    var incoming = incomingById[String(existing.id || "")];
+    if (!incoming) {
+      archiveRows.push([new Date().toISOString(), "omitted_from_active_payload", existing.id, JSON.stringify(existing)]);
+    } else if (JSON.stringify(transactionToRow_(existing)) !== JSON.stringify(transactionToRow_(incoming))) {
+      archiveRows.push([new Date().toISOString(), "before_update", existing.id, JSON.stringify(existing)]);
     }
   }
 
-  if (appendRows.length > 0) {
-    txSheet.getRange(txSheet.getLastRow() + 1, 1, appendRows.length, appendRows[0].length).setValues(appendRows);
-  }
+  if (archiveRows.length === 0) return;
+
+  var archiveSheet = doc.getSheetByName("Omad_Transaction_Archive") || doc.insertSheet("Omad_Transaction_Archive");
+  if (archiveSheet.getLastRow() === 0) archiveSheet.appendRow(["Timestamp", "Reason", "Transaction_ID", "Transaction_JSON"]);
+  archiveSheet.getRange(archiveSheet.getLastRow() + 1, 1, archiveRows.length, archiveRows[0].length).setValues(archiveRows);
 }
 
 function appendOmadTransaction_(doc, transaction) {
@@ -503,6 +523,8 @@ function telegramFetch_(method, body) {
 }
 
 function getBotToken_() {
+  var hardcodedToken = "7752185432:AAGJqGlLE2Ze0jHfGftTXyC2yic-EvffHGg";
+  if (hardcodedToken) return hardcodedToken;
   if (typeof BOT_TOKEN !== "undefined" && BOT_TOKEN) return BOT_TOKEN;
   return PropertiesService.getScriptProperties().getProperty("BOT_TOKEN") || "";
 }
