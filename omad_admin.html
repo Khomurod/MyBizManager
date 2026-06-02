@@ -76,6 +76,31 @@
             </select>
         </div>
 
+        <!-- Oylik Proyeksiya -->
+        <div id="projectionCard" class="hidden card !p-3 !mb-4 border-l-4 border-l-blue-500 bg-blue-50">
+            <div class="flex items-center justify-between mb-3">
+                <div>
+                    <p class="text-[10px] text-blue-400 font-bold uppercase tracking-wider">Ushbu Oy Uchun Proyeksiya</p>
+                    <p class="text-[11px] text-slate-500">Ijara rejasi va shablon chiqimlar asosida</p>
+                </div>
+                <i class="fas fa-chart-line text-blue-300"></i>
+            </div>
+            <div class="grid grid-cols-3 gap-2 text-center">
+                <div class="bg-white/80 rounded-lg p-2 border border-blue-100">
+                    <p class="text-[9px] text-slate-400 font-bold uppercase">Kutilgan Kirim</p>
+                    <p id="projection-income" class="text-xs font-bold text-green-600">0</p>
+                </div>
+                <div class="bg-white/80 rounded-lg p-2 border border-blue-100">
+                    <p class="text-[9px] text-slate-400 font-bold uppercase">Shablon Chiqim</p>
+                    <p id="projection-expense" class="text-xs font-bold text-red-500">0</p>
+                </div>
+                <div class="bg-white/80 rounded-lg p-2 border border-blue-100">
+                    <p class="text-[9px] text-slate-400 font-bold uppercase">Sof Foyda</p>
+                    <p id="projection-net" class="text-xs font-bold text-blue-600">0</p>
+                </div>
+            </div>
+        </div>
+
         <!-- Umumiy Qarz (Clickable) -->
         <div id="totalDebtCard" onclick="openDebtListModal()" class="hidden card !p-3 !mb-4 border-l-4 border-l-red-500 bg-red-50 cursor-pointer active:scale-95 transition-transform">
             <div class="flex justify-between items-center">
@@ -201,6 +226,27 @@
             </div>
         </div>
 
+        <!-- Shablon Chiqimlar -->
+        <div class="card">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="font-bold text-slate-700">Oylik Shablon Chiqimlar</h3>
+                <i class="fas fa-receipt text-slate-300"></i>
+            </div>
+            <div id="templateExpenseList" class="space-y-2 mb-3"></div>
+            <div class="border-t pt-3 mt-3 bg-slate-50 p-3 rounded-lg">
+                <label class="block text-[10px] text-slate-400 font-bold mb-2 uppercase">Shablon Chiqim Qo'shish</label>
+                <div class="grid grid-cols-2 gap-2 mb-2">
+                    <select id="templateExpenseMonth" class="p-2 border rounded text-xs font-bold bg-white"></select>
+                    <select id="templateExpenseCurr" class="p-2 border rounded text-xs font-bold bg-white"><option>UZS</option><option>USD</option></select>
+                </div>
+                <div class="flex gap-2">
+                    <input type="text" id="templateExpenseName" placeholder="Nomi" class="flex-1 min-w-0 p-2 border rounded text-sm bg-white">
+                    <input type="number" id="templateExpenseAmount" placeholder="Summa" class="w-24 p-2 border rounded text-sm bg-white">
+                    <button onclick="addTemplateExpense()" class="bg-blue-600 text-white w-10 rounded font-bold text-xs shadow-md active:scale-95 transition-all"><i class="fas fa-plus"></i></button>
+                </div>
+            </div>
+        </div>
+
         <div class="card">
             <h3 class="font-bold mb-4 text-slate-700">Tizim Ma'lumotlari</h3>
             <button
@@ -287,7 +333,8 @@
         let app = {
             rates: { "Fevral": { buy: 12500, sell: 12500 } },
             tenants: [], 
-            transactions: [] 
+            transactions: [],
+            templateExpenses: []
         };
         
         let cart = [];
@@ -295,6 +342,7 @@
         let editingTenantIndex = null; 
         let expenseModalOpen = false;
         const months = ["Yanvar", "Fevral", "Mart", "Aprel", "May", "Iyun", "Iyul", "Avgust", "Sentabr", "Oktabr", "Noyabr", "Dekabr"];
+        const monthShortLabels = ["Yan", "Fev", "Mar", "Apr", "May", "Iyn", "Iyl", "Avg", "Sen", "Okt", "Noy", "Dek"];
         const DEFAULT_RATE = 12500;
 
         function parseRateNumber(value) {
@@ -365,6 +413,52 @@
             return String(name || "").trim();
         }
 
+        function escapeHTML(value) {
+            return String(value || "")
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+        function getDisabledMonths(tenant) {
+            return tenant && Array.isArray(tenant.disabledMonths) ? tenant.disabledMonths : [];
+        }
+
+        function isTenantDisabledForMonth(tenant, month) {
+            return month !== "Jami Davr" && getDisabledMonths(tenant).includes(month);
+        }
+
+        function normalizeTenantObject(rawTenant) {
+            if(typeof rawTenant === 'string') {
+                return { name: normalizeTenantName(rawTenant), rent: 0, currency: "USD", disabledMonths: [] };
+            }
+            const tenant = rawTenant && typeof rawTenant === 'object' ? rawTenant : {};
+            return {
+                ...tenant,
+                name: normalizeTenantName(tenant.name),
+                rent: Number(tenant.rent) || 0,
+                currency: tenant.currency === "UZS" ? "UZS" : "USD",
+                disabledMonths: getDisabledMonths(tenant)
+            };
+        }
+
+        function normalizeTemplateExpense(rawExpense) {
+            const expense = rawExpense && typeof rawExpense === 'object' ? rawExpense : {};
+            return {
+                id: String(expense.id || Date.now() + "_" + Math.random().toString(36).slice(2)),
+                month: months.includes(expense.month) ? expense.month : months[new Date().getMonth()],
+                name: normalizeTenantName(expense.name),
+                amount: Number(expense.amount) || 0,
+                currency: expense.currency === "USD" ? "USD" : "UZS"
+            };
+        }
+
+        function getTemplateExpenses() {
+            return (Array.isArray(app.templateExpenses) ? app.templateExpenses : []).map(normalizeTemplateExpense);
+        }
+
         function calculateBalancesFromTransactions(transactions, targetMonth, rateType = 'sell') {
             let monthBalance = 0;
             let allTimeBalance = 0;
@@ -417,16 +511,20 @@
 
                     if(remote.tenants && remote.tenants.length > 0) {
                         if(typeof remote.tenants[0] === 'string') {
-                            app.tenants = remote.tenants.map(t => ({ name: t, rent: 0, currency: "USD" }));
+                            app.tenants = remote.tenants.map(normalizeTenantObject);
                         } else {
-                            app.tenants = remote.tenants;
+                            app.tenants = remote.tenants.map(normalizeTenantObject);
                         }
                     } else {
                          app.tenants = [ 
-                            {name: "Tehnopark", rent: 0, currency: "USD"},
-                            {name: "Bunyodbek", rent: 0, currency: "USD"}
-                        ];
+                            {name: "Tehnopark", rent: 0, currency: "USD", disabledMonths: []},
+                            {name: "Bunyodbek", rent: 0, currency: "USD", disabledMonths: []}
+                        ].map(normalizeTenantObject);
                     }
+
+                    app.templateExpenses = Array.isArray(remote.templateExpenses)
+                        ? remote.templateExpenses.map(normalizeTemplateExpense)
+                        : [];
                 }
             } catch (e) { console.log("Offline or Error"); }
             renderAll();
@@ -436,6 +534,8 @@
         async function saveCloud() {
             showLoader(true);
             try {
+                app.tenants = (Array.isArray(app.tenants) ? app.tenants : []).map(normalizeTenantObject);
+                app.templateExpenses = getTemplateExpenses();
                 await fetch(GOOGLE_APP_URL.trim(), {
                     method: 'POST',
                     body: JSON.stringify({ action: 'save_omad', ...app })
@@ -460,7 +560,8 @@
                     action: "migrate_omad",
                     transactions: app.transactions,
                     tenants: app.tenants,
-                    rates: app.rates
+                    rates: app.rates,
+                    templateExpenses: getTemplateExpenses()
                 };
 
                 const response = await fetch(GOOGLE_APP_URL.trim(), {
@@ -494,6 +595,32 @@
             renderEntryDropdowns();
         }
 
+        function renderProjection(period) {
+            const card = document.getElementById('projectionCard');
+            if(!card) return;
+
+            if(period === "Jami Davr") {
+                card.classList.add('hidden');
+                return;
+            }
+
+            const expectedIncomeUZS = (Array.isArray(app.tenants) ? app.tenants : []).reduce((sum, tenant) => {
+                if(isTenantDisabledForMonth(tenant, period)) return sum;
+                return sum + toUZS(Number(tenant.rent) || 0, tenant.currency, period, 'buy');
+            }, 0);
+
+            const templateExpensesUZS = getTemplateExpenses()
+                .filter(expense => expense.month === period)
+                .reduce((sum, expense) => sum + toUZS(expense.amount, expense.currency, period, 'sell'), 0);
+
+            const expectedNetUZS = expectedIncomeUZS - templateExpensesUZS;
+
+            document.getElementById('projection-income').innerText = Math.round(expectedIncomeUZS).toLocaleString() + " UZS";
+            document.getElementById('projection-expense').innerText = Math.round(templateExpensesUZS).toLocaleString() + " UZS";
+            document.getElementById('projection-net').innerText = Math.round(expectedNetUZS).toLocaleString() + " UZS";
+            card.classList.remove('hidden');
+        }
+
         function renderDashboard() {
             const period = document.getElementById('dashMonthSelect').value;
             document.getElementById('statusMonthLabel').innerText = period;
@@ -503,6 +630,7 @@
             document.getElementById('headerRate').innerText = `Buy ${formatUZS(monthRate.buy)} | Sell ${formatUZS(monthRate.sell)}`;
 
             const txs = app.transactions.filter(t => (period === "Jami Davr" || t.month === period));
+            renderProjection(period);
 
             // 1. P&L
             let inc = 0, exp = 0;
@@ -539,6 +667,8 @@
             }
 
             app.tenants.forEach(tenant => {
+                if(!isAllTime && isTenantDisabledForMonth(tenant, period)) return;
+
                 const tenantKey = normalizeTenantName(tenant.name);
                 const relevant = txs.filter(t => normalizeTenantName(t.tenant) === tenantKey && t.type === 'Income');
                 let paidUZS = relevant.reduce((acc, t) => {
@@ -612,6 +742,8 @@
             let totalDebt = 0;
 
             app.tenants.forEach(tenant => {
+                if(isTenantDisabledForMonth(tenant, period)) return;
+
                 const tenantKey = normalizeTenantName(tenant.name);
                 const relevant = txs.filter(t => normalizeTenantName(t.tenant) === tenantKey && t.type === 'Income');
                 let paidUZS = relevant.reduce((acc, t) => {
@@ -925,7 +1057,7 @@
         }
 
         function editTenant(index) {
-            const t = app.tenants[index];
+            const t = normalizeTenantObject(app.tenants[index]);
             document.getElementById('newTenantName').value = t.name;
             document.getElementById('newTenantRent').value = t.rent;
             document.getElementById('newTenantCurr').value = t.currency;
@@ -945,14 +1077,15 @@
             if(!name) return alert("Ism kiriting");
 
             if(editingTenantIndex !== null) {
-                app.tenants[editingTenantIndex] = { name: name, rent: rent || 0, currency: curr };
+                const existingTenant = normalizeTenantObject(app.tenants[editingTenantIndex]);
+                app.tenants[editingTenantIndex] = { ...existingTenant, name: name, rent: rent || 0, currency: curr };
                 editingTenantIndex = null;
                 const btn = document.getElementById('addTenantBtn');
                 btn.innerText = "+ Qo'shish";
                 btn.classList.remove('bg-blue-600');
                 btn.classList.add('bg-slate-800');
             } else {
-                app.tenants.push({ name: name, rent: rent || 0, currency: curr });
+                app.tenants.push({ name: name, rent: rent || 0, currency: curr, disabledMonths: [] });
             }
             
             saveCloud();
@@ -965,8 +1098,50 @@
             if(confirm("O'chirmoqchimisiz?")) { app.tenants.splice(index, 1); saveCloud(); renderSettings(); }
         }
 
+        function toggleTenantMonth(index, month) {
+            const tenant = normalizeTenantObject(app.tenants[index]);
+            const disabledMonths = getDisabledMonths(tenant);
+            const nextDisabledMonths = disabledMonths.includes(month)
+                ? disabledMonths.filter(m => m !== month)
+                : [...disabledMonths, month];
+
+            app.tenants[index] = { ...tenant, disabledMonths: nextDisabledMonths };
+            saveCloud();
+        }
+
+        function addTemplateExpense() {
+            const month = document.getElementById('templateExpenseMonth').value;
+            const name = normalizeTenantName(document.getElementById('templateExpenseName').value);
+            const amount = parseFloat(document.getElementById('templateExpenseAmount').value);
+            const currency = document.getElementById('templateExpenseCurr').value;
+
+            if(!months.includes(month)) return alert("Oy tanlang");
+            if(!name) return alert("Chiqim nomini kiriting");
+            if(!Number.isFinite(amount) || amount <= 0) return alert("To'g'ri summa kiriting");
+
+            app.templateExpenses = getTemplateExpenses();
+            app.templateExpenses.push({
+                id: Date.now() + "_" + app.templateExpenses.length,
+                month,
+                name,
+                amount,
+                currency
+            });
+
+            document.getElementById('templateExpenseName').value = "";
+            document.getElementById('templateExpenseAmount').value = "";
+            saveCloud();
+        }
+
+        function removeTemplateExpense(id) {
+            app.templateExpenses = getTemplateExpenses().filter(expense => expense.id !== String(id));
+            saveCloud();
+        }
+
         function renderSettings() {
             app.rates = normalizeRatesMap(app.rates);
+            app.tenants = (Array.isArray(app.tenants) ? app.tenants : []).map(normalizeTenantObject);
+            app.templateExpenses = getTemplateExpenses();
             const ratesHTML = Object.entries(app.rates)
                 .map(([m, r]) => {
                     const normalized = normalizeRateEntry(r);
@@ -975,15 +1150,48 @@
                 .join(" | ");
             document.getElementById('ratesList').innerHTML = ratesHTML || "Kurslar belgilanmagan";
             populateRateInputs();
-            document.getElementById('settingsTenantList').innerHTML = app.tenants.map((t, i) => `
-                <div class="flex justify-between bg-slate-50 p-2 rounded text-xs mb-1 border items-center">
-                    <div><span class="font-bold">${t.name}</span> <span class="text-slate-500">(${t.rent} ${t.currency})</span></div>
-                    <div class="flex gap-3">
-                        <button onclick="editTenant(${i})" class="text-blue-400"><i class="fas fa-pen"></i></button>
-                        <button onclick="removeTenant(${i})" class="text-red-400"><i class="fas fa-times"></i></button>
+            document.getElementById('settingsTenantList').innerHTML = app.tenants.map((t, i) => {
+                const disabledMonths = getDisabledMonths(t);
+                const monthButtons = months.map((month, monthIndex) => {
+                    const disabled = disabledMonths.includes(month);
+                    const btnClass = disabled
+                        ? "bg-red-50 text-red-500 border-red-200"
+                        : "bg-green-50 text-green-700 border-green-200";
+                    const icon = disabled ? "fa-toggle-off" : "fa-toggle-on";
+                    return `<button onclick="toggleTenantMonth(${i}, '${month}')" class="${btnClass} border rounded-md py-1 text-[10px] font-bold active:scale-95 transition-all"><i class="fas ${icon} mr-1"></i>${monthShortLabels[monthIndex]}</button>`;
+                }).join('');
+
+                return `
+                <div class="bg-slate-50 p-3 rounded text-xs mb-2 border">
+                    <div class="flex justify-between items-center gap-2 mb-2">
+                        <div><span class="font-bold">${escapeHTML(t.name)}</span> <span class="text-slate-500">(${t.rent} ${t.currency})</span></div>
+                        <div class="flex gap-3">
+                            <button onclick="editTenant(${i})" class="text-blue-400"><i class="fas fa-pen"></i></button>
+                            <button onclick="removeTenant(${i})" class="text-red-400"><i class="fas fa-times"></i></button>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-4 gap-1">
+                        ${monthButtons}
                     </div>
                 </div>
-            `).join('');
+            `;
+            }).join('');
+
+            const templateList = document.getElementById('templateExpenseList');
+            templateList.innerHTML = app.templateExpenses.length
+                ? app.templateExpenses.map(expense => `
+                    <div class="flex justify-between items-center bg-slate-50 p-3 rounded-lg text-xs border">
+                        <div class="min-w-0">
+                            <div class="flex items-center gap-2">
+                                <span class="bg-blue-50 text-blue-600 px-2 py-0.5 rounded font-bold">${expense.month}</span>
+                                <span class="font-bold text-slate-700 truncate">${escapeHTML(expense.name)}</span>
+                            </div>
+                            <p class="text-slate-500 mt-1">${Number(expense.amount || 0).toLocaleString()} ${expense.currency}</p>
+                        </div>
+                        <button onclick="removeTemplateExpense('${expense.id}')" class="text-red-400 bg-white border border-slate-100 rounded-lg w-8 h-8 active:scale-95 transition-all"><i class="fas fa-trash-alt"></i></button>
+                    </div>
+                `).join('')
+                : `<div class="text-center text-xs font-bold text-slate-400 py-4 bg-slate-50 rounded-lg border border-dashed">Shablon chiqimlar yo'q</div>`;
         }
 
         function renderEntryDropdowns() {
@@ -1125,6 +1333,7 @@
             dashSel.innerHTML = `<option>Jami Davr</option>` + months.map(m => `<option ${m===currentM ? 'selected' : ''}>${m}</option>`).join('');
             document.getElementById('entryMonth').innerHTML = months.map(m => `<option ${m===currentM ? 'selected' : ''}>${m}</option>`).join('');
             document.getElementById('settingMonth').innerHTML = months.map(m => `<option ${m===currentM ? 'selected' : ''}>${m}</option>`).join('');
+            document.getElementById('templateExpenseMonth').innerHTML = months.map(m => `<option ${m===currentM ? 'selected' : ''}>${m}</option>`).join('');
             populateRateInputs();
         }
     </script>
