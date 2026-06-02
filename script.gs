@@ -100,7 +100,12 @@
 
     return jsonOutput_({ status: "error", message: "Unknown action" });
   } catch (error) {
-    if (isTelegramWebhook) return okHtmlOutput_();
+    if (isTelegramWebhook) {
+      try {
+        debugLog_(doc, "telegram_webhook_error", error.toString());
+      } catch (logError) {}
+      return okHtmlOutput_();
+    }
     return jsonOutput_({ status: "error", message: error.toString() });
   }
 }
@@ -356,8 +361,15 @@ function handleOmadTelegramUpdate_(update, doc, configSheet) {
   var callback = update.callback_query;
   var message = update.message;
   var chatId = callback ? callback.message.chat.id : message.chat.id;
+  var chatType = callback ? callback.message.chat.type : message.chat.type;
   var cache = CacheService.getScriptCache();
   var key = "yangi_" + chatId;
+  debugLog_(doc, "telegram_update_received", JSON.stringify({ chatId: chatId, chatType: chatType, text: message && message.text, callback: callback && callback.data }));
+
+  if (chatType !== "private") {
+    debugLog_(doc, "telegram_non_private_ignored", JSON.stringify({ chatId: chatId, chatType: chatType, text: message && message.text, callback: callback && callback.data }));
+    return okHtmlOutput_();
+  }
 
   if (callback) {
     answerCallbackQuery_(callback.id);
@@ -368,6 +380,7 @@ function handleOmadTelegramUpdate_(update, doc, configSheet) {
   var text = String((message && message.text) || "").trim();
   if (text === "/yangi" || text.indexOf("/yangi ") === 0) {
     cache.remove(key);
+    debugLog_(doc, "telegram_yangi_triggered", JSON.stringify({ chatId: chatId }));
     sendTelegramMessage_(chatId, "Iltimos, operatsiya turini tanlang:", {
       inline_keyboard: [[
         { text: "🟢 Kirim", callback_data: "bot_type:Income" },
@@ -448,6 +461,8 @@ function processOmadTextStep_(text, chatId, key, cache, doc, configSheet) {
     var lock = LockService.getScriptLock();
     lock.waitLock(30000);
     var transaction;
+    var groupMessage;
+    var groupMsgId = "";
     try {
       backupOmadState_(doc, configSheet, "telegram_yangi");
       transaction = normalizeTransaction_({
@@ -463,6 +478,12 @@ function processOmadTextStep_(text, chatId, key, cache, doc, configSheet) {
         msgId: ""
       });
       appendOmadTransaction_(doc, transaction);
+      var projectedTransactions = readOmadTransactions_(doc);
+      var balances = calculateBalancesFromTransactions_(projectedTransactions, transaction.month);
+      groupMessage = buildOmadGroupTransactionMessage_(transaction, balances);
+      var groupResponse = sendTelegramMessage_(getOmadGroupChatId_(), groupMessage);
+      groupMsgId = extractTelegramMessageId_(groupResponse);
+      if (groupMsgId) updateOmadTransactionMsgId_(doc, transaction.id, groupMsgId);
     } finally {
       lock.releaseLock();
     }
@@ -470,6 +491,100 @@ function processOmadTextStep_(text, chatId, key, cache, doc, configSheet) {
     cache.remove(key);
     sendTelegramMessage_(chatId, buildTelegramConfirmation_(transaction), null, "Markdown");
   }
+}
+
+function getOmadGroupChatId_() {
+  return "-5124753855";
+}
+
+function extractTelegramMessageId_(response) {
+  try {
+    var data = JSON.parse(response.getContentText() || "{}");
+    return data && data.ok && data.result ? data.result.message_id : "";
+  } catch (error) {
+    return "";
+  }
+}
+
+function updateOmadTransactionMsgId_(doc, transactionId, msgId) {
+  if (!msgId) return;
+  var txSheet = doc.getSheetByName("Omad_Transactions");
+  if (!txSheet || txSheet.getLastRow() < 2) return;
+
+  var data = txSheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === String(transactionId)) {
+      txSheet.getRange(i + 1, 10).setValue(msgId);
+      return;
+    }
+  }
+}
+
+function getOmadRates_() {
+  var doc = SpreadsheetApp.getActiveSpreadsheet();
+  var configSheet = doc.getSheetByName("System_Config");
+  if (!configSheet) return {};
+  return safeParseJSON_(getConfig(configSheet, "Omad_Rates"), {});
+}
+
+function normalizeRateEntry_(rawRate) {
+  var defaultRate = 12500;
+  if (typeof rawRate === "number") return { buy: rawRate || defaultRate, sell: rawRate || defaultRate };
+  if (rawRate && typeof rawRate === "object") {
+    var buy = Number(rawRate.buy || rawRate.sell || rawRate.rate) || defaultRate;
+    var sell = Number(rawRate.sell || rawRate.buy || rawRate.rate) || defaultRate;
+    return { buy: buy, sell: sell };
+  }
+  return { buy: defaultRate, sell: defaultRate };
+}
+
+function getMonthRateByType_(rates, month, rateType) {
+  var normalized = normalizeRateEntry_(rates && rates[month]);
+  return rateType === "buy" ? normalized.buy : normalized.sell;
+}
+
+function toUZS_(amount, currency, month, rates, rateType) {
+  var numericAmount = Number(amount) || 0;
+  return currency === "USD" ? numericAmount * getMonthRateByType_(rates, month, rateType || "sell") : numericAmount;
+}
+
+function formatUZS_(amount) {
+  return Math.round(Number(amount) || 0).toLocaleString();
+}
+
+function calculateBalancesFromTransactions_(transactions, targetMonth) {
+  var rates = getOmadRates_();
+  var monthBalance = 0;
+  var allTimeBalance = 0;
+
+  for (var i = 0; i < transactions.length; i++) {
+    var t = transactions[i];
+    var valueUZS = toUZS_(t.amount, t.currency, t.month, rates, "sell");
+    var sign = t.type === "Income" ? 1 : -1;
+    allTimeBalance += valueUZS * sign;
+    if (t.month === targetMonth) monthBalance += valueUZS * sign;
+  }
+
+  return { monthBalance: monthBalance, allTimeBalance: allTimeBalance };
+}
+
+function buildOmadGroupTransactionMessage_(transaction, balances) {
+  var rates = getOmadRates_();
+  var title = transaction.type === "Income" ? "🟢 YANGI KIRIM" : "🔴 YANGI CHIQIM";
+  var objectText = String(transaction.tenant || "").trim() || "Noma'lum";
+  var periodText = String(transaction.month || "").trim() || "Noma'lum";
+  var transferUZS = toUZS_(transaction.amount, transaction.currency, periodText, rates, "sell");
+  var transferLines = "💵 " + formatUZS_(transferUZS) + " UZS";
+
+  return title +
+    "\n\n🏢 Obyekt: " + objectText +
+    "\n📅 Davr: " + periodText +
+    "\n\n💸 O'tkazma:\n" + transferLines +
+    "\nJami: " + formatUZS_(transferUZS) + " UZS" +
+    "\n\n📝 Izoh: " + (String(transaction.comment || "").trim() || "Kiritilmagan") +
+    "\n\n📊 HISOBOT:" +
+    "\n🔹 " + periodText + " qoldig'i: " + formatUZS_(balances.monthBalance) + " UZS" +
+    "\n🏦 Umumiy balans: " + formatUZS_(balances.allTimeBalance) + " UZS";
 }
 
 function getActiveTenantNames_(configSheet) {
@@ -517,12 +632,22 @@ function answerCallbackQuery_(callbackQueryId) {
 function telegramFetch_(method, body) {
   var token = getBotToken_();
   if (!token) throw new Error("Telegram bot token is missing");
-  return UrlFetchApp.fetch("https://api.telegram.org/bot" + token + "/" + method, {
+  var response = UrlFetchApp.fetch("https://api.telegram.org/bot" + token + "/" + method, {
     method: "post",
     contentType: "application/json",
     payload: JSON.stringify(body),
     muteHttpExceptions: true
   });
+  var responseText = response.getContentText();
+  debugLog_(SpreadsheetApp.getActiveSpreadsheet(), "telegram_api_" + method, JSON.stringify({
+    code: response.getResponseCode(),
+    request: body,
+    response: responseText
+  }));
+  if (response.getResponseCode() < 200 || response.getResponseCode() >= 300) {
+    throw new Error("Telegram API " + method + " failed: " + responseText);
+  }
+  return response;
 }
 
 function getBotToken_() {
@@ -530,6 +655,22 @@ function getBotToken_() {
   if (hardcodedToken) return hardcodedToken;
   if (typeof BOT_TOKEN !== "undefined" && BOT_TOKEN) return BOT_TOKEN;
   return PropertiesService.getScriptProperties().getProperty("BOT_TOKEN") || "";
+}
+
+function authorizeTelegramAccess() {
+  UrlFetchApp.fetch("https://api.telegram.org/bot" + getBotToken_() + "/getMe");
+}
+
+function debugTelegramSendToGroup() {
+  sendTelegramMessage_("-5124753855", "Apps Script debug: Telegram send path works.");
+}
+
+function debugLog_(doc, eventName, details) {
+  try {
+    var sheet = doc.getSheetByName("Telegram_Debug_Log") || doc.insertSheet("Telegram_Debug_Log");
+    if (sheet.getLastRow() === 0) sheet.appendRow(["Timestamp", "Event", "Details"]);
+    sheet.appendRow([new Date().toISOString(), eventName, String(details || "")]);
+  } catch (error) {}
 }
 
 function escapeMarkdown_(value) {
