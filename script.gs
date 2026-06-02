@@ -1,5 +1,6 @@
 ﻿function doPost(e) {
   var doc = SpreadsheetApp.getActiveSpreadsheet();
+  var isTelegramWebhook = false;
 
   try {
     var payload = JSON.parse((e.postData && e.postData.contents) || "{}");
@@ -7,6 +8,7 @@
     var configSheet = doc.getSheetByName("System_Config") || doc.insertSheet("System_Config");
 
     if (!action && (payload.message || payload.callback_query)) {
+      isTelegramWebhook = true;
       return handleOmadTelegramUpdate_(payload, doc, configSheet);
     }
 
@@ -98,6 +100,7 @@
 
     return jsonOutput_({ status: "error", message: "Unknown action" });
   } catch (error) {
+    if (isTelegramWebhook) return okHtmlOutput_();
     return jsonOutput_({ status: "error", message: error.toString() });
   }
 }
@@ -359,7 +362,7 @@ function handleOmadTelegramUpdate_(update, doc, configSheet) {
   if (callback) {
     answerCallbackQuery_(callback.id);
     processOmadCallback_(callback, chatId, key, cache, configSheet);
-    return jsonOutput_({ status: "success" });
+    return okHtmlOutput_();
   }
 
   var text = String((message && message.text) || "").trim();
@@ -371,11 +374,11 @@ function handleOmadTelegramUpdate_(update, doc, configSheet) {
         { text: "🔴 Chiqim", callback_data: "bot_type:Expense" }
       ]]
     });
-    return jsonOutput_({ status: "success" });
+    return okHtmlOutput_();
   }
 
   processOmadTextStep_(text, chatId, key, cache, doc, configSheet);
-  return jsonOutput_({ status: "success" });
+  return okHtmlOutput_();
 }
 
 function processOmadCallback_(callback, chatId, key, cache, configSheet) {
@@ -546,6 +549,10 @@ function jsonOutput_(payload) {
   return ContentService.createTextOutput(JSON.stringify(payload)).setMimeType(ContentService.MimeType.JSON);
 }
 
+function okHtmlOutput_() {
+  return HtmlService.createHtmlOutput("OK");
+}
+
 function setConfig(sheet, key, value) {
   var data = sheet.getDataRange().getValues();
   for (var i = 0; i < data.length; i++) {
@@ -564,3 +571,5 @@ function getConfig(sheet, key) {
   }
   return null;
 }
+
+
