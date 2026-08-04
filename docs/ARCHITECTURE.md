@@ -67,7 +67,7 @@ Column A = key, column B = a JSON string.
 
 | Key | Shape |
 |---|---|
-| `Omad_Tenants` | `[{ name, rent, currency: "USD"\|"UZS", disabledMonths: string[] }]` |
+| `Omad_Tenants` | `[{ name, defaultRent, rent, currency, active, startPeriod, endPeriod, rentChanges: [{fromPeriod, amount}], exceptions: [{period, amount}], noRentPeriods: string[], disabledMonths: string[] }]` |
 | `Omad_Rates` | `{ "<YYYY-MM>": { buy: number, sell: number } }` — legacy `"<MonthName>"` keys still read |
 | `Omad_Rates_V1_Backup` | the pre-migration rate map, restored by rollback |
 | `Omad_Migration_Fallback_Year` | the year applied to rows whose year cannot be derived |
@@ -306,6 +306,44 @@ Tenants, rates and planned expenses still save through it.
 
 The frontend picks its path from `get_migration_status`, so a half-finished
 migration cannot break entry.
+
+## Tenant rent schedules
+
+A tenant's rent is **effective-dated**, not a single number.
+
+| Field | Meaning |
+|---|---|
+| `defaultRent` | what the agreement says |
+| `startPeriod` | when it begins (`""` = it always has) |
+| `endPeriod` | when it ends (`""` = open-ended) |
+| `rentChanges` | `[{ fromPeriod, amount }]` — a new default from a period onwards |
+| `exceptions` | `[{ period, amount }]` — one month at a different amount |
+| `noRentPeriods` | `["2026-12"]` — one month with no rent at all |
+| `active` | an inactive tenant is owed nothing, and can be reactivated |
+
+Resolution order, highest first:
+
+1. outside `startPeriod`/`endPeriod`, or inactive → **0**
+2. a legacy `disabledMonths` entry → **0**
+3. a `noRentPeriods` entry → **0**
+4. an `exceptions` entry → that amount
+5. the latest `rentChanges` entry that has taken effect
+6. `defaultRent`
+
+`tenantRentSource_` returns which of those applied, and the schedule editor
+shows it next to every month, so nothing is implicit.
+
+`rent` is kept in step with `defaultRent` so older readers keep working, and
+legacy `{ name, rent, currency, disabledMonths }` records need no migration —
+`disabledMonths` still repeats yearly, which is precisely why schedules
+replace it.
+
+**Tenants are never deleted**, because their payment history has to keep
+resolving. Deactivating, or giving the agreement an end period, is what
+"removing" means.
+
+`apps-script/06_tenants.gs` and `assets/omad/04-tenants.js` are mirrors, tested
+against the same expectations.
 
 ## Exchange rates
 
