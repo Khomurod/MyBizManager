@@ -161,6 +161,31 @@ under the script lock (status `Processing`), retried with exponential backoff
 starting at ~30s, and give up after 5 attempts. `processPendingTelegramJobs`
 is the entry point for a time-driven trigger.
 
+### Fast saving
+
+A save returns as soon as the financial record is safely stored. At most
+**one** queued job rides along inline (`JOB_QUEUE_INLINE_BATCH = 1`), so
+response time does not grow with the size of the backlog; the trigger picks up
+everything else. Passing `deferReports: true` on a request skips the inline
+drain entirely.
+
+Failing to *queue* a report never undoes a save the caller is about to be told
+succeeded — the enqueue is wrapped, and the failure is logged rather than
+raised.
+
+### Idempotency
+
+Every write carries a request id.
+
+| Source | Where the id comes from |
+|---|---|
+| Telegram `/yangi` | the conversation's `sessionId` |
+| Web entry | generated once per submission, mirrored into `sessionStorage` |
+
+The web id survives a mid-save refresh, so the resubmission carries the
+original id and the server recognises it. It is cleared only once the
+submission succeeds. A second click while a save is in flight is ignored.
+
 ### Webhook verification
 
 Apps Script cannot read request headers, so Telegram's

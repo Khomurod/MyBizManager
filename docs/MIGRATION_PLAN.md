@@ -11,7 +11,7 @@ rolled back on its own.
 | 2 | Code organization (module split, café duplicate removal) | ✅ delivered |
 | 3 | Year-month data model (`2026-01`) + friendly Uzbek labels | ✅ delivered (tooling; live run pending) |
 | 4 | Append-only transaction system (individual create/correct/cancel) | ✅ delivered |
-| 5 | Retry queue and fast saving | ⬜ not started |
+| 5 | Retry queue and fast saving | ✅ delivered |
 | 6 | Historical exchange rates stored per transaction; `sell` used consistently | ⬜ not started |
 | 7 | Settings redesign (Sozlamalar sections A–E) | ⬜ partial (D: Telegram done) |
 | 8 | Tenant rent schedules, exceptions, start/end periods | ⬜ not started |
@@ -60,6 +60,11 @@ from 2026-04-22 and can serve as sample data for migration dry runs.
 | Verification fails | Point reads back at `Omad_Transactions`; delete V2 |
 | Discovered after cutover | Restore from the `Omad_Backups` snapshot row taken immediately before cutover |
 | Catastrophic | Restore the file-level spreadsheet copy |
+
+### Rollback for stage 5
+
+No stored data changes. `git revert` the commit and redeploy. The
+`Omad_Job_Queue` sheet is inert for older code.
 
 ### Rollback for stage 4
 

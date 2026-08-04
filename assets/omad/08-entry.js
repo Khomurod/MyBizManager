@@ -66,17 +66,33 @@ function cancelEdit() {
 // --- SUBMIT LOGIC ---
 
 /**
- * The request id for the submission in progress. It is generated once and
- * reused until the submission succeeds, so a retry after a network error
- * resolves to the same transactions instead of creating duplicates.
+ * The request id for the submission in progress.
+ *
+ * It is generated once and reused until the submission succeeds, so a retry
+ * after a network error resolves to the same transactions instead of creating
+ * duplicates. It is mirrored into sessionStorage so the same holds when the
+ * browser is refreshed mid-save: the resubmission carries the original id and
+ * the server recognises it.
  */
+const PENDING_REQUEST_KEY = 'omad_pending_request';
 let pendingRequestBase = "";
 
 function nextRequestBase() {
     if(!pendingRequestBase) {
+        try {
+            pendingRequestBase = sessionStorage.getItem(PENDING_REQUEST_KEY) || "";
+        } catch (e) { pendingRequestBase = ""; }
+    }
+    if(!pendingRequestBase) {
         pendingRequestBase = `web_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
     }
+    try { sessionStorage.setItem(PENDING_REQUEST_KEY, pendingRequestBase); } catch (e) {}
     return pendingRequestBase;
+}
+
+function clearPendingRequest() {
+    pendingRequestBase = "";
+    try { sessionStorage.removeItem(PENDING_REQUEST_KEY); } catch (e) {}
 }
 
 async function submitAll() {
@@ -91,7 +107,7 @@ async function submitAll() {
         } else {
             await submitViaWholeListSave();
         }
-        pendingRequestBase = "";
+        clearPendingRequest();
         clearEntryForm();
         switchTab('dash');
     } catch (error) {
