@@ -17,9 +17,14 @@ function renderEntryDropdowns() {
 
 // --- COMMON UI ---
 function addToCart() {
-    const amt = document.getElementById('tempAmount').value;
-    if(!amt) return;
-    cart.push({ amount: parseFloat(amt), currency: document.getElementById('tempCurr').value, method: document.getElementById('tempMethod').value });
+    const amount = parseMoneyInput(document.getElementById('tempAmount').value);
+    if(!Number.isFinite(amount) || amount <= 0) return alert("To'g'ri summa kiriting");
+
+    cart.push({
+        amount,
+        currency: document.getElementById('tempCurr').value,
+        method: document.getElementById('tempMethod').value
+    });
     document.getElementById('tempAmount').value = "";
     renderCart();
 }

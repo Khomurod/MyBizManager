@@ -173,7 +173,7 @@ function readExpenseForm() {
 
     return {
         name: normalizeTenantName(document.getElementById('templateExpenseName').value),
-        amount: Number(String(document.getElementById('templateExpenseAmount').value).replace(/\s/g, '')),
+        amount: parseMoneyInput(document.getElementById('templateExpenseAmount').value),
         currency: document.getElementById('templateExpenseCurr').value,
         startPeriod: document.getElementById('templateExpenseMonth').value,
         frequency,
@@ -255,7 +255,7 @@ function editTemplateExpense(id) {
 
     editingExpenseId = expense.id;
     document.getElementById('templateExpenseName').value = expense.name;
-    document.getElementById('templateExpenseAmount').value = expense.amount;
+    document.getElementById('templateExpenseAmount').value = formatMoneyValue(expense.amount);
     document.getElementById('templateExpenseCurr').value = expense.currency;
     document.getElementById('templateExpenseMonth').value = expense.startPeriod;
     document.getElementById('templateExpenseFrequency').value = expense.frequency;

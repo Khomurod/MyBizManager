@@ -115,8 +115,8 @@ function populateRateInputs() {
 
     const period = selectedRatePeriod();
     const rates = getRateForPeriod(period);
-    buyInput.value = rates.buy;
-    sellInput.value = rates.sell;
+    buyInput.value = formatMoneyValue(rates.buy);
+    sellInput.value = formatMoneyValue(rates.sell);
 
     const hint = document.getElementById('settingRateHint');
     if(hint) {
@@ -128,8 +128,8 @@ function populateRateInputs() {
 
 function saveRate() {
     const period = selectedRatePeriod();
-    const buyInput = parseRateNumber(document.getElementById('settingRateBuyInput').value);
-    const sellInput = parseRateNumber(document.getElementById('settingRateSellInput').value);
+    const buyInput = parseRateNumber(parseMoneyInput(document.getElementById('settingRateBuyInput').value));
+    const sellInput = parseRateNumber(parseMoneyInput(document.getElementById('settingRateSellInput').value));
     const current = getRateForPeriod(period);
 
     const nextBuy = buyInput || current.buy;

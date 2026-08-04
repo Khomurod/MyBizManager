@@ -84,5 +84,6 @@ function initSelectors() {
 
 window.onload = () => {
     initSelectors();
+    attachMoneyFormatting();
     syncData();
 };
