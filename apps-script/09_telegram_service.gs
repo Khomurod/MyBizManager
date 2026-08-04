@@ -331,7 +331,8 @@ function buildOmadGroupReportMessage_(group, balances) {
   var transferLines = [];
   var total = 0;
   for (var i = 0; i < group.length; i++) {
-    var valueUZS = toUZS_(group[i].amount, group[i].currency, period, rates, "sell");
+    // The value stored on the transaction, not today's rate.
+    var valueUZS = transactionUZS_(group[i], rates);
     total += valueUZS;
     transferLines.push("💵 " + formatUZS_(valueUZS) + " UZS");
   }

@@ -15,20 +15,12 @@ function renderProjection(period) {
         return;
     }
 
-    const expectedIncomeUZS = (Array.isArray(app.tenants) ? app.tenants : []).reduce((sum, tenant) => {
-        if(isTenantDisabledForPeriod(tenant, period)) return sum;
-        return sum + toUZS(Number(tenant.rent) || 0, tenant.currency, period, 'buy');
-    }, 0);
+    // Projections are a plan, not money that moved. They never mix with actuals.
+    const projection = calculateProjection(app.tenants, getTemplateExpenses(), period);
 
-    const templateExpensesUZS = getTemplateExpenses()
-        .filter(expense => recordPeriod(expense) === period)
-        .reduce((sum, expense) => sum + toUZS(expense.amount, expense.currency, period, 'sell'), 0);
-
-    const expectedNetUZS = expectedIncomeUZS - templateExpensesUZS;
-
-    document.getElementById('projection-income').innerText = Math.round(expectedIncomeUZS).toLocaleString() + " UZS";
-    document.getElementById('projection-expense').innerText = Math.round(templateExpensesUZS).toLocaleString() + " UZS";
-    document.getElementById('projection-net').innerText = Math.round(expectedNetUZS).toLocaleString() + " UZS";
+    document.getElementById('projection-income').innerText = projection.expectedIncome.toLocaleString() + " UZS";
+    document.getElementById('projection-expense').innerText = projection.plannedExpense.toLocaleString() + " UZS";
+    document.getElementById('projection-net').innerText = projection.net.toLocaleString() + " UZS";
     card.classList.remove('hidden');
 }
 
@@ -40,29 +32,16 @@ function renderDashboard() {
     document.getElementById('headerMonth').innerText = periodShortLabel(period);
     document.getElementById('headerRate').innerText = `Buy ${formatUZS(monthRate.buy)} | Sell ${formatUZS(monthRate.sell)}`;
 
-    const txs = app.transactions.filter(t => matchesPeriod(t, period));
+    const countable = countableTransactions();
     renderProjection(period);
 
-    // 1. P&L
-    let inc = 0, exp = 0;
-    txs.forEach(t => {
-        const val = toUZS(t.amount, t.currency, recordPeriod(t), 'sell');
-        if(t.type === 'Income') inc += val; else exp += val;
-    });
-    document.getElementById('dash-income').innerText = inc.toLocaleString();
-    document.getElementById('dash-expense').innerText = exp.toLocaleString();
-
-    // 2. Liquidity (Calculated from ALL TIME)
-    let cashVal = 0, bankVal = 0;
-    app.transactions.forEach(t => {
-        const val = toUZS(t.amount, t.currency, recordPeriod(t), 'sell');
-        const mod = t.type === 'Income' ? 1 : -1;
-
-        if(t.method === 'Bank') bankVal += (val * mod);
-        else cashVal += (val * mod);
-    });
-    document.getElementById('dash-cash-total').innerText = cashVal.toLocaleString();
-    document.getElementById('dash-bank').innerText = bankVal.toLocaleString();
+    // Income/expense are scoped to the period; cash, bank and total are
+    // all-time - money in the safe does not reset when you change the month.
+    const actuals = calculateActuals(countable, period);
+    document.getElementById('dash-income').innerText = actuals.income.toLocaleString();
+    document.getElementById('dash-expense').innerText = actuals.expense.toLocaleString();
+    document.getElementById('dash-cash-total').innerText = actuals.cash.toLocaleString();
+    document.getElementById('dash-bank').innerText = actuals.bank.toLocaleString();
 
     // 3. SMART TENANT STATUS & TOTAL DEBT
     const list = document.getElementById('tenantStatusList');
@@ -80,19 +59,14 @@ function renderDashboard() {
     app.tenants.forEach(tenant => {
         if(!isAllTime && isTenantDisabledForPeriod(tenant, period)) return;
 
-        const tenantKey = normalizeTenantName(tenant.name);
-        const relevant = txs.filter(t => normalizeTenantName(t.tenant) === tenantKey && t.type === 'Income');
-        let paidUZS = relevant.reduce((acc, t) => {
-            return acc + toUZS(t.amount, t.currency, recordPeriod(t), 'buy');
-        }, 0);
-
-        let rentUZS = 0;
-        if(!isAllTime) {
-            rentUZS = (tenant.currency === 'USD') ? (tenant.rent * monthRate.buy) : tenant.rent;
-        }
+        // Paid and expected both use the sell rate, so a tenant who paid
+        // exactly their rent shows zero rather than the spread.
+        const balance = calculateTenantBalance(countable, tenant, period);
+        const paidUZS = balance.paid;
+        const rentUZS = isAllTime ? 0 : balance.expected;
 
         let status = "";
-        let diff = paidUZS - rentUZS;
+        let diff = isAllTime ? 0 : balance.difference;
         let barColor = "bg-red-500";
         let percent = isAllTime ? 100 : Math.min((paidUZS / rentUZS) * 100, 100);
 
@@ -146,8 +120,7 @@ function renderDashboard() {
 // --- DEBT LIST MODAL ---
 function openDebtListModal() {
     const period = document.getElementById('dashMonthSelect').value;
-    const monthRate = getRateForPeriod(period);
-    const txs = app.transactions.filter(t => recordPeriod(t) === period);
+    const countable = countableTransactions();
 
     let debtors = [];
     let totalDebt = 0;
@@ -155,18 +128,10 @@ function openDebtListModal() {
     app.tenants.forEach(tenant => {
         if(isTenantDisabledForPeriod(tenant, period)) return;
 
-        const tenantKey = normalizeTenantName(tenant.name);
-        const relevant = txs.filter(t => normalizeTenantName(t.tenant) === tenantKey && t.type === 'Income');
-        let paidUZS = relevant.reduce((acc, t) => {
-            return acc + toUZS(t.amount, t.currency, recordPeriod(t), 'buy');
-        }, 0);
-
-        let rentUZS = (tenant.currency === 'USD') ? (tenant.rent * monthRate.buy) : tenant.rent;
-        let diff = paidUZS - rentUZS;
-
-        if (diff < -1000) {
-            debtors.push({ name: tenant.name, debt: Math.abs(diff), rent: rentUZS });
-            totalDebt += Math.abs(diff);
+        const balance = calculateTenantBalance(countable, tenant, period);
+        if (balance.difference < -1000) {
+            debtors.push({ name: tenant.name, debt: Math.abs(balance.difference), rent: balance.expected });
+            totalDebt += Math.abs(balance.difference);
         }
     });
 
@@ -216,17 +181,16 @@ function openDebtListModal() {
 function openTenantModal(tenantName, period, rentAmount, rentCurr, monthRate) {
     const isAllTime = period === ALL_PERIODS;
     const tenantKey = normalizeTenantName(tenantName);
-    const txs = app.transactions.filter(t => normalizeTenantName(t.tenant) === tenantKey && (isAllTime || recordPeriod(t) === period) && t.type === 'Income');
+    const countable = countableTransactions();
+    const txs = countable.filter(t =>
+        normalizeTenantName(t.tenant) === tenantKey &&
+        (isAllTime || recordPeriod(t) === period) &&
+        t.type === 'Income');
     const selectedMonthRates = normalizeRateEntry(monthRate, DEFAULT_RATE);
 
-    let totalPaidUZS = txs.reduce((acc, t) => {
-        return acc + toUZS(t.amount, t.currency, recordPeriod(t), 'buy');
-    }, 0);
-
-    let expectedRentUZS = 0;
-    if(!isAllTime) {
-        expectedRentUZS = (rentCurr === 'USD') ? (rentAmount * selectedMonthRates.buy) : rentAmount;
-    }
+    const balance = calculateTenantBalance(countable, { name: tenantName, rent: rentAmount, currency: rentCurr }, period);
+    const totalPaidUZS = calculateTenantPaid(countable, tenantName, isAllTime ? ALL_PERIODS : period);
+    const expectedRentUZS = isAllTime ? 0 : balance.expected;
 
     // Configure Modal UI
     document.getElementById('modalTitle').innerText = tenantName;
@@ -247,8 +211,8 @@ function openTenantModal(tenantName, period, rentAmount, rentCurr, monthRate) {
         }
         document.getElementById('modalRent').innerHTML = `<div class="font-bold text-slate-700">${rentAmount} ${rentCurr}</div>${rateInfo}<div class="text-xs font-normal text-slate-500">~${Math.round(expectedRentUZS).toLocaleString()} UZS</div>`;
 
-        let diff = totalPaidUZS - expectedRentUZS;
-        let diffEl = document.getElementById('modalDiff');
+        const diff = totalPaidUZS - expectedRentUZS;
+        const diffEl = document.getElementById('modalDiff');
         if(diff < -1000) {
             diffEl.innerText = `${Math.round(diff).toLocaleString()} UZS (QARZ)`;
             diffEl.className = "font-bold text-red-500";
@@ -272,9 +236,10 @@ function openTenantModal(tenantName, period, rentAmount, rentCurr, monthRate) {
         txs.forEach(t => {
             let detailText = "";
             if (t.currency === 'USD') {
-                let inUZS = toUZS(t.amount, t.currency, recordPeriod(t), 'buy');
-                let buyRate = getPeriodRateByType(recordPeriod(t), 'buy');
-                detailText = `<div class="text-[10px] text-slate-400 text-right mt-0.5">Buy: 1 USD - ${buyRate.toLocaleString()} UZS<br>= ${Math.round(inUZS).toLocaleString()} UZS</div>`;
+                // The rate stored on the transaction, not today's rate.
+                const inUZS = transactionUZS(t);
+                const usedRate = Number(t.rateUsed) || getPeriodRateByType(recordPeriod(t), RATE_TYPE_ACTUAL);
+                detailText = `<div class="text-[10px] text-slate-400 text-right mt-0.5">Kurs: 1 USD - ${usedRate.toLocaleString()} UZS<br>= ${Math.round(inUZS).toLocaleString()} UZS</div>`;
             }
 
             const row = document.createElement('div');
