@@ -128,7 +128,7 @@ function calculateTenantBalance_(transactions, tenant, period) {
  *
  * Projections are a plan, not money that moved: a planned expense is never
  * counted as paid. Compare it with `calculateActuals_` rather than adding the
- * two together.
+ * two together - see `comparePlanToActual_`.
  */
 function calculateProjection_(tenants, plannedExpenses, period) {
   var rates = getOmadRates_();
@@ -141,11 +141,11 @@ function calculateProjection_(tenants, plannedExpenses, period) {
   }
 
 
-  var expenseList = Array.isArray(plannedExpenses) ? plannedExpenses : [];
-  for (var j = 0; j < expenseList.length; j++) {
-    var expense = expenseList[j];
-    if (String(expense.period || expense.month || "") !== period) continue;
-    plannedExpense += toUZS_(expense.amount, expense.currency, period, rates, RATE_TYPE_PROJECTION);
+  // Recurrence decides which expenses fall due, not a stored month. Callers
+  // may pass raw records, so they are normalised here.
+  var due = plannedExpensesForPeriod_(normalizeTemplateExpenses_(plannedExpenses), period);
+  for (var j = 0; j < due.length; j++) {
+    plannedExpense += toUZS_(due[j].expense.amount, due[j].expense.currency, period, rates, RATE_TYPE_PROJECTION);
   }
 
   return roundMoneyFields_({
@@ -153,4 +153,30 @@ function calculateProjection_(tenants, plannedExpenses, period) {
     plannedExpense: plannedExpense,
     net: expectedIncome - plannedExpense
   });
+}
+
+/**
+ * Plan against reality for one period, side by side.
+ *
+ * `plannedExpense` is what was scheduled; `actualExpense` is what actually
+ * left. They are deliberately never summed: a planned expense that has been
+ * paid appears in both, and adding them would double-count it. `outstanding`
+ * is what is still expected to leave, floored at zero.
+ */
+function comparePlanToActual_(transactions, tenants, plannedExpenses, period) {
+  var projection = calculateProjection_(tenants, plannedExpenses, period);
+  var actuals = calculateActuals_(transactions, period);
+
+  return {
+    period: period,
+    expectedIncome: projection.expectedIncome,
+    actualIncome: actuals.income,
+    plannedExpense: projection.plannedExpense,
+    actualExpense: actuals.expense,
+    // What is still expected, not a total.
+    outstandingIncome: Math.max(0, projection.expectedIncome - actuals.income),
+    outstandingExpense: Math.max(0, projection.plannedExpense - actuals.expense),
+    projectedNet: projection.net,
+    actualNet: actuals.net
+  };
 }

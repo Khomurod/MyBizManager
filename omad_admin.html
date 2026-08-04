@@ -331,6 +331,7 @@
 
             <div class="card">
                 <h3 class="font-bold mb-3 text-slate-700">Rejali Chiqim Qo'shish</h3>
+
                 <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Nomi</label>
                 <input type="text" id="templateExpenseName" placeholder="Masalan: Soliq" class="w-full min-w-0 p-2 border rounded-lg text-sm mb-3 bg-white">
 
@@ -345,10 +346,51 @@
                     </div>
                 </div>
 
-                <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Boshlanish Davri</label>
-                <select id="templateExpenseMonth" class="w-full min-w-0 p-2 border rounded-lg text-sm font-bold bg-white mb-3"></select>
+                <div class="grid grid-cols-2 gap-2 mb-3">
+                    <div class="min-w-0">
+                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Boshlanish</label>
+                        <select id="templateExpenseMonth" class="w-full min-w-0 p-2 border rounded-lg text-sm font-bold bg-white"></select>
+                    </div>
+                    <div class="min-w-0">
+                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Takrorlanish</label>
+                        <select id="templateExpenseFrequency" onchange="onExpenseFrequencyChange()" class="w-full min-w-0 p-2 border rounded-lg text-sm font-bold bg-white"></select>
+                    </div>
+                </div>
 
-                <button onclick="addTemplateExpense()" class="w-full py-3 bg-blue-600 text-white rounded-lg text-sm font-bold shadow-md active:scale-95 transition-all">+ Qo'shish</button>
+                <div id="expenseIntervalRow" class="hidden mb-3">
+                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Necha oyda bir marta</label>
+                    <input type="text" inputmode="numeric" id="templateExpenseInterval" placeholder="4" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                </div>
+
+                <div id="expenseMonthsRow" class="hidden mb-3">
+                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Qaysi oylarda</label>
+                    <div id="expenseMonthToggles" class="grid grid-cols-4 gap-1"></div>
+                </div>
+
+                <div id="expenseEndingRow" class="hidden mb-3">
+                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Tugash Qoidasi</label>
+                    <select id="templateExpenseEndType" onchange="onExpenseFrequencyChange()" class="w-full min-w-0 p-2 border rounded-lg text-sm font-bold bg-white">
+                        <option value="never">Muddatsiz</option>
+                        <option value="until_period">Belgilangan davrgacha</option>
+                        <option value="after_occurrences">Belgilangan marta</option>
+                    </select>
+                </div>
+
+                <div id="expenseEndPeriodRow" class="hidden mb-3">
+                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Tugash Davri</label>
+                    <select id="templateExpenseEndPeriod" class="w-full min-w-0 p-2 border rounded-lg text-sm font-bold bg-white"></select>
+                </div>
+
+                <div id="expenseEndCountRow" class="hidden mb-3">
+                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Necha marta</label>
+                    <input type="text" inputmode="numeric" id="templateExpenseEndCount" placeholder="12" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                </div>
+
+                <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Izoh (ixtiyoriy)</label>
+                <input type="text" id="templateExpenseDescription" placeholder="Qo'shimcha ma'lumot" class="w-full min-w-0 p-2 border rounded-lg text-sm mb-3 bg-white">
+
+                <button onclick="addTemplateExpense()" id="addExpenseBtn" class="w-full py-3 bg-blue-600 text-white rounded-lg text-sm font-bold shadow-md active:scale-95 transition-all">+ Qo'shish</button>
+                <button onclick="clearExpenseForm()" class="w-full mt-2 py-2 text-slate-400 text-xs font-bold">Tozalash</button>
             </div>
         </section>
 

@@ -73,7 +73,7 @@ Column A = key, column B = a JSON string.
 | `Omad_Migration_Fallback_Year` | the year applied to rows whose year cannot be derived |
 | `Omad_Active_Transactions_Sheet` | which sheet reads and writes go to — the cutover switch |
 | `Omad_Migration_Status` | `{ state, appliedAt, cutoverAt, rolledBackAt, fallbackYear, ... }` |
-| `Omad_Template_Expenses` | `[{ id, month, name, amount, currency }]` |
+| `Omad_Template_Expenses` | `[{ id, name, amount, currency, startPeriod, month, frequency, intervalMonths, selectedMonths, ending: {type, untilPeriod, occurrences}, active, description }]` |
 | `Cafe_Inventory` | café inventory array |
 | `Cafe_Recipes` | café recipe array |
 | `Cafe_Categories` | `string[]` |
@@ -344,6 +344,43 @@ resolving. Deactivating, or giving the agreement an end period, is what
 
 `apps-script/06_tenants.gs` and `assets/omad/04-tenants.js` are mirrors, tested
 against the same expectations.
+
+## Planned expenses
+
+A planned expense is a **plan**. It says money is expected to leave in given
+periods; it is never money that moved.
+
+| Frequency | Meaning |
+|---|---|
+| `once` | one period only |
+| `monthly` | every month |
+| `every_2_months` … `every_12_months` | fixed interval from the start period |
+| `selected_months` | chosen months of the year, every year |
+| `custom_interval` | every `intervalMonths` months |
+
+| Ending rule | Meaning |
+|---|---|
+| `never` | runs indefinitely |
+| `until_period` | stops after that period |
+| `after_occurrences` | stops after exactly N occurrences |
+
+Intervals count from `startPeriod`, so an expense starting in November falls
+due in February, May, August… — it keeps its own rhythm rather than snapping to
+the calendar quarter. `plannedExpenseOccurrence_` returns the 1-based
+occurrence number, which is what the "after N occurrences" rule counts and what
+the UI shows.
+
+Legacy `{ id, month, name, amount, currency }` records are read as one-time
+expenses in that month, and `month` is kept in step with `startPeriod`, so
+nothing needs migrating.
+
+### Never double-counted
+
+`calculateProjection_` sums only what is **scheduled**; `calculateActuals_`
+sums only what actually **left**. `comparePlanToActual_` reports both side by
+side plus `outstandingExpense` (what is still expected, floored at zero) —
+deliberately not a total, because a planned expense that has been paid appears
+in both and adding them would count it twice.
 
 ## Exchange rates
 

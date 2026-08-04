@@ -239,7 +239,7 @@ test('projections use the sell rate, the same as actuals', () => {
   const gas = boot();
   const projection = gas.calculateProjection_(
     [{ name: 'A', rent: 500, currency: 'USD' }, { name: 'B', rent: 1000000, currency: 'UZS' }],
-    [{ period: '2026-01', amount: 200, currency: 'USD' }],
+    [{ id: 'e1', name: 'Soliq', startPeriod: '2026-01', frequency: 'once', amount: 200, currency: 'USD' }],
     '2026-01');
 
   // 500 USD at sell 12 500 = 6 250 000, plus 1 000 000 UZS.
@@ -252,7 +252,8 @@ test('projections use the sell rate, the same as actuals', () => {
 test('a planned expense in another period is excluded', () => {
   const gas = boot();
   const projection = gas.calculateProjection_([],
-    [{ period: '2027-01', amount: 500000, currency: 'UZS' }], '2026-01');
+    [{ id: 'e1', name: 'Soliq', startPeriod: '2027-01', frequency: 'once', amount: 500000, currency: 'UZS' }],
+    '2026-01');
   assert.strictEqual(projection.plannedExpense, 0);
 });
 

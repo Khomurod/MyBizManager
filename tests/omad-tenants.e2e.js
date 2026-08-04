@@ -347,3 +347,221 @@ describe('Tenant schedules (browser)', () => {
     await context.close();
   });
 });
+
+describe('Planned expenses (browser)', () => {
+  let server;
+  let browser;
+  let baseUrl;
+
+  test.before(async () => {
+    server = await startStaticServer();
+    baseUrl = `http://127.0.0.1:${server.address().port}`;
+    browser = await chromium.launch();
+  });
+
+  test.after(async () => {
+    if (browser) await browser.close();
+    if (server) server.close();
+  });
+
+  async function openExpenses(templateExpenses = []) {
+    const requests = [];
+    const context = await browser.newContext();
+    await context.addInitScript(() => {
+      localStorage.setItem('omad_role', 'omad_admin');
+      localStorage.setItem('omad_token', 'omad_admin_active');
+    });
+    await context.route('**script.google.com/**', async route => {
+      const request = route.request();
+      if (request.method() === 'GET') {
+        await route.fulfill({
+          status: 200, contentType: 'application/json',
+          body: JSON.stringify({
+            transactions: [], tenants: [],
+            rates: { '2026-01': { buy: 12000, sell: 12500 } },
+            templateExpenses
+          })
+        });
+        return;
+      }
+      let payload = {};
+      try { payload = JSON.parse(request.postData() || '{}'); } catch (e) { payload = {}; }
+      requests.push(payload);
+      await route.fulfill({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify(payload.action === 'get_migration_status'
+          ? { status: 'success', migration: { state: 'not_started', activeSheet: 'Omad_Transactions' } }
+          : { status: 'success' })
+      });
+    });
+
+    const page = await context.newPage();
+    const pageErrors = [];
+    page.on('pageerror', err => pageErrors.push(String(err)));
+    await page.goto(`${baseUrl}/omad_admin.html`);
+    await page.waitForFunction(() => app.migration !== null);
+    await page.evaluate(() => { window.alert = () => {}; window.confirm = () => true; });
+    await page.click('#nav-settings');
+    await page.evaluate(() => showSettingsSection('expenses'));
+    return { page, context, requests, pageErrors };
+  }
+
+  test('the frequency selector offers every supported recurrence', async () => {
+    const { page, context, pageErrors } = await openExpenses();
+
+    const values = await page.evaluate(() =>
+      [...document.getElementById('templateExpenseFrequency').options].map(o => o.value));
+
+    assert.deepStrictEqual(values, [
+      'once', 'monthly', 'every_2_months', 'every_3_months',
+      'every_6_months', 'every_12_months', 'selected_months', 'custom_interval'
+    ]);
+    assert.deepStrictEqual(pageErrors, []);
+    await context.close();
+  });
+
+  test('only the fields the chosen frequency needs are shown', async () => {
+    const { page, context } = await openExpenses();
+
+    const visibility = await page.evaluate(() => {
+      const read = () => ({
+        interval: !document.getElementById('expenseIntervalRow').classList.contains('hidden'),
+        months: !document.getElementById('expenseMonthsRow').classList.contains('hidden'),
+        ending: !document.getElementById('expenseEndingRow').classList.contains('hidden')
+      });
+      const set = value => {
+        document.getElementById('templateExpenseFrequency').value = value;
+        onExpenseFrequencyChange();
+        return read();
+      };
+      return { once: set('once'), monthly: set('monthly'),
+               selected: set('selected_months'), custom: set('custom_interval') };
+    });
+
+    assert.deepStrictEqual(visibility.once, { interval: false, months: false, ending: false },
+      'a one-time expense has nothing to end');
+    assert.deepStrictEqual(visibility.monthly, { interval: false, months: false, ending: true });
+    assert.deepStrictEqual(visibility.selected, { interval: false, months: true, ending: true });
+    assert.deepStrictEqual(visibility.custom, { interval: true, months: false, ending: true });
+    await context.close();
+  });
+
+  test('a monthly loan ending in November 2026 is saved with its rule', async () => {
+    const { page, context, requests } = await openExpenses();
+
+    await page.evaluate(() => {
+      document.getElementById('templateExpenseName').value = 'Kredit';
+      document.getElementById('templateExpenseAmount').value = '2 000 000';
+      document.getElementById('templateExpenseMonth').value = '2026-01';
+      document.getElementById('templateExpenseFrequency').value = 'monthly';
+      onExpenseFrequencyChange();
+      document.getElementById('templateExpenseEndType').value = 'until_period';
+      onExpenseFrequencyChange();
+      document.getElementById('templateExpenseEndPeriod').value = '2026-11';
+      addTemplateExpense();
+    });
+
+    const save = await waitForRequest(requests, 'save_omad');
+    const saved = save.templateExpenses.find(e => e.name === 'Kredit');
+    assert.strictEqual(saved.amount, 2000000, 'spaces are stripped from the amount');
+    assert.strictEqual(saved.frequency, 'monthly');
+    assert.deepStrictEqual(saved.ending, { type: 'until_period', untilPeriod: '2026-11', occurrences: 0 });
+    await context.close();
+  });
+
+  test('selected months are captured from the toggles', async () => {
+    const { page, context, requests } = await openExpenses();
+
+    await page.evaluate(() => {
+      document.getElementById('templateExpenseName').value = "Sug'urta";
+      document.getElementById('templateExpenseAmount').value = '500000';
+      document.getElementById('templateExpenseMonth').value = '2026-01';
+      document.getElementById('templateExpenseFrequency').value = 'selected_months';
+      onExpenseFrequencyChange();
+      document.querySelectorAll('.expense-month-toggle').forEach(button => {
+        if (['4', '10'].includes(button.dataset.month)) toggleExpenseMonth(button);
+      });
+      addTemplateExpense();
+    });
+
+    const save = await waitForRequest(requests, 'save_omad');
+    const saved = save.templateExpenses.find(e => e.name === "Sug'urta");
+    assert.deepStrictEqual(saved.selectedMonths, [4, 10]);
+    await context.close();
+  });
+
+  test('selected months with nothing chosen is rejected', async () => {
+    const { page, context, requests } = await openExpenses();
+
+    const warned = await page.evaluate(() => {
+      let message = "";
+      window.alert = text => { message = text; };
+      document.getElementById('templateExpenseName').value = 'X';
+      document.getElementById('templateExpenseAmount').value = '1000';
+      document.getElementById('templateExpenseMonth').value = '2026-01';
+      document.getElementById('templateExpenseFrequency').value = 'selected_months';
+      onExpenseFrequencyChange();
+      addTemplateExpense();
+      return message;
+    });
+
+    assert.match(warned, /Kamida bitta oyni tanlang/);
+    assert.deepStrictEqual(requests.filter(r => r.action === 'save_omad'), []);
+    await context.close();
+  });
+
+  test('the list describes each schedule and says whether it is due now', async () => {
+    const { page, context } = await openExpenses([
+      { id: 'e1', name: 'Internet', amount: 300000, currency: 'UZS',
+        startPeriod: '2026-01', frequency: 'monthly', ending: { type: 'never' } },
+      { id: 'e2', name: 'Litsenziya', amount: 100, currency: 'USD',
+        startPeriod: '2026-05', frequency: 'every_12_months', ending: { type: 'never' } }
+    ]);
+
+    const text = await page.evaluate(() =>
+      document.getElementById('templateExpenseList').textContent.replace(/\s+/g, ' '));
+
+    assert.match(text, /Internet/);
+    assert.match(text, /Har oy/);
+    assert.match(text, /Litsenziya/);
+    assert.match(text, /Har yili/);
+    await context.close();
+  });
+
+  test('editing an expense keeps its id', async () => {
+    const { page, context, requests } = await openExpenses([
+      { id: 'e1', name: 'Internet', amount: 300000, currency: 'UZS',
+        startPeriod: '2026-01', frequency: 'monthly', ending: { type: 'never' } }
+    ]);
+
+    await page.evaluate(() => {
+      editTemplateExpense('e1');
+      document.getElementById('templateExpenseAmount').value = '350000';
+      addTemplateExpense();
+    });
+
+    const save = await waitForRequest(requests, 'save_omad');
+    assert.strictEqual(save.templateExpenses.length, 1);
+    assert.strictEqual(save.templateExpenses[0].id, 'e1');
+    assert.strictEqual(save.templateExpenses[0].amount, 350000);
+    await context.close();
+  });
+
+  test('a legacy template expense still renders', async () => {
+    const { page, context, pageErrors } = await openExpenses([
+      { id: 'old', month: '2026-03', name: 'Soliq', amount: 500000, currency: 'UZS' }
+    ]);
+
+    const state = await page.evaluate(() => ({
+      frequency: app.templateExpenses[0].frequency,
+      startPeriod: app.templateExpenses[0].startPeriod,
+      text: document.getElementById('templateExpenseList').textContent.replace(/\s+/g, ' ')
+    }));
+
+    assert.strictEqual(state.frequency, 'once');
+    assert.strictEqual(state.startPeriod, '2026-03');
+    assert.match(state.text, /Bir marta/);
+    assert.deepStrictEqual(pageErrors, []);
+    await context.close();
+  });
+});
