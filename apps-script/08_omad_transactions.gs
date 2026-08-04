@@ -77,8 +77,16 @@ function activeTransactionSheetName_(doc) {
   return OMAD_TRANSACTIONS_SHEET;
 }
 
+/**
+ * Active transactions in the shape the rest of the app expects.
+ *
+ * After cutover this reads the append-only ledger and returns only Active
+ * rows; before cutover it reads the legacy sheet and resolves periods in
+ * memory. Callers do not need to know which.
+ */
 function readOmadTransactions_(doc) {
-  return readTransactionsFromSheet_(doc, activeTransactionSheetName_(doc));
+  if (isLedgerActive_(doc)) return listActiveTransactions_(doc, {});
+  return readTransactionsFromSheet_(doc, OMAD_TRANSACTIONS_SHEET);
 }
 
 /**
@@ -161,21 +169,35 @@ function appendOmadTransaction_(doc, transaction) {
   txSheet.appendRow(transactionToRow_(normalizeTransaction_(transaction)));
 }
 
+/**
+ * Writes the group message id back onto a transaction. The column differs
+ * between the two schemas, so it is chosen from whichever sheet is live -
+ * column 10 in the legacy layout, column 21 in the ledger.
+ */
 function updateOmadTransactionMsgId_(doc, transactionId, msgId) {
   if (!msgId) return;
-  var txSheet = doc.getSheetByName(activeTransactionSheetName_(doc));
+  var sheetName = activeTransactionSheetName_(doc);
+  var txSheet = doc.getSheetByName(sheetName);
   if (!txSheet || txSheet.getLastRow() < 2) return;
 
+  var column = sheetName === OMAD_TRANSACTIONS_V2_SHEET ? 21 : 10;
   var data = txSheet.getDataRange().getValues();
   for (var i = 1; i < data.length; i++) {
     if (String(data[i][0]) === String(transactionId)) {
-      txSheet.getRange(i + 1, 10).setValue(msgId);
+      txSheet.getRange(i + 1, column).setValue(msgId);
       return;
     }
   }
 }
 
 function safeSaveOmad_(doc, configSheet, payload) {
+  // Whole-list rewrites are exactly what the append-only ledger exists to
+  // prevent. Once V2 is live, transactions change only through
+  // create/correct/cancel.
+  if (isLedgerActive_(doc)) {
+    return saveOmadSettingsOnly_(doc, configSheet, payload);
+  }
+
   var incomingTransactions = normalizeTransactions_(payload.transactions || []);
   var existingTransactions = readOmadTransactions_(doc);
   if (existingTransactions.length > 0 && incomingTransactions.length === 0 && payload.allowEmptyOmadTransactions !== true) {
@@ -189,4 +211,25 @@ function safeSaveOmad_(doc, configSheet, payload) {
   )));
   setConfig(configSheet, "Omad_Rates", JSON.stringify(payload.rates || {}));
   setConfig(configSheet, "Omad_Template_Expenses", JSON.stringify(normalizeTemplateExpenses_(payload.templateExpenses || [])));
+}
+
+/**
+ * The non-transaction half of a save. Used once the ledger is live, where
+ * tenants, rates and planned expenses are still whole-object settings but
+ * transactions are not.
+ */
+function saveOmadSettingsOnly_(doc, configSheet, payload) {
+  if (payload.tenants !== undefined) {
+    setConfig(configSheet, "Omad_Tenants", JSON.stringify(mergeTenantsByName_(
+      normalizeTenantList_(safeParseJSON_(getConfig(configSheet, "Omad_Tenants"), [])),
+      normalizeTenantList_(payload.tenants || [])
+    )));
+  }
+  if (payload.rates !== undefined) {
+    setConfig(configSheet, "Omad_Rates", JSON.stringify(payload.rates || {}));
+  }
+  if (payload.templateExpenses !== undefined) {
+    setConfig(configSheet, "Omad_Template_Expenses",
+      JSON.stringify(normalizeTemplateExpenses_(payload.templateExpenses || [])));
+  }
 }

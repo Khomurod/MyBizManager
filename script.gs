@@ -1067,8 +1067,16 @@ function activeTransactionSheetName_(doc) {
   return OMAD_TRANSACTIONS_SHEET;
 }
 
+/**
+ * Active transactions in the shape the rest of the app expects.
+ *
+ * After cutover this reads the append-only ledger and returns only Active
+ * rows; before cutover it reads the legacy sheet and resolves periods in
+ * memory. Callers do not need to know which.
+ */
 function readOmadTransactions_(doc) {
-  return readTransactionsFromSheet_(doc, activeTransactionSheetName_(doc));
+  if (isLedgerActive_(doc)) return listActiveTransactions_(doc, {});
+  return readTransactionsFromSheet_(doc, OMAD_TRANSACTIONS_SHEET);
 }
 
 /**
@@ -1151,21 +1159,35 @@ function appendOmadTransaction_(doc, transaction) {
   txSheet.appendRow(transactionToRow_(normalizeTransaction_(transaction)));
 }
 
+/**
+ * Writes the group message id back onto a transaction. The column differs
+ * between the two schemas, so it is chosen from whichever sheet is live -
+ * column 10 in the legacy layout, column 21 in the ledger.
+ */
 function updateOmadTransactionMsgId_(doc, transactionId, msgId) {
   if (!msgId) return;
-  var txSheet = doc.getSheetByName(activeTransactionSheetName_(doc));
+  var sheetName = activeTransactionSheetName_(doc);
+  var txSheet = doc.getSheetByName(sheetName);
   if (!txSheet || txSheet.getLastRow() < 2) return;
 
+  var column = sheetName === OMAD_TRANSACTIONS_V2_SHEET ? 21 : 10;
   var data = txSheet.getDataRange().getValues();
   for (var i = 1; i < data.length; i++) {
     if (String(data[i][0]) === String(transactionId)) {
-      txSheet.getRange(i + 1, 10).setValue(msgId);
+      txSheet.getRange(i + 1, column).setValue(msgId);
       return;
     }
   }
 }
 
 function safeSaveOmad_(doc, configSheet, payload) {
+  // Whole-list rewrites are exactly what the append-only ledger exists to
+  // prevent. Once V2 is live, transactions change only through
+  // create/correct/cancel.
+  if (isLedgerActive_(doc)) {
+    return saveOmadSettingsOnly_(doc, configSheet, payload);
+  }
+
   var incomingTransactions = normalizeTransactions_(payload.transactions || []);
   var existingTransactions = readOmadTransactions_(doc);
   if (existingTransactions.length > 0 && incomingTransactions.length === 0 && payload.allowEmptyOmadTransactions !== true) {
@@ -1179,6 +1201,27 @@ function safeSaveOmad_(doc, configSheet, payload) {
   )));
   setConfig(configSheet, "Omad_Rates", JSON.stringify(payload.rates || {}));
   setConfig(configSheet, "Omad_Template_Expenses", JSON.stringify(normalizeTemplateExpenses_(payload.templateExpenses || [])));
+}
+
+/**
+ * The non-transaction half of a save. Used once the ledger is live, where
+ * tenants, rates and planned expenses are still whole-object settings but
+ * transactions are not.
+ */
+function saveOmadSettingsOnly_(doc, configSheet, payload) {
+  if (payload.tenants !== undefined) {
+    setConfig(configSheet, "Omad_Tenants", JSON.stringify(mergeTenantsByName_(
+      normalizeTenantList_(safeParseJSON_(getConfig(configSheet, "Omad_Tenants"), [])),
+      normalizeTenantList_(payload.tenants || [])
+    )));
+  }
+  if (payload.rates !== undefined) {
+    setConfig(configSheet, "Omad_Rates", JSON.stringify(payload.rates || {}));
+  }
+  if (payload.templateExpenses !== undefined) {
+    setConfig(configSheet, "Omad_Template_Expenses",
+      JSON.stringify(normalizeTemplateExpenses_(payload.templateExpenses || [])));
+  }
 }
 
 // ----- apps-script/09_telegram_service.gs --------------------------------------
@@ -1992,7 +2035,7 @@ function readCafeState_(doc, configSheet) {
 // ============================================================
 
 var MIGRATION_STATUS_KEY = "Omad_Migration_Status";
-var MIGRATION_SCHEMA_VERSION = 2;
+var MIGRATION_SCHEMA_VERSION = LEDGER_SCHEMA_VERSION;
 
 /**
  * Resolves every row without writing anything.
@@ -2154,33 +2197,24 @@ function applyOmadMigration_(doc, options) {
   try {
     backupOmadState_(doc, configSheet, "pre_period_migration");
 
+    // The target is rebuilt from scratch, so an interrupted apply is recovered
+    // simply by running it again.
     var target = doc.getSheetByName(OMAD_TRANSACTIONS_V2_SHEET) ||
                  doc.insertSheet(OMAD_TRANSACTIONS_V2_SHEET);
     clearSheetRows_(target);
-    target.appendRow(OMAD_TRANSACTION_HEADER);
+    target.appendRow(LEDGER_HEADER);
 
     var sourceRows = readRawTransactionRows_(doc.getSheetByName(OMAD_TRANSACTIONS_SHEET));
+    var migratedAt = new Date().toISOString();
     var written = [];
     for (var i = 0; i < sourceRows.length; i++) {
       var resolution = resolveTransactionPeriod_(sourceRows[i], preview.fallbackYear);
       if (!resolution.period) continue;
-      var migrated = normalizeTransaction_({
-        id: sourceRows[i].id,
-        tenant: sourceRows[i].tenant,
-        month: resolution.period,
-        type: sourceRows[i].type,
-        amount: sourceRows[i].amount,
-        currency: sourceRows[i].currency,
-        method: sourceRows[i].method,
-        date: sourceRows[i].date,
-        comment: sourceRows[i].comment,
-        msgId: sourceRows[i].msgId,
-        requestId: sourceRows[i].requestId
-      });
-      written.push(transactionToRow_(migrated));
+      written.push(transactionToLedgerRow_(
+        migratedRowToLedger_(sourceRows[i], resolution.period, migratedAt)));
     }
     if (written.length > 0) {
-      target.getRange(2, 1, written.length, OMAD_TRANSACTION_HEADER.length).setValues(written);
+      target.getRange(2, 1, written.length, LEDGER_HEADER.length).setValues(written);
     }
 
     // Rates carry a month but no date of their own, so they follow the same
@@ -2217,7 +2251,15 @@ function applyOmadMigration_(doc, options) {
 function verifyOmadMigration_(doc) {
   var sourceRows = readRawTransactionRows_(doc.getSheetByName(OMAD_TRANSACTIONS_SHEET));
   var targetSheet = doc.getSheetByName(OMAD_TRANSACTIONS_V2_SHEET);
-  var targetRows = readRawTransactionRows_(targetSheet);
+  // The target carries the append-only schema, so it is read as a ledger and
+  // then shaped like the source for a like-for-like comparison.
+  var targetRows = readLedgerRows_(doc).map(function (t) {
+    return {
+      id: t.id, tenant: t.tenant, month: t.period, type: t.type, amount: t.amount,
+      currency: t.currency, method: t.method, date: t.createdAt, comment: t.comment,
+      msgId: t.msgId, requestId: t.requestId, status: t.status
+    };
+  });
   var failures = [];
 
   if (!targetSheet) {
@@ -2359,9 +2401,555 @@ function getMigrationStatus_(doc) {
   };
 }
 
+/**
+ * A legacy row in the append-only schema. The rates in force for the resolved
+ * period are frozen onto it, so post-migration rate edits cannot move it.
+ */
+function migratedRowToLedger_(row, period, migratedAt) {
+  var normalized = normalizeTransaction_({
+    id: row.id, tenant: row.tenant, month: period, type: row.type,
+    amount: row.amount, currency: row.currency, method: row.method,
+    date: row.date, comment: row.comment, msgId: row.msgId, requestId: row.requestId
+  });
+  var snapshot = buildRateSnapshot_(period, normalized.currency, "sell");
+
+  return {
+    id: normalized.id,
+    requestId: normalized.requestId,
+    // The original entry date is what matters; the migration timestamp is
+    // recorded separately as the update.
+    createdAt: legacyDateToIso_(row.date, period),
+    updatedAt: migratedAt,
+    createdBy: "migration",
+    source: TX_SOURCE_MIGRATION,
+    period: period,
+    tenant: normalized.tenant,
+    type: normalized.type,
+    amount: normalized.amount,
+    currency: normalized.currency,
+    rateBuy: snapshot.rateBuy,
+    rateSell: snapshot.rateSell,
+    rateUsed: snapshot.rateUsed,
+    rateType: snapshot.rateType,
+    amountUZS: Math.round(normalized.currency === "USD"
+      ? normalized.amount * snapshot.rateUsed : normalized.amount),
+    method: normalized.method,
+    comment: normalized.comment,
+    status: TX_STATUS_ACTIVE,
+    relatedId: "",
+    msgId: normalized.msgId,
+    schemaVersion: LEDGER_SCHEMA_VERSION
+  };
+}
+
+/** Best-effort ISO timestamp for a legacy row; falls back to the period start. */
+function legacyDateToIso_(dateValue, period) {
+  var parsed = parseTransactionDate_(dateValue);
+  if (parsed) {
+    var day = 1;
+    var text = String(dateValue || "");
+    var dmy = /^(\d{1,2})[\/.-]\d{1,2}[\/.-]\d{4}$/.exec(text);
+    var iso = /^\d{4}-\d{2}-(\d{2})/.exec(text);
+    if (dmy) day = Number(dmy[1]);
+    else if (iso) day = Number(iso[1]);
+    else if (typeof dateValue === "object" && dateValue.getDate) day = dateValue.getDate();
+    return new Date(Date.UTC(parsed.year, parsed.month - 1, day)).toISOString();
+  }
+  return new Date(Date.UTC(periodYear_(period), periodMonth_(period) - 1, 1)).toISOString();
+}
+
 function clearSheetRows_(sheet) {
   var lastRow = sheet.getLastRow();
   if (lastRow > 0) sheet.deleteRows(1, lastRow);
+}
+
+// ----- apps-script/14_ledger.gs ------------------------------------------------
+
+// ============================================================
+// Append-only transaction ledger (schema V2)
+// ------------------------------------------------------------
+// Financial records are never rewritten in place and never deleted.
+//
+//   create  -> append one Active row
+//   correct -> mark the original Corrected, append a new Active row that
+//              points back at it
+//   cancel  -> mark the row Cancelled; nothing is removed
+//
+// Every row carries the exchange rates that were in force when it was written,
+// so changing a rate later cannot move a historical value.
+// ============================================================
+
+var LEDGER_SCHEMA_VERSION = 2;
+
+var LEDGER_HEADER = [
+  "ID",                 //  1 transaction id
+  "Request_ID",         //  2 idempotency key
+  "Created_At",         //  3 ISO timestamp
+  "Updated_At",         //  4 ISO timestamp, set when the status changes
+  "Created_By",         //  5 who or what wrote it
+  "Source",             //  6 Web | Telegram | Migration
+  "Period",             //  7 canonical YYYY-MM
+  "Tenant",             //  8 tenant name, or the expense source
+  "Type",               //  9 Income | Expense
+  "Amount",             // 10 original amount
+  "Currency",           // 11 UZS | USD
+  "Rate_Buy",           // 12 buy rate available at write time
+  "Rate_Sell",          // 13 sell rate available at write time
+  "Rate_Used",          // 14 the rate actually applied
+  "Rate_Type",          // 15 which of the two was applied
+  "Amount_UZS",         // 16 converted value, frozen at write time
+  "Method",             // 17 Naqd | Bank
+  "Comment",            // 18 free text
+  "Status",             // 19 Active | Corrected | Cancelled
+  "Related_ID",         // 20 the transaction this one corrects
+  "Telegram_Msg_ID",    // 21 group message id
+  "Schema_Version"      // 22
+];
+
+var TX_STATUS_ACTIVE = "Active";
+var TX_STATUS_CORRECTED = "Corrected";
+var TX_STATUS_CANCELLED = "Cancelled";
+
+var TX_SOURCE_WEB = "Web";
+var TX_SOURCE_TELEGRAM = "Telegram";
+var TX_SOURCE_MIGRATION = "Migration";
+
+var TX_SOURCES = {};
+TX_SOURCES[TX_SOURCE_WEB] = true;
+TX_SOURCES[TX_SOURCE_TELEGRAM] = true;
+TX_SOURCES[TX_SOURCE_MIGRATION] = true;
+
+/** True once the migrated ledger is the sheet reads and writes go to. */
+function isLedgerActive_(doc) {
+  return activeTransactionSheetName_(doc) === OMAD_TRANSACTIONS_V2_SHEET;
+}
+
+function ledgerSheet_(doc) {
+  var sheet = doc.getSheetByName(OMAD_TRANSACTIONS_V2_SHEET) ||
+              doc.insertSheet(OMAD_TRANSACTIONS_V2_SHEET);
+  if (sheet.getLastRow() === 0) sheet.appendRow(LEDGER_HEADER);
+  return sheet;
+}
+
+function ledgerRowToTransaction_(row, rowNumber) {
+  return {
+    rowNumber: rowNumber,
+    id: String(row[0]),
+    requestId: String(row[1] || ""),
+    createdAt: String(row[2] || ""),
+    updatedAt: String(row[3] || ""),
+    createdBy: String(row[4] || ""),
+    source: String(row[5] || TX_SOURCE_WEB),
+    period: String(row[6] || ""),
+    tenant: String(row[7] || ""),
+    type: row[8] === "Expense" ? "Expense" : "Income",
+    amount: Number(row[9]) || 0,
+    currency: row[10] === "USD" ? "USD" : "UZS",
+    rateBuy: Number(row[11]) || 0,
+    rateSell: Number(row[12]) || 0,
+    rateUsed: Number(row[13]) || 0,
+    rateType: String(row[14] || "sell"),
+    amountUZS: Number(row[15]) || 0,
+    method: row[16] === "Bank" ? "Bank" : "Naqd",
+    comment: String(row[17] || ""),
+    status: String(row[18] || TX_STATUS_ACTIVE),
+    relatedId: String(row[19] || ""),
+    msgId: String(row[20] || ""),
+    schemaVersion: Number(row[21]) || LEDGER_SCHEMA_VERSION
+  };
+}
+
+function transactionToLedgerRow_(t) {
+  return [
+    t.id, t.requestId, t.createdAt, t.updatedAt, t.createdBy, t.source, t.period,
+    t.tenant, t.type, t.amount, t.currency, t.rateBuy, t.rateSell, t.rateUsed,
+    t.rateType, t.amountUZS, t.method, t.comment, t.status, t.relatedId,
+    t.msgId, t.schemaVersion
+  ];
+}
+
+/** Every row, in sheet order, including corrected and cancelled ones. */
+function readLedgerRows_(doc) {
+  var sheet = doc.getSheetByName(OMAD_TRANSACTIONS_V2_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) return [];
+
+  var data = sheet.getDataRange().getValues();
+  var rows = [];
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0] === "" || data[i][0] === null || data[i][0] === undefined) continue;
+    rows.push(ledgerRowToTransaction_(data[i], i + 1));
+  }
+  return rows;
+}
+
+function findLedgerRow_(doc, transactionId) {
+  var rows = readLedgerRows_(doc);
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i].id === String(transactionId)) return rows[i];
+  }
+  return null;
+}
+
+function findLedgerRowByRequestId_(doc, requestId) {
+  if (!requestId) return null;
+  var rows = readLedgerRows_(doc);
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i].requestId && rows[i].requestId === String(requestId)) return rows[i];
+  }
+  return null;
+}
+
+/**
+ * A transaction as the rest of the app expects to see it. `month` is kept
+ * alongside `period` so existing readers keep working unchanged.
+ */
+function ledgerToLegacyShape_(t) {
+  return {
+    id: t.id,
+    tenant: t.tenant,
+    month: t.period,
+    period: t.period,
+    periodLabel: formatPeriodLabel_(t.period),
+    periodSource: "canonical",
+    type: t.type,
+    amount: t.amount,
+    currency: t.currency,
+    method: t.method,
+    date: formatLedgerDate_(t.createdAt),
+    comment: t.comment,
+    msgId: t.msgId,
+    requestId: t.requestId,
+    status: t.status,
+    relatedId: t.relatedId,
+    source: t.source,
+    createdAt: t.createdAt,
+    updatedAt: t.updatedAt,
+    createdBy: t.createdBy,
+    rateBuy: t.rateBuy,
+    rateSell: t.rateSell,
+    rateUsed: t.rateUsed,
+    rateType: t.rateType,
+    amountUZS: t.amountUZS,
+    schemaVersion: t.schemaVersion
+  };
+}
+
+function formatLedgerDate_(isoTimestamp) {
+  try {
+    var parsed = new Date(String(isoTimestamp || ""));
+    if (isNaN(parsed.getTime())) return "";
+    return Utilities.formatDate(parsed, Session.getScriptTimeZone(), "dd/MM/yyyy");
+  } catch (error) {
+    return "";
+  }
+}
+
+// ------------------------------------------------------------------ validation
+
+function validateTransactionInput_(input) {
+  var payload = input || {};
+
+  if (!isCanonicalPeriod_(payload.period)) return "Davr noto'g'ri (masalan 2026-01).";
+  if (!String(payload.tenant || "").trim()) return "Obyekt tanlanmagan.";
+  if (String(payload.tenant).length > 200) return "Obyekt nomi juda uzun.";
+
+  var amount = Number(payload.amount);
+  if (!isFinite(amount) || amount <= 0) return "Summa musbat raqam bo'lishi kerak.";
+  if (amount > 1e15) return "Summa juda katta.";
+
+  if (payload.currency !== "UZS" && payload.currency !== "USD") return "Valyuta noto'g'ri.";
+  if (payload.method !== "Naqd" && payload.method !== "Bank") return "To'lov usuli noto'g'ri.";
+  if (payload.type !== "Income" && payload.type !== "Expense") return "Operatsiya turi noto'g'ri.";
+  if (String(payload.comment || "").length > 2000) return "Izoh juda uzun.";
+  if (payload.source && !TX_SOURCES[payload.source]) return "Manba noto'g'ri.";
+
+  return "";
+}
+
+/**
+ * Freezes the rates in force right now onto the transaction. USD amounts are
+ * converted at the sell rate; UZS amounts convert one-to-one and record the
+ * rates anyway, so the history is complete.
+ */
+function buildRateSnapshot_(period, currency, rateType) {
+  var rates = getOmadRates_();
+  var entry = getPeriodRate_(rates, period);
+  var appliedType = rateType === "buy" ? "buy" : "sell";
+  var used = currency === "USD" ? (appliedType === "buy" ? entry.buy : entry.sell) : 1;
+
+  return {
+    rateBuy: entry.buy,
+    rateSell: entry.sell,
+    rateUsed: used,
+    rateType: currency === "USD" ? appliedType : "none"
+  };
+}
+
+// -------------------------------------------------------------------- create
+
+/**
+ * Appends one Active transaction. Idempotent on `requestId`: the same request
+ * always resolves to the same record, so a retry, a refresh or a double-click
+ * cannot create a second copy.
+ */
+function createTransaction_(doc, input) {
+  var validationError = validateTransactionInput_(input);
+  if (validationError) return { status: "error", message: validationError };
+
+  var requestId = String(input.requestId || "").trim();
+  if (!requestId) return { status: "error", message: "requestId talab qilinadi." };
+  if (requestId.length > 128) return { status: "error", message: "requestId juda uzun." };
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var existing = findLedgerRowByRequestId_(doc, requestId);
+    if (existing) {
+      // Not an error: the caller gets exactly the record their request created.
+      return { status: "success", duplicate: true, transaction: ledgerToLegacyShape_(existing) };
+    }
+
+    var now = new Date().toISOString();
+    var snapshot = buildRateSnapshot_(input.period, input.currency, input.rateType);
+    var amount = Number(input.amount);
+
+    var transaction = {
+      id: input.id ? String(input.id) : nextTransactionId_(doc),
+      requestId: requestId,
+      createdAt: now,
+      updatedAt: "",
+      createdBy: String(input.createdBy || "").slice(0, 120),
+      source: TX_SOURCES[input.source] ? input.source : TX_SOURCE_WEB,
+      period: String(input.period),
+      tenant: String(input.tenant).trim(),
+      type: input.type,
+      amount: amount,
+      currency: input.currency,
+      rateBuy: snapshot.rateBuy,
+      rateSell: snapshot.rateSell,
+      rateUsed: snapshot.rateUsed,
+      rateType: snapshot.rateType,
+      amountUZS: Math.round(input.currency === "USD" ? amount * snapshot.rateUsed : amount),
+      method: input.method,
+      comment: String(input.comment || "").slice(0, 2000),
+      status: TX_STATUS_ACTIVE,
+      relatedId: "",
+      msgId: String(input.msgId || ""),
+      schemaVersion: LEDGER_SCHEMA_VERSION
+    };
+
+    ledgerSheet_(doc).appendRow(transactionToLedgerRow_(transaction));
+    appendAuditRow_(doc, "transaction_created", JSON.stringify({
+      id: transaction.id, period: transaction.period, source: transaction.source,
+      amount: transaction.amount, currency: transaction.currency
+    }));
+
+    return { status: "success", duplicate: false, transaction: ledgerToLegacyShape_(transaction) };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Ids are "<epochMillis>_<n>". The suffix disambiguates two transactions
+ * created inside the same millisecond, which the entry form does routinely.
+ */
+function nextTransactionId_(doc) {
+  var stamp = String(new Date().getTime());
+  var rows = readLedgerRows_(doc);
+  var used = {};
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i].id.indexOf(stamp + "_") === 0) used[rows[i].id] = true;
+  }
+  var index = 0;
+  while (used[stamp + "_" + index]) index++;
+  return stamp + "_" + index;
+}
+
+// ------------------------------------------------------------------- correct
+
+/**
+ * Marks the original Corrected and appends a replacement that points back at
+ * it. The original row is never edited beyond its status and timestamp, so the
+ * audit trail keeps the value that was actually recorded at the time.
+ */
+function correctTransaction_(doc, input) {
+  var requestId = String((input && input.requestId) || "").trim();
+  if (!requestId) return { status: "error", message: "requestId talab qilinadi." };
+
+  var validationError = validateTransactionInput_(input);
+  if (validationError) return { status: "error", message: validationError };
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var alreadyDone = findLedgerRowByRequestId_(doc, requestId);
+    if (alreadyDone) {
+      return { status: "success", duplicate: true, transaction: ledgerToLegacyShape_(alreadyDone) };
+    }
+
+    var original = findLedgerRow_(doc, input.transactionId);
+    if (!original) return { status: "error", message: "Tranzaksiya topilmadi." };
+    if (original.status !== TX_STATUS_ACTIVE) {
+      return {
+        status: "error",
+        message: "Bu tranzaksiya allaqachon " +
+                 (original.status === TX_STATUS_CANCELLED ? "bekor qilingan" : "tuzatilgan") + "."
+      };
+    }
+
+    var now = new Date().toISOString();
+    var snapshot = buildRateSnapshot_(input.period, input.currency, input.rateType);
+    var amount = Number(input.amount);
+
+    var replacement = {
+      id: nextTransactionId_(doc),
+      requestId: requestId,
+      createdAt: now,
+      updatedAt: "",
+      createdBy: String(input.createdBy || "").slice(0, 120),
+      source: TX_SOURCES[input.source] ? input.source : TX_SOURCE_WEB,
+      period: String(input.period),
+      tenant: String(input.tenant).trim(),
+      type: input.type,
+      amount: amount,
+      currency: input.currency,
+      rateBuy: snapshot.rateBuy,
+      rateSell: snapshot.rateSell,
+      rateUsed: snapshot.rateUsed,
+      rateType: snapshot.rateType,
+      amountUZS: Math.round(input.currency === "USD" ? amount * snapshot.rateUsed : amount),
+      method: input.method,
+      comment: String(input.comment || "").slice(0, 2000),
+      status: TX_STATUS_ACTIVE,
+      relatedId: original.id,
+      // The replacement inherits the group message so the report is edited
+      // rather than duplicated.
+      msgId: original.msgId,
+      schemaVersion: LEDGER_SCHEMA_VERSION
+    };
+
+    var sheet = ledgerSheet_(doc);
+    setLedgerStatus_(sheet, original.rowNumber, TX_STATUS_CORRECTED, now);
+    sheet.appendRow(transactionToLedgerRow_(replacement));
+
+    appendAuditRow_(doc, "transaction_corrected", JSON.stringify({
+      original: original.id, replacement: replacement.id,
+      before: { amount: original.amount, currency: original.currency, period: original.period },
+      after: { amount: replacement.amount, currency: replacement.currency, period: replacement.period }
+    }));
+
+    return {
+      status: "success",
+      duplicate: false,
+      transaction: ledgerToLegacyShape_(replacement),
+      corrected: original.id
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// -------------------------------------------------------------------- cancel
+
+/** Marks a transaction Cancelled. Financial records are never deleted. */
+function cancelTransaction_(doc, input) {
+  var requestId = String((input && input.requestId) || "").trim();
+  if (!requestId) return { status: "error", message: "requestId talab qilinadi." };
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var original = findLedgerRow_(doc, input.transactionId);
+    if (!original) return { status: "error", message: "Tranzaksiya topilmadi." };
+
+    if (original.status === TX_STATUS_CANCELLED) {
+      // Cancelling twice is the same outcome as cancelling once.
+      return { status: "success", duplicate: true, transaction: ledgerToLegacyShape_(original) };
+    }
+    if (original.status === TX_STATUS_CORRECTED) {
+      return { status: "error", message: "Tuzatilgan yozuvni bekor qilib bo'lmaydi. Yangi yozuvni bekor qiling." };
+    }
+
+    var now = new Date().toISOString();
+    setLedgerStatus_(ledgerSheet_(doc), original.rowNumber, TX_STATUS_CANCELLED, now);
+
+    appendAuditRow_(doc, "transaction_cancelled", JSON.stringify({
+      id: original.id, reason: String((input && input.reason) || "").slice(0, 500),
+      amount: original.amount, currency: original.currency, period: original.period
+    }));
+
+    var cancelled = Object.assign({}, original, { status: TX_STATUS_CANCELLED, updatedAt: now });
+    return { status: "success", duplicate: false, transaction: ledgerToLegacyShape_(cancelled) };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function setLedgerStatus_(sheet, rowNumber, status, timestamp) {
+  sheet.getRange(rowNumber, 19).setValue(status);
+  sheet.getRange(rowNumber, 4).setValue(timestamp);
+}
+
+// ---------------------------------------------------------------------- read
+
+/** Active transactions only - what the dashboard, reports and balances use. */
+function listActiveTransactions_(doc, filters) {
+  var options = filters || {};
+  var rows = readLedgerRows_(doc);
+  var result = [];
+
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i].status !== TX_STATUS_ACTIVE) continue;
+    if (options.period && rows[i].period !== options.period) continue;
+    if (options.tenant && rows[i].tenant !== options.tenant) continue;
+    if (options.type && rows[i].type !== options.type) continue;
+    result.push(ledgerToLegacyShape_(rows[i]));
+  }
+  return result;
+}
+
+function getTransaction_(doc, transactionId) {
+  var found = findLedgerRow_(doc, transactionId);
+  return found ? ledgerToLegacyShape_(found) : null;
+}
+
+/**
+ * The full chain for one transaction: the record itself, whatever it corrected,
+ * and whatever corrected it - newest last.
+ */
+function getTransactionHistory_(doc, transactionId) {
+  var rows = readLedgerRows_(doc);
+  var byId = {};
+  for (var i = 0; i < rows.length; i++) byId[rows[i].id] = rows[i];
+
+  var target = byId[String(transactionId)];
+  if (!target) return null;
+
+  // Walk back to the first record in the chain.
+  var root = target;
+  var guard = 0;
+  while (root.relatedId && byId[root.relatedId] && guard++ < 1000) root = byId[root.relatedId];
+
+  // Then forward, collecting every link.
+  var chain = [root];
+  var current = root;
+  guard = 0;
+  while (guard++ < 1000) {
+    var next = null;
+    for (var j = 0; j < rows.length; j++) {
+      if (rows[j].relatedId === current.id) { next = rows[j]; break; }
+    }
+    if (!next) break;
+    chain.push(next);
+    current = next;
+  }
+
+  return {
+    transactionId: String(transactionId),
+    chain: chain.map(ledgerToLegacyShape_),
+    current: ledgerToLegacyShape_(chain[chain.length - 1])
+  };
 }
 
 // ----- apps-script/20_api.gs ---------------------------------------------------
@@ -2400,6 +2988,11 @@ function doPost(e) {
     // ---- Omad ledger ------------------------------------------------------
     if (action === 'migrate_omad' || action === 'save_omad') {
       return saveOmadAction_(action, payload, doc, configSheet);
+    }
+
+    // ---- Append-only ledger -----------------------------------------------
+    if (isLedgerAction_(action)) {
+      return ledgerAction_(action, payload, doc);
     }
 
     // ---- Retry queue ------------------------------------------------------
@@ -2563,5 +3156,83 @@ function migrationAction_(action, payload, doc) {
   var rolledBack = rollbackOmadMigration_(doc);
   rolledBack.migration = getMigrationStatus_(doc);
   return jsonOutput_(rolledBack);
+}
+
+function isLedgerAction_(action) {
+  return action === 'create_transaction' ||
+         action === 'correct_transaction' ||
+         action === 'cancel_transaction' ||
+         action === 'list_transactions' ||
+         action === 'get_transaction' ||
+         action === 'get_transaction_history';
+}
+
+/**
+ * Individual transaction operations. They require the migrated ledger, because
+ * the legacy sheet has no status column and therefore cannot record a
+ * correction or a cancellation without losing the original.
+ */
+function ledgerAction_(action, payload, doc) {
+  if (action === 'list_transactions') {
+    return jsonOutput_({
+      status: "success",
+      transactions: isLedgerActive_(doc)
+        ? listActiveTransactions_(doc, {
+            period: payload.period || "",
+            tenant: payload.tenant || "",
+            type: payload.type || ""
+          })
+        : readOmadTransactions_(doc)
+    });
+  }
+
+  if (action === 'get_transaction') {
+    var found = getTransaction_(doc, payload.transactionId);
+    if (!found) return jsonOutput_({ status: "error", message: "Tranzaksiya topilmadi." });
+    return jsonOutput_({ status: "success", transaction: found });
+  }
+
+  if (action === 'get_transaction_history') {
+    var history = getTransactionHistory_(doc, payload.transactionId);
+    if (!history) return jsonOutput_({ status: "error", message: "Tranzaksiya topilmadi." });
+    return jsonOutput_({ status: "success", history: history });
+  }
+
+  if (!isLedgerActive_(doc)) {
+    return jsonOutput_({
+      status: "error",
+      message: "Yangi tranzaksiya tizimi hali yoqilmagan. Avval ma'lumotlarni ko'chiring."
+    });
+  }
+
+  var result;
+  if (action === 'create_transaction') result = createTransaction_(doc, payload);
+  else if (action === 'correct_transaction') result = correctTransaction_(doc, payload);
+  else result = cancelTransaction_(doc, payload);
+
+  if (result.status === "success") {
+    // The financial record is committed. Reporting is a separate retryable job.
+    result.reportJobId = queueLedgerReport_(doc, action, result) || "";
+    drainJobQueueQuietly_(doc);
+  }
+  return jsonOutput_(result);
+}
+
+/** Queues the Telegram report that matches the operation just performed. */
+function queueLedgerReport_(doc, action, result) {
+  if (result.duplicate) return "";
+  var transaction = result.transaction || {};
+
+  if (action === 'cancel_transaction') {
+    if (!transaction.msgId) return "";
+    return enqueueJob_(doc, "omad_transaction_delete_report", transaction.id, {
+      messageId: String(transaction.msgId)
+    });
+  }
+
+  return enqueueJob_(doc, "omad_transaction_report", transaction.id, {
+    baseId: String(transaction.id).split("_")[0],
+    messageId: String(transaction.msgId || "")
+  });
 }
 

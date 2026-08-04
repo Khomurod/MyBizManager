@@ -10,7 +10,7 @@ rolled back on its own.
 | 1b | Telegram proxy removal, webhook verification, retry queue, `/yangi` idempotency | ✅ delivered |
 | 2 | Code organization (module split, café duplicate removal) | ✅ delivered |
 | 3 | Year-month data model (`2026-01`) + friendly Uzbek labels | ✅ delivered (tooling; live run pending) |
-| 4 | Append-only transaction system (individual create/correct/cancel) | ⬜ not started |
+| 4 | Append-only transaction system (individual create/correct/cancel) | ✅ delivered |
 | 5 | Retry queue and fast saving | ⬜ not started |
 | 6 | Historical exchange rates stored per transaction; `sell` used consistently | ⬜ not started |
 | 7 | Settings redesign (Sozlamalar sections A–E) | ⬜ partial (D: Telegram done) |
@@ -60,6 +60,17 @@ from 2026-04-22 and can serve as sample data for migration dry runs.
 | Verification fails | Point reads back at `Omad_Transactions`; delete V2 |
 | Discovered after cutover | Restore from the `Omad_Backups` snapshot row taken immediately before cutover |
 | Catastrophic | Restore the file-level spreadsheet copy |
+
+### Rollback for stage 4
+
+The ledger is only live after cutover, so `rollback_omad_migration` is also the
+rollback for stage 4: reads and writes go back to the legacy sheet and the app
+returns to the whole-list save automatically (it reads
+`get_migration_status` on every sync).
+
+Ledger rows are never deleted by a rollback. Any transactions created after
+cutover stay in `Omad_Transactions_V2`; if you need them on the legacy sheet,
+copy them across before rolling back.
 
 ### Rollback for stage 3
 

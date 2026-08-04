@@ -131,10 +131,15 @@ test('apply writes a versioned sheet and leaves the original alone', () => {
   const result = gas.applyOmadMigration_(gas.__spreadsheet, {});
   assert.strictEqual(result.status, 'success');
 
+  // The versioned sheet carries the append-only schema: period in column 7,
+  // status in column 19.
   const migrated = v2Rows(gas);
   assert.strictEqual(migrated.length, 2);
-  assert.strictEqual(migrated[0][2], '2026-12');
-  assert.strictEqual(migrated[1][2], '2027-01');
+  assert.strictEqual(migrated[0][6], '2026-12');
+  assert.strictEqual(migrated[1][6], '2027-01');
+  assert.strictEqual(migrated[0][18], 'Active');
+  assert.strictEqual(migrated[0][5], 'Migration', 'the source is recorded');
+  assert.strictEqual(migrated[0][21], gas.LEDGER_SCHEMA_VERSION);
 
   const original = gas.__spreadsheet.getSheetByName('Omad_Transactions').getDataRange().getValues();
   assert.strictEqual(original[1][2], 'Dekabr', 'the original month value is preserved');
@@ -219,7 +224,8 @@ test('verification fails when the migrated sheet is tampered with', () => {
   const gas = boot([row('1_0', 'Yanvar', '05/01/2026'), row('2_0', 'Fevral', '05/02/2026')]);
   gas.applyOmadMigration_(gas.__spreadsheet, {});
 
-  gas.__spreadsheet.getSheetByName('Omad_Transactions_V2').getRange(2, 5).setValue(999);
+  // Column 10 is Amount in the ledger schema.
+  gas.__spreadsheet.getSheetByName('Omad_Transactions_V2').getRange(2, 10).setValue(999);
   const verification = gas.verifyOmadMigration_(gas.__spreadsheet);
 
   assert.strictEqual(verification.ok, false);

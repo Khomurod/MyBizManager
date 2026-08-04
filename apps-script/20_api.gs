@@ -34,6 +34,11 @@ function doPost(e) {
       return saveOmadAction_(action, payload, doc, configSheet);
     }
 
+    // ---- Append-only ledger -----------------------------------------------
+    if (isLedgerAction_(action)) {
+      return ledgerAction_(action, payload, doc);
+    }
+
     // ---- Retry queue ------------------------------------------------------
     if (action === 'get_job_queue_status') {
       return jsonOutput_({ status: "success", queue: buildJobQueueStatus_(doc) });
@@ -195,4 +200,82 @@ function migrationAction_(action, payload, doc) {
   var rolledBack = rollbackOmadMigration_(doc);
   rolledBack.migration = getMigrationStatus_(doc);
   return jsonOutput_(rolledBack);
+}
+
+function isLedgerAction_(action) {
+  return action === 'create_transaction' ||
+         action === 'correct_transaction' ||
+         action === 'cancel_transaction' ||
+         action === 'list_transactions' ||
+         action === 'get_transaction' ||
+         action === 'get_transaction_history';
+}
+
+/**
+ * Individual transaction operations. They require the migrated ledger, because
+ * the legacy sheet has no status column and therefore cannot record a
+ * correction or a cancellation without losing the original.
+ */
+function ledgerAction_(action, payload, doc) {
+  if (action === 'list_transactions') {
+    return jsonOutput_({
+      status: "success",
+      transactions: isLedgerActive_(doc)
+        ? listActiveTransactions_(doc, {
+            period: payload.period || "",
+            tenant: payload.tenant || "",
+            type: payload.type || ""
+          })
+        : readOmadTransactions_(doc)
+    });
+  }
+
+  if (action === 'get_transaction') {
+    var found = getTransaction_(doc, payload.transactionId);
+    if (!found) return jsonOutput_({ status: "error", message: "Tranzaksiya topilmadi." });
+    return jsonOutput_({ status: "success", transaction: found });
+  }
+
+  if (action === 'get_transaction_history') {
+    var history = getTransactionHistory_(doc, payload.transactionId);
+    if (!history) return jsonOutput_({ status: "error", message: "Tranzaksiya topilmadi." });
+    return jsonOutput_({ status: "success", history: history });
+  }
+
+  if (!isLedgerActive_(doc)) {
+    return jsonOutput_({
+      status: "error",
+      message: "Yangi tranzaksiya tizimi hali yoqilmagan. Avval ma'lumotlarni ko'chiring."
+    });
+  }
+
+  var result;
+  if (action === 'create_transaction') result = createTransaction_(doc, payload);
+  else if (action === 'correct_transaction') result = correctTransaction_(doc, payload);
+  else result = cancelTransaction_(doc, payload);
+
+  if (result.status === "success") {
+    // The financial record is committed. Reporting is a separate retryable job.
+    result.reportJobId = queueLedgerReport_(doc, action, result) || "";
+    drainJobQueueQuietly_(doc);
+  }
+  return jsonOutput_(result);
+}
+
+/** Queues the Telegram report that matches the operation just performed. */
+function queueLedgerReport_(doc, action, result) {
+  if (result.duplicate) return "";
+  var transaction = result.transaction || {};
+
+  if (action === 'cancel_transaction') {
+    if (!transaction.msgId) return "";
+    return enqueueJob_(doc, "omad_transaction_delete_report", transaction.id, {
+      messageId: String(transaction.msgId)
+    });
+  }
+
+  return enqueueJob_(doc, "omad_transaction_report", transaction.id, {
+    baseId: String(transaction.id).split("_")[0],
+    messageId: String(transaction.msgId || "")
+  });
 }
