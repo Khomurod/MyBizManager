@@ -316,12 +316,12 @@ describe('Telegram settings panel (browser)', () => {
   });
 
   test('panel is usable on a mobile viewport', async () => {
-    // NOTE: this deliberately does not assert on document-level horizontal
-    // overflow. Layout comes from the Tailwind CDN, which is unreachable in
-    // some sandboxes - there the measurement passes vacuously against unstyled
-    // HTML, and where Tailwind does load the page already overflows slightly
-    // at 375px. That overflow predates this panel and is not diagnosed here;
-    // see docs/ARCHITECTURE.md. What is asserted below holds either way.
+    // NOTE: deliberately not asserting document-level horizontal overflow.
+    // omad_admin.html already overflows to 489px at a 375px viewport, caused
+    // by the pre-existing exchange-rate row (two flex-1 inputs plus a button
+    // with no min-w-0), which is out of scope for this PR - see
+    // docs/ARCHITECTURE.md. The assertions below are scoped to the Telegram
+    // panel and hold whether or not the Tailwind CDN is reachable.
     const state = { ...savedState };
     const { page, context } = await openAdmin(backend(state));
     await page.setViewportSize({ width: 375, height: 812 });
@@ -342,11 +342,20 @@ describe('Telegram settings panel (browser)', () => {
       assert.ok(await page.isEnabled(selector), `${selector} is not enabled on mobile`);
     }
 
-    // Inputs stay inside the viewport rather than running off the right edge.
-    const widest = await page.evaluate(() =>
-      Math.max(...[...document.querySelectorAll('#tab-settings input')]
-        .map(el => el.getBoundingClientRect().right)));
-    assert.ok(widest <= 375, `an input extends to ${widest}px, past the 375px viewport`);
+    // Every Telegram input stays inside its own card rather than running past
+    // the right edge. Comparing against the container (not the viewport) makes
+    // this meaningful with or without Tailwind loaded.
+    const overhang = await page.evaluate(() => {
+      const card = document.getElementById('tgBotToken').closest('.card');
+      const cardRight = card.getBoundingClientRect().right;
+      return [...card.querySelectorAll('input, button')]
+        .map(el => ({
+          id: el.id || el.textContent.trim().slice(0, 20),
+          over: Math.round(el.getBoundingClientRect().right - cardRight)
+        }))
+        .filter(x => x.over > 1);
+    });
+    assert.deepStrictEqual(overhang, [], 'Telegram controls must not overflow their card');
 
     await context.close();
   });

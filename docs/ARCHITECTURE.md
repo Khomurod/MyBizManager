@@ -114,11 +114,22 @@ These are tracked as the remaining migration stages:
 7. **Duplicate functions in `cafe_pos.html`**: `recomputeCloseDay` (×3),
    `renderCloseDayList` (×2), `submitCloseDay` (×2). Later definitions win at
    runtime. Guarded by a test so the set cannot grow.
-8. **Slight horizontal overflow on `omad_admin.html` at 375px.** Observed in CI
-   (where the Tailwind CDN is reachable) on the Sozlamalar tab. It predates the
-   Telegram panel and has not been diagnosed — the browser test asserts that
-   controls are visible, enabled and within the viewport instead of asserting
-   document-level overflow. Worth fixing during the settings redesign (stage 7).
+8. **Horizontal overflow on `omad_admin.html` at 375px** (`scrollWidth` 489px vs
+   a 375px viewport, Sozlamalar tab). Traced to the pre-existing exchange-rate
+   row in the *Oylik Kurslar* card:
+
+   ```html
+   <div class="flex gap-2 mb-2">
+     <input ... id="settingRateBuyInput"  class="flex-1 p-2 border rounded text-sm">
+     <input ... id="settingRateSellInput" class="flex-1 p-2 border rounded text-sm">
+     <button ... class="bg-blue-600 text-white px-3 rounded ...">OK</button>
+   </div>
+   ```
+
+   `flex-1` items default to `min-width: auto`, so the inputs refuse to shrink
+   below their intrinsic width and push the button off-screen. The fix is to add
+   `min-w-0` to both inputs. Left alone here because it is unrelated to the
+   Telegram change; scheduled for the settings redesign (stage 7).
 
 ## Testing
 
