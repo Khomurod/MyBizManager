@@ -40,6 +40,7 @@ filename order. `npm run build` regenerates `script.gs`; `npm run build:check`
 | `11_report_jobs.gs` | Server-composed business reports |
 | `12_cafe.gs` | Café inventory, sales, voids, close-day |
 | `13_migration.gs` | Period migration: preview, apply, verify, cutover, rollback |
+| `14_ledger.gs` | Append-only ledger: create / correct / cancel / read / audit |
 | `20_api.gs` | `doPost` / `doGet` routing only |
 
 ### Frontend modules
@@ -102,7 +103,7 @@ Column A = key, column B = a JSON string.
 | `Telegram_Debug_Log` | `[Timestamp, Event, Details]` — secrets redacted on write |
 | `Cafe_Sales` | `[Sana, Sotuvchi, Jami_Tushum, Sof_Foyda, Chek_Tafsilotlari, ID]` |
 | `Cafe_Kun_Yakuni` | `[Sana, Sotuvchi, Jami_Tushum, Sof_Foyda, Tafsilotlar_JSON]` |
-| `Omad_Transactions_V2` | migrated ledger, canonical periods — written by the migration, read after cutover |
+| `Omad_Transactions_V2` | **append-only ledger** (schema V2) — written by the migration, read after cutover |
 | `Omad_Job_Queue` | retry queue — `[Job_ID, Related_ID, Type, Payload_JSON, Status, Attempts, Next_Attempt_At, Last_Error, Created_At, Completed_At]` |
 
 ## Apps Script Script Properties
@@ -218,6 +219,64 @@ so the app shows correct years **before** the sheet is migrated.
 | `cutover_omad_migration` | Refuses unless verification passes, then points `Omad_Active_Transactions_Sheet` at V2 |
 | `rollback_omad_migration` | Points reads back at the original and restores the pre-migration rate map. **Never deletes migrated data** |
 
+## Append-only ledger (`Omad_Transactions_V2`, schema version 2)
+
+Financial records are never rewritten in place and never deleted.
+
+| Col | Header | Notes |
+|---|---|---|
+| 1 | `ID` | `"<epochMillis>_<n>"` |
+| 2 | `Request_ID` | idempotency key |
+| 3 | `Created_At` | ISO timestamp |
+| 4 | `Updated_At` | set when the status changes |
+| 5 | `Created_By` | who or what wrote it |
+| 6 | `Source` | `Web` \| `Telegram` \| `Migration` |
+| 7 | `Period` | canonical `YYYY-MM` |
+| 8 | `Tenant` | tenant name, or the expense source |
+| 9 | `Type` | `Income` \| `Expense` |
+| 10 | `Amount` | original amount |
+| 11 | `Currency` | `UZS` \| `USD` |
+| 12 | `Rate_Buy` | buy rate available at write time |
+| 13 | `Rate_Sell` | sell rate available at write time |
+| 14 | `Rate_Used` | the rate actually applied |
+| 15 | `Rate_Type` | `buy` \| `sell` \| `none` |
+| 16 | `Amount_UZS` | converted value, **frozen** at write time |
+| 17 | `Method` | `Naqd` \| `Bank` |
+| 18 | `Comment` | free text |
+| 19 | `Status` | `Active` \| `Corrected` \| `Cancelled` |
+| 20 | `Related_ID` | the transaction this one corrects |
+| 21 | `Telegram_Msg_ID` | group message id |
+| 22 | `Schema_Version` | `2` |
+
+### Operations
+
+| Action | Effect |
+|---|---|
+| `create_transaction` | Appends one `Active` row. Idempotent on `Request_ID` |
+| `correct_transaction` | Marks the original `Corrected` and appends a replacement whose `Related_ID` points back at it. The original's values are untouched |
+| `cancel_transaction` | Marks the row `Cancelled`. Nothing is removed |
+| `list_transactions` | `Active` rows only, optionally filtered by period / tenant / type |
+| `get_transaction` | One row, whatever its status |
+| `get_transaction_history` | The whole correction chain, oldest first |
+
+All writes take the script lock. Correcting an already-corrected or cancelled
+record is refused rather than silently applied. Cancelling twice is the same
+outcome as cancelling once.
+
+### Backward-compatible reads
+
+`readOmadTransactions_` returns the same shape either way: before cutover it
+reads the legacy sheet and resolves periods in memory, after cutover it reads
+`Active` ledger rows. Ledger rows also expose `month` (mirroring `period`) so
+existing readers keep working.
+
+The whole-list `save_omad` rewrite is **refused for transactions** once the
+ledger is live — it is exactly what the append-only design exists to prevent.
+Tenants, rates and planned expenses still save through it.
+
+The frontend picks its path from `get_migration_status`, so a half-finished
+migration cannot break entry.
+
 ## Exchange rates
 
 `normalizeRateEntry_` accepts a bare number (legacy) or `{buy, sell}`.
@@ -232,14 +291,17 @@ still moves historical values — addressed by stage 6.
 
 These are tracked as the remaining migration stages:
 
-1. **Whole-database rewrites.** `save_omad` sends and rewrites the entire
-   transaction list on every add/edit/delete.
+1. ~~Whole-database rewrites.~~ Replaced by the append-only ledger once the
+   migration is cut over. Before cutover the legacy path is still used, by
+   design.
 2. ~~Month-only periods.~~ Replaced by canonical `YYYY-MM` periods. The
    migration tooling is delivered and tested; the live sheet migration has not
    been run (it needs access to the spreadsheet).
-3. **No stored exchange rate per transaction.** Historical values drift.
-4. **No idempotency for *web* submits.** Telegram `/yangi` is idempotent via
-   `Request_ID`; the web entry form is not yet (stage 5).
+3. **No stored exchange rate per transaction** *for legacy rows*. Ledger rows
+   freeze `Rate_Buy`, `Rate_Sell`, `Rate_Used` and `Amount_UZS` at write time;
+   stage 6 makes every consumer read the frozen value.
+4. **Idempotency** is delivered for Telegram `/yangi` and for web submits
+   against the ledger. The legacy pre-cutover path is still not idempotent.
 5. ~~No retry queue.~~ Delivered — `Omad_Job_Queue`.
 6. **Projection uses the `buy` rate, actuals use `sell`.** The rule is
    implicit rather than explicit and tested.

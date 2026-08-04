@@ -56,9 +56,25 @@ async function syncData() {
                 ? remote.templateExpenses.map(normalizeTemplateExpense)
                 : [];
         }
+        await loadMigrationState();
     } catch (e) { console.log("Offline or Error"); }
     renderAll();
     showLoader(false);
+}
+
+/**
+ * Whether the append-only ledger is live. Until cutover the app keeps using
+ * the whole-list save, so a half-finished migration cannot break entry.
+ */
+async function loadMigrationState() {
+    try {
+        const data = await callBackend({ action: 'get_migration_status' });
+        app.migration = (data && data.migration) || null;
+        app.ledgerActive = !!(app.migration && app.migration.activeSheet === 'Omad_Transactions_V2');
+    } catch (e) {
+        app.migration = null;
+        app.ledgerActive = false;
+    }
 }
 
 /**

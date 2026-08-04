@@ -17,7 +17,11 @@ let app = {
     rates: {},
     tenants: [], 
     transactions: [],
-    templateExpenses: []
+    templateExpenses: [],
+    // Filled in from get_migration_status; decides whether entry uses the
+    // append-only ledger operations or the legacy whole-list save.
+    migration: null,
+    ledgerActive: false
 };
 
 let cart = [];

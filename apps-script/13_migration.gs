@@ -13,7 +13,7 @@
 // ============================================================
 
 var MIGRATION_STATUS_KEY = "Omad_Migration_Status";
-var MIGRATION_SCHEMA_VERSION = 2;
+var MIGRATION_SCHEMA_VERSION = LEDGER_SCHEMA_VERSION;
 
 /**
  * Resolves every row without writing anything.
@@ -175,33 +175,24 @@ function applyOmadMigration_(doc, options) {
   try {
     backupOmadState_(doc, configSheet, "pre_period_migration");
 
+    // The target is rebuilt from scratch, so an interrupted apply is recovered
+    // simply by running it again.
     var target = doc.getSheetByName(OMAD_TRANSACTIONS_V2_SHEET) ||
                  doc.insertSheet(OMAD_TRANSACTIONS_V2_SHEET);
     clearSheetRows_(target);
-    target.appendRow(OMAD_TRANSACTION_HEADER);
+    target.appendRow(LEDGER_HEADER);
 
     var sourceRows = readRawTransactionRows_(doc.getSheetByName(OMAD_TRANSACTIONS_SHEET));
+    var migratedAt = new Date().toISOString();
     var written = [];
     for (var i = 0; i < sourceRows.length; i++) {
       var resolution = resolveTransactionPeriod_(sourceRows[i], preview.fallbackYear);
       if (!resolution.period) continue;
-      var migrated = normalizeTransaction_({
-        id: sourceRows[i].id,
-        tenant: sourceRows[i].tenant,
-        month: resolution.period,
-        type: sourceRows[i].type,
-        amount: sourceRows[i].amount,
-        currency: sourceRows[i].currency,
-        method: sourceRows[i].method,
-        date: sourceRows[i].date,
-        comment: sourceRows[i].comment,
-        msgId: sourceRows[i].msgId,
-        requestId: sourceRows[i].requestId
-      });
-      written.push(transactionToRow_(migrated));
+      written.push(transactionToLedgerRow_(
+        migratedRowToLedger_(sourceRows[i], resolution.period, migratedAt)));
     }
     if (written.length > 0) {
-      target.getRange(2, 1, written.length, OMAD_TRANSACTION_HEADER.length).setValues(written);
+      target.getRange(2, 1, written.length, LEDGER_HEADER.length).setValues(written);
     }
 
     // Rates carry a month but no date of their own, so they follow the same
@@ -238,7 +229,15 @@ function applyOmadMigration_(doc, options) {
 function verifyOmadMigration_(doc) {
   var sourceRows = readRawTransactionRows_(doc.getSheetByName(OMAD_TRANSACTIONS_SHEET));
   var targetSheet = doc.getSheetByName(OMAD_TRANSACTIONS_V2_SHEET);
-  var targetRows = readRawTransactionRows_(targetSheet);
+  // The target carries the append-only schema, so it is read as a ledger and
+  // then shaped like the source for a like-for-like comparison.
+  var targetRows = readLedgerRows_(doc).map(function (t) {
+    return {
+      id: t.id, tenant: t.tenant, month: t.period, type: t.type, amount: t.amount,
+      currency: t.currency, method: t.method, date: t.createdAt, comment: t.comment,
+      msgId: t.msgId, requestId: t.requestId, status: t.status
+    };
+  });
   var failures = [];
 
   if (!targetSheet) {
@@ -378,6 +377,63 @@ function getMigrationStatus_(doc) {
     cutoverAt: stored.cutoverAt || "",
     rolledBackAt: stored.rolledBackAt || ""
   };
+}
+
+/**
+ * A legacy row in the append-only schema. The rates in force for the resolved
+ * period are frozen onto it, so post-migration rate edits cannot move it.
+ */
+function migratedRowToLedger_(row, period, migratedAt) {
+  var normalized = normalizeTransaction_({
+    id: row.id, tenant: row.tenant, month: period, type: row.type,
+    amount: row.amount, currency: row.currency, method: row.method,
+    date: row.date, comment: row.comment, msgId: row.msgId, requestId: row.requestId
+  });
+  var snapshot = buildRateSnapshot_(period, normalized.currency, "sell");
+
+  return {
+    id: normalized.id,
+    requestId: normalized.requestId,
+    // The original entry date is what matters; the migration timestamp is
+    // recorded separately as the update.
+    createdAt: legacyDateToIso_(row.date, period),
+    updatedAt: migratedAt,
+    createdBy: "migration",
+    source: TX_SOURCE_MIGRATION,
+    period: period,
+    tenant: normalized.tenant,
+    type: normalized.type,
+    amount: normalized.amount,
+    currency: normalized.currency,
+    rateBuy: snapshot.rateBuy,
+    rateSell: snapshot.rateSell,
+    rateUsed: snapshot.rateUsed,
+    rateType: snapshot.rateType,
+    amountUZS: Math.round(normalized.currency === "USD"
+      ? normalized.amount * snapshot.rateUsed : normalized.amount),
+    method: normalized.method,
+    comment: normalized.comment,
+    status: TX_STATUS_ACTIVE,
+    relatedId: "",
+    msgId: normalized.msgId,
+    schemaVersion: LEDGER_SCHEMA_VERSION
+  };
+}
+
+/** Best-effort ISO timestamp for a legacy row; falls back to the period start. */
+function legacyDateToIso_(dateValue, period) {
+  var parsed = parseTransactionDate_(dateValue);
+  if (parsed) {
+    var day = 1;
+    var text = String(dateValue || "");
+    var dmy = /^(\d{1,2})[\/.-]\d{1,2}[\/.-]\d{4}$/.exec(text);
+    var iso = /^\d{4}-\d{2}-(\d{2})/.exec(text);
+    if (dmy) day = Number(dmy[1]);
+    else if (iso) day = Number(iso[1]);
+    else if (typeof dateValue === "object" && dateValue.getDate) day = dateValue.getDate();
+    return new Date(Date.UTC(parsed.year, parsed.month - 1, day)).toISOString();
+  }
+  return new Date(Date.UTC(periodYear_(period), periodMonth_(period) - 1, 1)).toISOString();
 }
 
 function clearSheetRows_(sheet) {
