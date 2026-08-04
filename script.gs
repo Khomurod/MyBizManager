@@ -29,6 +29,30 @@
     }
 
     // ==========================================
+    // 1b. TELEGRAM SETTINGS & SERVER-SIDE PROXY
+    // ==========================================
+    if (action === 'get_telegram_settings') {
+      return jsonOutput_({ status: "success", settings: buildTelegramSettingsView_() });
+    }
+
+    if (action === 'save_telegram_settings' ||
+        action === 'test_telegram_connection' ||
+        action === 'send_telegram_test_message' ||
+        action === 'configure_telegram_webhook') {
+      var adminError = checkAdminKey_(payload);
+      if (adminError) return jsonOutput_({ status: "error", message: adminError });
+
+      if (action === 'save_telegram_settings') return jsonOutput_(saveTelegramSettings_(payload));
+      if (action === 'test_telegram_connection') return jsonOutput_(testTelegramConnection_());
+      if (action === 'send_telegram_test_message') return jsonOutput_(sendTelegramTestMessage_());
+      return jsonOutput_(configureTelegramWebhook_(payload));
+    }
+
+    if (action === 'telegram_send' || action === 'telegram_edit' || action === 'telegram_delete') {
+      return jsonOutput_(proxyTelegramGroupCall_(action, payload));
+    }
+
+    // ==========================================
     // 2. CAFE ADMIN (INVENTORY, RECIPES, CATEGORIES, SETTINGS)
     // ==========================================
     if (action === 'save_inventory') {
@@ -357,30 +381,63 @@ function backupOmadState_(doc, configSheet, reason) {
   backupSheet.appendRow([new Date().toISOString(), reason || "omad_write", JSON.stringify(snapshot)]);
 }
 
+var TELEGRAM_UNAUTHORIZED_MESSAGE = "⛔️ Sizda bu botdan foydalanish huquqi yo'q.";
+
+/**
+ * Single source of truth for /yangi authorization.
+ * Uses Telegram's permanent numeric from.id - never the username, which can
+ * be changed or impersonated. Returns true only for the configured admin.
+ */
+function isAuthorizedTelegramUser_(fromId) {
+  var configured = getAuthorizedTelegramUserId_();
+  if (!configured) return false;
+  var actual = String(fromId === null || fromId === undefined ? "" : fromId).trim();
+  if (!actual) return false;
+  return actual === String(configured).trim();
+}
+
+function extractTelegramFromId_(update) {
+  if (!update) return "";
+  if (update.callback_query && update.callback_query.from) return update.callback_query.from.id;
+  if (update.message && update.message.from) return update.message.from.id;
+  return "";
+}
+
 function handleOmadTelegramUpdate_(update, doc, configSheet) {
   var callback = update.callback_query;
   var message = update.message;
   var chatId = callback ? callback.message.chat.id : message.chat.id;
   var chatType = callback ? callback.message.chat.type : message.chat.type;
+  var fromId = extractTelegramFromId_(update);
   var cache = CacheService.getScriptCache();
-  var key = "yangi_" + chatId;
-  debugLog_(doc, "telegram_update_received", JSON.stringify({ chatId: chatId, chatType: chatType, text: message && message.text, callback: callback && callback.data }));
+  // Session key is bound to the authorized user, not just the chat.
+  var key = "yangi_" + fromId;
+  debugLog_(doc, "telegram_update_received", JSON.stringify({ chatId: chatId, fromId: fromId, chatType: chatType, text: message && message.text, callback: callback && callback.data }));
 
+  // The reporting group receives reports only - never accepts transaction entry.
   if (chatType !== "private") {
     debugLog_(doc, "telegram_non_private_ignored", JSON.stringify({ chatId: chatId, chatType: chatType, text: message && message.text, callback: callback && callback.data }));
     return okHtmlOutput_();
   }
 
+  // Gate #1: every private update, before any session/cache/record is touched.
+  if (!isAuthorizedTelegramUser_(fromId)) {
+    debugLog_(doc, "telegram_unauthorized_blocked", JSON.stringify({ chatId: chatId, fromId: fromId, callback: callback && callback.data }));
+    if (callback) answerCallbackQuery_(callback.id, TELEGRAM_UNAUTHORIZED_MESSAGE);
+    sendTelegramMessage_(chatId, TELEGRAM_UNAUTHORIZED_MESSAGE);
+    return okHtmlOutput_();
+  }
+
   if (callback) {
     answerCallbackQuery_(callback.id);
-    processOmadCallback_(callback, chatId, key, cache, configSheet);
+    processOmadCallback_(callback, chatId, key, cache, configSheet, fromId);
     return okHtmlOutput_();
   }
 
   var text = String((message && message.text) || "").trim();
   if (text === "/yangi" || text.indexOf("/yangi ") === 0) {
     cache.remove(key);
-    debugLog_(doc, "telegram_yangi_triggered", JSON.stringify({ chatId: chatId }));
+    debugLog_(doc, "telegram_yangi_triggered", JSON.stringify({ chatId: chatId, fromId: fromId }));
     sendTelegramMessage_(chatId, "Iltimos, operatsiya turini tanlang:", {
       inline_keyboard: [[
         { text: "🟢 Kirim", callback_data: "bot_type:Income" },
@@ -390,11 +447,18 @@ function handleOmadTelegramUpdate_(update, doc, configSheet) {
     return okHtmlOutput_();
   }
 
-  processOmadTextStep_(text, chatId, key, cache, doc, configSheet);
+  processOmadTextStep_(text, chatId, key, cache, doc, configSheet, fromId);
   return okHtmlOutput_();
 }
 
-function processOmadCallback_(callback, chatId, key, cache, configSheet) {
+function processOmadCallback_(callback, chatId, key, cache, configSheet, fromId) {
+  // Gate #2: re-checked on every inline button callback (type, tenant,
+  // expense source and currency selection all arrive through here).
+  if (!isAuthorizedTelegramUser_(fromId)) {
+    sendTelegramMessage_(chatId, TELEGRAM_UNAUTHORIZED_MESSAGE);
+    return;
+  }
+
   var data = String(callback.data || "");
   var state = safeParseJSON_(cache.get(key), {});
 
@@ -440,7 +504,14 @@ function processOmadCallback_(callback, chatId, key, cache, configSheet) {
   }
 }
 
-function processOmadTextStep_(text, chatId, key, cache, doc, configSheet) {
+function processOmadTextStep_(text, chatId, key, cache, doc, configSheet, fromId) {
+  // Gate #3: re-checked on the amount and description steps, immediately
+  // before the transaction is written to the sheet.
+  if (!isAuthorizedTelegramUser_(fromId)) {
+    sendTelegramMessage_(chatId, TELEGRAM_UNAUTHORIZED_MESSAGE);
+    return;
+  }
+
   var state = safeParseJSON_(cache.get(key), null);
   if (!state || !state.step) return;
 
@@ -458,6 +529,13 @@ function processOmadTextStep_(text, chatId, key, cache, doc, configSheet) {
   }
 
   if (state.step === "await_desc") {
+    // Gate #4: final check immediately before the financial record is saved.
+    if (!isAuthorizedTelegramUser_(fromId)) {
+      cache.remove(key);
+      sendTelegramMessage_(chatId, TELEGRAM_UNAUTHORIZED_MESSAGE);
+      return;
+    }
+
     var lock = LockService.getScriptLock();
     lock.waitLock(30000);
     var transaction;
@@ -494,7 +572,7 @@ function processOmadTextStep_(text, chatId, key, cache, doc, configSheet) {
 }
 
 function getOmadGroupChatId_() {
-  return "-5124753855";
+  return getTelegramSetting_(TELEGRAM_PROP_GROUP_CHAT_ID);
 }
 
 function extractTelegramMessageId_(response) {
@@ -625,51 +703,328 @@ function editTelegramMessage_(chatId, messageId, text, replyMarkup) {
   return telegramFetch_("editMessageText", body);
 }
 
-function answerCallbackQuery_(callbackQueryId) {
-  telegramFetch_("answerCallbackQuery", { callback_query_id: callbackQueryId });
+function answerCallbackQuery_(callbackQueryId, text) {
+  var body = { callback_query_id: callbackQueryId };
+  if (text) body.text = text;
+  telegramFetch_("answerCallbackQuery", body);
 }
 
 function telegramFetch_(method, body) {
   var token = getBotToken_();
-  if (!token) throw new Error("Telegram bot token is missing");
-  var response = UrlFetchApp.fetch("https://api.telegram.org/bot" + token + "/" + method, {
-    method: "post",
-    contentType: "application/json",
-    payload: JSON.stringify(body),
-    muteHttpExceptions: true
-  });
+  if (!token) throw new Error("Telegram bot token is not configured. Set it in Sozlamalar → Telegram.");
+
+  var response;
+  try {
+    response = UrlFetchApp.fetch("https://api.telegram.org/bot" + token + "/" + method, {
+      method: "post",
+      contentType: "application/json",
+      payload: JSON.stringify(body),
+      muteHttpExceptions: true
+    });
+  } catch (transportError) {
+    recordTelegramError_(method, transportError);
+    throw new Error("Telegram API " + method + " unreachable: " + redactSecrets_(transportError));
+  }
+
   var responseText = response.getContentText();
+  var responseCode = response.getResponseCode();
+
   debugLog_(SpreadsheetApp.getActiveSpreadsheet(), "telegram_api_" + method, JSON.stringify({
-    code: response.getResponseCode(),
+    code: responseCode,
     request: body,
     response: responseText
   }));
-  if (response.getResponseCode() < 200 || response.getResponseCode() >= 300) {
-    throw new Error("Telegram API " + method + " failed: " + responseText);
+
+  if (responseCode < 200 || responseCode >= 300) {
+    var failure = "Telegram API " + method + " failed (HTTP " + responseCode + "): " + responseText;
+    recordTelegramError_(method, failure);
+    throw new Error(redactSecrets_(failure));
   }
+
+  recordTelegramSuccess_(method);
   return response;
 }
 
+// ==========================================
+// 5. TELEGRAM CREDENTIALS & SETTINGS
+// ------------------------------------------
+// Secrets live ONLY in Apps Script Script Properties. They are never
+// hardcoded, never returned to the browser and never written to logs.
+// ==========================================
+
+var TELEGRAM_PROP_BOT_TOKEN = "TELEGRAM_BOT_TOKEN";
+var TELEGRAM_PROP_AUTHORIZED_USER_ID = "TELEGRAM_AUTHORIZED_USER_ID";
+var TELEGRAM_PROP_GROUP_CHAT_ID = "TELEGRAM_GROUP_CHAT_ID";
+var TELEGRAM_PROP_WEBHOOK_URL = "TELEGRAM_WEBHOOK_URL";
+var TELEGRAM_PROP_WEBHOOK_STATUS = "TELEGRAM_WEBHOOK_STATUS";
+var TELEGRAM_PROP_LAST_SUCCESS = "TELEGRAM_LAST_SUCCESS";
+var TELEGRAM_PROP_LAST_ERROR = "TELEGRAM_LAST_ERROR";
+var OMAD_PROP_ADMIN_KEY = "OMAD_ADMIN_KEY";
+
+var TELEGRAM_TOKEN_PATTERN = /^\d{6,16}:[A-Za-z0-9_-]{30,}$/;
+var TELEGRAM_TOKEN_LIKE_PATTERN = /\d{6,16}:[A-Za-z0-9_-]{30,}/g;
+
+function scriptProperties_() {
+  return PropertiesService.getScriptProperties();
+}
+
+function getTelegramSetting_(key) {
+  try {
+    return scriptProperties_().getProperty(key) || "";
+  } catch (error) {
+    return "";
+  }
+}
+
+function setTelegramSetting_(key, value) {
+  if (value === null || value === undefined || value === "") {
+    scriptProperties_().deleteProperty(key);
+    return;
+  }
+  scriptProperties_().setProperty(key, String(value));
+}
+
 function getBotToken_() {
-  var hardcodedToken = "7752185432:AAGJqGlLE2Ze0jHfGftTXyC2yic-EvffHGg";
-  if (hardcodedToken) return hardcodedToken;
-  if (typeof BOT_TOKEN !== "undefined" && BOT_TOKEN) return BOT_TOKEN;
-  return PropertiesService.getScriptProperties().getProperty("BOT_TOKEN") || "";
+  return getTelegramSetting_(TELEGRAM_PROP_BOT_TOKEN);
 }
 
+function getAuthorizedTelegramUserId_() {
+  return getTelegramSetting_(TELEGRAM_PROP_AUTHORIZED_USER_ID);
+}
+
+/**
+ * Removes anything that looks like a Telegram bot token (and the configured
+ * token itself) from any string before it is logged or returned to a client.
+ */
+function redactSecrets_(value) {
+  var text = value === null || value === undefined ? "" : String(value && value.message ? value.message : value);
+  var token = "";
+  try {
+    token = getBotToken_();
+  } catch (error) {
+    token = "";
+  }
+  if (token) {
+    text = text.split(token).join("[REDACTED]");
+    var tokenId = token.split(":")[0];
+    if (tokenId) text = text.split("bot" + tokenId).join("bot[REDACTED]");
+  }
+  return text.replace(TELEGRAM_TOKEN_LIKE_PATTERN, "[REDACTED]");
+}
+
+function validateTelegramToken_(token) {
+  var value = String(token || "").trim();
+  if (!value) return "Bot token bo'sh bo'lishi mumkin emas.";
+  if (!TELEGRAM_TOKEN_PATTERN.test(value)) {
+    return "Bot token formati noto'g'ri. Namuna: 123456789:AA...";
+  }
+  return "";
+}
+
+function validateTelegramUserId_(userId) {
+  var value = String(userId || "").trim();
+  if (!value) return "Telegram foydalanuvchi ID kiritilmagan.";
+  if (!/^\d{1,20}$/.test(value)) return "Telegram foydalanuvchi ID faqat musbat raqam bo'lishi kerak.";
+  return "";
+}
+
+function validateTelegramChatId_(chatId) {
+  var value = String(chatId || "").trim();
+  if (!value) return "Guruh ID kiritilmagan.";
+  if (/^@[A-Za-z0-9_]{4,}$/.test(value)) return "";
+  if (!/^-?\d{1,20}$/.test(value)) return "Guruh ID raqam (masalan -1001234567890) yoki @username bo'lishi kerak.";
+  return "";
+}
+
+function recordTelegramSuccess_(action) {
+  try {
+    setTelegramSetting_(TELEGRAM_PROP_LAST_SUCCESS, JSON.stringify({
+      action: String(action || ""),
+      at: new Date().toISOString()
+    }));
+  } catch (error) {}
+}
+
+function recordTelegramError_(action, error) {
+  try {
+    setTelegramSetting_(TELEGRAM_PROP_LAST_ERROR, JSON.stringify({
+      action: String(action || ""),
+      message: redactSecrets_(error).slice(0, 500),
+      at: new Date().toISOString()
+    }));
+  } catch (ignored) {}
+}
+
+/**
+ * Public-safe view of the Telegram configuration.
+ * The token itself is NEVER included - only whether one is configured.
+ */
+function buildTelegramSettingsView_() {
+  return {
+    tokenConfigured: !!getBotToken_(),
+    authorizedUserId: getTelegramSetting_(TELEGRAM_PROP_AUTHORIZED_USER_ID),
+    groupChatId: getTelegramSetting_(TELEGRAM_PROP_GROUP_CHAT_ID),
+    webhookUrl: getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_URL),
+    webhookStatus: safeParseJSON_(getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_STATUS), null),
+    lastSuccess: safeParseJSON_(getTelegramSetting_(TELEGRAM_PROP_LAST_SUCCESS), null),
+    lastError: safeParseJSON_(getTelegramSetting_(TELEGRAM_PROP_LAST_ERROR), null),
+    adminKeyConfigured: !!getTelegramSetting_(OMAD_PROP_ADMIN_KEY)
+  };
+}
+
+/**
+ * Settings mutations require an admin key stored in Script Properties.
+ * Returns "" when authorized, or an error message.
+ */
+function checkAdminKey_(payload) {
+  var expected = getTelegramSetting_(OMAD_PROP_ADMIN_KEY);
+  if (!expected) {
+    return "OMAD_ADMIN_KEY Script Property o'rnatilmagan. Apps Script → Project Settings → Script Properties orqali qo'shing.";
+  }
+  var provided = String((payload && payload.adminKey) || "");
+  if (provided !== expected) return "Admin kaliti noto'g'ri.";
+  return "";
+}
+
+function saveTelegramSettings_(payload) {
+  var errors = [];
+  var updated = [];
+  var hasToken = Object.prototype.hasOwnProperty.call(payload, "botToken") && String(payload.botToken || "").trim() !== "";
+
+  if (hasToken) {
+    var tokenError = validateTelegramToken_(payload.botToken);
+    if (tokenError) errors.push(tokenError);
+  }
+
+  var userError = validateTelegramUserId_(payload.authorizedUserId);
+  if (userError) errors.push(userError);
+
+  var chatError = validateTelegramChatId_(payload.groupChatId);
+  if (chatError) errors.push(chatError);
+
+  if (errors.length > 0) return { status: "error", message: errors.join(" ") };
+
+  if (hasToken) {
+    setTelegramSetting_(TELEGRAM_PROP_BOT_TOKEN, String(payload.botToken).trim());
+    updated.push("botToken");
+  }
+  setTelegramSetting_(TELEGRAM_PROP_AUTHORIZED_USER_ID, String(payload.authorizedUserId).trim());
+  setTelegramSetting_(TELEGRAM_PROP_GROUP_CHAT_ID, String(payload.groupChatId).trim());
+  updated.push("authorizedUserId", "groupChatId");
+
+  auditTelegramSettingsChange_(updated);
+  return { status: "success", settings: buildTelegramSettingsView_() };
+}
+
+function auditTelegramSettingsChange_(updatedFields) {
+  try {
+    var doc = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = doc.getSheetByName("Omad_Audit_Log") || doc.insertSheet("Omad_Audit_Log");
+    if (sheet.getLastRow() === 0) sheet.appendRow(["Timestamp", "Event", "Details"]);
+    // Only field NAMES are stored - never values, never the token.
+    sheet.appendRow([new Date().toISOString(), "telegram_settings_changed", (updatedFields || []).join(",")]);
+  } catch (error) {}
+}
+
+function testTelegramConnection_() {
+  if (!getBotToken_()) return { status: "error", message: "Bot token o'rnatilmagan." };
+  try {
+    var response = telegramFetch_("getMe", {});
+    var data = safeParseJSON_(response.getContentText(), {});
+    var bot = (data && data.result) || {};
+    return {
+      status: "success",
+      bot: { id: bot.id || "", username: bot.username || "", firstName: bot.first_name || "" },
+      settings: buildTelegramSettingsView_()
+    };
+  } catch (error) {
+    return { status: "error", message: redactSecrets_(error), settings: buildTelegramSettingsView_() };
+  }
+}
+
+function sendTelegramTestMessage_() {
+  var chatId = getOmadGroupChatId_();
+  if (!chatId) return { status: "error", message: "Guruh ID o'rnatilmagan." };
+  try {
+    sendTelegramMessage_(chatId, "✅ MyBizManager: Telegram sozlamalari tekshiruvi muvaffaqiyatli.");
+    return { status: "success", settings: buildTelegramSettingsView_() };
+  } catch (error) {
+    return { status: "error", message: redactSecrets_(error), settings: buildTelegramSettingsView_() };
+  }
+}
+
+function configureTelegramWebhook_(payload) {
+  var webhookUrl = String((payload && payload.webhookUrl) || getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_URL) || "").trim();
+  if (!/^https:\/\/[^\s]+$/.test(webhookUrl)) {
+    return { status: "error", message: "Webhook manzili https:// bilan boshlanishi kerak." };
+  }
+  try {
+    telegramFetch_("setWebhook", { url: webhookUrl, allowed_updates: ["message", "callback_query"] });
+    var info = safeParseJSON_(telegramFetch_("getWebhookInfo", {}).getContentText(), {});
+    var result = (info && info.result) || {};
+    setTelegramSetting_(TELEGRAM_PROP_WEBHOOK_URL, webhookUrl);
+    setTelegramSetting_(TELEGRAM_PROP_WEBHOOK_STATUS, JSON.stringify({
+      configured: !!result.url,
+      pendingUpdateCount: result.pending_update_count || 0,
+      lastErrorMessage: redactSecrets_(result.last_error_message || ""),
+      checkedAt: new Date().toISOString()
+    }));
+    return { status: "success", settings: buildTelegramSettingsView_() };
+  } catch (error) {
+    return { status: "error", message: redactSecrets_(error), settings: buildTelegramSettingsView_() };
+  }
+}
+
+/**
+ * Server-side proxy so the browser never needs a bot token.
+ * Always posts to the configured reporting group.
+ */
+function proxyTelegramGroupCall_(action, payload) {
+  var chatId = getOmadGroupChatId_();
+  if (!chatId) return { status: "error", message: "Telegram guruh ID o'rnatilmagan." };
+
+  try {
+    if (action === "telegram_send") {
+      var sendBody = { chat_id: chatId, text: String(payload.text || ""), disable_web_page_preview: true };
+      if (payload.parseMode) sendBody.parse_mode = payload.parseMode;
+      var response = telegramFetch_("sendMessage", sendBody);
+      return { status: "success", messageId: extractTelegramMessageId_(response) };
+    }
+    if (action === "telegram_edit") {
+      if (!payload.messageId) return { status: "error", message: "messageId talab qilinadi." };
+      telegramFetch_("editMessageText", {
+        chat_id: chatId,
+        message_id: payload.messageId,
+        text: String(payload.text || ""),
+        parse_mode: payload.parseMode || undefined
+      });
+      return { status: "success", messageId: payload.messageId };
+    }
+    if (action === "telegram_delete") {
+      if (!payload.messageId) return { status: "error", message: "messageId talab qilinadi." };
+      telegramFetch_("deleteMessage", { chat_id: chatId, message_id: payload.messageId });
+      return { status: "success" };
+    }
+    return { status: "error", message: "Unknown telegram action" };
+  } catch (error) {
+    return { status: "error", message: redactSecrets_(error) };
+  }
+}
+
+/**
+ * Run once from the Apps Script editor to grant the UrlFetch scope.
+ * Uses the configured token; nothing is hardcoded.
+ */
 function authorizeTelegramAccess() {
-  UrlFetchApp.fetch("https://api.telegram.org/bot" + getBotToken_() + "/getMe");
-}
-
-function debugTelegramSendToGroup() {
-  sendTelegramMessage_("-5124753855", "Apps Script debug: Telegram send path works.");
+  if (!getBotToken_()) throw new Error("Set TELEGRAM_BOT_TOKEN in Script Properties first.");
+  telegramFetch_("getMe", {});
 }
 
 function debugLog_(doc, eventName, details) {
   try {
     var sheet = doc.getSheetByName("Telegram_Debug_Log") || doc.insertSheet("Telegram_Debug_Log");
     if (sheet.getLastRow() === 0) sheet.appendRow(["Timestamp", "Event", "Details"]);
-    sheet.appendRow([new Date().toISOString(), eventName, String(details || "")]);
+    sheet.appendRow([new Date().toISOString(), eventName, redactSecrets_(details).slice(0, 45000)]);
   } catch (error) {}
 }
 

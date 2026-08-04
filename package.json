@@ -1,0 +1,20 @@
+{
+  "name": "mybizmanager",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Omad-D rent management and cafe POS on Google Sheets + Apps Script",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "test:e2e": "node --test tests/*.e2e.js",
+    "test:all": "npm test && npm run test:e2e",
+    "lint": "node --test tests/static-analysis.test.js",
+    "scan:secrets": "node scripts/scan-secrets.js",
+    "scan:secrets:history": "node scripts/scan-secrets.js --history"
+  },
+  "devDependencies": {
+    "playwright": "^1.56.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
