@@ -8,13 +8,51 @@ Documented as of the Telegram credential-hardening change. This is the
 | File | Role |
 |---|---|
 | `login.html` | Role selection, writes `omad_role` / `omad_token` to `localStorage` |
-| `omad_admin.html` | Omad-D rent admin: dashboard, entry, history, settings |
+| `omad_admin.html` | Omad-D rent admin markup: dashboard, entry, history, settings |
+| `assets/omad/*.js` | The Omad admin application, split by responsibility |
 | `cafe_admin.html` | Café inventory, recipes, categories, settings |
 | `cafe_pos.html` | Café point of sale, close-day |
-| `script.gs` | Apps Script backend — the only server. Google Sheets is the database. |
+| `apps-script/*.gs` | Apps Script backend **source of truth**, split by responsibility |
+| `script.gs` | **Generated** single-file bundle of `apps-script/*.gs` — what you paste into Apps Script |
 
 The frontend is static HTML served from GitHub Pages; it talks to a single
 Apps Script `/exec` web app over `fetch`.
+
+### Backend modules
+
+Apps Script files share one global scope, so the modules are concatenated in
+filename order. `npm run build` regenerates `script.gs`; `npm run build:check`
+(run in CI) fails if the bundle is stale.
+
+| Module | Contents |
+|---|---|
+| `01_shared_utils.gs` | JSON/HTML/date helpers, `setConfig`/`getConfig` |
+| `02_validation.gs` | Rate limiting, length limits, every input validator |
+| `03_settings.gs` | Script Properties, secrets, the Telegram settings actions |
+| `04_audit_history.gs` | Backups, transaction archive, audit and debug logs |
+| `05_exchange_rates.gs` | Rate normalisation, `toUZS_`, balances |
+| `06_tenants.gs` | Tenant records |
+| `07_planned_expenses.gs` | Template expenses |
+| `08_omad_transactions.gs` | The ledger: read/normalise/append/rewrite |
+| `09_telegram_service.gs` | Telegram API calls and the `/yangi` conversation |
+| `10_retry_queue.gs` | `Omad_Job_Queue` worker |
+| `11_report_jobs.gs` | Server-composed business reports |
+| `12_cafe.gs` | Café inventory, sales, voids, close-day |
+| `20_api.gs` | `doPost` / `doGet` routing only |
+
+### Frontend modules
+
+`omad_admin.html` is markup only. The application loads as ordinary classic
+scripts, in order, sharing one global scope:
+
+`00-config.js` (URL + access guard) → `01-state.js` → `02-format.js` →
+`03-exchange-rates.js` → `04-tenants.js` → `05-planned-expenses.js` →
+`06-api.js` → `07-dashboard.js` → `08-entry.js` → `09-history.js` →
+`10-settings.js` → `11-telegram-settings.js` → `12-app.js`.
+
+`tests/static-analysis.test.js` parses every linked script and fails if any
+page defines the same function twice, so a shadowed definition cannot come
+back.
 
 ## Google Sheets storage
 
@@ -156,9 +194,11 @@ These are tracked as the remaining migration stages:
 5. ~~No retry queue.~~ Delivered — `Omad_Job_Queue`.
 6. **Projection uses the `buy` rate, actuals use `sell`.** The rule is
    implicit rather than explicit and tested.
-7. **Duplicate functions in `cafe_pos.html`**: `recomputeCloseDay` (×3),
-   `renderCloseDayList` (×2), `submitCloseDay` (×2). Later definitions win at
-   runtime. Guarded by a test so the set cannot grow. Removed in stage 2.
+7. ~~Duplicate functions in `cafe_pos.html`.~~ Removed in stage 2. The
+   surviving implementations are the ones that were already winning at
+   runtime: they cost consumption against `state.openingInventory` rather than
+   the running balance, so a mid-day restock does not skew the cost of goods
+   sold. `tests/cafe-regression.e2e.js` pins that behaviour.
 8. **Horizontal overflow on `omad_admin.html` at 375px** (`scrollWidth` 489px vs
    a 375px viewport, Sozlamalar tab). Traced to the pre-existing exchange-rate
    row in the *Oylik Kurslar* card:
