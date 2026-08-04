@@ -473,11 +473,6 @@
             return Math.round(Number(amount) || 0).toLocaleString();
         }
 
-        function normalizeComment(comment) {
-            const text = String(comment || "").trim();
-            return text || "Kiritilmagan";
-        }
-
         function normalizeTenantName(name) {
             return String(name || "").trim();
         }
@@ -528,31 +523,9 @@
             return (Array.isArray(app.templateExpenses) ? app.templateExpenses : []).map(normalizeTemplateExpense);
         }
 
-        function calculateBalancesFromTransactions(transactions, targetMonth, rateType = 'sell') {
-            let monthBalance = 0;
-            let allTimeBalance = 0;
-
-            transactions.forEach(t => {
-                const valueUZS = toUZS(t.amount, t.currency, t.month, rateType);
-                const sign = t.type === 'Income' ? 1 : -1;
-
-                allTimeBalance += (valueUZS * sign);
-                if(t.month === targetMonth) monthBalance += (valueUZS * sign);
-            });
-
-            return { monthBalance, allTimeBalance };
-        }
-
-        function buildTelegramTransactionMessage({ type, tenant, month, comment, cartItems, transferTotal, monthBalance, allTimeBalance }) {
-            const title = type === 'Income' ? "\u{1F7E2} YANGI KIRIM" : "\u{1F534} YANGI CHIQIM";
-            const objectText = String(tenant || "").trim() || "Noma'lum";
-            const periodText = String(month || "").trim() || "Noma'lum";
-            const transferLines = cartItems
-                .map(item => `\u{1F4B5} ${formatUZS(toUZS(item.amount, item.currency, periodText))} UZS`)
-                .join('\n') || "\u{1F4B5} 0 UZS";
-
-            return `${title}\n\n\u{1F3E2} Obyekt: ${objectText}\n\u{1F4C5} Davr: ${periodText}\n\n\u{1F4B8} O'tkazma:\n${transferLines}\nJami: ${formatUZS(transferTotal)} UZS\n\n\u{1F4DD} Izoh: ${normalizeComment(comment)}\n\n\u{1F4CA} HISOBOT:\n\u{1F539} ${periodText} qoldig'i: ${formatUZS(monthBalance)} UZS\n\u{1F3E6} Umumiy balans: ${formatUZS(allTimeBalance)} UZS`;
-        }
+        // Telegram report text is composed on the server (see
+        // buildOmadGroupReportMessage_ in script.gs), so there is exactly one
+        // implementation of the report format.
 
         window.onload = () => {
             initSelectors();
@@ -600,18 +573,29 @@
             showLoader(false);
         }
 
-        async function saveCloud() {
+        /**
+         * Saves the Omad state. `telegramReport` names a *business operation*
+         * ("this entry group was created/updated", "this one was deleted");
+         * the server composes and queues the actual Telegram message. The
+         * browser can no longer ask the backend to send arbitrary text.
+         */
+        async function saveCloud(telegramReport = null) {
             showLoader(true);
+            let ok = false;
             try {
                 app.tenants = (Array.isArray(app.tenants) ? app.tenants : []).map(normalizeTenantObject);
                 app.templateExpenses = getTemplateExpenses();
-                await fetch(GOOGLE_APP_URL.trim(), {
+                const body = { action: 'save_omad', ...app };
+                if (telegramReport) body.telegramReport = telegramReport;
+                const res = await fetch(GOOGLE_APP_URL.trim(), {
                     method: 'POST',
-                    body: JSON.stringify({ action: 'save_omad', ...app })
+                    body: JSON.stringify(body)
                 });
+                ok = res.ok;
             } catch(e) { alert("Saqlanmadi (Internet yo'q)"); }
             showLoader(false);
             renderAll();
+            return ok;
         }
 
         async function migrateToGoogleSheets() {
@@ -975,30 +959,6 @@
             }
         }
 
-        async function sendTelegram(text, replyId = null) {
-            try {
-                const data = await callBackend({ action: 'telegram_send', text });
-                return data && data.status === 'success' ? (data.messageId || null) : null;
-            } catch (e) {
-                console.log("Telegram notification failed");
-                return null;
-            }
-        }
-
-        async function editTelegram(msgId, text) {
-            if(!msgId) return;
-            try {
-                await callBackend({ action: 'telegram_edit', messageId: msgId, text });
-            } catch(e) { console.log("Too old to edit"); }
-        }
-
-        async function deleteTelegram(msgId) {
-            if(!msgId) return;
-            try {
-                await callBackend({ action: 'telegram_delete', messageId: msgId });
-            } catch(e) { console.log("Too old to delete"); }
-        }
-
         // --- SUBMIT LOGIC ---
         async function submitAll() {
             if(cart.length === 0) return alert("Summani kiriting");
@@ -1030,37 +990,25 @@
                 method: item.method
             }));
 
-            const totalVal = pendingTransactions.reduce((acc, tx) => acc + toUZS(tx.amount, tx.currency, tx.month), 0);
-            const projectedTransactions = [...baseTransactions, ...pendingTransactions];
-            const { monthBalance, allTimeBalance } = calculateBalancesFromTransactions(projectedTransactions, common.month);
-
-            const msgText = buildTelegramTransactionMessage({
-                type: currentType,
-                tenant: common.tenant,
-                month: common.month,
-                comment: common.comment,
-                cartItems: pendingTransactions,
-                transferTotal: totalVal,
-                monthBalance,
-                allTimeBalance
-            });
-
-            let finalMsgId = null;
-            if(editId && existingMsgId) {
-                await editTelegram(existingMsgId, msgText);
-                finalMsgId = existingMsgId;
-            } else {
-                finalMsgId = await sendTelegram(msgText);
-            }
-
+            const keptMsgId = editId ? existingMsgId : "";
             app.transactions = [
                 ...baseTransactions,
-                ...pendingTransactions.map(tx => ({ ...tx, msgId: finalMsgId }))
+                ...pendingTransactions.map(tx => ({ ...tx, msgId: keptMsgId }))
             ];
 
-            await saveCloud();
-            
-            cart = []; 
+            // Save first, then let the server report. The report is a queued,
+            // retryable job on the backend - it can never duplicate the entry
+            // and a Telegram outage never blocks the save.
+            await saveCloud({
+                operation: 'transaction_upsert',
+                baseId,
+                messageId: keptMsgId || ""
+            });
+            // Pick up the Telegram message id the server attached, so a later
+            // edit updates the same group message.
+            await syncData();
+
+            cart = [];
             document.getElementById('entryComment').value = "";
             document.getElementById('editId').value = "";
             document.getElementById('msgId').value = "";
@@ -1104,10 +1052,9 @@
             if(confirm("O'chirmoqchimisiz?")) { 
                 const baseId = getTxBaseId(id);
                 const grouped = app.transactions.filter(t => t.id.startsWith(baseId + "_"));
-                const msgId = grouped.find(t => t.msgId)?.msgId;
-                if(msgId) await deleteTelegram(msgId);
+                const msgId = grouped.find(t => t.msgId)?.msgId || "";
                 app.transactions = app.transactions.filter(t => !t.id.startsWith(baseId + "_"));
-                await saveCloud(); 
+                await saveCloud(msgId ? { operation: 'transaction_delete', baseId, messageId: msgId } : null);
             }
         }
 

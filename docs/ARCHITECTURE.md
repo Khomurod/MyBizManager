@@ -46,6 +46,7 @@ Column A = key, column B = a JSON string.
 | 8 | `Date` | `dd/MM/yyyy` display string |
 | 9 | `Comment` | free text |
 | 10 | `Telegram_Msg_ID` | group message id, for later edit/delete |
+| 11 | `Request_ID` | idempotency key; empty on legacy rows |
 
 ### Other sheets
 
@@ -57,6 +58,7 @@ Column A = key, column B = a JSON string.
 | `Telegram_Debug_Log` | `[Timestamp, Event, Details]` — secrets redacted on write |
 | `Cafe_Sales` | `[Sana, Sotuvchi, Jami_Tushum, Sof_Foyda, Chek_Tafsilotlari, ID]` |
 | `Cafe_Kun_Yakuni` | `[Sana, Sotuvchi, Jami_Tushum, Sof_Foyda, Tafsilotlar_JSON]` |
+| `Omad_Job_Queue` | retry queue — `[Job_ID, Related_ID, Type, Payload_JSON, Status, Attempts, Next_Attempt_At, Last_Error, Created_At, Completed_At]` |
 
 ## Apps Script Script Properties
 
@@ -68,7 +70,8 @@ Secrets and configuration that must never reach the browser.
 | `OMAD_ADMIN_KEY` | **yes** | Required for every settings mutation |
 | `TELEGRAM_AUTHORIZED_USER_ID` | no | The only user allowed to run `/yangi` |
 | `TELEGRAM_GROUP_CHAT_ID` | no | Reporting group |
-| `TELEGRAM_WEBHOOK_URL` | no | Last configured webhook URL |
+| `TELEGRAM_WEBHOOK_URL` | no | Last configured webhook URL (without the secret) |
+| `TELEGRAM_WEBHOOK_SECRET` | **yes** | Random value embedded in the webhook URL; every inbound update must present it |
 | `TELEGRAM_WEBHOOK_STATUS` | no | JSON status snapshot |
 | `TELEGRAM_LAST_SUCCESS` | no | `{ action, at }` |
 | `TELEGRAM_LAST_ERROR` | no | `{ action, message, at }` — redacted |
@@ -77,17 +80,58 @@ Secrets and configuration that must never reach the browser.
 
 | Action | Admin key | Notes |
 |---|---|---|
-| `save_omad` / `migrate_omad` | no | **Rewrites the whole transaction list** (see limitations) |
+| `save_omad` / `migrate_omad` | no | **Rewrites the whole transaction list** (see limitations). Optional `telegramReport: {operation, baseId, messageId}` queues a server-composed report |
 | `get_telegram_settings` | no | Never includes the token |
 | `save_telegram_settings` | **yes** | Validates before accepting |
 | `test_telegram_connection` | **yes** | `getMe` |
 | `send_telegram_test_message` | **yes** | Posts to the reporting group |
 | `configure_telegram_webhook` | **yes** | `setWebhook` + `getWebhookInfo` |
-| `telegram_send` / `telegram_edit` / `telegram_delete` | no | Server-side proxy so the browser holds no token |
+| `get_job_queue_status` | no | Pending/processing/completed/failed counts only |
+| `process_jobs` | **yes** | Manually drains the retry queue |
 | `save_inventory`, `save_recipe`, `save_categories`, `save_cafe_settings` | no | Café admin |
 | `save_sale`, `void_sale`, `close_day` | no | Café POS |
 
 `doGet` supports `action=get_omad` and `action=get_cafe`.
+
+## Telegram reporting
+
+There is **no generic Telegram proxy**. `telegram_send`, `telegram_edit` and
+`telegram_delete` were removed — they let any unauthenticated caller post
+arbitrary text into the reporting group.
+
+Instead the browser submits a business operation and the server composes the
+message from data it already stored:
+
+| Browser action | Server behaviour |
+|---|---|
+| `save_omad` + `telegramReport.operation = "transaction_upsert"` | Builds the group report from the stored transaction group (`buildOmadGroupReportMessage_`), sends or edits it, and writes the message id back onto the rows |
+| `save_omad` + `telegramReport.operation = "transaction_delete"` | Deletes the previously sent group message |
+| `close_day` | Builds the café close-day report (`buildCafeCloseDayMessage_`) from the stored close-day payload |
+| Telegram `/yangi` | Saves the transaction, then queues its own report |
+
+Every one of those becomes a **job on `Omad_Job_Queue`**, so a Telegram outage
+degrades to "the report is late", never "the money is wrong". Jobs are claimed
+under the script lock (status `Processing`), retried with exponential backoff
+starting at ~30s, and give up after 5 attempts. `processPendingTelegramJobs`
+is the entry point for a time-driven trigger.
+
+### Webhook verification
+
+Apps Script cannot read request headers, so Telegram's
+`X-Telegram-Bot-Api-Secret-Token` is not observable. The strongest available
+mechanism is a high-entropy secret embedded in the webhook URL
+(`?wh=<secret>`), stored in `TELEGRAM_WEBHOOK_SECRET` and additionally passed
+to `setWebhook` as `secret_token`. Updates that do not present it are dropped
+before any state changes. If no secret is stored yet (a deployment from before
+this change), updates are accepted until the operator presses **🔄 Webhook**
+once.
+
+### Idempotency
+
+Each `/yangi` conversation gets a `sessionId`; it is written to the
+transaction's `Request_ID`. The insert looks the request id up first, so a
+redelivered Telegram update, a retried webhook or a repeated callback all
+resolve to the same single transaction.
 
 ## Exchange rates
 
@@ -107,13 +151,14 @@ These are tracked as the remaining migration stages:
    transaction list on every add/edit/delete.
 2. **Month-only periods.** `Month` has no year, so two Januaries collide.
 3. **No stored exchange rate per transaction.** Historical values drift.
-4. **No idempotency.** A retried submit creates duplicates.
-5. **No retry queue.** A Telegram failure is surfaced to the user inline.
+4. **No idempotency for *web* submits.** Telegram `/yangi` is idempotent via
+   `Request_ID`; the web entry form is not yet (stage 5).
+5. ~~No retry queue.~~ Delivered — `Omad_Job_Queue`.
 6. **Projection uses the `buy` rate, actuals use `sell`.** The rule is
    implicit rather than explicit and tested.
 7. **Duplicate functions in `cafe_pos.html`**: `recomputeCloseDay` (×3),
    `renderCloseDayList` (×2), `submitCloseDay` (×2). Later definitions win at
-   runtime. Guarded by a test so the set cannot grow.
+   runtime. Guarded by a test so the set cannot grow. Removed in stage 2.
 8. **Horizontal overflow on `omad_admin.html` at 375px** (`scrollWidth` 489px vs
    a 375px viewport, Sozlamalar tab). Traced to the pre-existing exchange-rate
    row in the *Oylik Kurslar* card:
@@ -134,7 +179,8 @@ These are tracked as the remaining migration stages:
 ## Testing
 
 ```
-npm test                                # 46 tests
+npm test                                # unit, calculation & security tests
+npm run test:e2e                        # Chromium browser flows
 node scripts/scan-secrets.js            # working tree
 node scripts/scan-secrets.js --history  # every committed blob
 ```

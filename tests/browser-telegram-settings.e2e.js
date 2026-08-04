@@ -245,7 +245,7 @@ describe('Telegram settings panel (browser)', () => {
     await context.close();
   });
 
-  test('café POS sends its close-day report through the backend proxy', async () => {
+  test('café POS reports close-day through the server, never through a proxy', async () => {
     const backendRequests = [];
     const telegramRequests = [];
     const context = await browser.newContext();
@@ -266,7 +266,7 @@ describe('Telegram settings panel (browser)', () => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ status: 'success', messageId: 77, inventory: [], recipes: [], categories: [], sales: [], closeReports: [], settings: {} })
+        body: JSON.stringify({ status: 'success', reportJobId: 'job_1', inventory: [], recipes: [], categories: [], sales: [], closeReports: [], settings: {} })
       });
     });
 
@@ -274,17 +274,68 @@ describe('Telegram settings panel (browser)', () => {
     const pageErrors = [];
     page.on('pageerror', err => pageErrors.push(String(err)));
     await page.goto(`${baseUrl}/cafe_pos.html`);
-    await page.waitForFunction(() => typeof window.sendTelegramMessage === 'function');
+    await page.waitForFunction(() => typeof window.submitCloseDay === 'function');
 
-    await page.evaluate(() => window.sendTelegramMessage('Kun yakuni hisoboti'));
+    // The client-side Telegram sender is gone for good.
+    const clientSenders = await page.evaluate(() => ({
+      sendTelegramMessage: typeof window.sendTelegramMessage,
+      buildCloseDayTelegramMessage: typeof window.buildCloseDayTelegramMessage
+    }));
+    assert.strictEqual(clientSenders.sendTelegramMessage, 'undefined');
+    assert.strictEqual(clientSenders.buildCloseDayTelegramMessage, 'undefined');
 
-    const sends = backendRequests.filter(r => r.action === 'telegram_send');
-    assert.strictEqual(sends.length, 1);
-    assert.strictEqual(sends[0].text, 'Kun yakuni hisoboti');
-    assert.strictEqual(sends[0].parseMode, 'HTML');
-    assert.strictEqual(sends[0].botToken, undefined);
+    // Drive a real close-day with one sold item and no bulk rows.
+    await page.evaluate(async () => {
+      window.alert = () => {};
+      state.menu = [{ id: 'm1', name: 'Kofe', price: 12000, __kind: 'product' }];
+      state.todaySold = { m1: 3 };
+      state.todayRevenue = 36000;
+      state.todayProfit = 12000;
+      await window.submitCloseDay();
+    });
+
+    const closes = backendRequests.filter(r => r.action === 'close_day');
+    assert.strictEqual(closes.length, 1);
+    assert.deepStrictEqual(closes[0].soldItems, [{ name: 'Kofe', qty: 3 }]);
+    assert.strictEqual(closes[0].totalRevenue, 36000);
+
+    // No Telegram action of any kind leaves the browser.
+    const telegramActions = backendRequests.filter(r => String(r.action || '').startsWith('telegram_'));
+    assert.deepStrictEqual(telegramActions, [], 'the POS must not call any telegram_* action');
     assert.deepStrictEqual(telegramRequests, [], 'POS must not call Telegram directly');
     assert.deepStrictEqual(pageErrors, []);
+    await context.close();
+  });
+
+  test('the Omad admin submits business operations, not Telegram messages', async () => {
+    const state = { ...savedState };
+    const { page, context, backendRequests, telegramRequests } = await openAdmin(backend(state));
+
+    // The proxy helpers no longer exist in the admin bundle either.
+    const helpers = await page.evaluate(() => ({
+      sendTelegram: typeof window.sendTelegram,
+      editTelegram: typeof window.editTelegram,
+      deleteTelegram: typeof window.deleteTelegram
+    }));
+    assert.deepStrictEqual(helpers, {
+      sendTelegram: 'undefined', editTelegram: 'undefined', deleteTelegram: 'undefined'
+    });
+
+    await page.evaluate(async () => {
+      window.alert = () => {};
+      await window.saveCloud({ operation: 'transaction_upsert', baseId: '123', messageId: '' });
+    });
+
+    const saves = backendRequests.filter(r => r.action === 'save_omad');
+    assert.strictEqual(saves.length, 1);
+    assert.deepStrictEqual(saves[0].telegramReport, {
+      operation: 'transaction_upsert', baseId: '123', messageId: ''
+    });
+    assert.strictEqual(saves[0].text, undefined, 'no free-text message may be sent');
+
+    const telegramActions = backendRequests.filter(r => String(r.action || '').startsWith('telegram_'));
+    assert.deepStrictEqual(telegramActions, []);
+    assert.deepStrictEqual(telegramRequests, []);
     await context.close();
   });
 
