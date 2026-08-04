@@ -114,6 +114,11 @@ These are tracked as the remaining migration stages:
 7. **Duplicate functions in `cafe_pos.html`**: `recomputeCloseDay` (×3),
    `renderCloseDayList` (×2), `submitCloseDay` (×2). Later definitions win at
    runtime. Guarded by a test so the set cannot grow.
+8. **Slight horizontal overflow on `omad_admin.html` at 375px.** Observed in CI
+   (where the Tailwind CDN is reachable) on the Sozlamalar tab. It predates the
+   Telegram panel and has not been diagnosed — the browser test asserts that
+   controls are visible, enabled and within the viewport instead of asserting
+   document-level overflow. Worth fixing during the settings redesign (stage 7).
 
 ## Testing
 
