@@ -34,7 +34,9 @@ async function syncData() {
             if(remote.transactions) app.transactions = remote.transactions;
 
             if(typeof remote.rate === 'number') {
-                app.rates["Fevral"] = normalizeRateEntry(remote.rate); 
+                // A very old single-rate payload. It has no period of its own,
+                // so it applies to the current one.
+                app.rates[currentPeriod()] = normalizeRateEntry(remote.rate);
             } else if (remote.rates) {
                 app.rates = normalizeRatesMap(remote.rates);
             }
@@ -42,11 +44,7 @@ async function syncData() {
             app.rates = normalizeRatesMap(app.rates);
 
             if(remote.tenants && remote.tenants.length > 0) {
-                if(typeof remote.tenants[0] === 'string') {
-                    app.tenants = remote.tenants.map(normalizeTenantObject);
-                } else {
-                    app.tenants = remote.tenants.map(normalizeTenantObject);
-                }
+                app.tenants = remote.tenants.map(normalizeTenantObject);
             } else {
                  app.tenants = [ 
                     {name: "Tehnopark", rent: 0, currency: "USD", disabledMonths: []},

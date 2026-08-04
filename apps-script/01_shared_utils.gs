@@ -68,11 +68,6 @@ function formatCloseDayStamp_(value) {
   }
 }
 
-function getCurrentUzbekMonth_() {
-  var months = ["Yanvar", "Fevral", "Mart", "Aprel", "May", "Iyun", "Iyul", "Avgust", "Sentabr", "Oktabr", "Noyabr", "Dekabr"];
-  return months[new Date().getMonth()];
-}
-
 /** Constant-time-ish comparison; avoids leaking the secret length via timing. */
 function secretsMatch_(a, b) {
   var left = String(a || "");

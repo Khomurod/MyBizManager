@@ -19,6 +19,7 @@ function createSheet(name, rows) {
     getLastRow: () => data.length,
     appendRow(row) { data.push(row.slice()); },
     deleteRow(rowNumber) { data.splice(rowNumber - 1, 1); },
+    deleteRows(rowNumber, howMany) { data.splice(rowNumber - 1, howMany); },
     getDataRange: () => ({
       getValues: () => data.map(r => r.slice())
     }),

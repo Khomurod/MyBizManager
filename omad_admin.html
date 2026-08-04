@@ -186,18 +186,29 @@
 
     <!-- 4-TAB: SOZLAMALAR -->
     <div id="tab-settings" class="tab-content p-4">
-        <!-- Oylik Kurslar -->
+        <!-- Valyuta Kurslari -->
         <div class="card">
-            <h3 class="font-bold mb-4 text-slate-700">Oylik Kurslar ($1)</h3>
-            <div class="flex gap-2 mb-2">
-                <select id="settingMonth" onchange="populateRateInputs()" class="flex-1 p-2 border rounded text-sm font-bold"></select>
+            <h3 class="font-bold mb-1 text-slate-700">Valyuta Kurslari ($1)</h3>
+            <p class="text-[11px] text-slate-400 mb-3">Har bir yil va oy uchun alohida kurs saqlanadi.</p>
+
+            <div class="grid grid-cols-2 gap-2 mb-2">
+                <select id="settingRateYear" onchange="onRateSelectorChange()" class="w-full min-w-0 p-2 border rounded text-sm font-bold"></select>
+                <select id="settingMonth" onchange="onRateSelectorChange()" class="w-full min-w-0 p-2 border rounded text-sm font-bold"></select>
             </div>
-            <div class="flex gap-2 mb-2">
-                <input type="number" id="settingRateBuyInput" placeholder="Sotib olish (Buy)" class="flex-1 p-2 border rounded text-sm">
-                <input type="number" id="settingRateSellInput" placeholder="Sotish (Sell)" class="flex-1 p-2 border rounded text-sm">
-                <button onclick="saveRate()" class="bg-blue-600 text-white px-3 rounded font-bold text-xs">OK</button>
+            <div class="grid grid-cols-2 gap-2 mb-2">
+                <input type="text" inputmode="numeric" id="settingRateBuyInput" placeholder="Sotib olish (Buy)" class="w-full min-w-0 p-2 border rounded text-sm">
+                <input type="text" inputmode="numeric" id="settingRateSellInput" placeholder="Sotish (Sell)" class="w-full min-w-0 p-2 border rounded text-sm">
             </div>
-            <div id="ratesList" class="text-xs text-slate-500 space-y-1 mt-2"></div>
+            <button onclick="saveRate()" class="w-full py-2 bg-blue-600 text-white rounded font-bold text-xs active:scale-95 transition-all">Kursni Saqlash</button>
+            <p id="settingRateHint" class="text-[11px] text-slate-400 mt-2"></p>
+
+            <div class="border-t mt-3 pt-3">
+                <div class="flex items-center justify-between mb-2">
+                    <h4 class="text-[10px] font-bold text-slate-400 uppercase">Yillik Ko'rinish</h4>
+                    <span id="ratesOverviewYear" class="text-[10px] font-bold text-slate-500"></span>
+                </div>
+                <div id="ratesList" class="text-xs text-slate-500 space-y-1"></div>
+            </div>
         </div>
 
         <!-- Ijarachilar -->
@@ -388,6 +399,7 @@
     <!-- DASTUR MANTIQI -->
     <!-- APPLICATION MODULES (load order matters) -->
     <script src="assets/omad/01-state.js"></script>
+    <script src="assets/omad/01b-periods.js"></script>
     <script src="assets/omad/02-format.js"></script>
     <script src="assets/omad/03-exchange-rates.js"></script>
     <script src="assets/omad/04-tenants.js"></script>

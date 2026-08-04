@@ -10,8 +10,18 @@ function getDisabledMonths(tenant) {
     return tenant && Array.isArray(tenant.disabledMonths) ? tenant.disabledMonths : [];
 }
 
-function isTenantDisabledForMonth(tenant, month) {
-    return month !== "Jami Davr" && getDisabledMonths(tenant).includes(month);
+/**
+ * `disabledMonths` holds month *names*, so a disabled month repeats every
+ * year. That is the behaviour stage 8 replaces with real effective-dated
+ * schedules; until then it is honoured for whichever year is selected, and a
+ * canonical period is also accepted so newer data works unchanged.
+ */
+function isTenantDisabledForPeriod(tenant, period) {
+    if(period === ALL_PERIODS) return false;
+    const disabled = getDisabledMonths(tenant);
+    if(disabled.includes(period)) return true;
+    const monthIndex = periodMonth(period);
+    return monthIndex > 0 && disabled.includes(MONTH_LABELS[monthIndex - 1]);
 }
 
 function normalizeTenantObject(rawTenant) {

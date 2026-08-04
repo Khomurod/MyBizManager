@@ -8,6 +8,7 @@
 
 // --- RENDER ---
 function renderAll() {
+    initSelectors();
     renderDashboard();
     renderHistory();
     renderSettings();
@@ -31,15 +32,26 @@ function logout() {
 
 function showLoader(show) { document.getElementById('loader').style.display = show ? 'flex' : 'none'; }
 
+/**
+ * Rebuilds every period selector. Called on load and again after each sync,
+ * because the set of periods that has data grows as transactions arrive.
+ */
 function initSelectors() {
-    const now = new Date();
-    const currentM = months[now.getMonth()];
-    const dashSel = document.getElementById('dashMonthSelect');
-    dashSel.innerHTML = `<option>Jami Davr</option>` + months.map(m => `<option ${m===currentM ? 'selected' : ''}>${m}</option>`).join('');
-    document.getElementById('entryMonth').innerHTML = months.map(m => `<option ${m===currentM ? 'selected' : ''}>${m}</option>`).join('');
-    document.getElementById('settingMonth').innerHTML = months.map(m => `<option ${m===currentM ? 'selected' : ''}>${m}</option>`).join('');
-    document.getElementById('templateExpenseMonth').innerHTML = months.map(m => `<option ${m===currentM ? 'selected' : ''}>${m}</option>`).join('');
-    populateRateInputs();
+    const keep = id => {
+        const element = document.getElementById(id);
+        return element && element.value ? element.value : "";
+    };
+
+    const dashSelected = keep('dashMonthSelect') || currentPeriod();
+    const entrySelected = keep('entryMonth') || currentPeriod();
+    const expenseSelected = keep('templateExpenseMonth') || currentPeriod();
+
+    document.getElementById('dashMonthSelect').innerHTML =
+        periodOptions(dashSelected, { includeAll: true });
+    document.getElementById('entryMonth').innerHTML = periodOptions(entrySelected);
+    document.getElementById('templateExpenseMonth').innerHTML = periodOptions(expenseSelected);
+
+    initRateSelectors();
 }
 
 // Telegram report text is composed on the server (see

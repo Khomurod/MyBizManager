@@ -27,6 +27,7 @@ filename order. `npm run build` regenerates `script.gs`; `npm run build:check`
 | Module | Contents |
 |---|---|
 | `01_shared_utils.gs` | JSON/HTML/date helpers, `setConfig`/`getConfig` |
+| `01a_periods.gs` | Canonical `YYYY-MM` periods, Uzbek labels, period resolution |
 | `02_validation.gs` | Rate limiting, length limits, every input validator |
 | `03_settings.gs` | Script Properties, secrets, the Telegram settings actions |
 | `04_audit_history.gs` | Backups, transaction archive, audit and debug logs |
@@ -38,6 +39,7 @@ filename order. `npm run build` regenerates `script.gs`; `npm run build:check`
 | `10_retry_queue.gs` | `Omad_Job_Queue` worker |
 | `11_report_jobs.gs` | Server-composed business reports |
 | `12_cafe.gs` | Café inventory, sales, voids, close-day |
+| `13_migration.gs` | Period migration: preview, apply, verify, cutover, rollback |
 | `20_api.gs` | `doPost` / `doGet` routing only |
 
 ### Frontend modules
@@ -45,7 +47,7 @@ filename order. `npm run build` regenerates `script.gs`; `npm run build:check`
 `omad_admin.html` is markup only. The application loads as ordinary classic
 scripts, in order, sharing one global scope:
 
-`00-config.js` (URL + access guard) → `01-state.js` → `02-format.js` →
+`00-config.js` (URL + access guard) → `01-state.js` → `01b-periods.js` → `02-format.js` →
 `03-exchange-rates.js` → `04-tenants.js` → `05-planned-expenses.js` →
 `06-api.js` → `07-dashboard.js` → `08-entry.js` → `09-history.js` →
 `10-settings.js` → `11-telegram-settings.js` → `12-app.js`.
@@ -63,7 +65,11 @@ Column A = key, column B = a JSON string.
 | Key | Shape |
 |---|---|
 | `Omad_Tenants` | `[{ name, rent, currency: "USD"\|"UZS", disabledMonths: string[] }]` |
-| `Omad_Rates` | `{ "<MonthName>": { buy: number, sell: number } }` |
+| `Omad_Rates` | `{ "<YYYY-MM>": { buy: number, sell: number } }` — legacy `"<MonthName>"` keys still read |
+| `Omad_Rates_V1_Backup` | the pre-migration rate map, restored by rollback |
+| `Omad_Migration_Fallback_Year` | the year applied to rows whose year cannot be derived |
+| `Omad_Active_Transactions_Sheet` | which sheet reads and writes go to — the cutover switch |
+| `Omad_Migration_Status` | `{ state, appliedAt, cutoverAt, rolledBackAt, fallbackYear, ... }` |
 | `Omad_Template_Expenses` | `[{ id, month, name, amount, currency }]` |
 | `Cafe_Inventory` | café inventory array |
 | `Cafe_Recipes` | café recipe array |
@@ -76,7 +82,7 @@ Column A = key, column B = a JSON string.
 |---|---|---|
 | 1 | `ID` | `"<epochMillis>_<cartIndex>"` |
 | 2 | `Tenant` | tenant name, or `"Umumiy Naqd Puldan"` / `"Umumiy Bankdan"` for expenses |
-| 3 | `Month` | **month name only** (`"Fevral"`) — no year |
+| 3 | `Month` | canonical period `"2026-02"` after migration; a legacy month name (`"Fevral"`) before it |
 | 4 | `Type` | `Income` \| `Expense` |
 | 5 | `Amount` | original amount |
 | 6 | `Currency` | `UZS` \| `USD` |
@@ -96,6 +102,7 @@ Column A = key, column B = a JSON string.
 | `Telegram_Debug_Log` | `[Timestamp, Event, Details]` — secrets redacted on write |
 | `Cafe_Sales` | `[Sana, Sotuvchi, Jami_Tushum, Sof_Foyda, Chek_Tafsilotlari, ID]` |
 | `Cafe_Kun_Yakuni` | `[Sana, Sotuvchi, Jami_Tushum, Sof_Foyda, Tafsilotlar_JSON]` |
+| `Omad_Transactions_V2` | migrated ledger, canonical periods — written by the migration, read after cutover |
 | `Omad_Job_Queue` | retry queue — `[Job_ID, Related_ID, Type, Payload_JSON, Status, Attempts, Next_Attempt_At, Last_Error, Created_At, Completed_At]` |
 
 ## Apps Script Script Properties
@@ -171,15 +178,55 @@ transaction's `Request_ID`. The insert looks the request id up first, so a
 redelivered Telegram update, a retried webhook or a repeated callback all
 resolve to the same single transaction.
 
+## Periods
+
+The canonical period is **`YYYY-MM`** (`2026-01`). Friendly Uzbek labels
+(`Yanvar 2026`) are produced from it for display and never stored.
+`apps-script/01a_periods.gs` and `assets/omad/01b-periods.js` implement the
+same rules on both sides.
+
+### Resolving a legacy row's period
+
+Month-only values carry no year. Rather than assigning one year to everything,
+`resolveTransactionPeriod_` works through, in order:
+
+| # | Situation | Result | Confident |
+|---|---|---|---|
+| 1 | `Month` is already `2026-01` | used as-is | ✅ |
+| 2 | month name **and** a valid date that agree | year from the date | ✅ |
+| 3 | December row dated in early January (or January dated in late December) | the labelled month of the adjacent year | ✅ |
+| 4 | any other month/date disagreement | flagged as a **conflict** | ❌ |
+| 5 | a valid date and no month name | period from the date | ✅ |
+| 6 | month name, no usable date | the **explicitly configured** fallback year | ❌ |
+| 7 | neither | unresolved — listed for the operator | ❌ |
+
+Two-digit years, impossible days (`31/04`), and `29/02` in a non-leap year are
+rejected rather than guessed at.
+
+Reads attach `period`, `periodSource` and `periodLabel` to every transaction,
+so the app shows correct years **before** the sheet is migrated.
+
+## Migration and cutover
+
+`apps-script/13_migration.gs`, all admin-key protected:
+
+| Action | Effect |
+|---|---|
+| `preview_omad_migration` | Writes nothing. Returns the per-year summary, the unresolved rows (with sheet row numbers), duplicate ids, per-period totals and the cash/bank/total balances |
+| `apply_omad_migration` | Backs up, then writes `Omad_Transactions_V2`. **The original sheet is never touched**, which is what makes rollback cheap. Rebuilt from scratch each run, so an interrupted apply is recovered by running it again |
+| `verify_omad_migration` | Row counts, unique ids, canonical periods, per-period totals and cash/bank/total balances |
+| `cutover_omad_migration` | Refuses unless verification passes, then points `Omad_Active_Transactions_Sheet` at V2 |
+| `rollback_omad_migration` | Points reads back at the original and restores the pre-migration rate map. **Never deletes migrated data** |
+
 ## Exchange rates
 
 `normalizeRateEntry_` accepts a bare number (legacy) or `{buy, sell}`.
-`toUZS_(amount, currency, month, rates, rateType)` converts USD using the
-month's rate; `rateType` defaults to `"sell"`.
+`toUZS_(amount, currency, period, rates, rateType)` converts USD using the
+period's rate; `rateType` defaults to `"sell"`.
 
-Rates are looked up **at read time**, keyed by month name. Changing a rate
-therefore retroactively changes the UZS value of historical transactions —
-this is a known defect, addressed by the historical-rate stage below.
+Rates are keyed by canonical period, with the legacy month-name key still
+honoured on read. They are still looked up **at read time**, so changing a rate
+still moves historical values — addressed by stage 6.
 
 ## Known limitations (not addressed by this change)
 
@@ -187,7 +234,9 @@ These are tracked as the remaining migration stages:
 
 1. **Whole-database rewrites.** `save_omad` sends and rewrites the entire
    transaction list on every add/edit/delete.
-2. **Month-only periods.** `Month` has no year, so two Januaries collide.
+2. ~~Month-only periods.~~ Replaced by canonical `YYYY-MM` periods. The
+   migration tooling is delivered and tested; the live sheet migration has not
+   been run (it needs access to the spreadsheet).
 3. **No stored exchange rate per transaction.** Historical values drift.
 4. **No idempotency for *web* submits.** Telegram `/yangi` is idempotent via
    `Request_ID`; the web entry form is not yet (stage 5).
