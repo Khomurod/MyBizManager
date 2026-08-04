@@ -163,7 +163,7 @@
 
             <label class="block text-[10px] font-bold text-slate-400 mb-1">SUMMA VA VALYUTA</label>
             <div class="flex gap-2 mb-2">
-                <input type="number" id="tempAmount" placeholder="0" class="flex-1 p-2 border border-slate-200 rounded text-lg font-bold outline-none">
+                <input type="text" inputmode="decimal" id="tempAmount" placeholder="0" class="flex-1 min-w-0 p-2 border border-slate-200 rounded text-lg font-bold outline-none">
                 <select id="tempCurr" class="w-20 p-2 border border-slate-200 rounded bg-white font-bold text-xs"><option>UZS</option><option>USD</option></select>
             </div>
             <div class="flex gap-2 mb-4">
@@ -600,6 +600,7 @@
     <script src="assets/omad/01b-periods.js"></script>
     <script src="assets/omad/02-format.js"></script>
     <script src="assets/omad/02b-calc.js"></script>
+    <script src="assets/omad/02c-money-input.js"></script>
     <script src="assets/omad/03-exchange-rates.js"></script>
     <script src="assets/omad/04-tenants.js"></script>
     <script src="assets/omad/05-planned-expenses.js"></script>

@@ -16,7 +16,27 @@ rolled back on its own.
 | 7 | Settings redesign (Sozlamalar sections A–E) | ✅ delivered |
 | 8 | Tenant rent schedules, exceptions, start/end periods | ✅ delivered |
 | 9 | Planned expenses with recurrence and ending rules | ✅ delivered |
-| 10 | Data migration and final cleanup | ⬜ not started |
+| 10 | Data migration tooling, monetary formatting, cleanup | ✅ delivered (live run pending) |
+
+## Remaining live action
+
+Everything is implemented and tested. **One step has not been performed**,
+because it needs access to the live spreadsheet and the Apps Script project:
+
+> Running the period migration against the real `Omad_Transactions` sheet, and
+> cutting over to the append-only ledger.
+
+`docs/MIGRATION_RUNBOOK.md` is the step-by-step procedure, including the three
+backups to take first and the rollback for every failure point. The tooling is
+merged and exercised against representative fixtures and the `diagnostics/`
+snapshots; nothing about the live data has been changed or claimed.
+
+Also outstanding, for the same reason:
+
+- deploying the current `script.gs` to the Apps Script project;
+- adding the `processPendingTelegramJobs` time-driven trigger;
+- setting `OMAD_ADMIN_KEY` and the Telegram credentials;
+- rotating the previously exposed bot token via BotFather.
 
 ## Backup and rollback
 
@@ -60,6 +80,14 @@ from 2026-04-22 and can serve as sample data for migration dry runs.
 | Verification fails | Point reads back at `Omad_Transactions`; delete V2 |
 | Discovered after cutover | Restore from the `Omad_Backups` snapshot row taken immediately before cutover |
 | Catastrophic | Restore the file-level spreadsheet copy |
+
+### Rollback for stage 10
+
+Monetary formatting is presentation only — the stored values are unchanged
+numbers. `git revert` and redeploy.
+
+The migration tooling itself is covered by `rollback_omad_migration`; see
+`docs/MIGRATION_RUNBOOK.md`.
 
 ### Rollback for stage 9
 

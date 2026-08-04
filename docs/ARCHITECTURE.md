@@ -50,7 +50,7 @@ filename order. `npm run build` regenerates `script.gs`; `npm run build:check`
 `omad_admin.html` is markup only. The application loads as ordinary classic
 scripts, in order, sharing one global scope:
 
-`00-config.js` (URL + access guard) → `01-state.js` → `01b-periods.js` → `02-format.js` → `02b-calc.js` →
+`00-config.js` (URL + access guard) → `01-state.js` → `01b-periods.js` → `02-format.js` → `02b-calc.js` → `02c-money-input.js` →
 `03-exchange-rates.js` → `04-tenants.js` → `05-planned-expenses.js` →
 `06-api.js` → `07-dashboard.js` → `08-entry.js` → `09-history.js` →
 `10-settings.js` → `10b-system.js` → `11-telegram-settings.js` → `12-app.js`.
@@ -502,14 +502,40 @@ inputs plus a button, and `flex-1` items default to `min-width: auto`, so the
 inputs refused to shrink and pushed the button off-screen. It is now a
 two-column grid with `min-w-0` and a full-width button beneath.
 
+## Monetary input
+
+Amount fields format as you type: `15000` → `15 000`, `12500000` →
+`12 500 000`. Values are stored as clean numbers with no spaces.
+
+They stay `type="text"` with `inputmode="decimal"`. A `type="number"` field
+rejects the grouping spaces outright, and `inputmode` is what actually raises
+the numeric keypad on a phone — so this is the combination that gives both
+formatting and a usable mobile keyboard.
+
+`cleanMoneyString` handles the comma ambiguity — a comma groups thousands in
+`12,500,000` and separates decimals in `1234,56` — with the rule that **the
+last separator is the decimal point only when it is followed by one or two
+digits**, or nothing at all (a decimal being typed). Everything else groups.
+
+The caret is restored by digit position rather than by raw offset, so inserting
+a separator does not shove the cursor left on every third digit.
+
+Fields are listed once in `MONEY_FIELD_IDS`; adding a new amount field means
+adding its id there.
+
 ## Testing
 
 ```
-npm test                                # unit, calculation & security tests
-npm run test:e2e                        # Chromium browser flows
-node scripts/scan-secrets.js            # working tree
-node scripts/scan-secrets.js --history  # every committed blob
+npm run build            # regenerate script.gs from apps-script/
+npm run build:check      # fail if the bundle is stale
+npm run lint             # syntax, duplicates, secrets, bundle freshness
+npm test                 # unit, calculation, migration, ledger & security
+npm run test:e2e         # Chromium browser flows
+npm run scan:secrets     # working tree
+npm run scan:secrets:history  # every committed blob
 ```
+
+See `docs/MIGRATION_RUNBOOK.md` for the live migration procedure.
 
 `tests/gas-harness.js` loads `script.gs` into a Node VM with
 `SpreadsheetApp`, `PropertiesService`, `CacheService`, `LockService`,

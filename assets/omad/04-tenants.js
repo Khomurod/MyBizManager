@@ -158,7 +158,7 @@ const RENT_SOURCE_LABELS = {
 function editTenant(index) {
     const t = normalizeTenantObject(app.tenants[index]);
     document.getElementById('newTenantName').value = t.name;
-    document.getElementById('newTenantRent').value = t.defaultRent;
+    document.getElementById('newTenantRent').value = formatMoneyValue(t.defaultRent);
     document.getElementById('newTenantCurr').value = t.currency;
     document.getElementById('newTenantStart').value = t.startPeriod;
     document.getElementById('newTenantEnd').value = t.endPeriod;
@@ -175,7 +175,7 @@ function editTenant(index) {
 function readTenantForm() {
     return {
         name: normalizeTenantName(document.getElementById('newTenantName').value),
-        defaultRent: Number(document.getElementById('newTenantRent').value) || 0,
+        defaultRent: parseMoneyInput(document.getElementById('newTenantRent').value) || 0,
         currency: document.getElementById('newTenantCurr').value,
         startPeriod: document.getElementById('newTenantStart').value,
         endPeriod: document.getElementById('newTenantEnd').value,
@@ -361,7 +361,7 @@ function setTenantException(period) {
 
     const exceptions = (tenant.exceptions || []).filter(e => e.period !== period);
     if(String(entered).trim() !== "") {
-        const amount = Number(String(entered).replace(/\s/g, ''));
+        const amount = parseMoneyInput(entered);
         if(!Number.isFinite(amount) || amount < 0) return alert("To'g'ri summa kiriting.");
         exceptions.push({ period, amount });
     }
@@ -384,7 +384,7 @@ function addTenantRentChange() {
     if(!tenant) return;
 
     const fromPeriod = document.getElementById('rentChangeFrom').value;
-    const amount = Number(String(document.getElementById('rentChangeAmount').value).replace(/\s/g, ''));
+    const amount = parseMoneyInput(document.getElementById('rentChangeAmount').value);
     if(!isPeriod(fromPeriod)) return alert("Davrni tanlang.");
     if(!Number.isFinite(amount) || amount < 0) return alert("To'g'ri summa kiriting.");
 
