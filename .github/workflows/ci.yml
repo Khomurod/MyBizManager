@@ -18,6 +18,9 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Apps Script bundle is up to date
+        run: npm run build:check
+
       - name: Syntax validation & duplicate-function detection
         run: npm run lint
 

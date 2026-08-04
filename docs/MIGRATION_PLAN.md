@@ -8,7 +8,7 @@ rolled back on its own.
 |---|---|---|
 | 1 | Telegram credentials, authorization, tests & CI foundation | ✅ delivered |
 | 1b | Telegram proxy removal, webhook verification, retry queue, `/yangi` idempotency | ✅ delivered |
-| 2 | Code organization (module split, café duplicate removal) | ⬜ not started |
+| 2 | Code organization (module split, café duplicate removal) | ✅ delivered |
 | 3 | Year-month data model (`2026-01`) + friendly Uzbek labels | ⬜ not started |
 | 4 | Append-only transaction system (individual create/correct/cancel) | ⬜ not started |
 | 5 | Retry queue and fast saving | ⬜ not started |
@@ -58,6 +58,13 @@ from 2026-04-22 and can serve as sample data for migration dry runs.
 | Verification fails | Point reads back at `Omad_Transactions`; delete V2 |
 | Discovered after cutover | Restore from the `Omad_Backups` snapshot row taken immediately before cutover |
 | Catastrophic | Restore the file-level spreadsheet copy |
+
+### Rollback for stage 2
+
+Stage 2 is a pure reorganisation: no stored data, no API surface and no
+business behaviour changed. To roll back, `git revert` the commit. The
+deployed `script.gs` is byte-for-byte reproducible from `apps-script/` via
+`npm run build`, so the Apps Script project only ever needs the bundle.
 
 ### Rollback for stage 1b
 

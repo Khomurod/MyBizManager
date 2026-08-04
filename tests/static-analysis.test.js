@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const crypto = require('crypto');
+const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
@@ -28,16 +29,35 @@ function relative(file) {
   return path.relative(ROOT, file);
 }
 
-/** Inline <script> bodies of an HTML file, in document order. */
-function inlineScripts(html) {
+/**
+ * Every JavaScript block an HTML page executes, in document order: inline
+ * <script> bodies plus the contents of locally referenced <script src="...">.
+ * Remote scripts (the Tailwind CDN) are skipped.
+ */
+function pageScripts(htmlFile) {
+  const html = fs.readFileSync(htmlFile, 'utf8');
   const blocks = [];
   const pattern = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
   let match;
   while ((match = pattern.exec(html)) !== null) {
-    if (/\bsrc\s*=/i.test(match[1])) continue;
-    blocks.push(match[2]);
+    const src = /\bsrc\s*=\s*["']([^"']+)["']/i.exec(match[1]);
+    if (!src) {
+      blocks.push({ name: `${relative(htmlFile)}#inline`, code: match[2] });
+      continue;
+    }
+    if (/^https?:/i.test(src[1])) continue;
+    const linked = path.join(ROOT, src[1]);
+    assert.ok(fs.existsSync(linked), `${relative(htmlFile)} references a missing script: ${src[1]}`);
+    blocks.push({ name: src[1], code: fs.readFileSync(linked, 'utf8') });
   }
   return blocks;
+}
+
+/** Apps Script modules, in the load order the bundler uses. */
+function appsScriptModules() {
+  const dir = path.join(ROOT, 'apps-script');
+  return fs.readdirSync(dir).filter(f => f.endsWith('.gs')).sort()
+    .map(f => ({ name: `apps-script/${f}`, code: fs.readFileSync(path.join(dir, f), 'utf8') }));
 }
 
 // ------------------------------------------------------------ secret scanning
@@ -115,17 +135,39 @@ test('script.gs parses as valid JavaScript', () => {
   assert.doesNotThrow(() => new vm.Script(content, { filename: 'script.gs' }));
 });
 
-test('every inline script in every HTML file parses as valid JavaScript', () => {
+test('every script an HTML page executes parses as valid JavaScript', () => {
   for (const file of walk(ROOT)) {
     if (path.extname(file) !== '.html') continue;
-    const blocks = inlineScripts(fs.readFileSync(file, 'utf8'));
-    blocks.forEach((code, index) => {
+    for (const block of pageScripts(file)) {
       assert.doesNotThrow(
-        () => new vm.Script(code, { filename: `${relative(file)}#script[${index}]` }),
-        `Syntax error in ${relative(file)} inline script #${index}`
+        () => new vm.Script(block.code, { filename: block.name }),
+        `Syntax error in ${block.name} (referenced by ${relative(file)})`
       );
-    });
+    }
   }
+});
+
+test('every Apps Script module parses as valid JavaScript', () => {
+  for (const module of appsScriptModules()) {
+    assert.doesNotThrow(
+      () => new vm.Script(module.code, { filename: module.name }),
+      `Syntax error in ${module.name}`
+    );
+  }
+});
+
+test('script.gs is the current build of apps-script/', () => {
+  // The bundle is generated. A stale bundle means the deployed backend does
+  // not match the reviewed source.
+  const result = spawnSync(process.execPath,
+    [path.join(ROOT, 'scripts', 'build-apps-script.js'), '--check'],
+    { cwd: ROOT, encoding: 'utf8' });
+  assert.strictEqual(result.status, 0, result.stderr || result.stdout);
+});
+
+test('script.gs is marked as generated so nobody edits it by hand', () => {
+  const head = fs.readFileSync(path.join(ROOT, 'script.gs'), 'utf8').slice(0, 400);
+  assert.match(head, /GENERATED FILE - DO NOT EDIT/);
 });
 
 // ------------------------------------------------- duplicate function detection
@@ -145,26 +187,28 @@ function duplicatesIn(names) {
   return Object.keys(counts).filter(name => counts[name] > 1).sort();
 }
 
-test('script.gs has no duplicate function definitions', () => {
+test('the generated script.gs has no duplicate function definitions', () => {
   const content = fs.readFileSync(path.join(ROOT, 'script.gs'), 'utf8');
   assert.deepStrictEqual(duplicatesIn(functionNames(content)), []);
 });
 
-test('known duplicate-function debt is tracked and does not grow', () => {
-  // cafe_pos.html carries pre-existing duplicates. They are deliberately not
-  // fixed in this change (see PR scope), but the list must not grow.
-  const known = {
-    'cafe_pos.html': ['recomputeCloseDay', 'renderCloseDayList', 'submitCloseDay']
-  };
+test('no function name is defined in two Apps Script modules', () => {
+  // Apps Script modules share one global scope, so a name defined twice means
+  // one definition silently wins.
+  const names = appsScriptModules().flatMap(m => functionNames(m.code));
+  assert.deepStrictEqual(duplicatesIn(names), []);
+});
 
+test('no HTML page defines the same function twice across all its scripts', () => {
+  // Every script a page loads shares one global scope. A repeated definition
+  // means the later one silently shadows the earlier - exactly the café
+  // close-day bug this suite used to allowlist.
   for (const file of walk(ROOT)) {
     if (path.extname(file) !== '.html') continue;
-    const names = inlineScripts(fs.readFileSync(file, 'utf8')).flatMap(functionNames);
-    const expected = known[path.basename(file)] || [];
+    const names = pageScripts(file).flatMap(block => functionNames(block.code));
     assert.deepStrictEqual(
-      duplicatesIn(names),
-      expected,
-      `Duplicate function set changed in ${relative(file)}`
+      duplicatesIn(names), [],
+      `Duplicate function definitions in ${relative(file)}`
     );
   }
 });
