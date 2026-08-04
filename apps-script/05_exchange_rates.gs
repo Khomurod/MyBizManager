@@ -70,21 +70,27 @@ function transactionPeriod_(transaction) {
   return String(t.period || t.month || "");
 }
 
+/**
+ * The two figures the Telegram report quotes. Uses the value frozen on each
+ * transaction where there is one, so a later rate edit cannot move a report
+ * that has already been sent.
+ */
 function calculateBalancesFromTransactions_(transactions, targetPeriod) {
   var rates = getOmadRates_();
   var monthBalance = 0;
   var allTimeBalance = 0;
+  var list = Array.isArray(transactions) ? transactions : [];
 
-  for (var i = 0; i < transactions.length; i++) {
-    var t = transactions[i];
+  for (var i = 0; i < list.length; i++) {
+    var t = list[i];
+    if (!isCountableTransaction_(t)) continue;
     var period = transactionPeriod_(t);
-    var valueUZS = toUZS_(t.amount, t.currency, period, rates, "sell");
-    var sign = t.type === "Income" ? 1 : -1;
-    allTimeBalance += valueUZS * sign;
-    if (period === String(targetPeriod || "")) monthBalance += valueUZS * sign;
+    var signed = signedTransactionUZS_(t, rates);
+    allTimeBalance += signed;
+    if (period === String(targetPeriod || "")) monthBalance += signed;
   }
 
-  return { monthBalance: monthBalance, allTimeBalance: allTimeBalance };
+  return { monthBalance: Math.round(monthBalance), allTimeBalance: Math.round(allTimeBalance) };
 }
 
 /**

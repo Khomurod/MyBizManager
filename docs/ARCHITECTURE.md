@@ -32,6 +32,7 @@ filename order. `npm run build` regenerates `script.gs`; `npm run build:check`
 | `03_settings.gs` | Script Properties, secrets, the Telegram settings actions |
 | `04_audit_history.gs` | Backups, transaction archive, audit and debug logs |
 | `05_exchange_rates.gs` | Rate normalisation, `toUZS_`, balances |
+| `05a_calculations.gs` | Every monetary rule, mirrored by `assets/omad/02b-calc.js` |
 | `06_tenants.gs` | Tenant records |
 | `07_planned_expenses.gs` | Template expenses |
 | `08_omad_transactions.gs` | The ledger: read/normalise/append/rewrite |
@@ -48,7 +49,7 @@ filename order. `npm run build` regenerates `script.gs`; `npm run build:check`
 `omad_admin.html` is markup only. The application loads as ordinary classic
 scripts, in order, sharing one global scope:
 
-`00-config.js` (URL + access guard) → `01-state.js` → `01b-periods.js` → `02-format.js` →
+`00-config.js` (URL + access guard) → `01-state.js` → `01b-periods.js` → `02-format.js` → `02b-calc.js` →
 `03-exchange-rates.js` → `04-tenants.js` → `05-planned-expenses.js` →
 `06-api.js` → `07-dashboard.js` → `08-entry.js` → `09-history.js` →
 `10-settings.js` → `11-telegram-settings.js` → `12-app.js`.
@@ -309,8 +310,43 @@ migration cannot break entry.
 period's rate; `rateType` defaults to `"sell"`.
 
 Rates are keyed by canonical period, with the legacy month-name key still
-honoured on read. They are still looked up **at read time**, so changing a rate
-still moves historical values — addressed by stage 6.
+honoured on read.
+
+### The rate rule
+
+Every UZS figure the business acts on — income, expenses, cash, bank, total
+balance, tenant payments, tenant debt, Telegram balance reports — uses the
+**sell** rate. **Projections use the sell rate too.**
+
+Mixing buy for expected income with sell for actual income made debt figures
+wrong by the spread: a tenant who paid exactly their rent still showed a
+balance. The buy rate is recorded on every transaction for history and is not
+used in any calculation. The header shows both, for information.
+
+### Historical values
+
+A ledger row carries `Rate_Buy`, `Rate_Sell`, `Rate_Used` and `Amount_UZS`
+frozen at write time, and every consumer reads `Amount_UZS`. Changing a
+current or future rate therefore **cannot** move a historical figure; it only
+affects transactions written afterwards.
+
+Legacy rows have no frozen value and are still converted live — which is
+exactly the drift the ledger removes.
+
+### One implementation
+
+`apps-script/05a_calculations.gs` and `assets/omad/02b-calc.js` are mirrors:
+`transactionUZS`, `calculateActuals`, `calculateTenantPaid`,
+`tenantExpectedRentUZS`, `calculateTenantBalance`, `calculateProjection`. Both
+are tested against the same expectations, so a figure on screen is the figure
+the server reports.
+
+Income, expense and net are scoped to the selected period. **Cash, bank and
+total are always all-time** — money in the safe does not reset when you change
+the reporting month. Cancelled and corrected records are excluded everywhere.
+
+Projections are a plan, not money that moved: a planned expense is never
+counted as paid, and projection and actual figures are never summed together.
 
 ## Known limitations (not addressed by this change)
 
@@ -322,14 +358,14 @@ These are tracked as the remaining migration stages:
 2. ~~Month-only periods.~~ Replaced by canonical `YYYY-MM` periods. The
    migration tooling is delivered and tested; the live sheet migration has not
    been run (it needs access to the spreadsheet).
-3. **No stored exchange rate per transaction** *for legacy rows*. Ledger rows
-   freeze `Rate_Buy`, `Rate_Sell`, `Rate_Used` and `Amount_UZS` at write time;
-   stage 6 makes every consumer read the frozen value.
+3. **No stored exchange rate per transaction** *for legacy rows only*. Ledger
+   rows freeze the rates at write time and every consumer reads the frozen
+   value.
 4. **Idempotency** is delivered for Telegram `/yangi` and for web submits
    against the ledger. The legacy pre-cutover path is still not idempotent.
 5. ~~No retry queue.~~ Delivered — `Omad_Job_Queue`.
-6. **Projection uses the `buy` rate, actuals use `sell`.** The rule is
-   implicit rather than explicit and tested.
+6. ~~Projection uses `buy`, actuals use `sell`.~~ Everything uses `sell`; the
+   rule is stated once and tested on both sides.
 7. ~~Duplicate functions in `cafe_pos.html`.~~ Removed in stage 2. The
    surviving implementations are the ones that were already winning at
    runtime: they cost consumption against `state.openingInventory` rather than

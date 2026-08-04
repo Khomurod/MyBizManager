@@ -12,7 +12,7 @@ rolled back on its own.
 | 3 | Year-month data model (`2026-01`) + friendly Uzbek labels | ✅ delivered (tooling; live run pending) |
 | 4 | Append-only transaction system (individual create/correct/cancel) | ✅ delivered |
 | 5 | Retry queue and fast saving | ✅ delivered |
-| 6 | Historical exchange rates stored per transaction; `sell` used consistently | ⬜ not started |
+| 6 | Historical exchange rates stored per transaction; `sell` used consistently | ✅ delivered |
 | 7 | Settings redesign (Sozlamalar sections A–E) | ⬜ partial (D: Telegram done) |
 | 8 | Tenant rent schedules, exceptions, start/end periods | ⬜ not started |
 | 9 | Planned expenses with recurrence and ending rules | ⬜ not started |
@@ -60,6 +60,16 @@ from 2026-04-22 and can serve as sample data for migration dry runs.
 | Verification fails | Point reads back at `Omad_Transactions`; delete V2 |
 | Discovered after cutover | Restore from the `Omad_Backups` snapshot row taken immediately before cutover |
 | Catastrophic | Restore the file-level spreadsheet copy |
+
+### Rollback for stage 6
+
+No stored data changes; the rate columns were added in stage 4. `git revert`
+and redeploy.
+
+**Note the behaviour change:** tenant payments and rent expectations now both
+use the sell rate. Debt figures will differ from the old mixed buy/sell
+numbers by the spread. That is the fix, not a regression — but it is visible,
+so mention it to the operator before deploying.
 
 ### Rollback for stage 5
 
