@@ -35,8 +35,9 @@
 
     <!-- SOZLAMALAR -->
     <script>
-        const BOT_TOKEN = "7752185432:AAGJqGlLE2Ze0jHfGftTXyC2yic-EvffHGg"; 
-        const CHAT_ID = "-5124753855"; 
+        // Telegram credentials are NOT stored in the browser. The bot token and
+        // chat IDs live in Apps Script Script Properties; all Telegram calls go
+        // through the Apps Script backend (see Sozlamalar → Telegram).
         const GOOGLE_APP_URL = "https://script.google.com/macros/s/AKfycbx9V6RKMAIVVrnPmycNdgh4XNE4memBRsi8EL2_mpRC6ReytBebaOcnpZi1SMkdtw/exec ";
         const ADMIN_TOKEN = "omad_admin_active";
 
@@ -243,6 +244,74 @@
                     <input type="text" id="templateExpenseName" placeholder="Nomi" class="flex-1 min-w-0 p-2 border rounded text-sm bg-white">
                     <input type="number" id="templateExpenseAmount" placeholder="Summa" class="w-24 p-2 border rounded text-sm bg-white">
                     <button onclick="addTemplateExpense()" class="bg-blue-600 text-white w-10 rounded font-bold text-xs shadow-md active:scale-95 transition-all"><i class="fas fa-plus"></i></button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Telegram -->
+        <div class="card">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="font-bold text-slate-700">Telegram</h3>
+                <i class="fab fa-telegram text-slate-300 text-lg"></i>
+            </div>
+
+            <!-- Holat -->
+            <div class="bg-slate-50 border rounded-xl p-3 mb-3 space-y-2 text-[11px]">
+                <div class="flex justify-between items-center">
+                    <span class="text-slate-500 font-bold uppercase text-[10px]">Bot Tokeni</span>
+                    <span id="tgTokenStatus" class="font-bold text-slate-400">Tekshirilmoqda...</span>
+                </div>
+                <div class="flex justify-between items-center">
+                    <span class="text-slate-500 font-bold uppercase text-[10px]">Bot Ulanishi</span>
+                    <span id="tgBotStatus" class="font-bold text-slate-400">Noma'lum</span>
+                </div>
+                <div class="flex justify-between items-center">
+                    <span class="text-slate-500 font-bold uppercase text-[10px]">Webhook</span>
+                    <span id="tgWebhookStatus" class="font-bold text-slate-400">Noma'lum</span>
+                </div>
+                <div class="border-t pt-2 space-y-1">
+                    <div class="flex justify-between gap-2">
+                        <span class="text-slate-400">Oxirgi muvaffaqiyat:</span>
+                        <span id="tgLastSuccess" class="text-right text-slate-600 truncate">—</span>
+                    </div>
+                    <div class="flex justify-between gap-2">
+                        <span class="text-slate-400">Oxirgi xatolik:</span>
+                        <span id="tgLastError" class="text-right text-red-500 truncate">—</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sozlash -->
+            <div class="bg-slate-50 p-3 rounded-lg border space-y-2">
+                <div>
+                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Admin Kaliti (Script Property: OMAD_ADMIN_KEY)</label>
+                    <input type="password" id="tgAdminKey" autocomplete="off" placeholder="Sozlamalarni saqlash uchun" class="w-full p-2 border rounded text-sm bg-white">
+                </div>
+                <div>
+                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Bot Tokeni (BotFather)</label>
+                    <input type="password" id="tgBotToken" autocomplete="off" placeholder="Yangi token kiritish / almashtirish" class="w-full p-2 border rounded text-sm bg-white">
+                    <p class="text-[10px] text-slate-400 mt-1">Bo'sh qoldirilsa mavjud token o'zgarmaydi. Token hech qachon qayta ko'rsatilmaydi.</p>
+                </div>
+                <div>
+                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Ruxsat Etilgan Telegram User ID</label>
+                    <input type="text" inputmode="numeric" id="tgAuthorizedUserId" placeholder="Masalan: 123456789" class="w-full p-2 border rounded text-sm bg-white">
+                </div>
+                <div>
+                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Hisobot Guruhi ID</label>
+                    <input type="text" id="tgGroupChatId" placeholder="Masalan: -1001234567890" class="w-full p-2 border rounded text-sm bg-white">
+                </div>
+                <div>
+                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Webhook Manzili</label>
+                    <input type="text" id="tgWebhookUrl" placeholder="https://script.google.com/macros/s/.../exec" class="w-full p-2 border rounded text-sm bg-white">
+                </div>
+
+                <div id="tgMessage" class="hidden text-[11px] font-bold rounded-lg p-2"></div>
+
+                <button onclick="saveTelegramSettings()" id="tgSaveBtn" class="w-full py-2 bg-blue-600 text-white rounded text-xs font-bold shadow-md active:scale-95 transition-all">💾 Saqlash / Tokenni Almashtirish</button>
+                <div class="grid grid-cols-3 gap-2">
+                    <button onclick="testTelegramConnection()" class="py-2 bg-slate-800 text-white rounded text-[10px] font-bold active:scale-95 transition-all">🔌 Ulanish</button>
+                    <button onclick="sendTelegramTestMessage()" class="py-2 bg-slate-800 text-white rounded text-[10px] font-bold active:scale-95 transition-all">✉️ Test Xabar</button>
+                    <button onclick="configureTelegramWebhook()" class="py-2 bg-slate-800 text-white rounded text-[10px] font-bold active:scale-95 transition-all">🔄 Webhook</button>
                 </div>
             </div>
         </div>
@@ -891,32 +960,42 @@
             document.getElementById('detailModal').classList.add('hidden');
         }
 
-        // --- TELEGRAM LOGIC (FIXED NEWLINES) ---
+        // --- TELEGRAM LOGIC (server-proxied, no token in the browser) ---
+        async function callBackend(payload) {
+            const res = await fetch(GOOGLE_APP_URL.trim(), {
+                method: 'POST',
+                body: JSON.stringify(payload)
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            try {
+                return await res.json();
+            } catch (e) {
+                // Apps Script occasionally returns a non-JSON redirect body.
+                return { status: "unknown" };
+            }
+        }
+
         async function sendTelegram(text, replyId = null) {
-            let url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
-            let body = { chat_id: CHAT_ID, text: text };
-            const res = await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
-            const data = await res.json();
-            return data.ok ? data.result.message_id : null;
+            try {
+                const data = await callBackend({ action: 'telegram_send', text });
+                return data && data.status === 'success' ? (data.messageId || null) : null;
+            } catch (e) {
+                console.log("Telegram notification failed");
+                return null;
+            }
         }
 
         async function editTelegram(msgId, text) {
             if(!msgId) return;
             try {
-                await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageText`, {
-                    method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ chat_id: CHAT_ID, message_id: msgId, text: text })
-                });
+                await callBackend({ action: 'telegram_edit', messageId: msgId, text });
             } catch(e) { console.log("Too old to edit"); }
         }
 
         async function deleteTelegram(msgId) {
             if(!msgId) return;
             try {
-                await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/deleteMessage`, {
-                    method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ chat_id: CHAT_ID, message_id: msgId })
-                });
+                await callBackend({ action: 'telegram_delete', messageId: msgId });
             } catch(e) { console.log("Too old to delete"); }
         }
 
@@ -1194,6 +1273,142 @@
                 : `<div class="text-center text-xs font-bold text-slate-400 py-4 bg-slate-50 rounded-lg border border-dashed">Shablon chiqimlar yo'q</div>`;
         }
 
+        // --- TELEGRAM SETTINGS PANEL ---
+        // The bot token is write-only from the browser's point of view: it is
+        // posted to the backend and never read back.
+        let telegramSettings = null;
+
+        function tgFormatStamp(entry) {
+            if (!entry || !entry.at) return "—";
+            const when = new Date(entry.at);
+            const stamp = isNaN(when.getTime()) ? entry.at : when.toLocaleString('uz-UZ');
+            return entry.action ? `${entry.action} • ${stamp}` : stamp;
+        }
+
+        function tgShowMessage(text, isError) {
+            const box = document.getElementById('tgMessage');
+            if (!box) return;
+            box.textContent = text;
+            box.className = isError
+                ? "text-[11px] font-bold rounded-lg p-2 bg-red-50 text-red-600 border border-red-100"
+                : "text-[11px] font-bold rounded-lg p-2 bg-green-50 text-green-700 border border-green-100";
+        }
+
+        function renderTelegramSettings(settings, botInfo) {
+            if (settings) telegramSettings = settings;
+            const s = telegramSettings || {};
+
+            const tokenEl = document.getElementById('tgTokenStatus');
+            if (tokenEl) {
+                tokenEl.textContent = s.tokenConfigured ? "✅ O'rnatilgan" : "❌ O'rnatilmagan";
+                tokenEl.className = s.tokenConfigured ? "font-bold text-green-600" : "font-bold text-red-500";
+            }
+
+            const botEl = document.getElementById('tgBotStatus');
+            if (botEl && botInfo) {
+                botEl.textContent = botInfo.username ? `✅ @${botInfo.username}` : "✅ Ulandi";
+                botEl.className = "font-bold text-green-600";
+            }
+
+            const hookEl = document.getElementById('tgWebhookStatus');
+            if (hookEl) {
+                const hook = s.webhookStatus;
+                if (!hook) {
+                    hookEl.textContent = "Noma'lum";
+                    hookEl.className = "font-bold text-slate-400";
+                } else if (hook.configured) {
+                    hookEl.textContent = `✅ Faol (${hook.pendingUpdateCount || 0} kutilmoqda)`;
+                    hookEl.className = "font-bold text-green-600";
+                } else {
+                    hookEl.textContent = "❌ Sozlanmagan";
+                    hookEl.className = "font-bold text-red-500";
+                }
+            }
+
+            const okEl = document.getElementById('tgLastSuccess');
+            if (okEl) okEl.textContent = tgFormatStamp(s.lastSuccess);
+
+            const errEl = document.getElementById('tgLastError');
+            if (errEl) errEl.textContent = s.lastError ? `${tgFormatStamp(s.lastError)}: ${s.lastError.message || ""}` : "—";
+
+            const userInput = document.getElementById('tgAuthorizedUserId');
+            if (userInput && !userInput.value) userInput.value = s.authorizedUserId || "";
+            const groupInput = document.getElementById('tgGroupChatId');
+            if (groupInput && !groupInput.value) groupInput.value = s.groupChatId || "";
+            const hookInput = document.getElementById('tgWebhookUrl');
+            if (hookInput && !hookInput.value) hookInput.value = s.webhookUrl || GOOGLE_APP_URL.trim();
+        }
+
+        async function loadTelegramSettings() {
+            try {
+                const data = await callBackend({ action: 'get_telegram_settings' });
+                if (data && data.settings) renderTelegramSettings(data.settings);
+            } catch (e) {
+                console.log("Telegram sozlamalarini yuklab bo'lmadi");
+            }
+        }
+
+        function tgAdminKey() {
+            return document.getElementById('tgAdminKey').value.trim();
+        }
+
+        async function tgAdminAction(payload, successText) {
+            const adminKey = tgAdminKey();
+            if (!adminKey) {
+                tgShowMessage("Admin kalitini kiriting.", true);
+                return null;
+            }
+            tgShowMessage("Bajarilmoqda...", false);
+            try {
+                const data = await callBackend({ ...payload, adminKey });
+                if (data && data.settings) renderTelegramSettings(data.settings, data.bot);
+                if (!data || data.status !== 'success') {
+                    tgShowMessage((data && data.message) || "Xatolik yuz berdi.", true);
+                    return null;
+                }
+                tgShowMessage(successText, false);
+                return data;
+            } catch (e) {
+                tgShowMessage("Server bilan bog'lanib bo'lmadi.", true);
+                return null;
+            }
+        }
+
+        async function saveTelegramSettings() {
+            const tokenInput = document.getElementById('tgBotToken');
+            const payload = {
+                action: 'save_telegram_settings',
+                authorizedUserId: document.getElementById('tgAuthorizedUserId').value.trim(),
+                groupChatId: document.getElementById('tgGroupChatId').value.trim()
+            };
+            const token = tokenInput.value.trim();
+            if (token) payload.botToken = token;
+            if (!token && !(telegramSettings && telegramSettings.tokenConfigured)) {
+                tgShowMessage("Bot tokeni kiritilmagan.", true);
+                return;
+            }
+
+            const result = await tgAdminAction(payload, "Sozlamalar saqlandi.");
+            // Clear the token field either way so it never lingers in the DOM.
+            tokenInput.value = "";
+            if (result) await loadTelegramSettings();
+        }
+
+        async function testTelegramConnection() {
+            await tgAdminAction({ action: 'test_telegram_connection' }, "Bot ulanishi muvaffaqiyatli.");
+        }
+
+        async function sendTelegramTestMessage() {
+            await tgAdminAction({ action: 'send_telegram_test_message' }, "Test xabari yuborildi.");
+        }
+
+        async function configureTelegramWebhook() {
+            await tgAdminAction({
+                action: 'configure_telegram_webhook',
+                webhookUrl: document.getElementById('tgWebhookUrl').value.trim()
+            }, "Webhook sozlandi.");
+        }
+
         function renderEntryDropdowns() {
             let options = app.tenants.map(t => t.name);
             if(currentType === 'Expense') {
@@ -1256,6 +1471,7 @@
             document.querySelectorAll('.nav-item').forEach(e => e.classList.remove('active'));
             document.getElementById('tab-'+t).classList.add('active');
             document.getElementById('nav-'+t).classList.add('active');
+            if (t === 'settings') loadTelegramSettings();
         }
 
         function logout() {

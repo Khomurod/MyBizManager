@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  static:
+    name: Static analysis & secret detection
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Syntax validation & duplicate-function detection
+        run: npm run lint
+
+      - name: Secret detection (working tree)
+        run: npm run scan:secrets
+
+      - name: Secret detection (full git history)
+        run: npm run scan:secrets:history
+
+  unit:
+    name: Unit & calculation tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Automated tests
+        run: npm test
+
+  browser:
+    name: Browser flows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Playwright Chromium
+        run: npm install --no-save playwright@1.56.1 && npx playwright install --with-deps chromium
+
+      - name: End-to-end browser tests
+        run: npm run test:e2e

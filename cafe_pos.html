@@ -62,8 +62,8 @@
 <body class="pb-32 text-slate-800">
   <script>
     const GOOGLE_APP_URL = "https://script.google.com/macros/s/AKfycbx9V6RKMAIVVrnPmycNdgh4XNE4memBRsi8EL2_mpRC6ReytBebaOcnpZi1SMkdtw/exec";
-    const BOT_TOKEN = "7752185432:AAGJqGlLE2Ze0jHfGftTXyC2yic-EvffHGg";
-    const CHAT_ID = "-5124753855";
+    // Telegram credentials are held server-side in Apps Script Script
+    // Properties. The POS never sees a bot token.
     if (localStorage.getItem("omad_role") !== "cafe_seller" || localStorage.getItem("omad_token") !== "cafe_seller_active") {
       window.location.href = "login.html";
     }
@@ -184,19 +184,18 @@
     }
 
     async function sendTelegramMessage(text) {
-      const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+      const res = await fetch(GOOGLE_APP_URL, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          chat_id: CHAT_ID,
+          action: "telegram_send",
           text,
-          parse_mode: "HTML",
-          disable_web_page_preview: true
+          parseMode: "HTML"
         })
       });
+      if (!res.ok) throw new Error(`Telegram xatolik: HTTP ${res.status}`);
       const data = await res.json();
-      if (!res.ok || !data?.ok) {
-        throw new Error(data?.description || `Telegram xatolik: HTTP ${res.status}`);
+      if (!data || data.status !== "success") {
+        throw new Error(data?.message || "Telegramga yuborib bo'lmadi.");
       }
       return data;
     }
