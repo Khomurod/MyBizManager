@@ -104,6 +104,62 @@ function populateTenantPeriodSelectors() {
     });
 }
 
+/** Planned expenses with their schedule spelled out, newest start first. */
+function renderPlannedExpenseList() {
+    const box = document.getElementById('templateExpenseList');
+    if(!box) return;
+
+    const period = currentPeriod();
+
+    box.innerHTML = app.templateExpenses.length
+        ? app.templateExpenses.map(expense => {
+            const occurrence = plannedExpenseOccurrence(expense, period);
+            return `
+            <div class="bg-slate-50 p-3 rounded-lg text-xs border" data-expense="${expense.id}">
+                <div class="flex justify-between items-start gap-2">
+                    <div class="min-w-0">
+                        <p class="font-bold text-slate-700 truncate">${escapeHTML(expense.name)}</p>
+                        <p class="expense-schedule text-[10px] text-slate-400">${escapeHTML(describePlannedExpense(expense))}</p>
+                        <p class="text-slate-600 mt-1">${expense.amount.toLocaleString()} ${expense.currency}</p>
+                        ${occurrence
+                            ? `<p class="text-[10px] text-blue-600 font-bold mt-1">${periodShortLabel(period)}: ${occurrence}-marta</p>`
+                            : `<p class="text-[10px] text-slate-300 mt-1">${periodShortLabel(period)}: kutilmaydi</p>`}
+                        ${expense.description ? `<p class="text-[10px] text-slate-400 mt-1">${escapeHTML(expense.description)}</p>` : ''}
+                    </div>
+                    <div class="flex gap-3 shrink-0">
+                        <button onclick="editTemplateExpense('${expense.id}')" class="text-blue-400"><i class="fas fa-pen"></i></button>
+                        <button onclick="removeTemplateExpense('${expense.id}')" class="text-red-400"><i class="fas fa-trash-alt"></i></button>
+                    </div>
+                </div>
+            </div>`;
+        }).join('')
+        : `<div class="text-center text-xs font-bold text-slate-400 py-4 bg-slate-50 rounded-lg border border-dashed">Rejali chiqimlar yo'q</div>`;
+}
+
+/** Frequency options and the month toggles, built once. */
+function initPlannedExpenseControls() {
+    const frequency = document.getElementById('templateExpenseFrequency');
+    if(frequency && frequency.options.length === 0) {
+        frequency.innerHTML = EXPENSE_FREQUENCIES
+            .map(f => `<option value="${f.value}">${f.label}</option>`).join('');
+    }
+
+    const toggles = document.getElementById('expenseMonthToggles');
+    if(toggles && toggles.children.length === 0) {
+        toggles.innerHTML = MONTH_SHORT_LABELS.map((label, index) =>
+            `<button type="button" data-month="${index + 1}" onclick="toggleExpenseMonth(this)"
+                class="expense-month-toggle border border-slate-200 rounded-md py-1 text-[10px] font-bold bg-white text-slate-600 active:scale-95 transition-all">${label}</button>`
+        ).join('');
+    }
+
+    const endPeriod = document.getElementById('templateExpenseEndPeriod');
+    if(endPeriod) {
+        const previous = endPeriod.value;
+        endPeriod.innerHTML = periodOptions("");
+        endPeriod.value = previous;
+    }
+}
+
 function renderSettings() {
     app.rates = normalizeRatesMap(app.rates);
     app.tenants = (Array.isArray(app.tenants) ? app.tenants : []).map(normalizeTenantObject);
@@ -111,19 +167,7 @@ function renderSettings() {
     renderRatesOverview();
     renderTenantList();
 
-    const templateList = document.getElementById('templateExpenseList');
-    templateList.innerHTML = app.templateExpenses.length
-        ? app.templateExpenses.map(expense => `
-            <div class="flex justify-between items-center bg-slate-50 p-3 rounded-lg text-xs border">
-                <div class="min-w-0">
-                    <div class="flex items-center gap-2">
-                        <span class="bg-blue-50 text-blue-600 px-2 py-0.5 rounded font-bold whitespace-nowrap">${periodShortLabel(recordPeriod(expense))}</span>
-                        <span class="font-bold text-slate-700 truncate">${escapeHTML(expense.name)}</span>
-                    </div>
-                    <p class="text-slate-500 mt-1">${Number(expense.amount || 0).toLocaleString()} ${expense.currency}</p>
-                </div>
-                <button onclick="removeTemplateExpense('${expense.id}')" class="text-red-400 bg-white border border-slate-100 rounded-lg w-8 h-8 active:scale-95 transition-all"><i class="fas fa-trash-alt"></i></button>
-            </div>
-        `).join('')
-        : `<div class="text-center text-xs font-bold text-slate-400 py-4 bg-slate-50 rounded-lg border border-dashed">Shablon chiqimlar yo'q</div>`;
+    initPlannedExpenseControls();
+    renderPlannedExpenseList();
+
 }
