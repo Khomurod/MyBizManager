@@ -13,7 +13,7 @@ function normalizeTemplateExpenses_(expenses) {
     if (!name) continue;
     normalized.push({
       id: String(item.id || (Date.now() + "_" + i)),
-      month: String(item.month || getCurrentUzbekMonth_()).trim(),
+      month: String(item.month || item.period || currentPeriod_()).trim(),
       name: name,
       amount: Number(item.amount) || 0,
       currency: item.currency === "USD" ? "USD" : "UZS"

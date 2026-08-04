@@ -32,46 +32,121 @@ function normalizeRatesMap(ratesMap) {
     const normalized = {};
     if(!ratesMap || typeof ratesMap !== 'object') return normalized;
 
-    Object.entries(ratesMap).forEach(([month, rateValue]) => {
-        normalized[month] = normalizeRateEntry(rateValue, DEFAULT_RATE);
+    Object.entries(ratesMap).forEach(([key, rateValue]) => {
+        normalized[key] = normalizeRateEntry(rateValue, DEFAULT_RATE);
     });
     return normalized;
 }
 
-function getRateForMonth(month) {
-    return normalizeRateEntry(app.rates[month], DEFAULT_RATE);
+/**
+ * Looks a rate up by canonical period, falling back to the legacy month-name
+ * key for the same month so the app keeps working before the migration runs.
+ * Returns null when the period has no rate at all.
+ */
+function findRateEntry(period) {
+    const rates = app.rates || {};
+    if(Object.prototype.hasOwnProperty.call(rates, period)) {
+        return normalizeRateEntry(rates[period], DEFAULT_RATE);
+    }
+    if(isPeriod(period)) {
+        const legacyKey = MONTH_LABELS[periodMonth(period) - 1];
+        if(Object.prototype.hasOwnProperty.call(rates, legacyKey)) {
+            return normalizeRateEntry(rates[legacyKey], DEFAULT_RATE);
+        }
+    }
+    return null;
 }
 
-function getMonthRateByType(month, rateType = 'sell') {
-    const rates = getRateForMonth(month);
+function getRateForPeriod(period) {
+    return findRateEntry(period) || { buy: DEFAULT_RATE, sell: DEFAULT_RATE };
+}
+
+function hasRateForPeriod(period) {
+    return findRateEntry(period) !== null;
+}
+
+function getPeriodRateByType(period, rateType = 'sell') {
+    const rates = getRateForPeriod(period);
     return rateType === 'buy' ? rates.buy : rates.sell;
 }
 
-function toUZS(amount, currency, month, rateType = 'sell') {
+function toUZS(amount, currency, period, rateType = 'sell') {
     const numericAmount = Number(amount) || 0;
-    return currency === 'USD' ? (numericAmount * getMonthRateByType(month, rateType)) : numericAmount;
+    return currency === 'USD' ? (numericAmount * getPeriodRateByType(period, rateType)) : numericAmount;
 }
 
-// --- SETTINGS LOGIC ---
+// --- RATE EDITOR ---
+
+/** The period the rate editor is currently pointed at. */
+function selectedRatePeriod() {
+    const year = document.getElementById('settingRateYear');
+    const month = document.getElementById('settingMonth');
+    if(!year || !month) return currentPeriod();
+    return buildPeriod(year.value, month.value) || currentPeriod();
+}
+
+function initRateSelectors() {
+    const yearSelect = document.getElementById('settingRateYear');
+    const monthSelect = document.getElementById('settingMonth');
+    if(!yearSelect || !monthSelect) return;
+
+    const active = isPeriod(selectedRatePeriod()) ? selectedRatePeriod() : currentPeriod();
+
+    yearSelect.innerHTML = availableYears()
+        .map(year => `<option value="${year}"${year === periodYear(active) ? ' selected' : ''}>${year}</option>`)
+        .join('');
+    monthSelect.innerHTML = MONTH_LABELS
+        .map((label, index) => `<option value="${index + 1}"${index + 1 === periodMonth(active) ? ' selected' : ''}>${label}</option>`)
+        .join('');
+
+    populateRateInputs();
+}
+
+/** Year or month changed: refresh both the inputs and the yearly overview. */
+function onRateSelectorChange() {
+    populateRateInputs();
+    renderRatesOverview();
+}
+
 function populateRateInputs() {
-    const month = document.getElementById('settingMonth').value;
-    const monthRates = getRateForMonth(month);
-    document.getElementById('settingRateBuyInput').value = monthRates.buy;
-    document.getElementById('settingRateSellInput').value = monthRates.sell;
+    const buyInput = document.getElementById('settingRateBuyInput');
+    const sellInput = document.getElementById('settingRateSellInput');
+    if(!buyInput || !sellInput) return;
+
+    const period = selectedRatePeriod();
+    const rates = getRateForPeriod(period);
+    buyInput.value = rates.buy;
+    sellInput.value = rates.sell;
+
+    const hint = document.getElementById('settingRateHint');
+    if(hint) {
+        hint.textContent = hasRateForPeriod(period)
+            ? `${periodLabel(period)} kursi saqlangan.`
+            : `${periodLabel(period)} uchun kurs hali belgilanmagan (standart ${DEFAULT_RATE.toLocaleString()}).`;
+    }
 }
 
 function saveRate() {
-    const m = document.getElementById('settingMonth').value;
+    const period = selectedRatePeriod();
     const buyInput = parseRateNumber(document.getElementById('settingRateBuyInput').value);
     const sellInput = parseRateNumber(document.getElementById('settingRateSellInput').value);
-    const current = getRateForMonth(m);
+    const current = getRateForPeriod(period);
 
     const nextBuy = buyInput || current.buy;
     const nextSell = sellInput || current.sell;
+    if(!nextBuy || !nextSell) return;
 
-    if(nextBuy && nextSell) {
-        app.rates[m] = { buy: nextBuy, sell: nextSell };
-        saveCloud();
-        renderSettings();
+    // Changing a rate is a real accounting decision: it moves the reported UZS
+    // value of every USD transaction in that period.
+    if(hasRateForPeriod(period)) {
+        const confirmed = confirm(
+            `${periodLabel(period)} kursini o'zgartirasizmi?\n` +
+            `Buy ${current.buy.toLocaleString()} -> ${nextBuy.toLocaleString()}\n` +
+            `Sell ${current.sell.toLocaleString()} -> ${nextSell.toLocaleString()}`);
+        if(!confirmed) return;
     }
+
+    app.rates[period] = { buy: nextBuy, sell: nextSell };
+    saveCloud();
+    renderSettings();
 }

@@ -2,7 +2,18 @@
 // Omad transactions
 // ------------------------------------------------------------
 // The financial ledger: read, normalise, append and rewrite.
+//
+// Reads are period-aware: every transaction comes back with a canonical
+// `period` ("2026-01") resolved from its stored month and date, whether or not
+// the sheet itself has been migrated yet. Reads also follow the cutover flag,
+// so pointing the app at the migrated V2 sheet is a one-line config change and
+// pointing it back is the rollback.
 // ============================================================
+
+var OMAD_TRANSACTIONS_SHEET = "Omad_Transactions";
+var OMAD_TRANSACTIONS_V2_SHEET = "Omad_Transactions_V2";
+/** System_Config key naming the sheet reads and writes go to. */
+var OMAD_ACTIVE_TX_SHEET_KEY = "Omad_Active_Transactions_Sheet";
 
 var OMAD_TRANSACTION_HEADER = [
   "ID", "Tenant", "Month", "Type", "Amount", "Currency", "Method", "Date", "Comment",
@@ -39,10 +50,13 @@ function normalizeTransactions_(transactions) {
 
 function normalizeTransaction_(raw) {
   var t = raw && typeof raw === "object" ? raw : {};
+  // `month` holds the canonical period for anything written from now on.
+  // Legacy month names are preserved verbatim rather than guessed at; the
+  // migration is where they get a year, under operator control.
   return {
     id: String(t.id || (Date.now() + "_0")),
     tenant: String(t.tenant || "").trim(),
-    month: String(t.month || getCurrentUzbekMonth_()).trim(),
+    month: String(t.month || t.period || currentPeriod_()).trim(),
     type: t.type === "Expense" ? "Expense" : "Income",
     amount: Number(t.amount) || 0,
     currency: t.currency === "USD" ? "USD" : "UZS",
@@ -54,20 +68,47 @@ function normalizeTransaction_(raw) {
   };
 }
 
+/** The sheet reads and writes go to: the migrated V2 sheet after cutover. */
+function activeTransactionSheetName_(doc) {
+  var configSheet = doc.getSheetByName("System_Config");
+  if (!configSheet) return OMAD_TRANSACTIONS_SHEET;
+  var configured = String(getConfig(configSheet, OMAD_ACTIVE_TX_SHEET_KEY) || "").trim();
+  if (configured && doc.getSheetByName(configured)) return configured;
+  return OMAD_TRANSACTIONS_SHEET;
+}
+
 function readOmadTransactions_(doc) {
-  var txSheet = doc.getSheetByName("Omad_Transactions");
+  return readTransactionsFromSheet_(doc, activeTransactionSheetName_(doc));
+}
+
+/**
+ * Reads a transaction sheet and attaches the resolved canonical period to
+ * every row. Used by both normal reads and the migration preview, so the
+ * preview shows exactly what the app would compute.
+ */
+function readTransactionsFromSheet_(doc, sheetName) {
+  var txSheet = doc.getSheetByName(sheetName);
   var transactions = [];
-  if (txSheet && txSheet.getLastRow() > 1) {
-    var data = txSheet.getDataRange().getValues();
-    for (var i = 1; i < data.length; i++) {
-      transactions.push({
-        id: data[i][0], tenant: data[i][1], month: data[i][2], type: data[i][3],
-        amount: data[i][4], currency: data[i][5], method: data[i][6],
-        date: data[i][7], comment: data[i][8], msgId: data[i][9],
-        // Legacy 10-column rows simply have no request id.
-        requestId: data[i].length > 10 ? data[i][10] : ""
-      });
-    }
+  if (!txSheet || txSheet.getLastRow() < 2) return transactions;
+
+  var configSheet = doc.getSheetByName("System_Config");
+  var fallbackYear = getFallbackYear_(configSheet);
+  var data = txSheet.getDataRange().getValues();
+
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0] === "" || data[i][0] === null || data[i][0] === undefined) continue;
+    var transaction = {
+      id: data[i][0], tenant: data[i][1], month: data[i][2], type: data[i][3],
+      amount: data[i][4], currency: data[i][5], method: data[i][6],
+      date: data[i][7], comment: data[i][8], msgId: data[i][9],
+      // Legacy 10-column rows simply have no request id.
+      requestId: data[i].length > 10 ? data[i][10] : ""
+    };
+    var resolved = resolveTransactionPeriod_(transaction, fallbackYear);
+    transaction.period = resolved.period;
+    transaction.periodSource = resolved.source;
+    transaction.periodLabel = formatPeriodLabel_(resolved.period);
+    transactions.push(transaction);
   }
   return transactions;
 }
@@ -95,7 +136,8 @@ function findTransactionGroup_(doc, baseId) {
 }
 
 function safeRewriteOmadTransactions_(doc, incomingTransactions) {
-  var txSheet = doc.getSheetByName("Omad_Transactions") || doc.insertSheet("Omad_Transactions");
+  var sheetName = activeTransactionSheetName_(doc);
+  var txSheet = doc.getSheetByName(sheetName) || doc.insertSheet(sheetName);
   ensureOmadTransactionHeader_(txSheet);
 
   var lastRow = txSheet.getLastRow();
@@ -113,14 +155,15 @@ function safeRewriteOmadTransactions_(doc, incomingTransactions) {
 }
 
 function appendOmadTransaction_(doc, transaction) {
-  var txSheet = doc.getSheetByName("Omad_Transactions") || doc.insertSheet("Omad_Transactions");
+  var sheetName = activeTransactionSheetName_(doc);
+  var txSheet = doc.getSheetByName(sheetName) || doc.insertSheet(sheetName);
   ensureOmadTransactionHeader_(txSheet);
   txSheet.appendRow(transactionToRow_(normalizeTransaction_(transaction)));
 }
 
 function updateOmadTransactionMsgId_(doc, transactionId, msgId) {
   if (!msgId) return;
-  var txSheet = doc.getSheetByName("Omad_Transactions");
+  var txSheet = doc.getSheetByName(activeTransactionSheetName_(doc));
   if (!txSheet || txSheet.getLastRow() < 2) return;
 
   var data = txSheet.getDataRange().getValues();

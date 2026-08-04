@@ -261,7 +261,7 @@ function processOmadTextStep_(text, chatId, key, cache, doc, configSheet, fromId
         transaction = normalizeTransaction_({
           id: Date.now() + "_0",
           tenant: state.tenant,
-          month: getCurrentUzbekMonth_(),
+          month: currentPeriod_(),
           type: state.type,
           amount: state.amount,
           currency: state.currency,
@@ -308,7 +308,7 @@ function buildTelegramConfirmation_(transaction) {
     "",
     "*Turi:* " + (transaction.type === "Income" ? "Kirim" : "Chiqim"),
     "*Obyekt:* " + escapeMarkdown_(transaction.tenant),
-    "*Oy:* " + escapeMarkdown_(transaction.month),
+    "*Davr:* " + escapeMarkdown_(formatPeriodLabel_(transactionPeriod_(transaction))),
     "*Summa:* " + Number(transaction.amount || 0).toLocaleString() + " " + transaction.currency,
     "*Usul:* " + escapeMarkdown_(transaction.method),
     "*Izoh:* " + escapeMarkdown_(transaction.comment || "Kiritilmagan")
@@ -325,12 +325,13 @@ function buildOmadGroupReportMessage_(group, balances) {
   var first = group[0];
   var title = first.type === "Income" ? "🟢 YANGI KIRIM" : "🔴 YANGI CHIQIM";
   var objectText = String(first.tenant || "").trim() || "Noma'lum";
-  var periodText = String(first.month || "").trim() || "Noma'lum";
+  var period = transactionPeriod_(first);
+  var periodText = formatPeriodLabel_(period) || "Noma'lum";
 
   var transferLines = [];
   var total = 0;
   for (var i = 0; i < group.length; i++) {
-    var valueUZS = toUZS_(group[i].amount, group[i].currency, periodText, rates, "sell");
+    var valueUZS = toUZS_(group[i].amount, group[i].currency, period, rates, "sell");
     total += valueUZS;
     transferLines.push("💵 " + formatUZS_(valueUZS) + " UZS");
   }

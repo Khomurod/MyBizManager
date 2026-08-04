@@ -10,18 +10,18 @@ function renderProjection(period) {
     const card = document.getElementById('projectionCard');
     if(!card) return;
 
-    if(period === "Jami Davr") {
+    if(period === ALL_PERIODS) {
         card.classList.add('hidden');
         return;
     }
 
     const expectedIncomeUZS = (Array.isArray(app.tenants) ? app.tenants : []).reduce((sum, tenant) => {
-        if(isTenantDisabledForMonth(tenant, period)) return sum;
+        if(isTenantDisabledForPeriod(tenant, period)) return sum;
         return sum + toUZS(Number(tenant.rent) || 0, tenant.currency, period, 'buy');
     }, 0);
 
     const templateExpensesUZS = getTemplateExpenses()
-        .filter(expense => expense.month === period)
+        .filter(expense => recordPeriod(expense) === period)
         .reduce((sum, expense) => sum + toUZS(expense.amount, expense.currency, period, 'sell'), 0);
 
     const expectedNetUZS = expectedIncomeUZS - templateExpensesUZS;
@@ -34,19 +34,19 @@ function renderProjection(period) {
 
 function renderDashboard() {
     const period = document.getElementById('dashMonthSelect').value;
-    document.getElementById('statusMonthLabel').innerText = period;
+    document.getElementById('statusMonthLabel').innerText = periodLabel(period);
 
-    const monthRate = getRateForMonth(period);
-    document.getElementById('headerMonth').innerText = period;
+    const monthRate = getRateForPeriod(period);
+    document.getElementById('headerMonth').innerText = periodShortLabel(period);
     document.getElementById('headerRate').innerText = `Buy ${formatUZS(monthRate.buy)} | Sell ${formatUZS(monthRate.sell)}`;
 
-    const txs = app.transactions.filter(t => (period === "Jami Davr" || t.month === period));
+    const txs = app.transactions.filter(t => matchesPeriod(t, period));
     renderProjection(period);
 
     // 1. P&L
     let inc = 0, exp = 0;
     txs.forEach(t => {
-        const val = toUZS(t.amount, t.currency, t.month, 'sell');
+        const val = toUZS(t.amount, t.currency, recordPeriod(t), 'sell');
         if(t.type === 'Income') inc += val; else exp += val;
     });
     document.getElementById('dash-income').innerText = inc.toLocaleString();
@@ -55,7 +55,7 @@ function renderDashboard() {
     // 2. Liquidity (Calculated from ALL TIME)
     let cashVal = 0, bankVal = 0;
     app.transactions.forEach(t => {
-        const val = toUZS(t.amount, t.currency, t.month, 'sell');
+        const val = toUZS(t.amount, t.currency, recordPeriod(t), 'sell');
         const mod = t.type === 'Income' ? 1 : -1;
 
         if(t.method === 'Bank') bankVal += (val * mod);
@@ -68,7 +68,7 @@ function renderDashboard() {
     const list = document.getElementById('tenantStatusList');
     list.innerHTML = "";
     let totalPeriodDebt = 0;
-    const isAllTime = period === "Jami Davr";
+    const isAllTime = period === ALL_PERIODS;
 
     // Only show Total Debt card if a specific month is selected
     if(isAllTime) {
@@ -78,12 +78,12 @@ function renderDashboard() {
     }
 
     app.tenants.forEach(tenant => {
-        if(!isAllTime && isTenantDisabledForMonth(tenant, period)) return;
+        if(!isAllTime && isTenantDisabledForPeriod(tenant, period)) return;
 
         const tenantKey = normalizeTenantName(tenant.name);
         const relevant = txs.filter(t => normalizeTenantName(t.tenant) === tenantKey && t.type === 'Income');
         let paidUZS = relevant.reduce((acc, t) => {
-            return acc + toUZS(t.amount, t.currency, t.month, 'buy');
+            return acc + toUZS(t.amount, t.currency, recordPeriod(t), 'buy');
         }, 0);
 
         let rentUZS = 0;
@@ -146,19 +146,19 @@ function renderDashboard() {
 // --- DEBT LIST MODAL ---
 function openDebtListModal() {
     const period = document.getElementById('dashMonthSelect').value;
-    const monthRate = getRateForMonth(period);
-    const txs = app.transactions.filter(t => t.month === period);
+    const monthRate = getRateForPeriod(period);
+    const txs = app.transactions.filter(t => recordPeriod(t) === period);
 
     let debtors = [];
     let totalDebt = 0;
 
     app.tenants.forEach(tenant => {
-        if(isTenantDisabledForMonth(tenant, period)) return;
+        if(isTenantDisabledForPeriod(tenant, period)) return;
 
         const tenantKey = normalizeTenantName(tenant.name);
         const relevant = txs.filter(t => normalizeTenantName(t.tenant) === tenantKey && t.type === 'Income');
         let paidUZS = relevant.reduce((acc, t) => {
-            return acc + toUZS(t.amount, t.currency, t.month, 'buy');
+            return acc + toUZS(t.amount, t.currency, recordPeriod(t), 'buy');
         }, 0);
 
         let rentUZS = (tenant.currency === 'USD') ? (tenant.rent * monthRate.buy) : tenant.rent;
@@ -174,7 +174,7 @@ function openDebtListModal() {
 
     // Configure Modal UI
     document.getElementById('modalTitle').innerText = "Qarzdorlar";
-    document.getElementById('modalSubtitle').innerText = `${period} oyi holatiga`;
+    document.getElementById('modalSubtitle').innerText = `${periodLabel(period)} holatiga`;
 
     // Show Simple Total Box, Hide Complex Box
     document.getElementById('modalSummaryBox').classList.add('hidden');
@@ -214,13 +214,13 @@ function openDebtListModal() {
 
 // --- TENANT DETAIL MODAL ---
 function openTenantModal(tenantName, period, rentAmount, rentCurr, monthRate) {
-    const isAllTime = period === "Jami Davr";
+    const isAllTime = period === ALL_PERIODS;
     const tenantKey = normalizeTenantName(tenantName);
-    const txs = app.transactions.filter(t => normalizeTenantName(t.tenant) === tenantKey && (isAllTime || t.month === period) && t.type === 'Income');
+    const txs = app.transactions.filter(t => normalizeTenantName(t.tenant) === tenantKey && (isAllTime || recordPeriod(t) === period) && t.type === 'Income');
     const selectedMonthRates = normalizeRateEntry(monthRate, DEFAULT_RATE);
 
     let totalPaidUZS = txs.reduce((acc, t) => {
-        return acc + toUZS(t.amount, t.currency, t.month, 'buy');
+        return acc + toUZS(t.amount, t.currency, recordPeriod(t), 'buy');
     }, 0);
 
     let expectedRentUZS = 0;
@@ -230,7 +230,7 @@ function openTenantModal(tenantName, period, rentAmount, rentCurr, monthRate) {
 
     // Configure Modal UI
     document.getElementById('modalTitle').innerText = tenantName;
-    document.getElementById('modalSubtitle').innerText = `${period} hisoboti`;
+    document.getElementById('modalSubtitle').innerText = `${periodLabel(period)} hisoboti`;
 
     // Show Complex Box, Hide Simple Box
     document.getElementById('modalSummaryBox').classList.remove('hidden');
@@ -272,8 +272,8 @@ function openTenantModal(tenantName, period, rentAmount, rentCurr, monthRate) {
         txs.forEach(t => {
             let detailText = "";
             if (t.currency === 'USD') {
-                let inUZS = toUZS(t.amount, t.currency, t.month, 'buy');
-                let buyRate = getMonthRateByType(t.month, 'buy');
+                let inUZS = toUZS(t.amount, t.currency, recordPeriod(t), 'buy');
+                let buyRate = getPeriodRateByType(recordPeriod(t), 'buy');
                 detailText = `<div class="text-[10px] text-slate-400 text-right mt-0.5">Buy: 1 USD - ${buyRate.toLocaleString()} UZS<br>= ${Math.round(inUZS).toLocaleString()} UZS</div>`;
             }
 

@@ -60,3 +60,12 @@ function debugLog_(doc, eventName, details) {
     sheet.appendRow([new Date().toISOString(), eventName, redactSecrets_(details).slice(0, 45000)]);
   } catch (error) {}
 }
+
+/** Appends one row to the append-only audit trail. Never throws. */
+function appendAuditRow_(doc, event, details) {
+  try {
+    var sheet = doc.getSheetByName("Omad_Audit_Log") || doc.insertSheet("Omad_Audit_Log");
+    if (sheet.getLastRow() === 0) sheet.appendRow(["Timestamp", "Event", "Details"]);
+    sheet.appendRow([new Date().toISOString(), String(event), redactSecrets_(details).slice(0, 45000)]);
+  } catch (error) {}
+}

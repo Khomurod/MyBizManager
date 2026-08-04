@@ -55,6 +55,17 @@ function doPost(e) {
       return telegramAdminAction_(action, payload);
     }
 
+    // ---- Migration --------------------------------------------------------
+    if (action === 'get_migration_status') {
+      return jsonOutput_({ status: "success", migration: getMigrationStatus_(doc) });
+    }
+
+    if (isMigrationAction_(action)) {
+      var migrationAdminError = checkAdminKey_(payload);
+      if (migrationAdminError) return jsonOutput_({ status: "error", message: migrationAdminError });
+      return migrationAction_(action, payload, doc);
+    }
+
     // ---- Café -------------------------------------------------------------
     var cafeResponse = handleCafeAction_(action, payload, doc, configSheet);
     if (cafeResponse) return cafeResponse;
@@ -145,4 +156,43 @@ function telegramAdminAction_(action, payload) {
   if (action === 'test_telegram_connection') return jsonOutput_(testTelegramConnection_());
   if (action === 'send_telegram_test_message') return jsonOutput_(sendTelegramTestMessage_());
   return jsonOutput_(configureTelegramWebhook_(payload));
+}
+
+function isMigrationAction_(action) {
+  return action === 'preview_omad_migration' ||
+         action === 'apply_omad_migration' ||
+         action === 'verify_omad_migration' ||
+         action === 'cutover_omad_migration' ||
+         action === 'rollback_omad_migration';
+}
+
+/**
+ * Every migration step is admin-key protected: they read the whole ledger and
+ * three of them change which sheet the app reads from.
+ */
+function migrationAction_(action, payload, doc) {
+  var options = {
+    fallbackYear: Number(payload.fallbackYear) || 0,
+    allowUnresolved: payload.allowUnresolved === true
+  };
+
+  if (action === 'preview_omad_migration') {
+    return jsonOutput_({ status: "success", preview: previewOmadMigration_(doc, options) });
+  }
+  if (action === 'apply_omad_migration') {
+    var applied = applyOmadMigration_(doc, options);
+    applied.migration = getMigrationStatus_(doc);
+    return jsonOutput_(applied);
+  }
+  if (action === 'verify_omad_migration') {
+    return jsonOutput_({ status: "success", verification: verifyOmadMigration_(doc) });
+  }
+  if (action === 'cutover_omad_migration') {
+    var cutover = cutoverOmadMigration_(doc);
+    cutover.migration = getMigrationStatus_(doc);
+    return jsonOutput_(cutover);
+  }
+  var rolledBack = rollbackOmadMigration_(doc);
+  rolledBack.migration = getMigrationStatus_(doc);
+  return jsonOutput_(rolledBack);
 }

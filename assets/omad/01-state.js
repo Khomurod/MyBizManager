@@ -7,15 +7,14 @@
 // reads and writes these; nothing else is global.
 // ==========================================================
 
-const months = ["Yanvar", "Fevral", "Mart", "Aprel", "May", "Iyun", "Iyul", "Avgust", "Sentabr", "Oktabr", "Noyabr", "Dekabr"];
-
-const monthShortLabels = ["Yan", "Fev", "Mar", "Apr", "May", "Iyn", "Iyl", "Avg", "Sen", "Okt", "Noy", "Dek"];
-
+// Month names live in 01b-periods.js (MONTH_LABELS); periods are the unit of
+// time everywhere else.
 const DEFAULT_RATE = 12500;
 
 // --- DATA STORE ---
 let app = {
-    rates: { "Fevral": { buy: 12500, sell: 12500 } },
+    // Keyed by canonical period. Legacy month-name keys are still read.
+    rates: {},
     tenants: [], 
     transactions: [],
     templateExpenses: []

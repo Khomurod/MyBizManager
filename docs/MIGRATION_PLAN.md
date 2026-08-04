@@ -9,7 +9,7 @@ rolled back on its own.
 | 1 | Telegram credentials, authorization, tests & CI foundation | ✅ delivered |
 | 1b | Telegram proxy removal, webhook verification, retry queue, `/yangi` idempotency | ✅ delivered |
 | 2 | Code organization (module split, café duplicate removal) | ✅ delivered |
-| 3 | Year-month data model (`2026-01`) + friendly Uzbek labels | ⬜ not started |
+| 3 | Year-month data model (`2026-01`) + friendly Uzbek labels | ✅ delivered (tooling; live run pending) |
 | 4 | Append-only transaction system (individual create/correct/cancel) | ⬜ not started |
 | 5 | Retry queue and fast saving | ⬜ not started |
 | 6 | Historical exchange rates stored per transaction; `sell` used consistently | ⬜ not started |
@@ -37,11 +37,13 @@ from 2026-04-22 and can serve as sample data for migration dry runs.
 
 ### Migration procedure (stage 3 and 10)
 
-1. **Preview.** A `preview_migration` action returns the proposed
-   `month → year-month` mapping and row counts, writing nothing.
-2. **Confirm the migration year.** Month-only rows carry no year. The
-   operator selects the year explicitly; the preview shows how many rows
-   each year would receive.
+1. **Preview.** `preview_omad_migration` returns the proposed
+   `month → year-month` mapping, a per-year summary, the unresolved rows with
+   their sheet row numbers, duplicate ids and the pre-migration totals. It
+   writes nothing.
+2. **Confirm the fallback year.** Most rows get their year from their own
+   saved date. Only rows whose date cannot determine the year need the
+   fallback, and the preview says exactly which ones and how many.
 3. **Apply.** Write converted rows to a **new** `Omad_Transactions_V2`
    sheet. The original sheet is left untouched — this is what makes
    rollback cheap.
@@ -58,6 +60,21 @@ from 2026-04-22 and can serve as sample data for migration dry runs.
 | Verification fails | Point reads back at `Omad_Transactions`; delete V2 |
 | Discovered after cutover | Restore from the `Omad_Backups` snapshot row taken immediately before cutover |
 | Catastrophic | Restore the file-level spreadsheet copy |
+
+### Rollback for stage 3
+
+Stage 3 changes no stored data on its own. Reads resolve periods in memory and
+the app keeps working against an unmigrated sheet.
+
+If the migration has been **applied** but not cut over: nothing to undo — the
+original sheet was never written. Delete `Omad_Transactions_V2` if you want.
+
+If it has been **cut over**: run `rollback_omad_migration`. It points
+`Omad_Active_Transactions_Sheet` back at `Omad_Transactions` and restores the
+pre-migration rate map from `Omad_Rates_V1_Backup`. Migrated data is left in
+place.
+
+To roll back the code as well, `git revert` the commit and redeploy.
 
 ### Rollback for stage 2
 

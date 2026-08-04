@@ -80,11 +80,6 @@ function formatCloseDayStamp_(value) {
   }
 }
 
-function getCurrentUzbekMonth_() {
-  var months = ["Yanvar", "Fevral", "Mart", "Aprel", "May", "Iyun", "Iyul", "Avgust", "Sentabr", "Oktabr", "Noyabr", "Dekabr"];
-  return months[new Date().getMonth()];
-}
-
 /** Constant-time-ish comparison; avoids leaking the secret length via timing. */
 function secretsMatch_(a, b) {
   var left = String(a || "");
@@ -94,6 +89,253 @@ function secretsMatch_(a, b) {
   var diff = 0;
   for (var i = 0; i < left.length; i++) diff |= left.charCodeAt(i) ^ right.charCodeAt(i);
   return diff === 0;
+}
+
+// ----- apps-script/01a_periods.gs ----------------------------------------------
+
+// ============================================================
+// Year-month periods
+// ------------------------------------------------------------
+// The canonical period is "YYYY-MM" ("2026-01"). Month-only values such as
+// "Yanvar" are legacy: two Januaries collide, and sorting is meaningless.
+//
+// Friendly Uzbek labels ("Yanvar 2026") are a *presentation* concern and are
+// produced from the canonical value, never stored.
+// ============================================================
+
+var UZBEK_MONTHS = [
+  "Yanvar", "Fevral", "Mart", "Aprel", "May", "Iyun",
+  "Iyul", "Avgust", "Sentabr", "Oktabr", "Noyabr", "Dekabr"
+];
+
+var UZBEK_MONTHS_SHORT = [
+  "Yan", "Fev", "Mar", "Apr", "May", "Iyn",
+  "Iyl", "Avg", "Sen", "Okt", "Noy", "Dek"
+];
+
+var CANONICAL_PERIOD_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
+var ALL_PERIODS_LABEL = "Jami Davr";
+
+/** Config key holding the year to use for rows whose year cannot be derived. */
+var OMAD_FALLBACK_YEAR_KEY = "Omad_Migration_Fallback_Year";
+
+function isCanonicalPeriod_(value) {
+  return CANONICAL_PERIOD_PATTERN.test(String(value || ""));
+}
+
+/** year + 1-based month -> "YYYY-MM". */
+function buildPeriod_(year, month) {
+  var y = Number(year);
+  var m = Number(month);
+  if (!isFinite(y) || !isFinite(m) || m < 1 || m > 12) return "";
+  return String(y) + "-" + (m < 10 ? "0" + m : String(m));
+}
+
+function periodYear_(period) {
+  return isCanonicalPeriod_(period) ? Number(String(period).slice(0, 4)) : 0;
+}
+
+/** 1-based month number. */
+function periodMonth_(period) {
+  return isCanonicalPeriod_(period) ? Number(String(period).slice(5, 7)) : 0;
+}
+
+/** "2026-01" -> "Yanvar 2026". Anything else is passed through unchanged. */
+function formatPeriodLabel_(period) {
+  if (!isCanonicalPeriod_(period)) return String(period || "");
+  return UZBEK_MONTHS[periodMonth_(period) - 1] + " " + periodYear_(period);
+}
+
+function periodFromDate_(date) {
+  if (!date || isNaN(date.getTime())) return "";
+  return buildPeriod_(date.getFullYear(), date.getMonth() + 1);
+}
+
+function currentPeriod_() {
+  return periodFromDate_(new Date());
+}
+
+/** Shifts a period by whole months, forwards or backwards, across year ends. */
+function addMonthsToPeriod_(period, delta) {
+  if (!isCanonicalPeriod_(period)) return "";
+  var index = periodYear_(period) * 12 + (periodMonth_(period) - 1) + Number(delta || 0);
+  return buildPeriod_(Math.floor(index / 12), (index % 12) + 1);
+}
+
+/** -1 / 0 / 1. Canonical periods sort correctly as plain strings. */
+function comparePeriods_(a, b) {
+  var left = String(a || "");
+  var right = String(b || "");
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
+}
+
+/** "Yanvar" / "yanvar" / "01" / "1" -> 1-based month number, or 0. */
+function parseUzbekMonth_(value) {
+  var text = String(value === null || value === undefined ? "" : value).trim();
+  if (!text) return 0;
+
+  for (var i = 0; i < UZBEK_MONTHS.length; i++) {
+    if (UZBEK_MONTHS[i].toLowerCase() === text.toLowerCase()) return i + 1;
+    if (UZBEK_MONTHS_SHORT[i].toLowerCase() === text.toLowerCase()) return i + 1;
+  }
+
+  if (/^\d{1,2}$/.test(text)) {
+    var numeric = Number(text);
+    if (numeric >= 1 && numeric <= 12) return numeric;
+  }
+  return 0;
+}
+
+/**
+ * Reads a year and month out of a stored transaction date.
+ *
+ * Accepted, in order of preference:
+ *   - a real Date value (Sheets returns these for date-formatted cells)
+ *   - "dd/MM/yyyy" (what the app writes)
+ *   - "yyyy-MM-dd" / ISO 8601
+ *
+ * Returns null when the value is absent, unparseable or ambiguous. A
+ * two-digit year is treated as ambiguous on purpose: guessing the century is
+ * exactly the kind of silent damage this migration exists to avoid.
+ */
+function parseTransactionDate_(value) {
+  if (value === null || value === undefined || value === "") return null;
+
+  if (typeof value === "object" && typeof value.getFullYear === "function") {
+    if (isNaN(value.getTime())) return null;
+    return { year: value.getFullYear(), month: value.getMonth() + 1 };
+  }
+
+  var text = String(value).trim();
+  if (!text) return null;
+
+  var dmy = /^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})$/.exec(text);
+  if (dmy) {
+    var day = Number(dmy[1]);
+    var monthDmy = Number(dmy[2]);
+    if (monthDmy < 1 || monthDmy > 12) return null;
+    if (day < 1 || day > daysInMonth_(Number(dmy[3]), monthDmy)) return null;
+    return { year: Number(dmy[3]), month: monthDmy };
+  }
+
+  var iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(text);
+  if (iso) {
+    var monthIso = Number(iso[2]);
+    if (monthIso < 1 || monthIso > 12) return null;
+    if (Number(iso[3]) < 1 || Number(iso[3]) > daysInMonth_(Number(iso[1]), monthIso)) return null;
+    return { year: Number(iso[1]), month: monthIso };
+  }
+
+  return null;
+}
+
+/** Leap years included - 2024-02-29 is valid, 2026-02-29 is not. */
+function daysInMonth_(year, month) {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+/**
+ * Resolves a transaction's canonical period.
+ *
+ * Precedence, and why:
+ *   1. an already-canonical `month` - nothing to guess;
+ *   2. a legacy month name plus a valid date whose month agrees - the date
+ *      supplies the year;
+ *   3. a valid date alone;
+ *   4. a legacy month name plus the explicitly configured fallback year;
+ *   5. unresolved.
+ *
+ * Case 2 deliberately requires the months to agree. A row saying "Dekabr"
+ * with a January date is a real December-to-January edit and must be flagged,
+ * not silently reassigned.
+ */
+function resolveTransactionPeriod_(transaction, fallbackYear) {
+  var raw = transaction || {};
+  var monthValue = raw.month;
+
+  if (isCanonicalPeriod_(monthValue)) {
+    return { period: String(monthValue), source: "canonical", confident: true };
+  }
+
+  var parsedDate = parseTransactionDate_(raw.date);
+  var namedMonth = parseUzbekMonth_(monthValue);
+
+  if (namedMonth && parsedDate) {
+    if (parsedDate.month === namedMonth) {
+      return { period: buildPeriod_(parsedDate.year, namedMonth), source: "date", confident: true };
+    }
+    // The stored month and the stored date disagree. The month label is what
+    // the operator chose, so keep it, but take the year from the date only
+    // when the disagreement is the ordinary December/January boundary.
+    var yearGuess = disagreementYear_(parsedDate, namedMonth);
+    if (yearGuess !== null) {
+      return {
+        period: buildPeriod_(yearGuess, namedMonth),
+        source: "date_boundary",
+        confident: true
+      };
+    }
+    return {
+      period: fallbackYear ? buildPeriod_(fallbackYear, namedMonth) : "",
+      source: "conflict",
+      confident: false,
+      detail: "month '" + monthValue + "' disagrees with date '" + raw.date + "'"
+    };
+  }
+
+  if (parsedDate) {
+    return {
+      period: buildPeriod_(parsedDate.year, parsedDate.month),
+      source: "date_only",
+      confident: true
+    };
+  }
+
+  if (namedMonth) {
+    if (!fallbackYear) {
+      return { period: "", source: "needs_fallback_year", confident: false,
+               detail: "month '" + monthValue + "' has no usable date" };
+    }
+    return { period: buildPeriod_(fallbackYear, namedMonth), source: "fallback", confident: false };
+  }
+
+  return { period: "", source: "unresolved", confident: false,
+           detail: "no usable month or date" };
+}
+
+/**
+ * A December row dated in early January (or a January row dated in late
+ * December) is a normal late entry: the period belongs to the labelled month
+ * of the adjacent year. Any other disagreement is not something to guess at.
+ */
+function disagreementYear_(parsedDate, namedMonth) {
+  if (namedMonth === 12 && parsedDate.month === 1) return parsedDate.year - 1;
+  if (namedMonth === 1 && parsedDate.month === 12) return parsedDate.year + 1;
+  return null;
+}
+
+/** The configured fallback year, or 0 when the operator has not chosen one. */
+function getFallbackYear_(configSheet) {
+  if (!configSheet) return 0;
+  var stored = Number(getConfig(configSheet, OMAD_FALLBACK_YEAR_KEY));
+  return isFinite(stored) && stored >= 1970 && stored <= 2999 ? stored : 0;
+}
+
+function setFallbackYear_(configSheet, year) {
+  setConfig(configSheet, OMAD_FALLBACK_YEAR_KEY, String(Number(year) || ""));
+}
+
+/**
+ * Normalises any stored period-ish value to canonical form where possible.
+ * Used for rates, planned expenses and tenant schedules, which carry a month
+ * but no date of their own.
+ */
+function normalizePeriodValue_(value, fallbackYear) {
+  if (isCanonicalPeriod_(value)) return String(value);
+  var month = parseUzbekMonth_(value);
+  if (month && fallbackYear) return buildPeriod_(fallbackYear, month);
+  return "";
 }
 
 // ----- apps-script/02_validation.gs --------------------------------------------
@@ -532,13 +774,28 @@ function debugLog_(doc, eventName, details) {
   } catch (error) {}
 }
 
+/** Appends one row to the append-only audit trail. Never throws. */
+function appendAuditRow_(doc, event, details) {
+  try {
+    var sheet = doc.getSheetByName("Omad_Audit_Log") || doc.insertSheet("Omad_Audit_Log");
+    if (sheet.getLastRow() === 0) sheet.appendRow(["Timestamp", "Event", "Details"]);
+    sheet.appendRow([new Date().toISOString(), String(event), redactSecrets_(details).slice(0, 45000)]);
+  } catch (error) {}
+}
+
 // ----- apps-script/05_exchange_rates.gs ----------------------------------------
 
 // ============================================================
 // Exchange rates
 // ------------------------------------------------------------
 // USD -> UZS conversion and the balances derived from it.
+//
+// Rates are keyed by canonical period ("2026-01"). A legacy month-name key
+// ("Fevral") is still honoured on read so the app keeps working before the
+// migration runs, but nothing writes one any more.
 // ============================================================
+
+var DEFAULT_RATE_UZS = 12500;
 
 function getOmadRates_() {
   var doc = SpreadsheetApp.getActiveSpreadsheet();
@@ -548,40 +805,101 @@ function getOmadRates_() {
 }
 
 function normalizeRateEntry_(rawRate) {
-  var defaultRate = 12500;
-  if (typeof rawRate === "number") return { buy: rawRate || defaultRate, sell: rawRate || defaultRate };
+  if (typeof rawRate === "number") {
+    return { buy: rawRate || DEFAULT_RATE_UZS, sell: rawRate || DEFAULT_RATE_UZS };
+  }
   if (rawRate && typeof rawRate === "object") {
-    var buy = Number(rawRate.buy || rawRate.sell || rawRate.rate) || defaultRate;
-    var sell = Number(rawRate.sell || rawRate.buy || rawRate.rate) || defaultRate;
+    var buy = Number(rawRate.buy || rawRate.sell || rawRate.rate) || DEFAULT_RATE_UZS;
+    var sell = Number(rawRate.sell || rawRate.buy || rawRate.rate) || DEFAULT_RATE_UZS;
     return { buy: buy, sell: sell };
   }
-  return { buy: defaultRate, sell: defaultRate };
+  return { buy: DEFAULT_RATE_UZS, sell: DEFAULT_RATE_UZS };
 }
 
-function getMonthRateByType_(rates, month, rateType) {
-  var normalized = normalizeRateEntry_(rates && rates[month]);
-  return rateType === "buy" ? normalized.buy : normalized.sell;
+/**
+ * Looks a rate up by canonical period, falling back to the legacy month-name
+ * key for the same month. Returns null when the period has no rate at all, so
+ * callers can tell "no rate configured" from "the rate happens to be 12500".
+ */
+function findRateEntry_(rates, period) {
+  if (!rates || typeof rates !== "object") return null;
+
+  var key = String(period || "");
+  if (Object.prototype.hasOwnProperty.call(rates, key)) return normalizeRateEntry_(rates[key]);
+
+  if (isCanonicalPeriod_(key)) {
+    var legacyKey = UZBEK_MONTHS[periodMonth_(key) - 1];
+    if (Object.prototype.hasOwnProperty.call(rates, legacyKey)) {
+      return normalizeRateEntry_(rates[legacyKey]);
+    }
+  }
+  return null;
 }
 
-function toUZS_(amount, currency, month, rates, rateType) {
+function getPeriodRate_(rates, period) {
+  return findRateEntry_(rates, period) || { buy: DEFAULT_RATE_UZS, sell: DEFAULT_RATE_UZS };
+}
+
+function getPeriodRateByType_(rates, period, rateType) {
+  var entry = getPeriodRate_(rates, period);
+  return rateType === "buy" ? entry.buy : entry.sell;
+}
+
+function toUZS_(amount, currency, period, rates, rateType) {
   var numericAmount = Number(amount) || 0;
-  return currency === "USD" ? numericAmount * getMonthRateByType_(rates, month, rateType || "sell") : numericAmount;
+  if (currency !== "USD") return numericAmount;
+  return numericAmount * getPeriodRateByType_(rates, period, rateType || "sell");
 }
 
-function calculateBalancesFromTransactions_(transactions, targetMonth) {
+/** The period a transaction belongs to, whichever field carries it. */
+function transactionPeriod_(transaction) {
+  var t = transaction || {};
+  return String(t.period || t.month || "");
+}
+
+function calculateBalancesFromTransactions_(transactions, targetPeriod) {
   var rates = getOmadRates_();
   var monthBalance = 0;
   var allTimeBalance = 0;
 
   for (var i = 0; i < transactions.length; i++) {
     var t = transactions[i];
-    var valueUZS = toUZS_(t.amount, t.currency, t.month, rates, "sell");
+    var period = transactionPeriod_(t);
+    var valueUZS = toUZS_(t.amount, t.currency, period, rates, "sell");
     var sign = t.type === "Income" ? 1 : -1;
     allTimeBalance += valueUZS * sign;
-    if (t.month === targetMonth) monthBalance += valueUZS * sign;
+    if (period === String(targetPeriod || "")) monthBalance += valueUZS * sign;
   }
 
   return { monthBalance: monthBalance, allTimeBalance: allTimeBalance };
+}
+
+/**
+ * Converts every legacy month-name key to a canonical period using the
+ * configured fallback year. Keys that are already canonical are kept as-is.
+ */
+function migrateRatesMap_(rates, fallbackYear) {
+  var source = rates && typeof rates === "object" ? rates : {};
+  var migrated = {};
+  var unresolved = [];
+
+  Object.keys(source).forEach(function (key) {
+    if (isCanonicalPeriod_(key)) {
+      migrated[key] = normalizeRateEntry_(source[key]);
+      return;
+    }
+    var period = normalizePeriodValue_(key, fallbackYear);
+    if (!period) {
+      unresolved.push(key);
+      return;
+    }
+    // An explicit canonical entry always wins over a converted legacy one.
+    if (!Object.prototype.hasOwnProperty.call(migrated, period)) {
+      migrated[period] = normalizeRateEntry_(source[key]);
+    }
+  });
+
+  return { rates: migrated, unresolved: unresolved };
 }
 
 // ----- apps-script/06_tenants.gs -----------------------------------------------
@@ -659,7 +977,7 @@ function normalizeTemplateExpenses_(expenses) {
     if (!name) continue;
     normalized.push({
       id: String(item.id || (Date.now() + "_" + i)),
-      month: String(item.month || getCurrentUzbekMonth_()).trim(),
+      month: String(item.month || item.period || currentPeriod_()).trim(),
       name: name,
       amount: Number(item.amount) || 0,
       currency: item.currency === "USD" ? "USD" : "UZS"
@@ -674,7 +992,18 @@ function normalizeTemplateExpenses_(expenses) {
 // Omad transactions
 // ------------------------------------------------------------
 // The financial ledger: read, normalise, append and rewrite.
+//
+// Reads are period-aware: every transaction comes back with a canonical
+// `period` ("2026-01") resolved from its stored month and date, whether or not
+// the sheet itself has been migrated yet. Reads also follow the cutover flag,
+// so pointing the app at the migrated V2 sheet is a one-line config change and
+// pointing it back is the rollback.
 // ============================================================
+
+var OMAD_TRANSACTIONS_SHEET = "Omad_Transactions";
+var OMAD_TRANSACTIONS_V2_SHEET = "Omad_Transactions_V2";
+/** System_Config key naming the sheet reads and writes go to. */
+var OMAD_ACTIVE_TX_SHEET_KEY = "Omad_Active_Transactions_Sheet";
 
 var OMAD_TRANSACTION_HEADER = [
   "ID", "Tenant", "Month", "Type", "Amount", "Currency", "Method", "Date", "Comment",
@@ -711,10 +1040,13 @@ function normalizeTransactions_(transactions) {
 
 function normalizeTransaction_(raw) {
   var t = raw && typeof raw === "object" ? raw : {};
+  // `month` holds the canonical period for anything written from now on.
+  // Legacy month names are preserved verbatim rather than guessed at; the
+  // migration is where they get a year, under operator control.
   return {
     id: String(t.id || (Date.now() + "_0")),
     tenant: String(t.tenant || "").trim(),
-    month: String(t.month || getCurrentUzbekMonth_()).trim(),
+    month: String(t.month || t.period || currentPeriod_()).trim(),
     type: t.type === "Expense" ? "Expense" : "Income",
     amount: Number(t.amount) || 0,
     currency: t.currency === "USD" ? "USD" : "UZS",
@@ -726,20 +1058,47 @@ function normalizeTransaction_(raw) {
   };
 }
 
+/** The sheet reads and writes go to: the migrated V2 sheet after cutover. */
+function activeTransactionSheetName_(doc) {
+  var configSheet = doc.getSheetByName("System_Config");
+  if (!configSheet) return OMAD_TRANSACTIONS_SHEET;
+  var configured = String(getConfig(configSheet, OMAD_ACTIVE_TX_SHEET_KEY) || "").trim();
+  if (configured && doc.getSheetByName(configured)) return configured;
+  return OMAD_TRANSACTIONS_SHEET;
+}
+
 function readOmadTransactions_(doc) {
-  var txSheet = doc.getSheetByName("Omad_Transactions");
+  return readTransactionsFromSheet_(doc, activeTransactionSheetName_(doc));
+}
+
+/**
+ * Reads a transaction sheet and attaches the resolved canonical period to
+ * every row. Used by both normal reads and the migration preview, so the
+ * preview shows exactly what the app would compute.
+ */
+function readTransactionsFromSheet_(doc, sheetName) {
+  var txSheet = doc.getSheetByName(sheetName);
   var transactions = [];
-  if (txSheet && txSheet.getLastRow() > 1) {
-    var data = txSheet.getDataRange().getValues();
-    for (var i = 1; i < data.length; i++) {
-      transactions.push({
-        id: data[i][0], tenant: data[i][1], month: data[i][2], type: data[i][3],
-        amount: data[i][4], currency: data[i][5], method: data[i][6],
-        date: data[i][7], comment: data[i][8], msgId: data[i][9],
-        // Legacy 10-column rows simply have no request id.
-        requestId: data[i].length > 10 ? data[i][10] : ""
-      });
-    }
+  if (!txSheet || txSheet.getLastRow() < 2) return transactions;
+
+  var configSheet = doc.getSheetByName("System_Config");
+  var fallbackYear = getFallbackYear_(configSheet);
+  var data = txSheet.getDataRange().getValues();
+
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0] === "" || data[i][0] === null || data[i][0] === undefined) continue;
+    var transaction = {
+      id: data[i][0], tenant: data[i][1], month: data[i][2], type: data[i][3],
+      amount: data[i][4], currency: data[i][5], method: data[i][6],
+      date: data[i][7], comment: data[i][8], msgId: data[i][9],
+      // Legacy 10-column rows simply have no request id.
+      requestId: data[i].length > 10 ? data[i][10] : ""
+    };
+    var resolved = resolveTransactionPeriod_(transaction, fallbackYear);
+    transaction.period = resolved.period;
+    transaction.periodSource = resolved.source;
+    transaction.periodLabel = formatPeriodLabel_(resolved.period);
+    transactions.push(transaction);
   }
   return transactions;
 }
@@ -767,7 +1126,8 @@ function findTransactionGroup_(doc, baseId) {
 }
 
 function safeRewriteOmadTransactions_(doc, incomingTransactions) {
-  var txSheet = doc.getSheetByName("Omad_Transactions") || doc.insertSheet("Omad_Transactions");
+  var sheetName = activeTransactionSheetName_(doc);
+  var txSheet = doc.getSheetByName(sheetName) || doc.insertSheet(sheetName);
   ensureOmadTransactionHeader_(txSheet);
 
   var lastRow = txSheet.getLastRow();
@@ -785,14 +1145,15 @@ function safeRewriteOmadTransactions_(doc, incomingTransactions) {
 }
 
 function appendOmadTransaction_(doc, transaction) {
-  var txSheet = doc.getSheetByName("Omad_Transactions") || doc.insertSheet("Omad_Transactions");
+  var sheetName = activeTransactionSheetName_(doc);
+  var txSheet = doc.getSheetByName(sheetName) || doc.insertSheet(sheetName);
   ensureOmadTransactionHeader_(txSheet);
   txSheet.appendRow(transactionToRow_(normalizeTransaction_(transaction)));
 }
 
 function updateOmadTransactionMsgId_(doc, transactionId, msgId) {
   if (!msgId) return;
-  var txSheet = doc.getSheetByName("Omad_Transactions");
+  var txSheet = doc.getSheetByName(activeTransactionSheetName_(doc));
   if (!txSheet || txSheet.getLastRow() < 2) return;
 
   var data = txSheet.getDataRange().getValues();
@@ -1085,7 +1446,7 @@ function processOmadTextStep_(text, chatId, key, cache, doc, configSheet, fromId
         transaction = normalizeTransaction_({
           id: Date.now() + "_0",
           tenant: state.tenant,
-          month: getCurrentUzbekMonth_(),
+          month: currentPeriod_(),
           type: state.type,
           amount: state.amount,
           currency: state.currency,
@@ -1132,7 +1493,7 @@ function buildTelegramConfirmation_(transaction) {
     "",
     "*Turi:* " + (transaction.type === "Income" ? "Kirim" : "Chiqim"),
     "*Obyekt:* " + escapeMarkdown_(transaction.tenant),
-    "*Oy:* " + escapeMarkdown_(transaction.month),
+    "*Davr:* " + escapeMarkdown_(formatPeriodLabel_(transactionPeriod_(transaction))),
     "*Summa:* " + Number(transaction.amount || 0).toLocaleString() + " " + transaction.currency,
     "*Usul:* " + escapeMarkdown_(transaction.method),
     "*Izoh:* " + escapeMarkdown_(transaction.comment || "Kiritilmagan")
@@ -1149,12 +1510,13 @@ function buildOmadGroupReportMessage_(group, balances) {
   var first = group[0];
   var title = first.type === "Income" ? "🟢 YANGI KIRIM" : "🔴 YANGI CHIQIM";
   var objectText = String(first.tenant || "").trim() || "Noma'lum";
-  var periodText = String(first.month || "").trim() || "Noma'lum";
+  var period = transactionPeriod_(first);
+  var periodText = formatPeriodLabel_(period) || "Noma'lum";
 
   var transferLines = [];
   var total = 0;
   for (var i = 0; i < group.length; i++) {
-    var valueUZS = toUZS_(group[i].amount, group[i].currency, periodText, rates, "sell");
+    var valueUZS = toUZS_(group[i].amount, group[i].currency, period, rates, "sell");
     total += valueUZS;
     transferLines.push("💵 " + formatUZS_(valueUZS) + " UZS");
   }
@@ -1613,6 +1975,395 @@ function readCafeState_(doc, configSheet) {
   };
 }
 
+// ----- apps-script/13_migration.gs ---------------------------------------------
+
+// ============================================================
+// Migration to canonical year-month periods
+// ------------------------------------------------------------
+// The original sheet is never overwritten. Migrated rows are written to a new
+// versioned sheet, verified, and only then read from. Rollback is a config
+// change, not a restore.
+//
+//   preview  -> what would happen, writing nothing
+//   apply    -> write Omad_Transactions_V2 (original untouched)
+//   verify   -> row counts, unique ids, per-period totals, balances
+//   cutover  -> point reads at V2
+//   rollback -> point reads back at the original
+// ============================================================
+
+var MIGRATION_STATUS_KEY = "Omad_Migration_Status";
+var MIGRATION_SCHEMA_VERSION = 2;
+
+/**
+ * Resolves every row without writing anything.
+ *
+ * Returns the proposed period for each row, a per-year summary, the rows whose
+ * year could not be determined, duplicate ids, and the pre-migration financial
+ * totals that verification will compare against.
+ */
+function previewOmadMigration_(doc, options) {
+  var configSheet = doc.getSheetByName("System_Config") || doc.insertSheet("System_Config");
+  var fallbackYear = Number((options && options.fallbackYear) || 0) || getFallbackYear_(configSheet);
+
+  var sourceName = OMAD_TRANSACTIONS_SHEET;
+  var sourceSheet = doc.getSheetByName(sourceName);
+  var rows = readRawTransactionRows_(sourceSheet);
+
+  var byYear = {};
+  var bySource = {};
+  var unresolved = [];
+  var resolvedRows = [];
+  var idCounts = {};
+
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    var resolution = resolveTransactionPeriod_(row, fallbackYear);
+    idCounts[String(row.id)] = (idCounts[String(row.id)] || 0) + 1;
+    bySource[resolution.source] = (bySource[resolution.source] || 0) + 1;
+
+    if (!resolution.period) {
+      unresolved.push({
+        rowNumber: row.rowNumber,
+        id: String(row.id),
+        month: String(row.month),
+        date: String(row.date),
+        amount: Number(row.amount) || 0,
+        currency: String(row.currency),
+        reason: resolution.detail || resolution.source
+      });
+      continue;
+    }
+
+    var year = periodYear_(resolution.period);
+    byYear[year] = (byYear[year] || 0) + 1;
+    resolvedRows.push({ row: row, period: resolution.period, source: resolution.source });
+  }
+
+  var duplicateIds = Object.keys(idCounts).filter(function (id) { return idCounts[id] > 1; }).sort();
+
+  return {
+    sourceSheet: sourceName,
+    targetSheet: OMAD_TRANSACTIONS_V2_SHEET,
+    fallbackYear: fallbackYear,
+    fallbackYearRequired: bySource.needs_fallback_year > 0 || bySource.conflict > 0,
+    totalRows: rows.length,
+    resolvedRows: resolvedRows.length,
+    byYear: byYear,
+    bySource: bySource,
+    unresolved: unresolved,
+    duplicateIds: duplicateIds,
+    // What verification will compare against.
+    totalsByPeriod: totalsByPeriod_(resolvedRows),
+    balances: balanceTotals_(rows),
+    ratePreview: migrateRatesMap_(safeParseJSON_(getConfig(configSheet, "Omad_Rates"), {}), fallbackYear),
+    canApply: rows.length > 0 && unresolved.length === 0 && duplicateIds.length === 0
+  };
+}
+
+/** Raw rows with their sheet row number, so the operator can find them. */
+function readRawTransactionRows_(sheet) {
+  var rows = [];
+  if (!sheet || sheet.getLastRow() < 2) return rows;
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0] === "" || data[i][0] === null || data[i][0] === undefined) continue;
+    rows.push({
+      rowNumber: i + 1,
+      id: data[i][0], tenant: data[i][1], month: data[i][2], type: data[i][3],
+      amount: data[i][4], currency: data[i][5], method: data[i][6],
+      date: data[i][7], comment: data[i][8], msgId: data[i][9],
+      requestId: data[i].length > 10 ? data[i][10] : ""
+    });
+  }
+  return rows;
+}
+
+/** Signed UZS totals per period, using each period's own sell rate. */
+function totalsByPeriod_(resolvedRows) {
+  var rates = getOmadRates_();
+  var totals = {};
+  for (var i = 0; i < resolvedRows.length; i++) {
+    var entry = resolvedRows[i];
+    var value = toUZS_(entry.row.amount, entry.row.currency, entry.period, rates, "sell");
+    var sign = entry.row.type === "Income" ? 1 : -1;
+    totals[entry.period] = Math.round((totals[entry.period] || 0) + value * sign);
+  }
+  return totals;
+}
+
+/** Cash, bank and total balances - invariants the migration must not move. */
+function balanceTotals_(rows) {
+  var rates = getOmadRates_();
+  var cash = 0;
+  var bank = 0;
+  var income = 0;
+  var expense = 0;
+
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    var period = transactionPeriod_(row);
+    var value = toUZS_(row.amount, row.currency, period, rates, "sell");
+    var sign = row.type === "Income" ? 1 : -1;
+    if (row.type === "Income") income += value; else expense += value;
+    if (row.method === "Bank") bank += value * sign; else cash += value * sign;
+  }
+
+  return {
+    cash: Math.round(cash),
+    bank: Math.round(bank),
+    total: Math.round(cash + bank),
+    income: Math.round(income),
+    expense: Math.round(expense)
+  };
+}
+
+/**
+ * Writes the migrated rows to the versioned sheet. The source sheet is not
+ * touched, which is what makes rollback cheap.
+ *
+ * The target sheet is rewritten from scratch every time, so an interrupted
+ * apply is recovered simply by running it again.
+ */
+function applyOmadMigration_(doc, options) {
+  var configSheet = doc.getSheetByName("System_Config") || doc.insertSheet("System_Config");
+  var preview = previewOmadMigration_(doc, options);
+
+  if (preview.totalRows === 0) {
+    return { status: "error", message: "Ko'chiriladigan yozuv yo'q.", preview: preview };
+  }
+  if (preview.duplicateIds.length > 0) {
+    return {
+      status: "error",
+      message: "Takrorlangan ID topildi: " + preview.duplicateIds.join(", "),
+      preview: preview
+    };
+  }
+  if (preview.unresolved.length > 0 && options.allowUnresolved !== true) {
+    return {
+      status: "error",
+      message: preview.unresolved.length + " ta yozuvning yili aniqlanmadi. " +
+               "Zaxira yilni tanlang yoki sanalarni tuzating.",
+      preview: preview
+    };
+  }
+
+  if (preview.fallbackYear) setFallbackYear_(configSheet, preview.fallbackYear);
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    backupOmadState_(doc, configSheet, "pre_period_migration");
+
+    var target = doc.getSheetByName(OMAD_TRANSACTIONS_V2_SHEET) ||
+                 doc.insertSheet(OMAD_TRANSACTIONS_V2_SHEET);
+    clearSheetRows_(target);
+    target.appendRow(OMAD_TRANSACTION_HEADER);
+
+    var sourceRows = readRawTransactionRows_(doc.getSheetByName(OMAD_TRANSACTIONS_SHEET));
+    var written = [];
+    for (var i = 0; i < sourceRows.length; i++) {
+      var resolution = resolveTransactionPeriod_(sourceRows[i], preview.fallbackYear);
+      if (!resolution.period) continue;
+      var migrated = normalizeTransaction_({
+        id: sourceRows[i].id,
+        tenant: sourceRows[i].tenant,
+        month: resolution.period,
+        type: sourceRows[i].type,
+        amount: sourceRows[i].amount,
+        currency: sourceRows[i].currency,
+        method: sourceRows[i].method,
+        date: sourceRows[i].date,
+        comment: sourceRows[i].comment,
+        msgId: sourceRows[i].msgId,
+        requestId: sourceRows[i].requestId
+      });
+      written.push(transactionToRow_(migrated));
+    }
+    if (written.length > 0) {
+      target.getRange(2, 1, written.length, OMAD_TRANSACTION_HEADER.length).setValues(written);
+    }
+
+    // Rates carry a month but no date of their own, so they follow the same
+    // fallback year. The original map is kept in the audit trail.
+    var rateMigration = migrateRatesMap_(
+      safeParseJSON_(getConfig(configSheet, "Omad_Rates"), {}), preview.fallbackYear);
+    setConfig(configSheet, "Omad_Rates_V1_Backup", getConfig(configSheet, "Omad_Rates") || "{}");
+    setConfig(configSheet, "Omad_Rates", JSON.stringify(rateMigration.rates));
+
+    recordMigrationStatus_(configSheet, {
+      state: "applied",
+      appliedAt: new Date().toISOString(),
+      fallbackYear: preview.fallbackYear,
+      sourceRows: preview.totalRows,
+      migratedRows: written.length,
+      skippedRows: preview.totalRows - written.length,
+      schemaVersion: MIGRATION_SCHEMA_VERSION
+    });
+    appendAuditRow_(doc, "omad_period_migration_applied", JSON.stringify({
+      migrated: written.length, skipped: preview.totalRows - written.length,
+      fallbackYear: preview.fallbackYear, byYear: preview.byYear
+    }));
+  } finally {
+    lock.releaseLock();
+  }
+
+  return { status: "success", preview: preview, verification: verifyOmadMigration_(doc) };
+}
+
+/**
+ * Compares the migrated sheet against the original: row counts, unique ids,
+ * per-period totals and the cash/bank/total balances.
+ */
+function verifyOmadMigration_(doc) {
+  var sourceRows = readRawTransactionRows_(doc.getSheetByName(OMAD_TRANSACTIONS_SHEET));
+  var targetSheet = doc.getSheetByName(OMAD_TRANSACTIONS_V2_SHEET);
+  var targetRows = readRawTransactionRows_(targetSheet);
+  var failures = [];
+
+  if (!targetSheet) {
+    return { ok: false, failures: ["Omad_Transactions_V2 varag'i topilmadi."] };
+  }
+
+  var configSheet = doc.getSheetByName("System_Config");
+  var fallbackYear = getFallbackYear_(configSheet);
+
+  if (targetRows.length !== sourceRows.length) {
+    failures.push("Yozuvlar soni mos emas: " + sourceRows.length + " -> " + targetRows.length);
+  }
+
+  var seen = {};
+  var duplicates = [];
+  for (var i = 0; i < targetRows.length; i++) {
+    var id = String(targetRows[i].id);
+    if (seen[id]) duplicates.push(id); else seen[id] = true;
+    if (!isCanonicalPeriod_(targetRows[i].month)) {
+      failures.push("Kanonik bo'lmagan davr: " + targetRows[i].id + " -> " + targetRows[i].month);
+    }
+  }
+  if (duplicates.length > 0) failures.push("Takrorlangan ID: " + duplicates.join(", "));
+
+  // Per-period totals: the source resolves to the same periods the target
+  // stores, so the two maps must be identical.
+  var sourceResolved = [];
+  for (var j = 0; j < sourceRows.length; j++) {
+    var resolution = resolveTransactionPeriod_(sourceRows[j], fallbackYear);
+    if (resolution.period) sourceResolved.push({ row: sourceRows[j], period: resolution.period });
+  }
+  var expectedTotals = totalsByPeriod_(sourceResolved);
+  var actualTotals = totalsByPeriod_(targetRows.map(function (row) {
+    return { row: row, period: String(row.month) };
+  }));
+
+  Object.keys(expectedTotals).forEach(function (period) {
+    if (expectedTotals[period] !== actualTotals[period]) {
+      failures.push("Davr yig'indisi mos emas (" + period + "): " +
+                    expectedTotals[period] + " -> " + (actualTotals[period] || 0));
+    }
+  });
+  Object.keys(actualTotals).forEach(function (period) {
+    if (!Object.prototype.hasOwnProperty.call(expectedTotals, period)) {
+      failures.push("Kutilmagan davr: " + period);
+    }
+  });
+
+  var expectedBalances = balanceTotals_(sourceResolved.map(function (entry) {
+    return Object.assign({}, entry.row, { period: entry.period });
+  }));
+  var actualBalances = balanceTotals_(targetRows);
+  ["cash", "bank", "total", "income", "expense"].forEach(function (key) {
+    if (expectedBalances[key] !== actualBalances[key]) {
+      failures.push("Balans mos emas (" + key + "): " +
+                    expectedBalances[key] + " -> " + actualBalances[key]);
+    }
+  });
+
+  return {
+    ok: failures.length === 0,
+    failures: failures,
+    sourceRows: sourceRows.length,
+    targetRows: targetRows.length,
+    expectedTotals: expectedTotals,
+    actualTotals: actualTotals,
+    expectedBalances: expectedBalances,
+    actualBalances: actualBalances
+  };
+}
+
+/** Points reads and writes at the verified V2 sheet. */
+function cutoverOmadMigration_(doc) {
+  var verification = verifyOmadMigration_(doc);
+  if (!verification.ok) {
+    return { status: "error", message: "Tekshiruv o'tmadi.", verification: verification };
+  }
+
+  var configSheet = doc.getSheetByName("System_Config") || doc.insertSheet("System_Config");
+  backupOmadState_(doc, configSheet, "pre_period_cutover");
+  setConfig(configSheet, OMAD_ACTIVE_TX_SHEET_KEY, OMAD_TRANSACTIONS_V2_SHEET);
+  recordMigrationStatus_(configSheet, {
+    state: "cutover",
+    cutoverAt: new Date().toISOString(),
+    activeSheet: OMAD_TRANSACTIONS_V2_SHEET,
+    schemaVersion: MIGRATION_SCHEMA_VERSION
+  });
+  appendAuditRow_(doc, "omad_period_migration_cutover", OMAD_TRANSACTIONS_V2_SHEET);
+
+  return { status: "success", verification: verification, activeSheet: OMAD_TRANSACTIONS_V2_SHEET };
+}
+
+/**
+ * Points reads back at the original sheet. V2 is left in place on purpose:
+ * deleting data is never part of a rollback.
+ */
+function rollbackOmadMigration_(doc) {
+  var configSheet = doc.getSheetByName("System_Config") || doc.insertSheet("System_Config");
+  setConfig(configSheet, OMAD_ACTIVE_TX_SHEET_KEY, OMAD_TRANSACTIONS_SHEET);
+
+  var backedUpRates = getConfig(configSheet, "Omad_Rates_V1_Backup");
+  if (backedUpRates) setConfig(configSheet, "Omad_Rates", backedUpRates);
+
+  recordMigrationStatus_(configSheet, {
+    state: "rolled_back",
+    rolledBackAt: new Date().toISOString(),
+    activeSheet: OMAD_TRANSACTIONS_SHEET,
+    schemaVersion: 1
+  });
+  appendAuditRow_(doc, "omad_period_migration_rolled_back", OMAD_TRANSACTIONS_SHEET);
+
+  return { status: "success", activeSheet: OMAD_TRANSACTIONS_SHEET };
+}
+
+function recordMigrationStatus_(configSheet, status) {
+  var previous = safeParseJSON_(getConfig(configSheet, MIGRATION_STATUS_KEY), {});
+  setConfig(configSheet, MIGRATION_STATUS_KEY, JSON.stringify(Object.assign({}, previous, status)));
+}
+
+function getMigrationStatus_(doc) {
+  var configSheet = doc.getSheetByName("System_Config");
+  var stored = configSheet ? safeParseJSON_(getConfig(configSheet, MIGRATION_STATUS_KEY), {}) : {};
+  var v2 = doc.getSheetByName(OMAD_TRANSACTIONS_V2_SHEET);
+
+  return {
+    state: stored.state || "not_started",
+    schemaVersion: stored.schemaVersion || 1,
+    fallbackYear: getFallbackYear_(configSheet),
+    activeSheet: activeTransactionSheetName_(doc),
+    versionedSheetExists: !!v2,
+    versionedSheetRows: v2 ? Math.max(0, v2.getLastRow() - 1) : 0,
+    sourceSheetRows: (function () {
+      var source = doc.getSheetByName(OMAD_TRANSACTIONS_SHEET);
+      return source ? Math.max(0, source.getLastRow() - 1) : 0;
+    })(),
+    appliedAt: stored.appliedAt || "",
+    cutoverAt: stored.cutoverAt || "",
+    rolledBackAt: stored.rolledBackAt || ""
+  };
+}
+
+function clearSheetRows_(sheet) {
+  var lastRow = sheet.getLastRow();
+  if (lastRow > 0) sheet.deleteRows(1, lastRow);
+}
+
 // ----- apps-script/20_api.gs ---------------------------------------------------
 
 // ============================================================
@@ -1670,6 +2421,17 @@ function doPost(e) {
 
     if (isTelegramAdminAction_(action)) {
       return telegramAdminAction_(action, payload);
+    }
+
+    // ---- Migration --------------------------------------------------------
+    if (action === 'get_migration_status') {
+      return jsonOutput_({ status: "success", migration: getMigrationStatus_(doc) });
+    }
+
+    if (isMigrationAction_(action)) {
+      var migrationAdminError = checkAdminKey_(payload);
+      if (migrationAdminError) return jsonOutput_({ status: "error", message: migrationAdminError });
+      return migrationAction_(action, payload, doc);
     }
 
     // ---- Café -------------------------------------------------------------
@@ -1762,5 +2524,44 @@ function telegramAdminAction_(action, payload) {
   if (action === 'test_telegram_connection') return jsonOutput_(testTelegramConnection_());
   if (action === 'send_telegram_test_message') return jsonOutput_(sendTelegramTestMessage_());
   return jsonOutput_(configureTelegramWebhook_(payload));
+}
+
+function isMigrationAction_(action) {
+  return action === 'preview_omad_migration' ||
+         action === 'apply_omad_migration' ||
+         action === 'verify_omad_migration' ||
+         action === 'cutover_omad_migration' ||
+         action === 'rollback_omad_migration';
+}
+
+/**
+ * Every migration step is admin-key protected: they read the whole ledger and
+ * three of them change which sheet the app reads from.
+ */
+function migrationAction_(action, payload, doc) {
+  var options = {
+    fallbackYear: Number(payload.fallbackYear) || 0,
+    allowUnresolved: payload.allowUnresolved === true
+  };
+
+  if (action === 'preview_omad_migration') {
+    return jsonOutput_({ status: "success", preview: previewOmadMigration_(doc, options) });
+  }
+  if (action === 'apply_omad_migration') {
+    var applied = applyOmadMigration_(doc, options);
+    applied.migration = getMigrationStatus_(doc);
+    return jsonOutput_(applied);
+  }
+  if (action === 'verify_omad_migration') {
+    return jsonOutput_({ status: "success", verification: verifyOmadMigration_(doc) });
+  }
+  if (action === 'cutover_omad_migration') {
+    var cutover = cutoverOmadMigration_(doc);
+    cutover.migration = getMigrationStatus_(doc);
+    return jsonOutput_(cutover);
+  }
+  var rolledBack = rollbackOmadMigration_(doc);
+  rolledBack.migration = getMigrationStatus_(doc);
+  return jsonOutput_(rolledBack);
 }
 

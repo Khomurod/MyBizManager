@@ -137,7 +137,7 @@ function editTx(id) {
 
     setType(tx.type);
     document.getElementById('entryTenant').value = tx.tenant;
-    document.getElementById('entryMonth').value = tx.month;
+    document.getElementById('entryMonth').value = recordPeriod(tx);
     document.getElementById('entryComment').value = tx.comment || "";
     document.getElementById('editId').value = tx.id;
     document.getElementById('msgId').value = tx.msgId || ""; 
