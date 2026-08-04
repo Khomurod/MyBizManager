@@ -60,6 +60,21 @@ function doPost(e) {
       return telegramAdminAction_(action, payload);
     }
 
+    // ---- System & data ----------------------------------------------------
+    if (action === 'get_system_status') {
+      return jsonOutput_({ status: "success", system: buildSystemStatus_(doc) });
+    }
+
+    if (action === 'create_backup' || action === 'retry_failed_jobs') {
+      var systemAdminError = checkAdminKey_(payload);
+      if (systemAdminError) return jsonOutput_({ status: "error", message: systemAdminError });
+      var systemResult = action === 'create_backup'
+        ? createManualBackup_(doc)
+        : retryFailedJobs_(doc);
+      systemResult.system = buildSystemStatus_(doc);
+      return jsonOutput_(systemResult);
+    }
+
     // ---- Migration --------------------------------------------------------
     if (action === 'get_migration_status') {
       return jsonOutput_({ status: "success", migration: getMigrationStatus_(doc) });
@@ -129,6 +144,8 @@ function saveOmadAction_(action, payload, doc, configSheet) {
   } finally {
     lock.releaseLock();
   }
+
+  recordLastOperation_(doc, action);
 
   var queuedJobId = "";
   try {
@@ -260,6 +277,7 @@ function ledgerAction_(action, payload, doc) {
   else result = cancelTransaction_(doc, payload);
 
   if (result.status === "success") {
+    recordLastOperation_(doc, action);
     // The financial record is committed. Reporting is a separate retryable job,
     // and even failing to *queue* it must not undo a save the caller was about
     // to be told succeeded.

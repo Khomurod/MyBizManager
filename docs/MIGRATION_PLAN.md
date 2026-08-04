@@ -13,7 +13,7 @@ rolled back on its own.
 | 4 | Append-only transaction system (individual create/correct/cancel) | ✅ delivered |
 | 5 | Retry queue and fast saving | ✅ delivered |
 | 6 | Historical exchange rates stored per transaction; `sell` used consistently | ✅ delivered |
-| 7 | Settings redesign (Sozlamalar sections A–E) | ⬜ partial (D: Telegram done) |
+| 7 | Settings redesign (Sozlamalar sections A–E) | ✅ delivered |
 | 8 | Tenant rent schedules, exceptions, start/end periods | ⬜ not started |
 | 9 | Planned expenses with recurrence and ending rules | ⬜ not started |
 | 10 | Data migration and final cleanup | ⬜ not started |
@@ -60,6 +60,11 @@ from 2026-04-22 and can serve as sample data for migration dry runs.
 | Verification fails | Point reads back at `Omad_Transactions`; delete V2 |
 | Discovered after cutover | Restore from the `Omad_Backups` snapshot row taken immediately before cutover |
 | Catastrophic | Restore the file-level spreadsheet copy |
+
+### Rollback for stage 7
+
+Presentation and read-only diagnostics only; no stored data changes.
+`git revert` and redeploy.
 
 ### Rollback for stage 6
 

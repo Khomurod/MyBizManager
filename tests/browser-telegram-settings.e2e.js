@@ -147,6 +147,7 @@ describe('Telegram settings panel (browser)', () => {
 
     await page.click('#nav-settings');
     await page.waitForSelector('#tab-settings.active');
+    await page.evaluate(() => showSettingsSection('telegram'));
     await page.waitForFunction(() =>
       document.getElementById('tgTokenStatus').textContent.includes("O'rnatilmagan"));
 
@@ -160,6 +161,8 @@ describe('Telegram settings panel (browser)', () => {
       await openAdmin(backend(state));
 
     await page.click('#nav-settings');
+    // Sozlamalar has five sections now; the Telegram one has to be opened.
+    await page.evaluate(() => showSettingsSection('telegram'));
     await page.fill('#tgAdminKey', ADMIN_KEY);
     await page.fill('#tgBotToken', FIXTURE_TOKEN);
     await page.fill('#tgAuthorizedUserId', '111222333');
@@ -200,6 +203,8 @@ describe('Telegram settings panel (browser)', () => {
     const { page, context } = await openAdmin(backend(state));
 
     await page.click('#nav-settings');
+    // Sozlamalar has five sections now; the Telegram one has to be opened.
+    await page.evaluate(() => showSettingsSection('telegram'));
     await page.fill('#tgAdminKey', 'wrong-key');
     await page.fill('#tgBotToken', FIXTURE_TOKEN);
     await page.fill('#tgAuthorizedUserId', '111222333');
@@ -218,6 +223,8 @@ describe('Telegram settings panel (browser)', () => {
     const { page, context, backendRequests } = await openAdmin(backend(state));
 
     await page.click('#nav-settings');
+    // Sozlamalar has five sections now; the Telegram one has to be opened.
+    await page.evaluate(() => showSettingsSection('telegram'));
     await page.fill('#tgBotToken', FIXTURE_TOKEN);
     await page.fill('#tgAuthorizedUserId', '111222333');
     await page.fill('#tgGroupChatId', '-1001234567890');
@@ -235,6 +242,8 @@ describe('Telegram settings panel (browser)', () => {
     const { page, context, telegramRequests } = await openAdmin(backend(state));
 
     await page.click('#nav-settings');
+    // Sozlamalar has five sections now; the Telegram one has to be opened.
+    await page.evaluate(() => showSettingsSection('telegram'));
     await page.fill('#tgAdminKey', ADMIN_KEY);
     await page.click('text=🔌 Ulanish');
 
@@ -377,6 +386,8 @@ describe('Telegram settings panel (browser)', () => {
     const { page, context } = await openAdmin(backend(state));
     await page.setViewportSize({ width: 375, height: 812 });
     await page.click('#nav-settings');
+    // Sozlamalar has five sections now; the Telegram one has to be opened.
+    await page.evaluate(() => showSettingsSection('telegram'));
     await page.waitForSelector('#tgBotToken');
 
     // Numeric input keeps the mobile numeric keyboard.
