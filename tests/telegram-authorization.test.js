@@ -66,6 +66,30 @@ test('nobody is authorized when no user id is configured', () => {
   assert.strictEqual(gas.isAuthorizedTelegramUser_(''), false);
 });
 
+test('updates with a missing, null or zero from.id are refused', () => {
+  const cases = [
+    { chat: { id: 111222333, type: 'private' }, text: '/yangi' },
+    { chat: { id: 111222333, type: 'private' }, from: { id: null }, text: '/yangi' },
+    { chat: { id: 111222333, type: 'private' }, from: { id: 0 }, text: '/yangi' }
+  ];
+  cases.forEach((msg, i) => {
+    const gas = loadScript({ properties: props(), sheets: tenantSheets() });
+    gas.doPost(postEvent({ message: msg }));
+    const texts = gas.__sentMessages.map(m => m.text);
+    assert.ok(texts.some(t => t.includes("huquqi yo'q")), `case ${i} was not refused`);
+    assert.ok(!texts.some(t => t.includes('operatsiya turini tanlang')), `case ${i} started a flow`);
+    assert.deepStrictEqual(Object.keys(gas.__cache), [], `case ${i} created a session`);
+  });
+});
+
+test('a numeric from.id matches a string-configured user id', () => {
+  const gas = loadScript({ properties: props(), sheets: tenantSheets() });
+  gas.doPost(postEvent({
+    message: { chat: { id: AUTHORIZED_ID, type: 'private' }, from: { id: AUTHORIZED_ID }, text: '/yangi' }
+  }));
+  assert.ok(gas.__sentMessages.some(m => m.text.includes('operatsiya turini tanlang')));
+});
+
 test('username is never used for authorization', () => {
   const gas = loadScript({ properties: props() });
   // A user whose username matches but whose numeric id does not stays blocked.
