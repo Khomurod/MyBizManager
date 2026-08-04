@@ -2,11 +2,12 @@
 
 The full request spans a large refactor of the Omad accounting model. It is
 split into independently reviewable stages so each one can be tested and
-rolled back on its own. **Stage 1 is delivered; stages 2–10 are not started.**
+rolled back on its own.
 
 | # | Stage | Status |
 |---|---|---|
 | 1 | Telegram credentials, authorization, tests & CI foundation | ✅ delivered |
+| 1b | Telegram proxy removal, webhook verification, retry queue, `/yangi` idempotency | ✅ delivered |
 | 2 | Code organization (module split, café duplicate removal) | ⬜ not started |
 | 3 | Year-month data model (`2026-01`) + friendly Uzbek labels | ⬜ not started |
 | 4 | Append-only transaction system (individual create/correct/cancel) | ⬜ not started |
@@ -58,7 +59,20 @@ from 2026-04-22 and can serve as sample data for migration dry runs.
 | Discovered after cutover | Restore from the `Omad_Backups` snapshot row taken immediately before cutover |
 | Catastrophic | Restore the file-level spreadsheet copy |
 
-### Rollback for stage 1 (this change)
+### Rollback for stage 1b
+
+Stage 1b changed no stored business data. It adds one column
+(`Request_ID`) to `Omad_Transactions` and one new sheet (`Omad_Job_Queue`).
+To roll back:
+
+1. `git revert` the commit and redeploy the Apps Script project.
+2. The extra column and the queue sheet are inert for the old code — delete
+   them only if you want a clean sheet.
+3. Re-run **Sozlamalar → Telegram → 🔄 Webhook** so the webhook URL loses the
+   `?wh=` secret the old code does not expect. (The old code ignores unknown
+   query parameters, so this is optional.)
+
+### Rollback for stage 1 (the original change)
 
 Stage 1 changed no stored business data. To roll back:
 

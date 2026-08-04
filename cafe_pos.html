@@ -176,54 +176,8 @@
       return `${Number(value || 0).toLocaleString()} UZS`;
     }
 
-    function escapeTelegramHtml(value) {
-      return String(value ?? "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
-    }
-
-    async function sendTelegramMessage(text) {
-      const res = await fetch(GOOGLE_APP_URL, {
-        method: "POST",
-        body: JSON.stringify({
-          action: "telegram_send",
-          text,
-          parseMode: "HTML"
-        })
-      });
-      if (!res.ok) throw new Error(`Telegram xatolik: HTTP ${res.status}`);
-      const data = await res.json();
-      if (!data || data.status !== "success") {
-        throw new Error(data?.message || "Telegramga yuborib bo'lmadi.");
-      }
-      return data;
-    }
-
-    function buildCloseDayTelegramMessage({ dateIso, cashierName, totalRevenue, totalProfit, soldItems }) {
-      const formattedDate = new Date(dateIso).toLocaleString("uz-UZ", {
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit"
-      });
-      const itemLines = soldItems.length
-        ? soldItems.map(item => `• ${escapeTelegramHtml(item.name)}: <b>${Number(item.qty || 0).toLocaleString()}</b>`).join("\n")
-        : "• Sotilgan mahsulotlar topilmadi";
-
-      return [
-        "🧾 <b>Kafe Kunlik Yakun Hisoboti</b>",
-        "",
-        `📅 <b>Sana:</b> ${escapeTelegramHtml(formattedDate)}`,
-        `👤 <b>Sotuvchi:</b> ${escapeTelegramHtml(cashierName)}`,
-        `💵 <b>Jami tushum:</b> ${Number(totalRevenue || 0).toLocaleString()} UZS`,
-        `📈 <b>Jami foyda:</b> ${Number(totalProfit || 0).toLocaleString()} UZS`,
-        "",
-        "📦 <b>Yopilgan mahsulotlar (sotilgan miqdor):</b>",
-        itemLines
-      ].join("\n");
-    }
+    // The close-day Telegram report is composed and queued on the server from
+    // the close_day payload. The POS never sends Telegram messages itself.
 
     function getDateKey(date) {
       const year = date.getFullYear();
@@ -973,6 +927,9 @@
           .filter(item => item.qty > 0)
           .sort((a, b) => b.qty - a.qty);
 
+        // The server stores the close-day record and queues its own Telegram
+        // report as a retryable job, so a Telegram outage cannot fail or
+        // duplicate the close-day.
         await fetch(GOOGLE_APP_URL, {
           method: "POST",
           body: JSON.stringify({
@@ -981,24 +938,11 @@
             seller: cashierName,
             inventory: updatedInventory,
             summary,
+            soldItems,
             totalRevenue: state.todayRevenue,
             totalProfit: state.todayProfit
           })
         });
-
-        const closeDayTelegramMessage = buildCloseDayTelegramMessage({
-          dateIso: closeDateIso,
-          cashierName,
-          totalRevenue: state.todayRevenue,
-          totalProfit: state.todayProfit,
-          soldItems
-        });
-        try {
-          await sendTelegramMessage(closeDayTelegramMessage);
-        } catch (telegramError) {
-          console.error("Telegramga yuborishda xatolik:", telegramError);
-          alert("Kun yakunlandi, lekin Telegramga hisobot yuborilmadi.");
-        }
 
         state.inventory = updatedInventory;
         state.openingInventory = cloneInventory(updatedInventory);

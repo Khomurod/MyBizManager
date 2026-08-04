@@ -86,6 +86,7 @@ function loadScript(options = {}) {
   const cacheStore = Object.assign({}, options.cache || {});
   const fetchCalls = [];
   const sentMessages = [];
+  let uuidCounter = 0;
 
   const defaultFetch = (url, params) => {
     fetchCalls.push({ url, params });
@@ -154,7 +155,12 @@ function loadScript(options = {}) {
     },
 
     Utilities: {
-      formatDate: () => '01/01/2026'
+      formatDate: (date, tz, format) =>
+        (format === 'dd.MM.yyyy HH:mm' ? '01.01.2026 09:00' : '01/01/2026'),
+      getUuid: () => {
+        uuidCounter += 1;
+        return `00000000-0000-4000-8000-${String(uuidCounter).padStart(12, '0')}`;
+      }
     },
 
     Session: {
@@ -187,9 +193,9 @@ function readJsonOutput(output) {
   return JSON.parse(output.__text);
 }
 
-/** Builds a doPost event object. */
-function postEvent(payload) {
-  return { postData: { contents: JSON.stringify(payload) } };
+/** Builds a doPost event object. `parameter` carries the query string. */
+function postEvent(payload, parameter = {}) {
+  return { postData: { contents: JSON.stringify(payload) }, parameter };
 }
 
 module.exports = { loadScript, readJsonOutput, postEvent, createSpreadsheet };

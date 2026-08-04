@@ -9,6 +9,15 @@
 
     if (!action && (payload.message || payload.callback_query)) {
       isTelegramWebhook = true;
+      // Apps Script cannot read request headers, so Telegram's
+      // X-Telegram-Bot-Api-Secret-Token is not observable here. The safest
+      // mechanism actually available is a high-entropy secret in the webhook
+      // URL itself, which is exactly what setWebhook stores and only Telegram
+      // ever learns. Requests without it are dropped before any state changes.
+      if (!isVerifiedTelegramWebhookRequest_(e)) {
+        debugLog_(doc, "telegram_webhook_rejected", "missing or invalid webhook secret");
+        return okHtmlOutput_();
+      }
       return handleOmadTelegramUpdate_(payload, doc, configSheet);
     }
 
@@ -16,6 +25,9 @@
     // 1. OMAD-D (REAL ESTATE) HANDLERS
     // ==========================================
     if (action === 'migrate_omad' || action === 'save_omad') {
+      var reportError = validateOmadTelegramReport_(payload.telegramReport);
+      if (reportError) return jsonOutput_({ status: "error", message: reportError });
+
       var lock = LockService.getScriptLock();
       lock.waitLock(30000);
       try {
@@ -25,7 +37,23 @@
         lock.releaseLock();
       }
 
-      return jsonOutput_({ status: "success" });
+      // The financial record is committed. Reporting is a separate, retryable
+      // job: it can never fail the save and can never duplicate it.
+      var queuedJobId = queueOmadTransactionReport_(doc, payload.telegramReport);
+      drainJobQueueQuietly_(doc);
+
+      return jsonOutput_({ status: "success", reportJobId: queuedJobId || "" });
+    }
+
+    if (action === 'get_job_queue_status') {
+      return jsonOutput_({ status: "success", queue: buildJobQueueStatus_(doc) });
+    }
+
+    if (action === 'process_jobs') {
+      var jobsAdminError = checkAdminKey_(payload);
+      if (jobsAdminError) return jsonOutput_({ status: "error", message: jobsAdminError });
+      var processed = processPendingJobs_(doc, JOB_QUEUE_MANUAL_BATCH);
+      return jsonOutput_({ status: "success", processed: processed, queue: buildJobQueueStatus_(doc) });
     }
 
     // ==========================================
@@ -39,6 +67,14 @@
         action === 'test_telegram_connection' ||
         action === 'send_telegram_test_message' ||
         action === 'configure_telegram_webhook') {
+      // Rate limited before the key is even compared, so the endpoint cannot be
+      // used to brute-force the admin key or to hammer the Telegram API.
+      var throttled = enforceRateLimit_("tg_admin", TELEGRAM_ADMIN_RATE_LIMIT, TELEGRAM_RATE_WINDOW_SECONDS);
+      if (throttled) return jsonOutput_({ status: "error", message: throttled });
+
+      var lengthError = validateTelegramPayloadLengths_(payload);
+      if (lengthError) return jsonOutput_({ status: "error", message: lengthError });
+
       var adminError = checkAdminKey_(payload);
       if (adminError) return jsonOutput_({ status: "error", message: adminError });
 
@@ -46,10 +82,6 @@
       if (action === 'test_telegram_connection') return jsonOutput_(testTelegramConnection_());
       if (action === 'send_telegram_test_message') return jsonOutput_(sendTelegramTestMessage_());
       return jsonOutput_(configureTelegramWebhook_(payload));
-    }
-
-    if (action === 'telegram_send' || action === 'telegram_edit' || action === 'telegram_delete') {
-      return jsonOutput_(proxyTelegramGroupCall_(action, payload));
     }
 
     // ==========================================
@@ -119,7 +151,12 @@
         payload.totalProfit,
         JSON.stringify(payload.summary)
       ]);
-      return jsonOutput_({ status: "success" });
+
+      // The close-day record is stored. Its Telegram report is queued
+      // server-side; the browser never composes a Telegram message.
+      var closeJobId = queueCafeCloseDayReport_(doc, payload);
+      drainJobQueueQuietly_(doc);
+      return jsonOutput_({ status: "success", reportJobId: closeJobId || "" });
     }
 
     return jsonOutput_({ status: "error", message: "Unknown action" });
@@ -214,11 +251,23 @@ function readOmadTransactions_(doc) {
       transactions.push({
         id: data[i][0], tenant: data[i][1], month: data[i][2], type: data[i][3],
         amount: data[i][4], currency: data[i][5], method: data[i][6],
-        date: data[i][7], comment: data[i][8], msgId: data[i][9]
+        date: data[i][7], comment: data[i][8], msgId: data[i][9],
+        // Legacy 10-column rows simply have no request id.
+        requestId: data[i].length > 10 ? data[i][10] : ""
       });
     }
   }
   return transactions;
+}
+
+/** Returns the existing transaction for a request id, or null. */
+function findTransactionByRequestId_(doc, requestId) {
+  if (!requestId) return null;
+  var all = readOmadTransactions_(doc);
+  for (var i = 0; i < all.length; i++) {
+    if (String(all[i].requestId || "") === String(requestId)) return all[i];
+  }
+  return null;
 }
 
 function safeRewriteOmadTransactions_(doc, incomingTransactions) {
@@ -227,7 +276,7 @@ function safeRewriteOmadTransactions_(doc, incomingTransactions) {
 
   var lastRow = txSheet.getLastRow();
   if (lastRow > 1) {
-    txSheet.getRange(2, 1, lastRow - 1, 10).clearContent();
+    txSheet.getRange(2, 1, lastRow - 1, OMAD_TRANSACTION_HEADER.length).clearContent();
   }
 
   var rows = [];
@@ -269,18 +318,30 @@ function appendOmadTransaction_(doc, transaction) {
   txSheet.appendRow(transactionToRow_(normalizeTransaction_(transaction)));
 }
 
+var OMAD_TRANSACTION_HEADER = [
+  "ID", "Tenant", "Month", "Type", "Amount", "Currency", "Method", "Date", "Comment",
+  "Telegram_Msg_ID", "Request_ID"
+];
+
 function ensureOmadTransactionHeader_(sheet) {
-  var header = ["ID", "Tenant", "Month", "Type", "Amount", "Currency", "Method", "Date", "Comment", "Telegram_Msg_ID"];
+  var header = OMAD_TRANSACTION_HEADER;
   if (sheet.getLastRow() === 0) {
     sheet.appendRow(header);
     return;
   }
   var firstRow = sheet.getRange(1, 1, 1, header.length).getValues()[0];
-  if (firstRow[0] !== "ID") sheet.getRange(1, 1, 1, header.length).setValues([header]);
+  // Upgrades a legacy 10-column header in place; existing rows keep their data
+  // and simply carry an empty Request_ID.
+  if (firstRow[0] !== "ID" || firstRow[header.length - 1] !== header[header.length - 1]) {
+    sheet.getRange(1, 1, 1, header.length).setValues([header]);
+  }
 }
 
 function transactionToRow_(t) {
-  return [t.id, t.tenant, t.month, t.type, t.amount, t.currency, t.method, t.date, t.comment || "", t.msgId || ""];
+  return [
+    t.id, t.tenant, t.month, t.type, t.amount, t.currency, t.method, t.date,
+    t.comment || "", t.msgId || "", t.requestId || ""
+  ];
 }
 
 function normalizeTransactions_(transactions) {
@@ -302,7 +363,8 @@ function normalizeTransaction_(raw) {
     method: t.method === "Bank" ? "Bank" : "Naqd",
     date: t.date || Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy"),
     comment: t.comment || "",
-    msgId: t.msgId || ""
+    msgId: t.msgId || "",
+    requestId: String(t.requestId || "")
   };
 }
 
@@ -463,7 +525,12 @@ function processOmadCallback_(callback, chatId, key, cache, configSheet, fromId)
   var state = safeParseJSON_(cache.get(key), {});
 
   if (data.indexOf("bot_type:") === 0) {
-    state = { type: data.replace("bot_type:", "") === "Expense" ? "Expense" : "Income" };
+    // A fresh session id per entry. It becomes the transaction's request id, so
+    // the whole conversation maps to exactly one financial record.
+    state = {
+      type: data.replace("bot_type:", "") === "Expense" ? "Expense" : "Income",
+      sessionId: Utilities.getUuid().split("-").join("")
+    };
     cache.put(key, JSON.stringify(state), 21600);
     var tenantNames = getActiveTenantNames_(configSheet);
     var keyboard = [];
@@ -536,38 +603,61 @@ function processOmadTextStep_(text, chatId, key, cache, doc, configSheet, fromId
       return;
     }
 
+    // The request id is derived from the session, so replaying the same update
+    // - or a retried webhook delivery - resolves to the same transaction.
+    // A session started before this field existed simply gets no dedup key,
+    // which is safer than risking a collision with a different session.
+    var requestId = state.sessionId ? ("tg_" + fromId + "_" + state.sessionId) : "";
+    var transaction;
+
     var lock = LockService.getScriptLock();
     lock.waitLock(30000);
-    var transaction;
-    var groupMessage;
-    var groupMsgId = "";
     try {
-      backupOmadState_(doc, configSheet, "telegram_yangi");
-      transaction = normalizeTransaction_({
-        id: Date.now() + "_0",
-        tenant: state.tenant,
-        month: getCurrentUzbekMonth_(),
-        type: state.type,
-        amount: state.amount,
-        currency: state.currency,
-        method: state.method,
-        date: Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy"),
-        comment: text,
-        msgId: ""
-      });
-      appendOmadTransaction_(doc, transaction);
-      var projectedTransactions = readOmadTransactions_(doc);
-      var balances = calculateBalancesFromTransactions_(projectedTransactions, transaction.month);
-      groupMessage = buildOmadGroupTransactionMessage_(transaction, balances);
-      var groupResponse = sendTelegramMessage_(getOmadGroupChatId_(), groupMessage);
-      groupMsgId = extractTelegramMessageId_(groupResponse);
-      if (groupMsgId) updateOmadTransactionMsgId_(doc, transaction.id, groupMsgId);
+      var existing = findTransactionByRequestId_(doc, requestId);
+      if (existing) {
+        transaction = normalizeTransaction_(existing);
+      } else {
+        backupOmadState_(doc, configSheet, "telegram_yangi");
+        transaction = normalizeTransaction_({
+          id: Date.now() + "_0",
+          tenant: state.tenant,
+          month: getCurrentUzbekMonth_(),
+          type: state.type,
+          amount: state.amount,
+          currency: state.currency,
+          method: state.method,
+          date: Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy"),
+          comment: text,
+          msgId: "",
+          requestId: requestId
+        });
+        appendOmadTransaction_(doc, transaction);
+      }
     } finally {
       lock.releaseLock();
     }
 
+    // The financial record is safely stored. Finalise the session next, so a
+    // failure anywhere below can never leave a session that accepts a second
+    // submission of the same transaction.
     cache.remove(key);
+
+    // Reporting is a separate retryable job. It cannot fail the transaction and
+    // it cannot create a second copy of it.
+    var reportJobId = "";
+    try {
+      reportJobId = enqueueJob_(doc, "omad_transaction_report", transaction.id, {
+        baseId: String(transaction.id).split("_")[0],
+        messageId: ""
+      });
+    } catch (queueError) {
+      debugLog_(doc, "telegram_report_enqueue_failed", String(queueError));
+    }
+
+    // Confirm to the user first - the save is what matters to them.
     sendTelegramMessage_(chatId, buildTelegramConfirmation_(transaction), null, "Markdown");
+
+    if (reportJobId) drainJobQueueQuietly_(doc);
   }
 }
 
@@ -646,23 +736,36 @@ function calculateBalancesFromTransactions_(transactions, targetMonth) {
   return { monthBalance: monthBalance, allTimeBalance: allTimeBalance };
 }
 
-function buildOmadGroupTransactionMessage_(transaction, balances) {
+/**
+ * Report for a whole entry group (the web UI can save several amounts under a
+ * single comment). Identical wording to the single-transaction message so the
+ * group sees one consistent format.
+ */
+function buildOmadGroupReportMessage_(group, balances) {
   var rates = getOmadRates_();
-  var title = transaction.type === "Income" ? "🟢 YANGI KIRIM" : "🔴 YANGI CHIQIM";
-  var objectText = String(transaction.tenant || "").trim() || "Noma'lum";
-  var periodText = String(transaction.month || "").trim() || "Noma'lum";
-  var transferUZS = toUZS_(transaction.amount, transaction.currency, periodText, rates, "sell");
-  var transferLines = "💵 " + formatUZS_(transferUZS) + " UZS";
+  var first = group[0];
+  var title = first.type === "Income" ? "🟢 YANGI KIRIM" : "🔴 YANGI CHIQIM";
+  var objectText = String(first.tenant || "").trim() || "Noma'lum";
+  var periodText = String(first.month || "").trim() || "Noma'lum";
 
-  return title +
+  var transferLines = [];
+  var total = 0;
+  for (var i = 0; i < group.length; i++) {
+    var valueUZS = toUZS_(group[i].amount, group[i].currency, periodText, rates, "sell");
+    total += valueUZS;
+    transferLines.push("💵 " + formatUZS_(valueUZS) + " UZS");
+  }
+
+  return (title +
     "\n\n🏢 Obyekt: " + objectText +
     "\n📅 Davr: " + periodText +
-    "\n\n💸 O'tkazma:\n" + transferLines +
-    "\nJami: " + formatUZS_(transferUZS) + " UZS" +
-    "\n\n📝 Izoh: " + (String(transaction.comment || "").trim() || "Kiritilmagan") +
+    "\n\n💸 O'tkazma:\n" + transferLines.join("\n") +
+    "\nJami: " + formatUZS_(total) + " UZS" +
+    "\n\n📝 Izoh: " + (String(first.comment || "").trim() || "Kiritilmagan") +
     "\n\n📊 HISOBOT:" +
     "\n🔹 " + periodText + " qoldig'i: " + formatUZS_(balances.monthBalance) + " UZS" +
-    "\n🏦 Umumiy balans: " + formatUZS_(balances.allTimeBalance) + " UZS";
+    "\n🏦 Umumiy balans: " + formatUZS_(balances.allTimeBalance) + " UZS"
+  ).slice(0, TELEGRAM_MAX_TEXT_LENGTH);
 }
 
 function getActiveTenantNames_(configSheet) {
@@ -675,6 +778,7 @@ function getActiveTenantNames_(configSheet) {
 function buildTelegramConfirmation_(transaction) {
   return [
     "✅ *Tranzaksiya saqlandi*",
+    "_Guruhga hisobot alohida yuboriladi._",
     "",
     "*Turi:* " + (transaction.type === "Income" ? "Kirim" : "Chiqim"),
     "*Obyekt:* " + escapeMarkdown_(transaction.tenant),
@@ -868,7 +972,9 @@ function buildTelegramSettingsView_() {
     webhookStatus: safeParseJSON_(getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_STATUS), null),
     lastSuccess: safeParseJSON_(getTelegramSetting_(TELEGRAM_PROP_LAST_SUCCESS), null),
     lastError: safeParseJSON_(getTelegramSetting_(TELEGRAM_PROP_LAST_ERROR), null),
-    adminKeyConfigured: !!getTelegramSetting_(OMAD_PROP_ADMIN_KEY)
+    adminKeyConfigured: !!getTelegramSetting_(OMAD_PROP_ADMIN_KEY),
+    // Whether a webhook verification secret exists - never the secret itself.
+    webhookSecretConfigured: !!getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_SECRET)
   };
 }
 
@@ -953,18 +1059,41 @@ function sendTelegramTestMessage_() {
   }
 }
 
+/** Strips any previously appended webhook secret from an operator-entered URL. */
+function stripWebhookSecret_(url) {
+  var base = String(url || "").trim();
+  var cut = base.indexOf("?" + TELEGRAM_WEBHOOK_SECRET_PARAM + "=");
+  if (cut !== -1) return base.slice(0, cut);
+  cut = base.indexOf("&" + TELEGRAM_WEBHOOK_SECRET_PARAM + "=");
+  if (cut !== -1) return base.slice(0, cut);
+  return base;
+}
+
 function configureTelegramWebhook_(payload) {
-  var webhookUrl = String((payload && payload.webhookUrl) || getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_URL) || "").trim();
+  var webhookUrl = stripWebhookSecret_(
+    (payload && payload.webhookUrl) || getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_URL) || ""
+  );
   if (!/^https:\/\/[^\s]+$/.test(webhookUrl)) {
     return { status: "error", message: "Webhook manzili https:// bilan boshlanishi kerak." };
   }
   try {
-    telegramFetch_("setWebhook", { url: webhookUrl, allowed_updates: ["message", "callback_query"] });
+    // The secret is never returned to the browser. It only ever travels to
+    // Telegram inside the setWebhook call, and comes back on each update.
+    var secret = getOrCreateWebhookSecret_();
+    var separator = webhookUrl.indexOf("?") === -1 ? "?" : "&";
+    var callbackUrl = webhookUrl + separator + TELEGRAM_WEBHOOK_SECRET_PARAM + "=" + secret;
+
+    telegramFetch_("setWebhook", {
+      url: callbackUrl,
+      secret_token: secret,
+      allowed_updates: ["message", "callback_query"]
+    });
     var info = safeParseJSON_(telegramFetch_("getWebhookInfo", {}).getContentText(), {});
     var result = (info && info.result) || {};
     setTelegramSetting_(TELEGRAM_PROP_WEBHOOK_URL, webhookUrl);
     setTelegramSetting_(TELEGRAM_PROP_WEBHOOK_STATUS, JSON.stringify({
       configured: !!result.url,
+      verified: true,
       pendingUpdateCount: result.pending_update_count || 0,
       lastErrorMessage: redactSecrets_(result.last_error_message || ""),
       checkedAt: new Date().toISOString()
@@ -975,40 +1104,442 @@ function configureTelegramWebhook_(payload) {
   }
 }
 
-/**
- * Server-side proxy so the browser never needs a bot token.
- * Always posts to the configured reporting group.
- */
-function proxyTelegramGroupCall_(action, payload) {
-  var chatId = getOmadGroupChatId_();
-  if (!chatId) return { status: "error", message: "Telegram guruh ID o'rnatilmagan." };
+// ==========================================
+// 5b. RATE LIMITING & INPUT-LENGTH VALIDATION
+// ------------------------------------------
+// There is no generic "send this text to Telegram" endpoint any more. The
+// endpoints that must stay externally reachable (settings, webhook) are
+// throttled and length-checked so they cannot be abused as an amplifier.
+// ==========================================
 
+var TELEGRAM_RATE_WINDOW_SECONDS = 60;
+var TELEGRAM_ADMIN_RATE_LIMIT = 10;
+var TELEGRAM_WEBHOOK_RATE_LIMIT = 120;
+var TELEGRAM_MAX_TEXT_LENGTH = 3500;
+var TELEGRAM_MAX_FIELD_LENGTH = 512;
+
+/**
+ * Fixed-window counter in the script cache. Returns "" when the call is
+ * allowed, or a user-facing error message when the window is exhausted.
+ * Cache failures fail open on purpose - throttling must never take the app
+ * down, it only has to blunt abuse.
+ */
+function enforceRateLimit_(bucketKey, maxCalls, windowSeconds) {
   try {
-    if (action === "telegram_send") {
-      var sendBody = { chat_id: chatId, text: String(payload.text || ""), disable_web_page_preview: true };
-      if (payload.parseMode) sendBody.parse_mode = payload.parseMode;
-      var response = telegramFetch_("sendMessage", sendBody);
-      return { status: "success", messageId: extractTelegramMessageId_(response) };
+    var cache = CacheService.getScriptCache();
+    var window = Math.floor(new Date().getTime() / (windowSeconds * 1000));
+    var key = "rl_" + bucketKey + "_" + window;
+    var used = Number(cache.get(key)) || 0;
+    if (used >= maxCalls) {
+      return "Juda ko'p so'rov yuborildi. Iltimos, biroz kutib qayta urinib ko'ring.";
     }
-    if (action === "telegram_edit") {
-      if (!payload.messageId) return { status: "error", message: "messageId talab qilinadi." };
-      telegramFetch_("editMessageText", {
-        chat_id: chatId,
-        message_id: payload.messageId,
-        text: String(payload.text || ""),
-        parse_mode: payload.parseMode || undefined
-      });
-      return { status: "success", messageId: payload.messageId };
-    }
-    if (action === "telegram_delete") {
-      if (!payload.messageId) return { status: "error", message: "messageId talab qilinadi." };
-      telegramFetch_("deleteMessage", { chat_id: chatId, message_id: payload.messageId });
-      return { status: "success" };
-    }
-    return { status: "error", message: "Unknown telegram action" };
+    cache.put(key, String(used + 1), windowSeconds + 5);
+    return "";
   } catch (error) {
-    return { status: "error", message: redactSecrets_(error) };
+    return "";
   }
+}
+
+function validateTelegramPayloadLengths_(payload) {
+  var fields = ["adminKey", "botToken", "authorizedUserId", "groupChatId", "webhookUrl"];
+  for (var i = 0; i < fields.length; i++) {
+    var value = payload && payload[fields[i]];
+    if (value !== undefined && value !== null && String(value).length > TELEGRAM_MAX_FIELD_LENGTH) {
+      return "Maydon juda uzun: " + fields[i];
+    }
+  }
+  return "";
+}
+
+// ==========================================
+// 5c. WEBHOOK VERIFICATION
+// ------------------------------------------
+// Apps Script web apps cannot read request headers, so Telegram's
+// X-Telegram-Bot-Api-Secret-Token header is not observable. The strongest
+// mechanism that IS available is a secret embedded in the webhook URL: only
+// Telegram is ever told the URL, and setWebhook additionally sends the same
+// value as secret_token for defence in depth.
+// ==========================================
+
+var TELEGRAM_PROP_WEBHOOK_SECRET = "TELEGRAM_WEBHOOK_SECRET";
+var TELEGRAM_WEBHOOK_SECRET_PARAM = "wh";
+
+function getOrCreateWebhookSecret_() {
+  var existing = getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_SECRET);
+  if (existing) return existing;
+  var generated = Utilities.getUuid().split("-").join("") + Utilities.getUuid().split("-").join("");
+  setTelegramSetting_(TELEGRAM_PROP_WEBHOOK_SECRET, generated);
+  return generated;
+}
+
+/** Constant-time-ish comparison; avoids leaking the secret length via timing. */
+function secretsMatch_(a, b) {
+  var left = String(a || "");
+  var right = String(b || "");
+  if (!left || !right) return false;
+  if (left.length !== right.length) return false;
+  var diff = 0;
+  for (var i = 0; i < left.length; i++) diff |= left.charCodeAt(i) ^ right.charCodeAt(i);
+  return diff === 0;
+}
+
+function isVerifiedTelegramWebhookRequest_(e) {
+  var expected = getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_SECRET);
+  // No secret configured yet: accept, so an existing deployment keeps working
+  // until the operator re-runs "Webhook" in Sozlamalar. buildTelegramSettingsView_
+  // surfaces this as an unverified webhook.
+  if (!expected) return true;
+
+  var provided = e && e.parameter ? e.parameter[TELEGRAM_WEBHOOK_SECRET_PARAM] : "";
+  if (secretsMatch_(provided, expected)) {
+    return !enforceRateLimit_("tg_webhook", TELEGRAM_WEBHOOK_RATE_LIMIT, TELEGRAM_RATE_WINDOW_SECONDS);
+  }
+  return false;
+}
+
+// ==========================================
+// 5d. RETRY QUEUE (Google Sheets backed)
+// ------------------------------------------
+// Telegram reporting is never on the critical path of a financial write. Jobs
+// are queued after the record is committed and retried with backoff.
+// ==========================================
+
+var JOB_QUEUE_SHEET = "Omad_Job_Queue";
+var JOB_QUEUE_HEADER = [
+  "Job_ID", "Related_ID", "Type", "Payload_JSON", "Status",
+  "Attempts", "Next_Attempt_At", "Last_Error", "Created_At", "Completed_At"
+];
+var JOB_STATUS_PENDING = "Pending";
+var JOB_STATUS_PROCESSING = "Processing";
+var JOB_STATUS_COMPLETED = "Completed";
+var JOB_STATUS_FAILED = "Failed";
+var JOB_MAX_ATTEMPTS = 5;
+var JOB_RETRY_BASE_SECONDS = 30;
+var JOB_QUEUE_INLINE_BATCH = 3;
+var JOB_QUEUE_MANUAL_BATCH = 25;
+var JOB_PROCESSING_TIMEOUT_MS = 5 * 60 * 1000;
+
+function jobQueueSheet_(doc) {
+  var sheet = doc.getSheetByName(JOB_QUEUE_SHEET) || doc.insertSheet(JOB_QUEUE_SHEET);
+  if (sheet.getLastRow() === 0) sheet.appendRow(JOB_QUEUE_HEADER);
+  return sheet;
+}
+
+function enqueueJob_(doc, type, relatedId, payload) {
+  var sheet = jobQueueSheet_(doc);
+  var jobId = "job_" + new Date().getTime() + "_" + sheet.getLastRow();
+  sheet.appendRow([
+    jobId,
+    String(relatedId || ""),
+    String(type),
+    JSON.stringify(payload || {}),
+    JOB_STATUS_PENDING,
+    0,
+    new Date().toISOString(),
+    "",
+    new Date().toISOString(),
+    ""
+  ]);
+  return jobId;
+}
+
+function readJobRows_(doc) {
+  var sheet = doc.getSheetByName(JOB_QUEUE_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) return { sheet: sheet, rows: [] };
+  var data = sheet.getDataRange().getValues();
+  var rows = [];
+  for (var i = 1; i < data.length; i++) {
+    if (!data[i][0]) continue;
+    rows.push({
+      rowNumber: i + 1,
+      jobId: String(data[i][0]),
+      relatedId: String(data[i][1] || ""),
+      type: String(data[i][2] || ""),
+      payload: safeParseJSON_(data[i][3], {}),
+      status: String(data[i][4] || ""),
+      attempts: Number(data[i][5]) || 0,
+      nextAttemptAt: String(data[i][6] || ""),
+      lastError: String(data[i][7] || ""),
+      createdAt: String(data[i][8] || ""),
+      completedAt: String(data[i][9] || "")
+    });
+  }
+  return { sheet: sheet, rows: rows };
+}
+
+function writeJobField_(sheet, rowNumber, columnIndex, value) {
+  sheet.getRange(rowNumber, columnIndex).setValue(value);
+}
+
+/**
+ * Claims a job by flipping it to Processing under the script lock, so two
+ * concurrent workers can never run the same job twice.
+ */
+function claimDueJobs_(doc, maxJobs) {
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(20000);
+  } catch (error) {
+    return [];
+  }
+
+  var claimed = [];
+  try {
+    var read = readJobRows_(doc);
+    if (!read.sheet) return [];
+    var nowMs = new Date().getTime();
+
+    for (var i = 0; i < read.rows.length && claimed.length < maxJobs; i++) {
+      var job = read.rows[i];
+
+      // Recover jobs abandoned by a worker that died mid-flight.
+      if (job.status === JOB_STATUS_PROCESSING) {
+        var startedMs = Date.parse(job.nextAttemptAt) || 0;
+        if (nowMs - startedMs < JOB_PROCESSING_TIMEOUT_MS) continue;
+      } else if (job.status !== JOB_STATUS_PENDING) {
+        continue;
+      } else if ((Date.parse(job.nextAttemptAt) || 0) > nowMs) {
+        continue;
+      }
+
+      writeJobField_(read.sheet, job.rowNumber, 5, JOB_STATUS_PROCESSING);
+      writeJobField_(read.sheet, job.rowNumber, 7, new Date(nowMs).toISOString());
+      job.status = JOB_STATUS_PROCESSING;
+      job.sheet = read.sheet;
+      claimed.push(job);
+    }
+  } finally {
+    lock.releaseLock();
+  }
+  return claimed;
+}
+
+function completeJob_(sheet, job) {
+  writeJobField_(sheet, job.rowNumber, 5, JOB_STATUS_COMPLETED);
+  writeJobField_(sheet, job.rowNumber, 6, job.attempts + 1);
+  writeJobField_(sheet, job.rowNumber, 8, "");
+  writeJobField_(sheet, job.rowNumber, 10, new Date().toISOString());
+}
+
+function failJob_(sheet, job, error) {
+  var attempts = job.attempts + 1;
+  var exhausted = attempts >= JOB_MAX_ATTEMPTS;
+  var delaySeconds = JOB_RETRY_BASE_SECONDS * Math.pow(2, Math.max(0, attempts - 1));
+  writeJobField_(sheet, job.rowNumber, 5, exhausted ? JOB_STATUS_FAILED : JOB_STATUS_PENDING);
+  writeJobField_(sheet, job.rowNumber, 6, attempts);
+  writeJobField_(sheet, job.rowNumber, 7, new Date(new Date().getTime() + delaySeconds * 1000).toISOString());
+  writeJobField_(sheet, job.rowNumber, 8, redactSecrets_(error).slice(0, 500));
+  if (exhausted) writeJobField_(sheet, job.rowNumber, 10, new Date().toISOString());
+}
+
+function processPendingJobs_(doc, maxJobs) {
+  var jobs = claimDueJobs_(doc, maxJobs || JOB_QUEUE_INLINE_BATCH);
+  var processed = 0;
+  for (var i = 0; i < jobs.length; i++) {
+    var job = jobs[i];
+    try {
+      runJob_(doc, job);
+      completeJob_(job.sheet, job);
+      processed++;
+    } catch (error) {
+      failJob_(job.sheet, job, error);
+    }
+  }
+  return processed;
+}
+
+/** Best-effort inline drain. Never throws into the caller's response path. */
+function drainJobQueueQuietly_(doc) {
+  try {
+    return processPendingJobs_(doc, JOB_QUEUE_INLINE_BATCH);
+  } catch (error) {
+    return 0;
+  }
+}
+
+/** Entry point for a time-driven trigger (see docs/TELEGRAM_SETUP.md). */
+function processPendingTelegramJobs() {
+  return processPendingJobs_(SpreadsheetApp.getActiveSpreadsheet(), JOB_QUEUE_MANUAL_BATCH);
+}
+
+function runJob_(doc, job) {
+  if (job.type === "omad_transaction_report") return runOmadTransactionReportJob_(doc, job);
+  if (job.type === "omad_transaction_delete_report") return runOmadDeleteReportJob_(job);
+  if (job.type === "cafe_close_day_report") return runCafeCloseDayReportJob_(job);
+  throw new Error("Unknown job type: " + job.type);
+}
+
+function buildJobQueueStatus_(doc) {
+  var read = readJobRows_(doc);
+  var counts = { pending: 0, processing: 0, completed: 0, failed: 0 };
+  var recentFailures = [];
+  for (var i = 0; i < read.rows.length; i++) {
+    var job = read.rows[i];
+    if (job.status === JOB_STATUS_PENDING) counts.pending++;
+    else if (job.status === JOB_STATUS_PROCESSING) counts.processing++;
+    else if (job.status === JOB_STATUS_COMPLETED) counts.completed++;
+    else if (job.status === JOB_STATUS_FAILED) {
+      counts.failed++;
+      recentFailures.push({ jobId: job.jobId, type: job.type, attempts: job.attempts, lastError: job.lastError });
+    }
+  }
+  return { counts: counts, failures: recentFailures.slice(-10) };
+}
+
+// ==========================================
+// 5e. BUSINESS REPORT JOBS
+// ------------------------------------------
+// The browser submits a business operation. The message text is composed here,
+// on the server, from data the server already stored.
+// ==========================================
+
+var OMAD_REPORT_OPERATIONS = { transaction_upsert: true, transaction_delete: true };
+
+function validateOmadTelegramReport_(report) {
+  if (report === undefined || report === null) return "";
+  if (typeof report !== "object") return "telegramReport noto'g'ri formatda.";
+  if (!OMAD_REPORT_OPERATIONS[String(report.operation || "")]) {
+    return "telegramReport.operation noto'g'ri.";
+  }
+  if (String(report.baseId || "").length > 64) return "telegramReport.baseId juda uzun.";
+  if (report.messageId !== undefined && report.messageId !== null && report.messageId !== "" &&
+      !/^\d{1,20}$/.test(String(report.messageId))) {
+    return "telegramReport.messageId noto'g'ri.";
+  }
+  return "";
+}
+
+function queueOmadTransactionReport_(doc, report) {
+  if (!report || typeof report !== "object") return "";
+  var operation = String(report.operation || "");
+  if (operation === "transaction_delete") {
+    if (!report.messageId) return "";
+    return enqueueJob_(doc, "omad_transaction_delete_report", String(report.baseId || ""), {
+      messageId: String(report.messageId)
+    });
+  }
+  if (operation === "transaction_upsert") {
+    var baseId = String(report.baseId || "");
+    if (!baseId) return "";
+    return enqueueJob_(doc, "omad_transaction_report", baseId, {
+      baseId: baseId,
+      messageId: report.messageId ? String(report.messageId) : ""
+    });
+  }
+  return "";
+}
+
+/** Transactions whose id is "<baseId>" or "<baseId>_<n>". */
+function findTransactionGroup_(doc, baseId) {
+  var all = readOmadTransactions_(doc);
+  var group = [];
+  var prefix = String(baseId) + "_";
+  for (var i = 0; i < all.length; i++) {
+    var id = String(all[i].id || "");
+    if (id === String(baseId) || id.indexOf(prefix) === 0) group.push(all[i]);
+  }
+  return group;
+}
+
+function runOmadTransactionReportJob_(doc, job) {
+  var chatId = getOmadGroupChatId_();
+  if (!chatId) throw new Error("Telegram guruh ID o'rnatilmagan.");
+
+  var baseId = String(job.payload.baseId || "");
+  var group = findTransactionGroup_(doc, baseId);
+  if (group.length === 0) {
+    // The group was deleted before the report went out. Nothing to report.
+    return;
+  }
+
+  var balances = calculateBalancesFromTransactions_(readOmadTransactions_(doc), group[0].month);
+  var text = buildOmadGroupReportMessage_(group, balances);
+  var existingMessageId = String(job.payload.messageId || group[0].msgId || "");
+
+  if (existingMessageId) {
+    editTelegramMessage_(chatId, existingMessageId, text);
+    applyMsgIdToGroup_(doc, group, existingMessageId);
+    return;
+  }
+
+  var response = sendTelegramMessage_(chatId, text);
+  var newMessageId = extractTelegramMessageId_(response);
+  if (newMessageId) applyMsgIdToGroup_(doc, group, newMessageId);
+}
+
+function applyMsgIdToGroup_(doc, group, messageId) {
+  for (var i = 0; i < group.length; i++) updateOmadTransactionMsgId_(doc, group[i].id, messageId);
+}
+
+function runOmadDeleteReportJob_(job) {
+  var chatId = getOmadGroupChatId_();
+  if (!chatId) throw new Error("Telegram guruh ID o'rnatilmagan.");
+  telegramFetch_("deleteMessage", { chat_id: chatId, message_id: job.payload.messageId });
+}
+
+function queueCafeCloseDayReport_(doc, payload) {
+  return enqueueJob_(doc, "cafe_close_day_report", "", {
+    date: String(payload.date || ""),
+    seller: String(payload.seller || "").slice(0, TELEGRAM_MAX_FIELD_LENGTH),
+    totalRevenue: Number(payload.totalRevenue) || 0,
+    totalProfit: Number(payload.totalProfit) || 0,
+    summary: Array.isArray(payload.summary) ? payload.summary.slice(0, 200) : [],
+    soldItems: Array.isArray(payload.soldItems) ? payload.soldItems.slice(0, 200) : []
+  });
+}
+
+function runCafeCloseDayReportJob_(job) {
+  var chatId = getOmadGroupChatId_();
+  if (!chatId) throw new Error("Telegram guruh ID o'rnatilmagan.");
+  var text = buildCafeCloseDayMessage_(job.payload);
+  sendTelegramMessage_(chatId, text, null, "HTML");
+}
+
+function escapeTelegramHtml_(value) {
+  return String(value === null || value === undefined ? "" : value)
+    .split("&").join("&amp;")
+    .split("<").join("&lt;")
+    .split(">").join("&gt;");
+}
+
+/** ISO timestamp -> "dd.MM.yyyy HH:mm" in the script's timezone. */
+function formatCloseDayStamp_(value) {
+  var raw = String(value || "");
+  if (!raw) return "";
+  try {
+    var parsed = new Date(raw);
+    if (isNaN(parsed.getTime())) return raw;
+    return Utilities.formatDate(parsed, Session.getScriptTimeZone(), "dd.MM.yyyy HH:mm");
+  } catch (error) {
+    return raw;
+  }
+}
+
+function buildCafeCloseDayMessage_(payload) {
+  var items = Array.isArray(payload.soldItems) && payload.soldItems.length
+    ? payload.soldItems
+    : (Array.isArray(payload.summary) ? payload.summary : []);
+
+  var lines = [];
+  for (var i = 0; i < items.length; i++) {
+    var qty = Number(items[i].qty !== undefined ? items[i].qty : items[i].sold) || 0;
+    if (qty <= 0) continue;
+    lines.push("• " + escapeTelegramHtml_(items[i].name) + ": <b>" + qty.toLocaleString() + "</b>");
+  }
+  if (lines.length === 0) lines.push("• Sotilgan mahsulotlar topilmadi");
+
+  var stamp = formatCloseDayStamp_(payload.date);
+  return [
+    "🧾 <b>Kafe Kunlik Yakun Hisoboti</b>",
+    "",
+    "📅 <b>Sana:</b> " + escapeTelegramHtml_(stamp),
+    "👤 <b>Sotuvchi:</b> " + escapeTelegramHtml_(payload.seller),
+    "💵 <b>Jami tushum:</b> " + Math.round(Number(payload.totalRevenue) || 0).toLocaleString() + " UZS",
+    "📈 <b>Jami foyda:</b> " + Math.round(Number(payload.totalProfit) || 0).toLocaleString() + " UZS",
+    "",
+    "📦 <b>Yopilgan mahsulotlar (sotilgan miqdor):</b>",
+    lines.join("\n")
+  ].join("\n").slice(0, TELEGRAM_MAX_TEXT_LENGTH);
 }
 
 /**

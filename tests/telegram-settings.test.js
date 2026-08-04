@@ -248,29 +248,17 @@ test('webhook configuration stores status and rejects non-https urls', () => {
   assert.strictEqual(ok.settings.webhookStatus.configured, true);
 });
 
-// ------------------------------------------------------------ server proxy
+// -------------------------------------------- public Telegram proxy removed
 
-test('telegram_send proxy posts to the configured group and returns message id', () => {
+test('the generic telegram_send/edit/delete proxy no longer exists', () => {
   const gas = loadScript({ properties: configured() });
-  const body = readJsonOutput(gas.doPost(postEvent({ action: 'telegram_send', text: 'hello' })));
-  assert.strictEqual(body.status, 'success');
-  assert.strictEqual(body.messageId, 555);
-  assert.strictEqual(gas.__sentMessages[0].chat_id, '-1001234567890');
-  assert.strictEqual(gas.__sentMessages[0].text, 'hello');
-});
 
-test('telegram_send proxy errors are returned without secrets', () => {
-  const gas = loadScript({
-    properties: configured(),
-    fetch: () => ({ getResponseCode: () => 403, getContentText: () => `forbidden ${VALID_TOKEN}` })
-  });
-  const body = readJsonOutput(gas.doPost(postEvent({ action: 'telegram_send', text: 'hi' })));
-  assert.strictEqual(body.status, 'error');
-  assert.ok(!JSON.stringify(body).includes(VALID_TOKEN));
-});
+  for (const action of ['telegram_send', 'telegram_edit', 'telegram_delete']) {
+    const body = readJsonOutput(gas.doPost(postEvent({ action, text: 'hello', messageId: 555 })));
+    assert.strictEqual(body.status, 'error', `${action} must not be handled`);
+    assert.strictEqual(body.message, 'Unknown action');
+  }
 
-test('telegram_edit and telegram_delete require a message id', () => {
-  const gas = loadScript({ properties: configured() });
-  assert.strictEqual(readJsonOutput(gas.doPost(postEvent({ action: 'telegram_edit', text: 'x' }))).status, 'error');
-  assert.strictEqual(readJsonOutput(gas.doPost(postEvent({ action: 'telegram_delete' }))).status, 'error');
+  assert.deepStrictEqual(gas.__sentMessages, [], 'no Telegram call may be made');
+  assert.strictEqual(typeof gas.proxyTelegramGroupCall_, 'undefined');
 });
