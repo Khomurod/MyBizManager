@@ -42,6 +42,7 @@ filename order. `npm run build` regenerates `script.gs`; `npm run build:check`
 | `12_cafe.gs` | Café inventory, sales, voids, close-day |
 | `13_migration.gs` | Period migration: preview, apply, verify, cutover, rollback |
 | `14_ledger.gs` | Append-only ledger: create / correct / cancel / read / audit |
+| `15_system_status.gs` | Backups, queue, migration state, audit tail, safe diagnostics |
 | `20_api.gs` | `doPost` / `doGet` routing only |
 
 ### Frontend modules
@@ -52,7 +53,7 @@ scripts, in order, sharing one global scope:
 `00-config.js` (URL + access guard) → `01-state.js` → `01b-periods.js` → `02-format.js` → `02b-calc.js` →
 `03-exchange-rates.js` → `04-tenants.js` → `05-planned-expenses.js` →
 `06-api.js` → `07-dashboard.js` → `08-entry.js` → `09-history.js` →
-`10-settings.js` → `11-telegram-settings.js` → `12-app.js`.
+`10-settings.js` → `10b-system.js` → `11-telegram-settings.js` → `12-app.js`.
 
 `tests/static-analysis.test.js` parses every linked script and fails if any
 page defines the same function twice, so a shadowed definition cannot come
@@ -135,6 +136,9 @@ Secrets and configuration that must never reach the browser.
 | `configure_telegram_webhook` | **yes** | `setWebhook` + `getWebhookInfo` |
 | `get_job_queue_status` | no | Pending/processing/completed/failed counts only |
 | `process_jobs` | **yes** | Manually drains the retry queue |
+| `get_system_status` | no | Counts, timestamps and event names only — never secrets, amounts or message contents |
+| `create_backup` | **yes** | Writes an `Omad_Backups` snapshot on demand |
+| `retry_failed_jobs` | **yes** | Puts failed jobs back in the queue |
 | `save_inventory`, `save_recipe`, `save_categories`, `save_cafe_settings` | no | Café admin |
 | `save_sale`, `void_sale`, `close_day` | no | Café POS |
 
@@ -371,7 +375,8 @@ These are tracked as the remaining migration stages:
    runtime: they cost consumption against `state.openingInventory` rather than
    the running balance, so a mid-day restock does not skew the cost of goods
    sold. `tests/cafe-regression.e2e.js` pins that behaviour.
-8. **Horizontal overflow on `omad_admin.html` at 375px** (`scrollWidth` 489px vs
+8. ~~Horizontal overflow on `omad_admin.html` at 375px~~ — fixed in stage 7.
+   The original diagnosis, for the record: (`scrollWidth` 489px vs
    a 375px viewport, Sozlamalar tab). Traced to the pre-existing exchange-rate
    row in the *Oylik Kurslar* card:
 
@@ -387,6 +392,40 @@ These are tracked as the remaining migration stages:
    below their intrinsic width and push the button off-screen. The fix is to add
    `min-w-0` to both inputs. Left alone here because it is unrelated to the
    Telegram change; scheduled for the settings redesign (stage 7).
+
+## Sozlamalar
+
+Five sections, one open at a time, navigated by a horizontally scrollable
+button row:
+
+| Section | Contents |
+|---|---|
+| 💱 Kurslar | Year + month selectors, buy/sell inputs, validation, yearly overview marking months with no rate, confirmation before changing an existing rate |
+| 🏢 Ijarachilar | Tenant list with per-month switches, add/edit form |
+| 🧾 Rejali Chiqim | Planned expenses (projection only) |
+| 📨 Telegram | Status, credentials, connection/test/webhook actions |
+| 🗄️ Tizim | Backup status and manual backup, migration status and the staged migration controls, pending and failed jobs with retry, audit history, schema version, last successful server operation |
+
+The admin key is typed once in the Telegram section and reused by the System
+and Data actions. It is never stored.
+
+`buildSystemStatus_` returns counts, timestamps and event names only — never a
+snapshot payload, a transaction amount or a message body.
+
+The migration controls dim once the cutover succeeds, leaving the rollback
+available.
+
+### Mobile
+
+`tests/omad-settings.e2e.js` asserts that no control in any section sticks out
+past its own card at **320 / 375 / 414 / 768 / 1280 px**, that every control is
+visible and enabled at 320px, that numeric fields keep `inputmode`, and that
+secret fields stay `type="password"`.
+
+The known 375px overflow is gone: the exchange-rate row used two `flex-1`
+inputs plus a button, and `flex-1` items default to `min-width: auto`, so the
+inputs refused to shrink and pushed the button off-screen. It is now a
+two-column grid with `min-w-0` and a full-width button beneath.
 
 ## Testing
 

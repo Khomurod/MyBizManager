@@ -100,10 +100,15 @@ function calculateTenantPaid_(transactions, tenantName, period) {
   return Math.round(total);
 }
 
-/** The rent expected from a tenant in a period, at the sell rate. */
+/**
+ * The rent expected from a tenant in a period, at the sell rate.
+ * The amount comes from the tenant's effective-dated schedule, so a month with
+ * an exception, a no-rent month, or a month outside the agreement all resolve
+ * correctly - and a historical month keeps the rent that applied then.
+ */
 function tenantExpectedRentUZS_(tenant, period) {
   var t = tenant || {};
-  var rent = Number(t.rent) || 0;
+  var rent = effectiveTenantRent_(t, period);
   if (rent <= 0) return 0;
   return Math.round(toUZS_(rent, t.currency, period, getOmadRates_(), RATE_TYPE_PROJECTION));
 }
@@ -134,6 +139,7 @@ function calculateProjection_(tenants, plannedExpenses, period) {
   for (var i = 0; i < tenantList.length; i++) {
     expectedIncome += tenantExpectedRentUZS_(tenantList[i], period);
   }
+
 
   var expenseList = Array.isArray(plannedExpenses) ? plannedExpenses : [];
   for (var j = 0; j < expenseList.length; j++) {

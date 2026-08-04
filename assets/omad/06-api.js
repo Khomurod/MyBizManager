@@ -89,7 +89,14 @@ async function saveCloud(telegramReport = null) {
     try {
         app.tenants = (Array.isArray(app.tenants) ? app.tenants : []).map(normalizeTenantObject);
         app.templateExpenses = getTemplateExpenses();
-        const body = { action: 'save_omad', ...app };
+        // Only the persisted collections - not the client-side migration flags.
+        const body = {
+            action: 'save_omad',
+            transactions: app.transactions,
+            tenants: app.tenants,
+            rates: app.rates,
+            templateExpenses: app.templateExpenses
+        };
         if (telegramReport) body.telegramReport = telegramReport;
         const res = await fetch(GOOGLE_APP_URL.trim(), {
             method: 'POST',
@@ -100,46 +107,4 @@ async function saveCloud(telegramReport = null) {
     showLoader(false);
     renderAll();
     return ok;
-}
-
-async function migrateToGoogleSheets() {
-    const confirmed = confirm("Haqiqatan ham barcha ma'lumotlarni ko'chirmoqchimisiz?");
-    if (!confirmed) return;
-
-    const loaderMsg = document.getElementById('loaderMsg');
-    const defaultLoaderText = loaderMsg.innerText;
-
-    showLoader(true);
-    loaderMsg.innerText = "Baza ko'chirilmoqda...";
-
-    try {
-        const payload = {
-            action: "migrate_omad",
-            transactions: app.transactions,
-            tenants: app.tenants,
-            rates: app.rates,
-            templateExpenses: getTemplateExpenses()
-        };
-
-        const response = await fetch(GOOGLE_APP_URL.trim(), {
-            method: 'POST',
-            body: JSON.stringify(payload)
-        });
-
-        if (!response.ok) throw new Error("Migration request failed");
-
-        const contentType = response.headers.get('content-type') || "";
-        if (contentType.includes('application/json')) {
-            await response.json();
-        } else {
-            await response.text();
-        }
-        alert("Muvaffaqiyatli yakunlandi!");
-    } catch (e) {
-        console.error("Google Sheets migration error:", e);
-        alert("Xatolik yuz berdi. Internetni tekshiring.");
-    } finally {
-        showLoader(false);
-        loaderMsg.innerText = defaultLoaderText;
-    }
 }

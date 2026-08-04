@@ -64,6 +64,20 @@ const REMOTE = {
   templateExpenses: [{ id: 'e1', month: '2026-01', name: 'Soliq', amount: 500000, currency: 'UZS' }]
 };
 
+/**
+ * saveCloud() runs in the background, so a POST can still be in flight when
+ * the assertion runs. Poll for it rather than assuming it has landed.
+ */
+async function waitForRequest(requests, action, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const match = requests.filter(r => r.action === action).pop();
+    if (match) return match;
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  throw new Error(`timed out waiting for a ${action} request`);
+}
+
 describe('Omad admin periods (browser)', () => {
   let server;
   let browser;
@@ -243,8 +257,7 @@ describe('Omad admin periods (browser)', () => {
     });
 
     assert.deepStrictEqual(saved, { buy: 14000, sell: 14500 });
-    const save = requests.find(r => r.action === 'save_omad');
-    assert.ok(save, 'the rate change is persisted');
+    const save = await waitForRequest(requests, 'save_omad');
     assert.deepStrictEqual(save.rates['2027-03'], { buy: 14000, sell: 14500 });
     await context.close();
   });
@@ -327,10 +340,7 @@ describe('Omad admin periods (browser)', () => {
       addTemplateExpense();
     });
 
-    // addTemplateExpense saves in the background, so wait for the POST.
-    await page.waitForFunction(() => document.getElementById('loader').style.display !== 'flex');
-
-    const save = requests.filter(r => r.action === 'save_omad').pop();
+    const save = await waitForRequest(requests, 'save_omad');
     const added = save.templateExpenses.find(e => e.name === 'Yillik soliq');
     assert.strictEqual(added.month, '2026-12');
     await context.close();

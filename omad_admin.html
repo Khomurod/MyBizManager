@@ -12,6 +12,13 @@
         .tab-content.active { display: block; animation: slideUp 0.2s; }
         @keyframes slideUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
         .nav-item.active { color: #2563eb; }
+
+        /* Settings section navigation */
+        .settings-nav-btn { background: #ffffff; border-color: #e2e8f0; color: #64748b; }
+        .settings-nav-btn.active { background: #2563eb; border-color: #2563eb; color: #ffffff; }
+        .settings-section.hidden { display: none; }
+        #settingsNav { scrollbar-width: none; }
+        #settingsNav::-webkit-scrollbar { display: none; }
         .card { background: white; border-radius: 16px; padding: 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; margin-bottom: 12px; }
         #loader { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.95); z-index: 100; justify-content: center; align-items: center; flex-direction: column; }
         
@@ -186,146 +193,251 @@
 
     <!-- 4-TAB: SOZLAMALAR -->
     <div id="tab-settings" class="tab-content p-4">
-        <!-- Valyuta Kurslari -->
-        <div class="card">
-            <h3 class="font-bold mb-1 text-slate-700">Valyuta Kurslari ($1)</h3>
-            <p class="text-[11px] text-slate-400 mb-3">Har bir yil va oy uchun alohida kurs saqlanadi.</p>
 
-            <div class="grid grid-cols-2 gap-2 mb-2">
-                <select id="settingRateYear" onchange="onRateSelectorChange()" class="w-full min-w-0 p-2 border rounded text-sm font-bold"></select>
-                <select id="settingMonth" onchange="onRateSelectorChange()" class="w-full min-w-0 p-2 border rounded text-sm font-bold"></select>
-            </div>
-            <div class="grid grid-cols-2 gap-2 mb-2">
-                <input type="text" inputmode="numeric" id="settingRateBuyInput" placeholder="Sotib olish (Buy)" class="w-full min-w-0 p-2 border rounded text-sm">
-                <input type="text" inputmode="numeric" id="settingRateSellInput" placeholder="Sotish (Sell)" class="w-full min-w-0 p-2 border rounded text-sm">
-            </div>
-            <button onclick="saveRate()" class="w-full py-2 bg-blue-600 text-white rounded font-bold text-xs active:scale-95 transition-all">Kursni Saqlash</button>
-            <p id="settingRateHint" class="text-[11px] text-slate-400 mt-2"></p>
+        <!-- SECTION NAV -->
+        <nav id="settingsNav" class="flex gap-2 overflow-x-auto pb-2 mb-4 -mx-1 px-1">
+            <button onclick="showSettingsSection('rates')" data-section="rates"
+                class="settings-nav-btn shrink-0 px-3 py-2 rounded-xl text-xs font-bold border transition-all">💱 Kurslar</button>
+            <button onclick="showSettingsSection('tenants')" data-section="tenants"
+                class="settings-nav-btn shrink-0 px-3 py-2 rounded-xl text-xs font-bold border transition-all">🏢 Ijarachilar</button>
+            <button onclick="showSettingsSection('expenses')" data-section="expenses"
+                class="settings-nav-btn shrink-0 px-3 py-2 rounded-xl text-xs font-bold border transition-all">🧾 Rejali Chiqim</button>
+            <button onclick="showSettingsSection('telegram')" data-section="telegram"
+                class="settings-nav-btn shrink-0 px-3 py-2 rounded-xl text-xs font-bold border transition-all">📨 Telegram</button>
+            <button onclick="showSettingsSection('system')" data-section="system"
+                class="settings-nav-btn shrink-0 px-3 py-2 rounded-xl text-xs font-bold border transition-all">🗄️ Tizim</button>
+        </nav>
 
-            <div class="border-t mt-3 pt-3">
-                <div class="flex items-center justify-between mb-2">
-                    <h4 class="text-[10px] font-bold text-slate-400 uppercase">Yillik Ko'rinish</h4>
-                    <span id="ratesOverviewYear" class="text-[10px] font-bold text-slate-500"></span>
-                </div>
-                <div id="ratesList" class="text-xs text-slate-500 space-y-1"></div>
-            </div>
-        </div>
+        <!-- A. VALYUTA KURSLARI -->
+        <section id="settings-rates" class="settings-section">
+            <div class="card">
+                <h3 class="font-bold mb-1 text-slate-700">Valyuta Kurslari</h3>
+                <p class="text-[11px] text-slate-400 mb-3">
+                    Har bir yil va oy uchun alohida kurs saqlanadi. Hisob-kitoblarda
+                    <b>Sotish (Sell)</b> kursi ishlatiladi.
+                </p>
 
-        <!-- Ijarachilar -->
-        <div class="card">
-            <h3 class="font-bold mb-4 text-slate-700">Ijarachilar & Ijara Narxi</h3>
-            <div id="settingsTenantList" class="space-y-2 mb-3"></div>
-            
-            <div class="border-t pt-3 mt-3 bg-slate-50 p-3 rounded-lg">
-                <label class="block text-[10px] text-slate-400 font-bold mb-2 uppercase">Ijarachi Qo'shish / Tahrirlash</label>
-                <input type="text" id="newTenantName" placeholder="Ismi (Masalan: Tehnopark)" class="w-full p-2 border rounded text-sm mb-2 bg-white">
-                <div class="flex gap-2 mb-2">
-                    <input type="number" id="newTenantRent" placeholder="Ijara Narxi" class="flex-1 p-2 border rounded text-sm bg-white">
-                    <select id="newTenantCurr" class="w-20 p-2 border rounded text-sm font-bold bg-white"><option>USD</option><option>UZS</option></select>
+                <label class="block text-[10px] font-bold text-slate-400 mb-1 uppercase">Davr</label>
+                <div class="grid grid-cols-2 gap-2 mb-3">
+                    <select id="settingRateYear" onchange="onRateSelectorChange()" class="w-full min-w-0 p-2 border rounded-lg text-sm font-bold bg-white"></select>
+                    <select id="settingMonth" onchange="onRateSelectorChange()" class="w-full min-w-0 p-2 border rounded-lg text-sm font-bold bg-white"></select>
                 </div>
-                <button onclick="addTenant()" id="addTenantBtn" class="w-full py-2 bg-slate-800 text-white rounded text-xs font-bold shadow-md active:scale-95 transition-all">+ Qo'shish</button>
-            </div>
-        </div>
 
-        <!-- Shablon Chiqimlar -->
-        <div class="card">
-            <div class="flex items-center justify-between mb-4">
-                <h3 class="font-bold text-slate-700">Oylik Shablon Chiqimlar</h3>
-                <i class="fas fa-receipt text-slate-300"></i>
-            </div>
-            <div id="templateExpenseList" class="space-y-2 mb-3"></div>
-            <div class="border-t pt-3 mt-3 bg-slate-50 p-3 rounded-lg">
-                <label class="block text-[10px] text-slate-400 font-bold mb-2 uppercase">Shablon Chiqim Qo'shish</label>
-                <div class="grid grid-cols-2 gap-2 mb-2">
-                    <select id="templateExpenseMonth" class="p-2 border rounded text-xs font-bold bg-white"></select>
-                    <select id="templateExpenseCurr" class="p-2 border rounded text-xs font-bold bg-white"><option>UZS</option><option>USD</option></select>
-                </div>
-                <div class="flex gap-2">
-                    <input type="text" id="templateExpenseName" placeholder="Nomi" class="flex-1 min-w-0 p-2 border rounded text-sm bg-white">
-                    <input type="number" id="templateExpenseAmount" placeholder="Summa" class="w-24 p-2 border rounded text-sm bg-white">
-                    <button onclick="addTemplateExpense()" class="bg-blue-600 text-white w-10 rounded font-bold text-xs shadow-md active:scale-95 transition-all"><i class="fas fa-plus"></i></button>
-                </div>
-            </div>
-        </div>
-
-        <!-- Telegram -->
-        <div class="card">
-            <div class="flex items-center justify-between mb-4">
-                <h3 class="font-bold text-slate-700">Telegram</h3>
-                <i class="fab fa-telegram text-slate-300 text-lg"></i>
-            </div>
-
-            <!-- Holat -->
-            <div class="bg-slate-50 border rounded-xl p-3 mb-3 space-y-2 text-[11px]">
-                <div class="flex justify-between items-center">
-                    <span class="text-slate-500 font-bold uppercase text-[10px]">Bot Tokeni</span>
-                    <span id="tgTokenStatus" class="font-bold text-slate-400">Tekshirilmoqda...</span>
-                </div>
-                <div class="flex justify-between items-center">
-                    <span class="text-slate-500 font-bold uppercase text-[10px]">Bot Ulanishi</span>
-                    <span id="tgBotStatus" class="font-bold text-slate-400">Noma'lum</span>
-                </div>
-                <div class="flex justify-between items-center">
-                    <span class="text-slate-500 font-bold uppercase text-[10px]">Webhook</span>
-                    <span id="tgWebhookStatus" class="font-bold text-slate-400">Noma'lum</span>
-                </div>
-                <div class="border-t pt-2 space-y-1">
-                    <div class="flex justify-between gap-2">
-                        <span class="text-slate-400">Oxirgi muvaffaqiyat:</span>
-                        <span id="tgLastSuccess" class="text-right text-slate-600 truncate">—</span>
+                <div class="grid grid-cols-2 gap-2 mb-1">
+                    <div class="min-w-0">
+                        <label class="block text-[10px] font-bold text-slate-400 mb-1 uppercase">Sotib olish</label>
+                        <input type="text" inputmode="decimal" id="settingRateBuyInput" placeholder="12 000" class="w-full min-w-0 p-2 border rounded-lg text-sm">
                     </div>
-                    <div class="flex justify-between gap-2">
-                        <span class="text-slate-400">Oxirgi xatolik:</span>
-                        <span id="tgLastError" class="text-right text-red-500 truncate">—</span>
+                    <div class="min-w-0">
+                        <label class="block text-[10px] font-bold text-slate-400 mb-1 uppercase">Sotish</label>
+                        <input type="text" inputmode="decimal" id="settingRateSellInput" placeholder="12 500" class="w-full min-w-0 p-2 border rounded-lg text-sm">
                     </div>
                 </div>
+                <p id="settingRateHint" class="text-[11px] text-slate-400 mb-3"></p>
+
+                <button onclick="saveRate()" class="w-full py-3 bg-blue-600 text-white rounded-lg font-bold text-sm shadow-md active:scale-95 transition-all">
+                    Kursni Saqlash
+                </button>
             </div>
 
-            <!-- Sozlash -->
-            <div class="bg-slate-50 p-3 rounded-lg border space-y-2">
-                <div>
-                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Admin Kaliti (Script Property: OMAD_ADMIN_KEY)</label>
-                    <input type="password" id="tgAdminKey" autocomplete="off" placeholder="Sozlamalarni saqlash uchun" class="w-full p-2 border rounded text-sm bg-white">
+            <div class="card">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="font-bold text-slate-700">Yillik Ko'rinish</h3>
+                    <span id="ratesOverviewYear" class="text-xs font-bold text-slate-500"></span>
                 </div>
-                <div>
-                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Bot Tokeni (BotFather)</label>
-                    <input type="password" id="tgBotToken" autocomplete="off" placeholder="Yangi token kiritish / almashtirish" class="w-full p-2 border rounded text-sm bg-white">
-                    <p class="text-[10px] text-slate-400 mt-1">Bo'sh qoldirilsa mavjud token o'zgarmaydi. Token hech qachon qayta ko'rsatilmaydi.</p>
+                <div id="ratesList" class="text-xs text-slate-500"></div>
+            </div>
+        </section>
+
+        <!-- B. IJARACHILAR VA IJARA -->
+        <section id="settings-tenants" class="settings-section hidden">
+            <div class="card">
+                <h3 class="font-bold mb-3 text-slate-700">Ijarachilar</h3>
+                <div id="settingsTenantList" class="space-y-2"></div>
+            </div>
+
+            <div class="card">
+                <h3 class="font-bold mb-3 text-slate-700">Ijarachi Qo'shish / Tahrirlash</h3>
+                <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Nomi</label>
+                <input type="text" id="newTenantName" placeholder="Masalan: Tehnopark" class="w-full min-w-0 p-2 border rounded-lg text-sm mb-3 bg-white">
+
+                <div class="grid grid-cols-2 gap-2 mb-3">
+                    <div class="min-w-0">
+                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Ijara Narxi</label>
+                        <input type="text" inputmode="decimal" id="newTenantRent" placeholder="500" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                    </div>
+                    <div class="min-w-0">
+                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Valyuta</label>
+                        <select id="newTenantCurr" class="w-full min-w-0 p-2 border rounded-lg text-sm font-bold bg-white"><option>USD</option><option>UZS</option></select>
+                    </div>
                 </div>
-                <div>
-                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Ruxsat Etilgan Telegram User ID</label>
-                    <input type="text" inputmode="numeric" id="tgAuthorizedUserId" placeholder="Masalan: 123456789" class="w-full p-2 border rounded text-sm bg-white">
-                </div>
-                <div>
-                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Hisobot Guruhi ID</label>
-                    <input type="text" id="tgGroupChatId" placeholder="Masalan: -1001234567890" class="w-full p-2 border rounded text-sm bg-white">
-                </div>
-                <div>
-                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Webhook Manzili</label>
-                    <input type="text" id="tgWebhookUrl" placeholder="https://script.google.com/macros/s/.../exec" class="w-full p-2 border rounded text-sm bg-white">
+                <button onclick="addTenant()" id="addTenantBtn" class="w-full py-3 bg-slate-800 text-white rounded-lg text-sm font-bold shadow-md active:scale-95 transition-all">+ Qo'shish</button>
+            </div>
+        </section>
+
+        <!-- C. REJALI CHIQIMLAR -->
+        <section id="settings-expenses" class="settings-section hidden">
+            <div class="card">
+                <h3 class="font-bold mb-1 text-slate-700">Rejali Chiqimlar</h3>
+                <p class="text-[11px] text-slate-400 mb-3">
+                    Faqat proyeksiyaga ta'sir qiladi. Haqiqiy chiqim yozuvi alohida kiritiladi.
+                </p>
+                <div id="templateExpenseList" class="space-y-2"></div>
+            </div>
+
+            <div class="card">
+                <h3 class="font-bold mb-3 text-slate-700">Rejali Chiqim Qo'shish</h3>
+                <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Nomi</label>
+                <input type="text" id="templateExpenseName" placeholder="Masalan: Soliq" class="w-full min-w-0 p-2 border rounded-lg text-sm mb-3 bg-white">
+
+                <div class="grid grid-cols-2 gap-2 mb-3">
+                    <div class="min-w-0">
+                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Summa</label>
+                        <input type="text" inputmode="decimal" id="templateExpenseAmount" placeholder="1 000 000" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                    </div>
+                    <div class="min-w-0">
+                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Valyuta</label>
+                        <select id="templateExpenseCurr" class="w-full min-w-0 p-2 border rounded-lg text-sm font-bold bg-white"><option>UZS</option><option>USD</option></select>
+                    </div>
                 </div>
 
-                <div id="tgMessage" class="hidden text-[11px] font-bold rounded-lg p-2"></div>
+                <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Boshlanish Davri</label>
+                <select id="templateExpenseMonth" class="w-full min-w-0 p-2 border rounded-lg text-sm font-bold bg-white mb-3"></select>
 
-                <button onclick="saveTelegramSettings()" id="tgSaveBtn" class="w-full py-2 bg-blue-600 text-white rounded text-xs font-bold shadow-md active:scale-95 transition-all">💾 Saqlash / Tokenni Almashtirish</button>
-                <div class="grid grid-cols-3 gap-2">
-                    <button onclick="testTelegramConnection()" class="py-2 bg-slate-800 text-white rounded text-[10px] font-bold active:scale-95 transition-all">🔌 Ulanish</button>
-                    <button onclick="sendTelegramTestMessage()" class="py-2 bg-slate-800 text-white rounded text-[10px] font-bold active:scale-95 transition-all">✉️ Test Xabar</button>
-                    <button onclick="configureTelegramWebhook()" class="py-2 bg-slate-800 text-white rounded text-[10px] font-bold active:scale-95 transition-all">🔄 Webhook</button>
+                <button onclick="addTemplateExpense()" class="w-full py-3 bg-blue-600 text-white rounded-lg text-sm font-bold shadow-md active:scale-95 transition-all">+ Qo'shish</button>
+            </div>
+        </section>
+
+        <!-- D. TELEGRAM -->
+        <section id="settings-telegram" class="settings-section hidden">
+            <div class="card">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="font-bold text-slate-700">Telegram Holati</h3>
+                    <i class="fab fa-telegram text-slate-300 text-lg"></i>
+                </div>
+
+                <div class="bg-slate-50 border rounded-xl p-3 space-y-2 text-[11px]">
+                    <div class="flex justify-between items-center gap-2">
+                        <span class="text-slate-500 font-bold uppercase text-[10px]">Bot Tokeni</span>
+                        <span id="tgTokenStatus" class="font-bold text-slate-400 text-right">Tekshirilmoqda...</span>
+                    </div>
+                    <div class="flex justify-between items-center gap-2">
+                        <span class="text-slate-500 font-bold uppercase text-[10px]">Bot Ulanishi</span>
+                        <span id="tgBotStatus" class="font-bold text-slate-400 text-right">Noma'lum</span>
+                    </div>
+                    <div class="flex justify-between items-center gap-2">
+                        <span class="text-slate-500 font-bold uppercase text-[10px]">Webhook</span>
+                        <span id="tgWebhookStatus" class="font-bold text-slate-400 text-right">Noma'lum</span>
+                    </div>
+                    <div class="border-t pt-2 space-y-1">
+                        <div class="flex justify-between gap-2">
+                            <span class="text-slate-400 shrink-0">Oxirgi muvaffaqiyat:</span>
+                            <span id="tgLastSuccess" class="text-right text-slate-600 truncate">—</span>
+                        </div>
+                        <div class="flex justify-between gap-2">
+                            <span class="text-slate-400 shrink-0">Oxirgi xatolik:</span>
+                            <span id="tgLastError" class="text-right text-red-500 truncate">—</span>
+                        </div>
+                    </div>
                 </div>
             </div>
-        </div>
 
-        <div class="card">
-            <h3 class="font-bold mb-4 text-slate-700">Tizim Ma'lumotlari</h3>
-            <button
-                id="migrateBtn"
-                onclick="migrateToGoogleSheets()"
-                class="w-full py-3 bg-slate-800 text-white rounded-lg font-bold text-sm shadow-md active:scale-95 transition-all"
-            >
-                🗄️ Baza (Google Sheets) ga Ko'chirish
-            </button>
-        </div>
+            <div class="card">
+                <h3 class="font-bold mb-3 text-slate-700">Telegram Sozlamalari</h3>
+                <div class="space-y-3">
+                    <div>
+                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Admin Kaliti</label>
+                        <input type="password" id="tgAdminKey" autocomplete="off" placeholder="Sozlamalarni saqlash uchun" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                        <p class="text-[10px] text-slate-400 mt-1">Apps Script Script Property: <code>OMAD_ADMIN_KEY</code></p>
+                    </div>
+                    <div>
+                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Bot Tokeni</label>
+                        <input type="password" id="tgBotToken" autocomplete="off" placeholder="Yangi token kiritish / almashtirish" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                        <p class="text-[10px] text-slate-400 mt-1">Bo'sh qoldirilsa mavjud token o'zgarmaydi. Token hech qachon qayta ko'rsatilmaydi.</p>
+                    </div>
+                    <div>
+                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Ruxsat Etilgan User ID</label>
+                        <input type="text" inputmode="numeric" id="tgAuthorizedUserId" placeholder="123456789" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                    </div>
+                    <div>
+                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Hisobot Guruhi ID</label>
+                        <input type="text" id="tgGroupChatId" placeholder="-1001234567890" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                    </div>
+                    <div>
+                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Webhook Manzili</label>
+                        <input type="text" id="tgWebhookUrl" placeholder="https://script.google.com/macros/s/.../exec" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                    </div>
+                </div>
+
+                <div id="tgMessage" class="hidden text-[11px] font-bold rounded-lg p-2 mt-3"></div>
+
+                <button onclick="saveTelegramSettings()" id="tgSaveBtn" class="w-full mt-3 py-3 bg-blue-600 text-white rounded-lg text-sm font-bold shadow-md active:scale-95 transition-all">💾 Saqlash</button>
+                <div class="grid grid-cols-3 gap-2 mt-2">
+                    <button onclick="testTelegramConnection()" class="py-2 bg-slate-800 text-white rounded-lg text-[10px] font-bold active:scale-95 transition-all">🔌 Ulanish</button>
+                    <button onclick="sendTelegramTestMessage()" class="py-2 bg-slate-800 text-white rounded-lg text-[10px] font-bold active:scale-95 transition-all">✉️ Test</button>
+                    <button onclick="configureTelegramWebhook()" class="py-2 bg-slate-800 text-white rounded-lg text-[10px] font-bold active:scale-95 transition-all">🔄 Webhook</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- E. TIZIM VA MA'LUMOTLAR -->
+        <section id="settings-system" class="settings-section hidden">
+            <div class="card">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="font-bold text-slate-700">Tizim Holati</h3>
+                    <button onclick="loadSystemStatus()" class="text-blue-500 text-xs font-bold"><i class="fas fa-sync-alt"></i></button>
+                </div>
+                <div id="systemOverview" class="bg-slate-50 border rounded-xl p-3 space-y-2 text-[11px]">
+                    <p class="text-slate-400">Yuklanmoqda...</p>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3 class="font-bold mb-1 text-slate-700">Zaxira Nusxa</h3>
+                <p class="text-[11px] text-slate-400 mb-3">Har bir yozuvdan oldin avtomatik zaxira olinadi.</p>
+                <div id="backupStatus" class="text-[11px] text-slate-500 mb-3"></div>
+                <button onclick="createBackup()" class="w-full py-3 bg-slate-800 text-white rounded-lg text-sm font-bold shadow-md active:scale-95 transition-all">
+                    Zaxira Nusxa Yaratish
+                </button>
+            </div>
+
+            <div class="card">
+                <h3 class="font-bold mb-1 text-slate-700">Kutilayotgan Vazifalar</h3>
+                <p class="text-[11px] text-slate-400 mb-3">Telegram hisobotlari alohida navbatda yuboriladi.</p>
+                <div id="jobQueueStatus" class="text-[11px] text-slate-500 mb-3"></div>
+                <div class="grid grid-cols-2 gap-2">
+                    <button onclick="processPendingJobs()" class="py-2 bg-blue-600 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">Hozir Yuborish</button>
+                    <button onclick="retryFailedJobs()" class="py-2 bg-slate-800 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">Xatolarni Qayta</button>
+                </div>
+            </div>
+
+            <div id="migrationCard" class="card">
+                <h3 class="font-bold mb-1 text-slate-700">Ma'lumotlarni Ko'chirish</h3>
+                <p class="text-[11px] text-slate-400 mb-3">
+                    Eski oy nomlarini (Yanvar) yil bilan (2026-01) almashtiradi.
+                    Asl varaq hech qachon o'zgartirilmaydi.
+                </p>
+                <div id="migrationStatus" class="text-[11px] text-slate-500 mb-3"></div>
+
+                <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Zaxira Yil</label>
+                <select id="migrationFallbackYear" class="w-full min-w-0 p-2 border rounded-lg text-sm font-bold bg-white mb-3"></select>
+
+                <div id="migrationPreview" class="hidden text-[11px] bg-slate-50 border rounded-xl p-3 mb-3"></div>
+
+                <div class="grid grid-cols-2 gap-2">
+                    <button onclick="previewMigration()" class="py-2 bg-slate-800 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">1. Ko'rib chiqish</button>
+                    <button onclick="applyMigration()" class="py-2 bg-slate-800 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">2. Ko'chirish</button>
+                    <button onclick="verifyMigration()" class="py-2 bg-slate-800 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">3. Tekshirish</button>
+                    <button onclick="cutoverMigration()" class="py-2 bg-green-600 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">4. Yoqish</button>
+                </div>
+                <button onclick="rollbackMigration()" class="w-full mt-2 py-2 text-red-500 text-xs font-bold">Orqaga Qaytarish</button>
+            </div>
+
+            <div class="card">
+                <h3 class="font-bold mb-3 text-slate-700">Oxirgi Amallar</h3>
+                <div id="auditList" class="space-y-1 text-[11px] text-slate-500 max-h-64 overflow-y-auto"></div>
+            </div>
+        </section>
     </div>
 
     <!-- DETAIL MODAL (SCROLL FIX & CENTERED, HIGH Z-INDEX) -->
@@ -410,6 +522,7 @@
     <script src="assets/omad/08-entry.js"></script>
     <script src="assets/omad/09-history.js"></script>
     <script src="assets/omad/10-settings.js"></script>
+    <script src="assets/omad/10b-system.js"></script>
     <script src="assets/omad/11-telegram-settings.js"></script>
     <script src="assets/omad/12-app.js"></script>
 </body>

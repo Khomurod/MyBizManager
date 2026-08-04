@@ -20,7 +20,31 @@ function switchTab(t) {
     document.querySelectorAll('.nav-item').forEach(e => e.classList.remove('active'));
     document.getElementById('tab-'+t).classList.add('active');
     document.getElementById('nav-'+t).classList.add('active');
-    if (t === 'settings') loadTelegramSettings();
+    if (t === 'settings') {
+        showSettingsSection(activeSettingsSection);
+        loadTelegramSettings();
+    }
+}
+
+/** Which Sozlamalar section is open. Remembered across tab switches. */
+let activeSettingsSection = 'rates';
+
+const SETTINGS_SECTIONS = ['rates', 'tenants', 'expenses', 'telegram', 'system'];
+
+function showSettingsSection(section) {
+    activeSettingsSection = SETTINGS_SECTIONS.includes(section) ? section : 'rates';
+
+    SETTINGS_SECTIONS.forEach(name => {
+        const panel = document.getElementById('settings-' + name);
+        if (panel) panel.classList.toggle('hidden', name !== activeSettingsSection);
+    });
+    document.querySelectorAll('.settings-nav-btn').forEach(button => {
+        button.classList.toggle('active', button.dataset.section === activeSettingsSection);
+    });
+
+    // The system panel is the only one that needs a server round trip.
+    if (activeSettingsSection === 'system') loadSystemStatus();
+    if (activeSettingsSection === 'rates') renderRatesOverview();
 }
 
 function logout() {
