@@ -297,7 +297,7 @@ function processOmadTextStep_(text, chatId, key, cache, doc, configSheet, fromId
     // Confirm to the user first - the save is what matters to them.
     sendTelegramMessage_(chatId, buildTelegramConfirmation_(transaction), null, "Markdown");
 
-    if (reportJobId) drainJobQueueQuietly_(doc);
+    if (reportJobId) drainJobQueueQuietly_(doc, null);
   }
 }
 

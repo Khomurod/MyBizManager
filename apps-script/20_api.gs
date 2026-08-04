@@ -130,8 +130,13 @@ function saveOmadAction_(action, payload, doc, configSheet) {
     lock.releaseLock();
   }
 
-  var queuedJobId = queueOmadTransactionReport_(doc, payload.telegramReport);
-  drainJobQueueQuietly_(doc);
+  var queuedJobId = "";
+  try {
+    queuedJobId = queueOmadTransactionReport_(doc, payload.telegramReport);
+  } catch (queueError) {
+    debugLog_(doc, "report_enqueue_failed", String(queueError));
+  }
+  drainJobQueueQuietly_(doc, payload);
 
   return jsonOutput_({ status: "success", reportJobId: queuedJobId || "" });
 }
@@ -255,9 +260,17 @@ function ledgerAction_(action, payload, doc) {
   else result = cancelTransaction_(doc, payload);
 
   if (result.status === "success") {
-    // The financial record is committed. Reporting is a separate retryable job.
-    result.reportJobId = queueLedgerReport_(doc, action, result) || "";
-    drainJobQueueQuietly_(doc);
+    // The financial record is committed. Reporting is a separate retryable job,
+    // and even failing to *queue* it must not undo a save the caller was about
+    // to be told succeeded.
+    try {
+      result.reportJobId = queueLedgerReport_(doc, action, result) || "";
+    } catch (queueError) {
+      result.reportJobId = "";
+      result.reportQueueError = redactSecrets_(queueError).slice(0, 300);
+      debugLog_(doc, "report_enqueue_failed", String(queueError));
+    }
+    drainJobQueueQuietly_(doc, payload);
   }
   return jsonOutput_(result);
 }

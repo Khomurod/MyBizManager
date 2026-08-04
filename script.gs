@@ -1525,7 +1525,7 @@ function processOmadTextStep_(text, chatId, key, cache, doc, configSheet, fromId
     // Confirm to the user first - the save is what matters to them.
     sendTelegramMessage_(chatId, buildTelegramConfirmation_(transaction), null, "Markdown");
 
-    if (reportJobId) drainJobQueueQuietly_(doc);
+    if (reportJobId) drainJobQueueQuietly_(doc, null);
   }
 }
 
@@ -1636,7 +1636,11 @@ var JOB_MAX_ATTEMPTS = 5;
 
 var JOB_RETRY_BASE_SECONDS = 30;
 
-var JOB_QUEUE_INLINE_BATCH = 3;
+// Deliberately one. A save returns as soon as the financial record is safely
+// stored; at most one queued report rides along, and the time-driven trigger
+// picks up everything else. Draining the whole queue inline would make the
+// user wait for work they do not care about.
+var JOB_QUEUE_INLINE_BATCH = 1;
 
 var JOB_QUEUE_MANUAL_BATCH = 25;
 
@@ -1771,8 +1775,15 @@ function processPendingJobs_(doc, maxJobs) {
   return processed;
 }
 
-/** Best-effort inline drain. Never throws into the caller's response path. */
-function drainJobQueueQuietly_(doc) {
+/**
+ * Best-effort inline drain. Never throws into the caller's response path, and
+ * never processes more than one job, so confirming a save stays fast.
+ *
+ * Pass `deferReports: true` on a request to skip it entirely and leave
+ * everything to the trigger.
+ */
+function drainJobQueueQuietly_(doc, options) {
+  if (options && options.deferReports === true) return 0;
   try {
     return processPendingJobs_(doc, JOB_QUEUE_INLINE_BATCH);
   } catch (error) {
@@ -1977,8 +1988,14 @@ function closeCafeDay_(doc, configSheet, payload) {
 
   // The close-day record is stored. Its Telegram report is queued server-side;
   // the browser never composes a Telegram message.
-  var closeJobId = queueCafeCloseDayReport_(doc, payload);
-  drainJobQueueQuietly_(doc);
+  // Queueing the report must never undo a close-day that is already stored.
+  var closeJobId = "";
+  try {
+    closeJobId = queueCafeCloseDayReport_(doc, payload);
+  } catch (queueError) {
+    debugLog_(doc, "report_enqueue_failed", String(queueError));
+  }
+  drainJobQueueQuietly_(doc, payload);
   return jsonOutput_({ status: "success", reportJobId: closeJobId || "" });
 }
 
@@ -3086,8 +3103,13 @@ function saveOmadAction_(action, payload, doc, configSheet) {
     lock.releaseLock();
   }
 
-  var queuedJobId = queueOmadTransactionReport_(doc, payload.telegramReport);
-  drainJobQueueQuietly_(doc);
+  var queuedJobId = "";
+  try {
+    queuedJobId = queueOmadTransactionReport_(doc, payload.telegramReport);
+  } catch (queueError) {
+    debugLog_(doc, "report_enqueue_failed", String(queueError));
+  }
+  drainJobQueueQuietly_(doc, payload);
 
   return jsonOutput_({ status: "success", reportJobId: queuedJobId || "" });
 }
@@ -3211,9 +3233,17 @@ function ledgerAction_(action, payload, doc) {
   else result = cancelTransaction_(doc, payload);
 
   if (result.status === "success") {
-    // The financial record is committed. Reporting is a separate retryable job.
-    result.reportJobId = queueLedgerReport_(doc, action, result) || "";
-    drainJobQueueQuietly_(doc);
+    // The financial record is committed. Reporting is a separate retryable job,
+    // and even failing to *queue* it must not undo a save the caller was about
+    // to be told succeeded.
+    try {
+      result.reportJobId = queueLedgerReport_(doc, action, result) || "";
+    } catch (queueError) {
+      result.reportJobId = "";
+      result.reportQueueError = redactSecrets_(queueError).slice(0, 300);
+      debugLog_(doc, "report_enqueue_failed", String(queueError));
+    }
+    drainJobQueueQuietly_(doc, payload);
   }
   return jsonOutput_(result);
 }

@@ -29,7 +29,11 @@ var JOB_MAX_ATTEMPTS = 5;
 
 var JOB_RETRY_BASE_SECONDS = 30;
 
-var JOB_QUEUE_INLINE_BATCH = 3;
+// Deliberately one. A save returns as soon as the financial record is safely
+// stored; at most one queued report rides along, and the time-driven trigger
+// picks up everything else. Draining the whole queue inline would make the
+// user wait for work they do not care about.
+var JOB_QUEUE_INLINE_BATCH = 1;
 
 var JOB_QUEUE_MANUAL_BATCH = 25;
 
@@ -164,8 +168,15 @@ function processPendingJobs_(doc, maxJobs) {
   return processed;
 }
 
-/** Best-effort inline drain. Never throws into the caller's response path. */
-function drainJobQueueQuietly_(doc) {
+/**
+ * Best-effort inline drain. Never throws into the caller's response path, and
+ * never processes more than one job, so confirming a save stays fast.
+ *
+ * Pass `deferReports: true` on a request to skip it entirely and leave
+ * everything to the trigger.
+ */
+function drainJobQueueQuietly_(doc, options) {
+  if (options && options.deferReports === true) return 0;
   try {
     return processPendingJobs_(doc, JOB_QUEUE_INLINE_BATCH);
   } catch (error) {

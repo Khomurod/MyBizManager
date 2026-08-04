@@ -81,8 +81,14 @@ function closeCafeDay_(doc, configSheet, payload) {
 
   // The close-day record is stored. Its Telegram report is queued server-side;
   // the browser never composes a Telegram message.
-  var closeJobId = queueCafeCloseDayReport_(doc, payload);
-  drainJobQueueQuietly_(doc);
+  // Queueing the report must never undo a close-day that is already stored.
+  var closeJobId = "";
+  try {
+    closeJobId = queueCafeCloseDayReport_(doc, payload);
+  } catch (queueError) {
+    debugLog_(doc, "report_enqueue_failed", String(queueError));
+  }
+  drainJobQueueQuietly_(doc, payload);
   return jsonOutput_({ status: "success", reportJobId: closeJobId || "" });
 }
 

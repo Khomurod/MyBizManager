@@ -215,6 +215,48 @@ describe('Omad admin ledger (browser)', () => {
     await context.close();
   });
 
+  test('a browser refresh mid-save resubmits with the same request id', async () => {
+    // The first submit never gets a response - the tab is reloaded first.
+    const { page, context, requests } = await openAdmin({
+      respond: payload => (payload.action === 'create_transaction'
+        ? { status: 'error', message: 'connection lost' }
+        : null)
+    });
+
+    await fillEntry(page);
+    await page.evaluate(() => submitAll());
+    const firstRequestId = requests.filter(r => r.action === 'create_transaction')[0].requestId;
+
+    // Reload. The pending request id survives in sessionStorage.
+    await page.reload();
+    await page.waitForFunction(() => app.migration !== null);
+    await page.evaluate(() => { window.alert = () => {}; window.confirm = () => true; });
+    await fillEntry(page);
+    await page.evaluate(() => submitAll());
+
+    const retried = requests.filter(r => r.action === 'create_transaction');
+    assert.strictEqual(retried[retried.length - 1].requestId, firstRequestId,
+      'the server sees the same request id and de-duplicates it');
+    await context.close();
+  });
+
+  test('a successful save clears the pending request id', async () => {
+    const { page, context, requests } = await openAdmin();
+
+    await fillEntry(page);
+    await page.evaluate(() => submitAll());
+    const first = requests.filter(r => r.action === 'create_transaction')[0].requestId;
+
+    await fillEntry(page, { amount: '700000', comment: 'second' });
+    await page.evaluate(() => submitAll());
+    const second = requests.filter(r => r.action === 'create_transaction')[1].requestId;
+
+    assert.notStrictEqual(first, second, 'the next entry is a new request');
+    const stored = await page.evaluate(() => sessionStorage.getItem('omad_pending_request'));
+    assert.strictEqual(stored, null);
+    await context.close();
+  });
+
   // --------------------------------------------------------------- correct
 
   test('editing an entry corrects the existing transaction', async () => {
