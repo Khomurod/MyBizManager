@@ -14,7 +14,7 @@ rolled back on its own.
 | 5 | Retry queue and fast saving | ✅ delivered |
 | 6 | Historical exchange rates stored per transaction; `sell` used consistently | ✅ delivered |
 | 7 | Settings redesign (Sozlamalar sections A–E) | ✅ delivered |
-| 8 | Tenant rent schedules, exceptions, start/end periods | ⬜ not started |
+| 8 | Tenant rent schedules, exceptions, start/end periods | ✅ delivered |
 | 9 | Planned expenses with recurrence and ending rules | ⬜ not started |
 | 10 | Data migration and final cleanup | ⬜ not started |
 
@@ -60,6 +60,17 @@ from 2026-04-22 and can serve as sample data for migration dry runs.
 | Verification fails | Point reads back at `Omad_Transactions`; delete V2 |
 | Discovered after cutover | Restore from the `Omad_Backups` snapshot row taken immediately before cutover |
 | Catastrophic | Restore the file-level spreadsheet copy |
+
+### Rollback for stage 8
+
+Existing tenant records are read unchanged — the new fields are additive and
+default to "no restriction". A tenant edited under the new UI gains
+`startPeriod`, `endPeriod`, `rentChanges`, `exceptions`, `noRentPeriods` and
+`active`; older code ignores them and falls back to `rent`, which is kept in
+step with `defaultRent`.
+
+To roll back, `git revert` and redeploy. The extra fields stay in
+`Omad_Tenants` and are inert.
 
 ### Rollback for stage 7
 

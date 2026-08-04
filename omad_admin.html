@@ -256,6 +256,33 @@
                 <div id="settingsTenantList" class="space-y-2"></div>
             </div>
 
+            <!-- Rent schedule editor -->
+            <div id="tenantScheduleCard" class="card hidden">
+                <div class="flex items-center justify-between mb-1">
+                    <h3 class="font-bold text-slate-700">Ijara Jadvali</h3>
+                    <button onclick="closeTenantSchedule()" class="text-slate-400 text-xs font-bold">Yopish</button>
+                </div>
+                <p class="text-[11px] text-slate-400 mb-3">
+                    <span id="scheduleTenantName" class="font-bold text-slate-600"></span> —
+                    har bir oy uchun amaldagi ijara narxi.
+                </p>
+
+                <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Yil</label>
+                <select id="scheduleYear" onchange="renderTenantSchedule()" class="w-full min-w-0 p-2 border rounded-lg text-sm font-bold bg-white mb-3"></select>
+
+                <div id="tenantScheduleList" class="mb-4"></div>
+
+                <div class="border-t pt-3">
+                    <h4 class="text-[10px] font-bold text-slate-400 uppercase mb-2">Kelajakdagi Narx O'zgarishi</h4>
+                    <div id="rentChangeList" class="mb-2"></div>
+                    <div class="grid grid-cols-2 gap-2 mb-2">
+                        <select id="rentChangeFrom" class="w-full min-w-0 p-2 border rounded-lg text-sm font-bold bg-white"></select>
+                        <input type="text" inputmode="decimal" id="rentChangeAmount" placeholder="Yangi narx" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                    </div>
+                    <button onclick="addTenantRentChange()" class="w-full py-2 bg-blue-600 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">Narxni Belgilash</button>
+                </div>
+            </div>
+
             <div class="card">
                 <h3 class="font-bold mb-3 text-slate-700">Ijarachi Qo'shish / Tahrirlash</h3>
                 <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Nomi</label>
@@ -263,7 +290,7 @@
 
                 <div class="grid grid-cols-2 gap-2 mb-3">
                     <div class="min-w-0">
-                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Ijara Narxi</label>
+                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Asosiy Narx</label>
                         <input type="text" inputmode="decimal" id="newTenantRent" placeholder="500" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
                     </div>
                     <div class="min-w-0">
@@ -271,6 +298,23 @@
                         <select id="newTenantCurr" class="w-full min-w-0 p-2 border rounded-lg text-sm font-bold bg-white"><option>USD</option><option>UZS</option></select>
                     </div>
                 </div>
+
+                <div class="grid grid-cols-2 gap-2 mb-3">
+                    <div class="min-w-0">
+                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Boshlanish</label>
+                        <select id="newTenantStart" class="w-full min-w-0 p-2 border rounded-lg text-sm font-bold bg-white"></select>
+                    </div>
+                    <div class="min-w-0">
+                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Tugash</label>
+                        <select id="newTenantEnd" class="w-full min-w-0 p-2 border rounded-lg text-sm font-bold bg-white"></select>
+                    </div>
+                </div>
+
+                <label class="flex items-center gap-2 mb-3 text-xs font-bold text-slate-600">
+                    <input type="checkbox" id="newTenantActive" checked class="w-4 h-4">
+                    Faol
+                </label>
+
                 <button onclick="addTenant()" id="addTenantBtn" class="w-full py-3 bg-slate-800 text-white rounded-lg text-sm font-bold shadow-md active:scale-95 transition-all">+ Qo'shish</button>
             </div>
         </section>

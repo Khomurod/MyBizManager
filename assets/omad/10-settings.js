@@ -34,37 +34,82 @@ function renderRatesOverview() {
     populateRateInputs();
 }
 
+/**
+ * One card per tenant, showing the agreement window, whether it is live, and
+ * the rent that actually applies this month.
+ */
+function renderTenantList() {
+    const box = document.getElementById('settingsTenantList');
+    if(!box) return;
+
+    const period = currentPeriod();
+
+    box.innerHTML = app.tenants.length ? app.tenants.map((t, i) => {
+        const rentNow = effectiveTenantRent(t, period);
+        const source = tenantRentSource(t, period);
+        const window = [
+            t.startPeriod ? periodShortLabel(t.startPeriod) : "boshidan",
+            t.endPeriod ? periodShortLabel(t.endPeriod) : "muddatsiz"
+        ].join(" — ");
+
+        const disabledMonths = getDisabledMonths(t);
+        const legacyMonths = disabledMonths.length ? `
+            <div class="grid grid-cols-4 gap-1 mt-2">
+                ${MONTH_LABELS.map((month, monthIndex) => {
+                    const disabled = disabledMonths.includes(month);
+                    return `<button onclick="toggleTenantMonth(${i}, '${month}')"
+                        class="${disabled ? 'bg-red-50 text-red-500 border-red-200' : 'bg-green-50 text-green-700 border-green-200'} border rounded-md py-1 text-[10px] font-bold active:scale-95 transition-all">
+                        ${MONTH_SHORT_LABELS[monthIndex]}</button>`;
+                }).join('')}
+            </div>` : '';
+
+        return `
+        <div class="bg-slate-50 p-3 rounded-lg text-xs border ${t.active ? '' : 'opacity-60'}" data-tenant="${escapeHTML(t.name)}">
+            <div class="flex justify-between items-start gap-2">
+                <div class="min-w-0">
+                    <p class="font-bold text-slate-700 truncate">${escapeHTML(t.name)}
+                        ${t.active ? '' : '<span class="text-[10px] font-normal text-slate-400">(faol emas)</span>'}
+                    </p>
+                    <p class="text-[10px] text-slate-400">${window}</p>
+                    <p class="tenant-current-rent text-[11px] text-slate-600 mt-1">
+                        ${periodShortLabel(period)}:
+                        <b>${rentNow > 0 ? `${rentNow.toLocaleString()} ${t.currency}` : "ijara yo'q"}</b>
+                        <span class="text-slate-400">(${RENT_SOURCE_LABELS[source] || source})</span>
+                    </p>
+                </div>
+                <div class="flex gap-3 shrink-0">
+                    <button onclick="openTenantSchedule(${i})" title="Jadval" class="text-slate-500"><i class="fas fa-calendar-alt"></i></button>
+                    <button onclick="editTenant(${i})" title="Tahrirlash" class="text-blue-400"><i class="fas fa-pen"></i></button>
+                    ${t.active
+                        ? `<button onclick="removeTenant(${i})" title="Faolsizlantirish" class="text-red-400"><i class="fas fa-times"></i></button>`
+                        : `<button onclick="reactivateTenant(${i})" title="Qayta faollashtirish" class="text-green-500"><i class="fas fa-undo"></i></button>`}
+                </div>
+            </div>
+            ${legacyMonths}
+        </div>`;
+    }).join('') : `<p class="text-xs text-slate-400">Ijarachi qo'shilmagan.</p>`;
+
+    populateTenantPeriodSelectors();
+}
+
+/** Start/end selectors allow "not set", which means open-ended. */
+function populateTenantPeriodSelectors() {
+    const options = `<option value="">Belgilanmagan</option>` + periodOptions("");
+    ['newTenantStart', 'newTenantEnd'].forEach(id => {
+        const select = document.getElementById(id);
+        if(!select) return;
+        const previous = select.value;
+        select.innerHTML = options;
+        select.value = previous;
+    });
+}
+
 function renderSettings() {
     app.rates = normalizeRatesMap(app.rates);
     app.tenants = (Array.isArray(app.tenants) ? app.tenants : []).map(normalizeTenantObject);
     app.templateExpenses = getTemplateExpenses();
     renderRatesOverview();
-    document.getElementById('settingsTenantList').innerHTML = app.tenants.map((t, i) => {
-        const disabledMonths = getDisabledMonths(t);
-        const monthButtons = MONTH_LABELS.map((month, monthIndex) => {
-            const disabled = disabledMonths.includes(month);
-            const btnClass = disabled
-                ? "bg-red-50 text-red-500 border-red-200"
-                : "bg-green-50 text-green-700 border-green-200";
-            const icon = disabled ? "fa-toggle-off" : "fa-toggle-on";
-            return `<button onclick="toggleTenantMonth(${i}, '${month}')" class="${btnClass} border rounded-md py-1 text-[10px] font-bold active:scale-95 transition-all"><i class="fas ${icon} mr-1"></i>${MONTH_SHORT_LABELS[monthIndex]}</button>`;
-        }).join('');
-
-        return `
-        <div class="bg-slate-50 p-3 rounded text-xs mb-2 border">
-            <div class="flex justify-between items-center gap-2 mb-2">
-                <div><span class="font-bold">${escapeHTML(t.name)}</span> <span class="text-slate-500">(${t.rent} ${t.currency})</span></div>
-                <div class="flex gap-3">
-                    <button onclick="editTenant(${i})" class="text-blue-400"><i class="fas fa-pen"></i></button>
-                    <button onclick="removeTenant(${i})" class="text-red-400"><i class="fas fa-times"></i></button>
-                </div>
-            </div>
-            <div class="grid grid-cols-4 gap-1">
-                ${monthButtons}
-            </div>
-        </div>
-    `;
-    }).join('');
+    renderTenantList();
 
     const templateList = document.getElementById('templateExpenseList');
     templateList.innerHTML = app.templateExpenses.length
