@@ -90,15 +90,19 @@ function renderDashboard() {
 
         if(paidUZS === 0) percent = 0;
 
+        // The rent that actually applies this month, so the badge and the modal
+        // show the same figure the debt is calculated from.
+        const rentForPeriod = isAllTime ? 0 : effectiveTenantRent(tenant, period);
+
         const div = document.createElement('div');
         div.className = "bg-white border border-slate-100 rounded-lg p-3 active:scale-95 transition-transform cursor-pointer";
-        div.onclick = () => openTenantModal(tenant.name, period, tenant.rent, tenant.currency, monthRate);
+        div.onclick = () => openTenantModal(tenant.name, period, rentForPeriod, tenant.currency, monthRate);
 
         div.innerHTML = `
             <div class="flex justify-between items-center mb-2">
                 <div class="flex items-center gap-2">
                     <span class="font-bold text-sm text-slate-700">${tenant.name}</span>
-                    <span class="text-[10px] bg-slate-100 px-1 rounded text-slate-500">${isAllTime ? 'Jami' : 'Ijara'}: ${isAllTime ? '-' : tenant.rent + ' ' + tenant.currency}</span>
+                    <span class="text-[10px] bg-slate-100 px-1 rounded text-slate-500">${isAllTime ? 'Jami' : 'Ijara'}: ${isAllTime ? '-' : rentForPeriod + ' ' + tenant.currency}</span>
                 </div>
                 <div class="text-[10px]">${status}</div>
             </div>
@@ -188,7 +192,12 @@ function openTenantModal(tenantName, period, rentAmount, rentCurr, monthRate) {
         t.type === 'Income');
     const selectedMonthRates = normalizeRateEntry(monthRate, DEFAULT_RATE);
 
-    const balance = calculateTenantBalance(countable, { name: tenantName, rent: rentAmount, currency: rentCurr }, period);
+    // The stored tenant, so the modal resolves the same schedule the dashboard
+    // did. A synthetic {name, rent} carries no exceptions or rent changes, so
+    // it could disagree with the card it was opened from.
+    const storedTenant = (app.tenants || []).find(t => normalizeTenantName(t.name) === tenantKey);
+    const balance = calculateTenantBalance(countable,
+        storedTenant || { name: tenantName, rent: rentAmount, currency: rentCurr }, period);
     const totalPaidUZS = calculateTenantPaid(countable, tenantName, isAllTime ? ALL_PERIODS : period);
     const expectedRentUZS = isAllTime ? 0 : balance.expected;
 
