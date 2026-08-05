@@ -3083,6 +3083,113 @@ function applyOmadMigration_(doc, options) {
  * Compares the migrated sheet against the original: row counts, unique ids,
  * per-period totals and the cash/bank/total balances.
  */
+/**
+ * The UZS value a migrated row *claims*, checked against its own frozen rate.
+ *
+ * A frozen value must never be re-derived from the current rate table - that
+ * is the whole point of freezing it, and doing so would make verification
+ * agree with any figure the table happens to produce today. It is instead
+ * checked for internal consistency: the amount, the rate recorded on the row,
+ * and the stored total have to describe the same conversion.
+ */
+function frozenAmountFailures_(row) {
+  var failures = [];
+  var amount = Number(row.amount) || 0;
+  var stored = Number(row.amountUZS);
+  var used = Number(row.rateUsed) || 0;
+
+  if (!isFinite(stored)) {
+    failures.push("Amount_UZS o'qib bo'lmadi: " + row.id);
+    return failures;
+  }
+
+  if (row.currency === "USD") {
+    if (used <= 0) {
+      failures.push("Rate_Used yo'q: " + row.id);
+    } else if (Math.abs(stored - Math.round(amount * used)) > 1) {
+      failures.push("Amount_UZS noto'g'ri (" + row.id + "): " +
+                    stored + " != " + Math.round(amount * used));
+    }
+    // The applied rate must be one of the two recorded on the row.
+    var buy = Number(row.rateBuy) || 0;
+    var sell = Number(row.rateSell) || 0;
+    if (used > 0 && used !== buy && used !== sell) {
+      failures.push("Rate_Used saqlangan kurslarga mos emas: " + row.id);
+    }
+    if (row.rateType === "sell" && sell > 0 && used !== sell) {
+      failures.push("Sotish kursi ishlatilmagan: " + row.id);
+    }
+  } else if (Math.abs(stored - Math.round(amount)) > 1) {
+    failures.push("UZS Amount_UZS asl summaga teng emas (" + row.id + "): " +
+                  stored + " != " + Math.round(amount));
+  }
+
+  return failures;
+}
+
+/**
+ * Every migrated row against the row it came from, field by field.
+ *
+ * Totals alone cannot see a swapped tenant, a changed method or a tampered
+ * frozen value that happens to keep a period sum intact, so each record is
+ * compared directly and the frozen conversion is checked on its own terms.
+ */
+function verifyMigratedRows_(sourceResolved, ledgerRows) {
+  var failures = [];
+  var byId = {};
+  for (var i = 0; i < ledgerRows.length; i++) byId[String(ledgerRows[i].id)] = ledgerRows[i];
+
+  var matched = {};
+  for (var j = 0; j < sourceResolved.length; j++) {
+    var source = sourceResolved[j].row;
+    var period = sourceResolved[j].period;
+    var id = String(source.id);
+    var target = byId[id];
+
+    if (!target) {
+      failures.push("Yozuv ko'chirilmagan: " + id);
+      continue;
+    }
+    matched[id] = true;
+
+    var normalized = normalizeTransaction_({
+      id: source.id, tenant: source.tenant, month: period, type: source.type,
+      amount: source.amount, currency: source.currency, method: source.method,
+      date: source.date, comment: source.comment, msgId: source.msgId,
+      requestId: source.requestId
+    });
+
+    var fields = [
+      ["Tenant", normalized.tenant, String(target.tenant || "")],
+      ["Type", normalized.type, String(target.type || "")],
+      ["Amount", String(normalized.amount), String(Number(target.amount) || 0)],
+      ["Currency", normalized.currency, String(target.currency || "")],
+      ["Method", normalized.method, String(target.method || "")],
+      ["Period", period, String(target.period || "")],
+      ["Request_ID", String(normalized.requestId || ""), String(target.requestId || "")],
+      ["Telegram_Msg_ID", String(normalized.msgId || ""), String(target.msgId || "")],
+      ["Status", TX_STATUS_ACTIVE, String(target.status || "")],
+      ["Related_ID", "", String(target.relatedId || "")]
+    ];
+
+    for (var k = 0; k < fields.length; k++) {
+      if (fields[k][1] !== fields[k][2]) {
+        failures.push(fields[k][0] + " mos emas (" + id + "): " +
+                      fields[k][1] + " -> " + fields[k][2]);
+      }
+    }
+
+    failures = failures.concat(frozenAmountFailures_(target));
+  }
+
+  for (var m = 0; m < ledgerRows.length; m++) {
+    var extraId = String(ledgerRows[m].id);
+    if (!matched[extraId]) failures.push("Manbada yo'q yozuv: " + extraId);
+  }
+
+  return failures;
+}
+
 function verifyOmadMigration_(doc) {
   var sourceRows = readRawTransactionRows_(doc.getSheetByName(OMAD_TRANSACTIONS_SHEET));
   var targetSheet = doc.getSheetByName(OMAD_TRANSACTIONS_V2_SHEET);
@@ -3142,6 +3249,11 @@ function verifyOmadMigration_(doc) {
       failures.push("Kutilmagan davr: " + period);
     }
   });
+
+  // Row by row, including each frozen value against its own recorded rate.
+  // Aggregates alone cannot see a tampered Amount_UZS that leaves a period
+  // sum looking correct.
+  failures = failures.concat(verifyMigratedRows_(sourceResolved, readLedgerRows_(doc)));
 
   var expectedBalances = balanceTotals_(sourceResolved.map(function (entry) {
     return Object.assign({}, entry.row, { period: entry.period });
