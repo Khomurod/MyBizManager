@@ -3,6 +3,14 @@
 Documented as of the Telegram credential-hardening change. This is the
 "before" picture that the remaining migration stages build on.
 
+> **This file describes the design, not what is deployed.** For the live
+> deployment, which sheet is active, the Telegram setup and the work still
+> outstanding, see **[LIVE_STATE.md](LIVE_STATE.md)**.
+>
+> In particular: the application is running on the legacy `Omad_Transactions`
+> sheet. **The V2 ledger is not live and cutover is not part of current work**,
+> so every "after cutover" passage below is describing a future state.
+
 ## Components
 
 | File | Role |
