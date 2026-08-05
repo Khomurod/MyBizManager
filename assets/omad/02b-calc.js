@@ -87,11 +87,20 @@ function calculateTenantPaid(transactions, tenantName, period) {
         .reduce((sum, t) => sum + transactionUZS(t), 0));
 }
 
-/** The rent expected from a tenant in a period, at the sell rate. */
+/**
+ * The rent expected from a tenant in a period, at the sell rate.
+ *
+ * The amount comes from the tenant's effective-dated schedule, so a month with
+ * an exception, a no-rent month, or a month outside the agreement all resolve
+ * correctly - and a historical month keeps the rent that applied then. Reading
+ * `tenant.rent` directly ignored every one of those rules, which billed a
+ * tenant their full default rent in a month they had been given a lower one.
+ */
 function tenantExpectedRentUZS(tenant, period) {
-    const rent = Number(tenant && tenant.rent) || 0;
+    const t = tenant || {};
+    const rent = effectiveTenantRent(t, period);
     if (rent <= 0) return 0;
-    return Math.round(toUZS(rent, tenant.currency, period, RATE_TYPE_PROJECTION));
+    return Math.round(toUZS(rent, t.currency, period, RATE_TYPE_PROJECTION));
 }
 
 /**
@@ -112,13 +121,18 @@ function calculateTenantBalance(transactions, tenant, period) {
  * two together.
  */
 function calculateProjection(tenants, plannedExpenses, period) {
+    // No disabled-month filter: the effective-dated schedule already returns 0
+    // for a month a tenant owes nothing, and filtering as well made this
+    // disagree with the backend for exceptions and no-rent periods.
     const expectedIncome = (tenants || [])
-        .filter(tenant => !isTenantDisabledForPeriod(tenant, period))
         .reduce((sum, tenant) => sum + tenantExpectedRentUZS(tenant, period), 0);
 
-    const plannedExpense = (plannedExpenses || [])
-        .filter(expense => recordPeriod(expense) === period)
-        .reduce((sum, expense) => sum + toUZS(expense.amount, expense.currency, period, RATE_TYPE_PROJECTION), 0);
+    // Recurrence decides which expenses fall due, not a stored month - matching
+    // calculateProjection_. Filtering on the stored month alone dropped every
+    // repeating expense from the projection.
+    const plannedExpense = plannedExpensesForPeriod(
+            (plannedExpenses || []).map(normalizeTemplateExpense), period)
+        .reduce((sum, due) => sum + toUZS(due.expense.amount, due.expense.currency, period, RATE_TYPE_PROJECTION), 0);
 
     return roundMoneyFields({
         expectedIncome,
