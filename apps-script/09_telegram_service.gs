@@ -5,6 +5,41 @@
 // There is no generic "send this text" entry point.
 // ============================================================
 
+/**
+ * A chat id reduced to something recognisable but not reusable: the sign and
+ * the last four digits. Enough to tell the group from a private chat in a log.
+ */
+function maskChatId_(chatId) {
+  var text = String(chatId === null || chatId === undefined ? "" : chatId);
+  if (!text) return "";
+  var negative = text.charAt(0) === "-";
+  var digits = text.replace(/[^0-9]/g, "");
+  if (digits.length <= 4) return (negative ? "-" : "") + digits;
+  return (negative ? "-" : "") + "..." + digits.slice(-4);
+}
+
+/** The `description` Telegram returns on failure, redacted, or "". */
+function telegramErrorDescription_(responseText) {
+  var parsed = safeParseJSON_(responseText, null);
+  if (!parsed || parsed.ok) return "";
+  return redactSecrets_(String(parsed.description || "")).slice(0, 300);
+}
+
+/**
+ * True when Telegram is telling us the thing we asked to change is already in
+ * the state we wanted. Deleting a message that is already gone is the desired
+ * outcome, not a failure to retry.
+ */
+function isAlreadyDoneTelegramError_(responseText) {
+  var parsed = safeParseJSON_(responseText, null);
+  if (!parsed || parsed.ok) return false;
+  var description = String(parsed.description || "").toLowerCase();
+  return description.indexOf("message to delete not found") >= 0 ||
+         description.indexOf("message can't be deleted") >= 0 ||
+         description.indexOf("message identifier is not specified") >= 0 ||
+         description.indexOf("message to edit not found") >= 0;
+}
+
 function telegramFetch_(method, body) {
   var token = getBotToken_();
   if (!token) throw new Error("Telegram bot token is not configured. Set it in Sozlamalar → Telegram.");
@@ -25,10 +60,15 @@ function telegramFetch_(method, body) {
   var responseText = response.getContentText();
   var responseCode = response.getResponseCode();
 
+  // Only facts that cannot carry a credential. The request body is never
+  // logged: setWebhook carries the verification secret in both the URL and
+  // secret_token, and that is exactly how it reached the debug sheet before.
   debugLog_(SpreadsheetApp.getActiveSpreadsheet(), "telegram_api_" + method, JSON.stringify({
     code: responseCode,
-    request: body,
-    response: responseText
+    chat: maskChatId_(body && body.chat_id),
+    messageId: (body && body.message_id) || "",
+    ok: responseCode >= 200 && responseCode < 300,
+    description: telegramErrorDescription_(responseText)
   }));
 
   if (responseCode < 200 || responseCode >= 300) {
@@ -52,6 +92,57 @@ function editTelegramMessage_(chatId, messageId, text, replyMarkup) {
   var body = { chat_id: chatId, message_id: messageId, text: text };
   if (replyMarkup) body.reply_markup = replyMarkup;
   return telegramFetch_("editMessageText", body);
+}
+
+/**
+ * Deletes a group message, treating "it is already gone" as success.
+ *
+ * Telegram answers HTTP 400 both for a message that never existed and for one
+ * already deleted, and neither can be fixed by trying again. Any other failure
+ * still throws, so a genuine outage is retried.
+ */
+function deleteTelegramMessageIfPresent_(chatId, messageId) {
+  var token = getBotToken_();
+  if (!token) throw new Error("Telegram bot token is not configured. Set it in Sozlamalar → Telegram.");
+
+  var response;
+  try {
+    response = UrlFetchApp.fetch("https://api.telegram.org/bot" + token + "/deleteMessage", {
+      method: "post",
+      contentType: "application/json",
+      payload: JSON.stringify({ chat_id: chatId, message_id: messageId }),
+      muteHttpExceptions: true
+    });
+  } catch (transportError) {
+    recordTelegramError_("deleteMessage", transportError);
+    throw new Error("Telegram API deleteMessage unreachable: " + redactSecrets_(transportError));
+  }
+
+  var responseText = response.getContentText();
+  var responseCode = response.getResponseCode();
+
+  debugLog_(SpreadsheetApp.getActiveSpreadsheet(), "telegram_api_deleteMessage", JSON.stringify({
+    code: responseCode,
+    chat: maskChatId_(chatId),
+    messageId: String(messageId),
+    ok: responseCode >= 200 && responseCode < 300,
+    description: telegramErrorDescription_(responseText)
+  }));
+
+  if (responseCode >= 200 && responseCode < 300) {
+    recordTelegramSuccess_("deleteMessage");
+    return { status: "deleted" };
+  }
+
+  if (isAlreadyDoneTelegramError_(responseText)) {
+    // The end state is what was asked for, so the job is complete.
+    recordTelegramSuccess_("deleteMessage");
+    return { status: "already_gone" };
+  }
+
+  var failure = "Telegram API deleteMessage failed (HTTP " + responseCode + "): " + responseText;
+  recordTelegramError_("deleteMessage", failure);
+  throw new Error(redactSecrets_(failure));
 }
 
 function answerCallbackQuery_(callbackQueryId, text) {

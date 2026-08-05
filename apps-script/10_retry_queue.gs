@@ -45,7 +45,31 @@ function jobQueueSheet_(doc) {
   return sheet;
 }
 
+/**
+ * True when an identical piece of work is already waiting.
+ *
+ * Asking twice for the same group message to be deleted is one instruction,
+ * not two: the second job could only ever find the message already gone.
+ */
+function hasPendingJob_(doc, type, relatedId, payload) {
+  var read = readJobRows_(doc);
+  var wanted = JSON.stringify(payload || {});
+  for (var i = 0; i < read.rows.length; i++) {
+    var job = read.rows[i];
+    if (job.status !== JOB_STATUS_PENDING && job.status !== JOB_STATUS_PROCESSING) continue;
+    if (job.type !== String(type)) continue;
+    if (job.relatedId !== String(relatedId || "")) continue;
+    if (JSON.stringify(job.payload || {}) === wanted) return job.jobId;
+  }
+  return "";
+}
+
 function enqueueJob_(doc, type, relatedId, payload) {
+  // Deduplicated before it is written, so a repeated instruction cannot leave
+  // a second job behind to fail on its own.
+  var duplicate = hasPendingJob_(doc, type, relatedId, payload);
+  if (duplicate) return duplicate;
+
   var sheet = jobQueueSheet_(doc);
   var jobId = "job_" + new Date().getTime() + "_" + sheet.getLastRow();
   sheet.appendRow([

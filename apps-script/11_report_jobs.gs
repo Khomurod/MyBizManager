@@ -59,10 +59,22 @@ function applyMsgIdToGroup_(doc, group, messageId) {
   for (var i = 0; i < group.length; i++) updateOmadTransactionMsgId_(doc, group[i].id, messageId);
 }
 
+/**
+ * Removes a group report.
+ *
+ * Deleting is a statement about the end state, not about who got there first:
+ * if the message is already gone the job has nothing left to do and is done.
+ * Retrying that forever only produced a permanently failed queue entry, which
+ * is what happened when one deletion was requested twice.
+ */
 function runOmadDeleteReportJob_(job) {
+  var messageId = String((job.payload && job.payload.messageId) || "");
+  if (!messageId) return;
+
   var chatId = getOmadGroupChatId_();
   if (!chatId) throw new Error("Telegram guruh ID o'rnatilmagan.");
-  telegramFetch_("deleteMessage", { chat_id: chatId, message_id: job.payload.messageId });
+
+  deleteTelegramMessageIfPresent_(chatId, messageId);
 }
 
 function queueCafeCloseDayReport_(doc, payload) {
