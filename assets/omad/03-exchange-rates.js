@@ -147,6 +147,6 @@ function saveRate() {
     }
 
     app.rates[period] = { buy: nextBuy, sell: nextSell };
-    saveCloud();
+    saveCloudInBackground();
     renderSettings();
 }
