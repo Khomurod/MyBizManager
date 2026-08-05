@@ -8,7 +8,7 @@
 // goes through the Apps Script backend as a business operation.
 // ==========================================================
 
-const GOOGLE_APP_URL = "https://script.google.com/macros/s/AKfycbx9V6RKMAIVVrnPmycNdgh4XNE4memBRsi8EL2_mpRC6ReytBebaOcnpZi1SMkdtw/exec";
+const GOOGLE_APP_URL = "https://script.google.com/macros/s/AKfycbzhKyEOGZbVdtpSd7fa6aTDZf1QsqWQeOpWRxrb7bYpzWWDQxUXZID8JNzGMfDtCA2W/exec";
 const ADMIN_TOKEN = "omad_admin_active";
 
 if (localStorage.getItem("omad_role") !== "omad_admin" ||
