@@ -245,7 +245,7 @@ function addTemplateExpense() {
     app.templateExpenses = expenses;
 
     clearExpenseForm();
-    saveCloud();
+    saveCloudInBackground();
     renderSettings();
 }
 
@@ -296,6 +296,6 @@ function clearExpenseForm() {
 function removeTemplateExpense(id) {
     if(!confirm("O'chirmoqchimisiz?")) return;
     app.templateExpenses = getTemplateExpenses().filter(expense => expense.id !== String(id));
-    saveCloud();
+    saveCloudInBackground();
     renderSettings();
 }

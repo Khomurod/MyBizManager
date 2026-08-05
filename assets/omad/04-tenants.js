@@ -202,7 +202,7 @@ function addTenant() {
         app.tenants.push(normalizeTenantObject(form));
     }
 
-    saveCloud();
+    saveCloudInBackground();
     clearTenantForm();
     renderSettings();
 }
@@ -224,13 +224,13 @@ function removeTenant(index) {
     const tenant = normalizeTenantObject(app.tenants[index]);
     if(!confirm(`${tenant.name} faolsizlantirilsinmi? Yozuvlar saqlanib qoladi.`)) return;
     app.tenants[index] = { ...tenant, active: false };
-    saveCloud();
+    saveCloudInBackground();
     renderSettings();
 }
 
 function reactivateTenant(index) {
     app.tenants[index] = { ...normalizeTenantObject(app.tenants[index]), active: true };
-    saveCloud();
+    saveCloudInBackground();
     renderSettings();
 }
 
@@ -242,7 +242,7 @@ function toggleTenantMonth(index, month) {
         : [...disabledMonths, month];
 
     app.tenants[index] = { ...tenant, disabledMonths: nextDisabledMonths };
-    saveCloud();
+    saveCloudInBackground();
     renderSettings();
 }
 
@@ -344,7 +344,7 @@ function renderRentChangeList(tenant) {
 function updateScheduleTenant(changes) {
     if(scheduleTenantIndex === null) return;
     app.tenants[scheduleTenantIndex] = normalizeTenantObject({ ...scheduleTenant(), ...changes });
-    saveCloud();
+    saveCloudInBackground();
     renderTenantSchedule();
     renderSettings();
 }

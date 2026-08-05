@@ -8,18 +8,41 @@
 // ==========================================================
 
 // --- TELEGRAM LOGIC (server-proxied, no token in the browser) ---
+
+/** What the user is told when the server could not be understood at all. */
+const SAVE_FAILED_MESSAGE = "Saqlanmadi. Internetni tekshirib, qayta urinib ko'ring.";
+
+/**
+ * One request to Apps Script, returning the parsed JSON body.
+ *
+ * Apps Script answers HTTP 200 for almost everything, including its own
+ * errors, so the status line says nothing about whether the work happened.
+ * A body that cannot be parsed is a failure too - it means a login page or a
+ * redirect came back instead of an answer.
+ */
 async function callBackend(payload) {
     const res = await fetch(GOOGLE_APP_URL.trim(), {
         method: 'POST',
         body: JSON.stringify(payload)
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const text = await res.text();
     try {
-        return await res.json();
+        return JSON.parse(text);
     } catch (e) {
-        // Apps Script occasionally returns a non-JSON redirect body.
-        return { status: "unknown" };
+        throw new Error('Server javobi tushunarsiz (JSON emas).');
     }
+}
+
+/**
+ * True only when the server said, in so many words, that it succeeded.
+ * Anything else - an error body, a missing status, an unparsable answer - is
+ * a failure, because the alternative is telling someone their money was
+ * recorded when it was not.
+ */
+function isSuccessResponse(body) {
+    return !!(body && body.status === 'success');
 }
 
 // --- CLOUD ---
@@ -85,7 +108,6 @@ async function loadMigrationState() {
  */
 async function saveCloud(telegramReport = null) {
     showLoader(true);
-    let ok = false;
     try {
         app.tenants = (Array.isArray(app.tenants) ? app.tenants : []).map(normalizeTenantObject);
         app.templateExpenses = getTemplateExpenses();
@@ -98,13 +120,29 @@ async function saveCloud(telegramReport = null) {
             templateExpenses: app.templateExpenses
         };
         if (telegramReport) body.telegramReport = telegramReport;
-        const res = await fetch(GOOGLE_APP_URL.trim(), {
-            method: 'POST',
-            body: JSON.stringify(body)
-        });
-        ok = res.ok;
-    } catch(e) { alert("Saqlanmadi (Internet yo'q)"); }
-    showLoader(false);
-    renderAll();
-    return ok;
+
+        // Throws on a transport failure, a non-200, or an unparsable body.
+        const result = await callBackend(body);
+        if (!isSuccessResponse(result)) {
+            // Apps Script reports its own failures inside a 200 response, so
+            // this is the only place the outcome is actually known.
+            throw new Error((result && result.message) || SAVE_FAILED_MESSAGE);
+        }
+        return result;
+    } finally {
+        showLoader(false);
+        renderAll();
+    }
+}
+
+/**
+ * A save whose result nobody is waiting on - settings screens, where the edit
+ * is already on screen. It still has to say so when the server refused, which
+ * is why it cannot simply be ignored.
+ */
+function saveCloudInBackground(telegramReport = null) {
+    return saveCloud(telegramReport).catch(error => {
+        console.error(error);
+        alert(error && error.message ? error.message : SAVE_FAILED_MESSAGE);
+    });
 }

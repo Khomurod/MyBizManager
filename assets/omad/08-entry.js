@@ -95,8 +95,30 @@ function nextRequestBase() {
     return pendingRequestBase;
 }
 
+/**
+ * The id group a legacy entry is being written under.
+ *
+ * The whole-list save keys rows by `<baseId>_<line>`, so reusing the id on a
+ * retry rewrites the same rows instead of adding a second copy. It is kept
+ * apart from the ledger request id because it must contain no underscore -
+ * getTxBaseId splits on one.
+ */
+const PENDING_ENTRY_KEY = 'omad_pending_entry_base';
+let pendingEntryBase = "";
+
+function nextEntryBaseId() {
+    if(!pendingEntryBase) {
+        try { pendingEntryBase = sessionStorage.getItem(PENDING_ENTRY_KEY) || ""; } catch (e) { pendingEntryBase = ""; }
+    }
+    if(!pendingEntryBase) pendingEntryBase = String(Date.now());
+    try { sessionStorage.setItem(PENDING_ENTRY_KEY, pendingEntryBase); } catch (e) {}
+    return pendingEntryBase;
+}
+
 function clearPendingRequest() {
     pendingRequestBase = "";
+    pendingEntryBase = "";
+    try { sessionStorage.removeItem(PENDING_ENTRY_KEY); } catch (e) {}
     try { sessionStorage.removeItem(PENDING_REQUEST_KEY); } catch (e) {}
 }
 
@@ -116,8 +138,10 @@ async function submitAll() {
         clearEntryForm();
         switchTab('dash');
     } catch (error) {
+        // The form, the cart and the request id are all left alone, so the
+        // same entry can simply be sent again without becoming a duplicate.
         console.error(error);
-        alert("Saqlanmadi. Internetni tekshirib, qayta urinib ko'ring.");
+        alert((error && error.message) || SAVE_FAILED_MESSAGE);
     } finally {
         btn.disabled = false;
         btn.innerText = currentType === 'Income' ? "KIRIMNI SAQLASH" : "CHIQIMNI SAQLASH";
@@ -204,7 +228,9 @@ async function submitViaWholeListSave() {
     const editId = document.getElementById('editId').value;
     const existingMsgId = document.getElementById('msgId').value;
     const editBaseId = editId ? getTxBaseId(editId) : null;
-    const baseId = editBaseId || String(Date.now());
+    // Stable across retries, so resubmitting after a failure rewrites the same
+    // rows rather than creating a second entry.
+    const baseId = editBaseId || nextEntryBaseId();
 
     const common = {
         tenant: normalizeTenantName(document.getElementById('entryTenant').value),
@@ -227,6 +253,10 @@ async function submitViaWholeListSave() {
     }));
 
     const keptMsgId = editId ? existingMsgId : "";
+    // The list is updated optimistically so the save carries the new rows; if
+    // the server refuses, the previous list is put back rather than leaving
+    // rows on screen that were never stored.
+    const previousTransactions = app.transactions;
     app.transactions = [
         ...baseTransactions,
         ...pendingTransactions.map(tx => ({ ...tx, msgId: keptMsgId }))
@@ -235,11 +265,16 @@ async function submitViaWholeListSave() {
     // Save first, then let the server report. The report is a queued,
     // retryable job on the backend - it can never duplicate the entry
     // and a Telegram outage never blocks the save.
-    await saveCloud({
-        operation: 'transaction_upsert',
-        baseId,
-        messageId: keptMsgId || ""
-    });
+    try {
+        await saveCloud({
+            operation: 'transaction_upsert',
+            baseId,
+            messageId: keptMsgId || ""
+        });
+    } catch (error) {
+        app.transactions = previousTransactions;
+        throw error;
+    }
     // Pick up the Telegram message id the server attached, so a later
     // edit updates the same group message.
     await syncData();
