@@ -83,23 +83,60 @@ function getOrCreateWebhookSecret_() {
 }
 
 /**
- * Removes anything that looks like a Telegram bot token (and the configured
- * token itself) from any string before it is logged or returned to a client.
+ * Every stored value that must never reach a log, a sheet cell or a client.
+ * Read defensively: redaction runs inside error paths, where a missing
+ * property must not itself throw.
+ */
+function storedSecretValues_() {
+  var names = [
+    TELEGRAM_PROP_BOT_TOKEN,
+    TELEGRAM_PROP_WEBHOOK_SECRET,
+    OMAD_PROP_ADMIN_KEY
+  ];
+  var values = [];
+  for (var i = 0; i < names.length; i++) {
+    var value = "";
+    try { value = getTelegramSetting_(names[i]); } catch (error) { value = ""; }
+    // One-character values would blank out ordinary text.
+    if (value && String(value).length >= 8) values.push(String(value));
+  }
+  return values;
+}
+
+/**
+ * Removes every credential from a string before it is logged or returned.
+ *
+ * Covers the configured bot token, the webhook verification secret and the
+ * admin key by value, and - because a value can be rotated while an old log
+ * line is still being written - anything *shaped* like one of them: a bot
+ * token, a `wh=` webhook parameter, a `secret_token` field, or an
+ * Authorization header.
  */
 function redactSecrets_(value) {
   var text = value === null || value === undefined ? "" : String(value && value.message ? value.message : value);
-  var token = "";
-  try {
-    token = getBotToken_();
-  } catch (error) {
-    token = "";
+
+  var secrets = storedSecretValues_();
+  for (var i = 0; i < secrets.length; i++) {
+    text = text.split(secrets[i]).join("[REDACTED]");
   }
+
+  var token = "";
+  try { token = getBotToken_(); } catch (error) { token = ""; }
   if (token) {
-    text = text.split(token).join("[REDACTED]");
     var tokenId = token.split(":")[0];
     if (tokenId) text = text.split("bot" + tokenId).join("bot[REDACTED]");
   }
-  return text.replace(TELEGRAM_TOKEN_LIKE_PATTERN, "[REDACTED]");
+
+  return text
+    .replace(TELEGRAM_TOKEN_LIKE_PATTERN, "[REDACTED]")
+    // ...wh=<secret> in a URL or query string, however it is quoted.
+    .replace(/([?&]wh=)[^&"'\s\\]+/gi, "$1[REDACTED]")
+    // ..."secret_token":"<secret>" / secret_token=<secret>
+    .replace(/("?secret_token"?\s*[:=]\s*"?)[^",&}\s]+/gi, "$1[REDACTED]")
+    // ...Authorization: Bearer <value>
+    .replace(/("?authorization"?\s*[:=]\s*"?)(bearer\s+)?[^",&}\s]+/gi, "$1[REDACTED]")
+    // ...adminKey carried in a payload that gets logged.
+    .replace(/("?adminKey"?\s*[:=]\s*"?)[^",&}\s]+/gi, "$1[REDACTED]");
 }
 
 function recordTelegramSuccess_(action) {
