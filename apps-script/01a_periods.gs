@@ -56,6 +56,39 @@ function periodFromDate_(date) {
   return buildPeriod_(date.getFullYear(), date.getMonth() + 1);
 }
 
+/**
+ * The period held by a Month cell that the spreadsheet turned into a date.
+ *
+ * The Month column stores "2026-08". A spreadsheet whose column is not text
+ * formatted reads that as a date and keeps 1 August instead, which loses the
+ * canonical string. The year and month of that date are exactly the period
+ * that was intended, so it is recovered rather than discarded - existing rows
+ * heal themselves without anyone editing the sheet.
+ *
+ * Returns "" for month names and anything else that is not a date.
+ */
+function periodFromDateCell_(value) {
+  var date = null;
+  if (value && typeof value === "object" && typeof value.getFullYear === "function") {
+    date = value;
+  } else if (/^\d{4}-\d{2}-\d{2}T/.test(String(value === null || value === undefined ? "" : value))) {
+    date = new Date(String(value));
+  }
+  return date ? periodFromDate_(date) : "";
+}
+
+/**
+ * Normalises whatever the Month column produced back into a storable value:
+ * a canonical period stays as it is, a date cell becomes its period, and a
+ * legacy month name is passed through untouched. Never stringifies a date.
+ */
+function normalizeMonthValue_(value) {
+  if (isCanonicalPeriod_(value)) return String(value);
+  var recovered = periodFromDateCell_(value);
+  if (recovered) return recovered;
+  return String(value === null || value === undefined ? "" : value).trim();
+}
+
 function currentPeriod_() {
   return periodFromDate_(new Date());
 }
@@ -109,7 +142,7 @@ function parseTransactionDate_(value) {
 
   if (typeof value === "object" && typeof value.getFullYear === "function") {
     if (isNaN(value.getTime())) return null;
-    return { year: value.getFullYear(), month: value.getMonth() + 1 };
+    return { year: value.getFullYear(), month: value.getMonth() + 1, day: value.getDate() };
   }
 
   var text = String(value).trim();
@@ -121,15 +154,28 @@ function parseTransactionDate_(value) {
     var monthDmy = Number(dmy[2]);
     if (monthDmy < 1 || monthDmy > 12) return null;
     if (day < 1 || day > daysInMonth_(Number(dmy[3]), monthDmy)) return null;
-    return { year: Number(dmy[3]), month: monthDmy };
+    return { year: Number(dmy[3]), month: monthDmy, day: day };
   }
 
   var iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(text);
   if (iso) {
+    // A full timestamp is an instant, not a calendar date. Reading it in the
+    // script's timezone is what makes a value that came back from the sheet
+    // round-trip to the same day instead of slipping to the one before.
+    if (text.indexOf("T") > 0) {
+      var instant = new Date(text);
+      if (!isNaN(instant.getTime())) {
+        return {
+          year: instant.getFullYear(),
+          month: instant.getMonth() + 1,
+          day: instant.getDate()
+        };
+      }
+    }
     var monthIso = Number(iso[2]);
     if (monthIso < 1 || monthIso > 12) return null;
     if (Number(iso[3]) < 1 || Number(iso[3]) > daysInMonth_(Number(iso[1]), monthIso)) return null;
-    return { year: Number(iso[1]), month: monthIso };
+    return { year: Number(iso[1]), month: monthIso, day: Number(iso[3]) };
   }
 
   return null;
@@ -161,6 +207,14 @@ function resolveTransactionPeriod_(transaction, fallbackYear) {
 
   if (isCanonicalPeriod_(monthValue)) {
     return { period: String(monthValue), source: "canonical", confident: true };
+  }
+
+  // A canonical period the spreadsheet stored as a date. It still says exactly
+  // which month was meant, and it is more trustworthy than the Date column,
+  // so it is honoured before anything is inferred from the date.
+  var periodCell = periodFromDateCell_(monthValue);
+  if (periodCell) {
+    return { period: periodCell, source: "canonical_date_cell", confident: true };
   }
 
   var parsedDate = parseTransactionDate_(raw.date);

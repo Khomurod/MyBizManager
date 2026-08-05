@@ -151,6 +151,39 @@ function periodFromDate_(date) {
   return buildPeriod_(date.getFullYear(), date.getMonth() + 1);
 }
 
+/**
+ * The period held by a Month cell that the spreadsheet turned into a date.
+ *
+ * The Month column stores "2026-08". A spreadsheet whose column is not text
+ * formatted reads that as a date and keeps 1 August instead, which loses the
+ * canonical string. The year and month of that date are exactly the period
+ * that was intended, so it is recovered rather than discarded - existing rows
+ * heal themselves without anyone editing the sheet.
+ *
+ * Returns "" for month names and anything else that is not a date.
+ */
+function periodFromDateCell_(value) {
+  var date = null;
+  if (value && typeof value === "object" && typeof value.getFullYear === "function") {
+    date = value;
+  } else if (/^\d{4}-\d{2}-\d{2}T/.test(String(value === null || value === undefined ? "" : value))) {
+    date = new Date(String(value));
+  }
+  return date ? periodFromDate_(date) : "";
+}
+
+/**
+ * Normalises whatever the Month column produced back into a storable value:
+ * a canonical period stays as it is, a date cell becomes its period, and a
+ * legacy month name is passed through untouched. Never stringifies a date.
+ */
+function normalizeMonthValue_(value) {
+  if (isCanonicalPeriod_(value)) return String(value);
+  var recovered = periodFromDateCell_(value);
+  if (recovered) return recovered;
+  return String(value === null || value === undefined ? "" : value).trim();
+}
+
 function currentPeriod_() {
   return periodFromDate_(new Date());
 }
@@ -204,7 +237,7 @@ function parseTransactionDate_(value) {
 
   if (typeof value === "object" && typeof value.getFullYear === "function") {
     if (isNaN(value.getTime())) return null;
-    return { year: value.getFullYear(), month: value.getMonth() + 1 };
+    return { year: value.getFullYear(), month: value.getMonth() + 1, day: value.getDate() };
   }
 
   var text = String(value).trim();
@@ -216,15 +249,28 @@ function parseTransactionDate_(value) {
     var monthDmy = Number(dmy[2]);
     if (monthDmy < 1 || monthDmy > 12) return null;
     if (day < 1 || day > daysInMonth_(Number(dmy[3]), monthDmy)) return null;
-    return { year: Number(dmy[3]), month: monthDmy };
+    return { year: Number(dmy[3]), month: monthDmy, day: day };
   }
 
   var iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(text);
   if (iso) {
+    // A full timestamp is an instant, not a calendar date. Reading it in the
+    // script's timezone is what makes a value that came back from the sheet
+    // round-trip to the same day instead of slipping to the one before.
+    if (text.indexOf("T") > 0) {
+      var instant = new Date(text);
+      if (!isNaN(instant.getTime())) {
+        return {
+          year: instant.getFullYear(),
+          month: instant.getMonth() + 1,
+          day: instant.getDate()
+        };
+      }
+    }
     var monthIso = Number(iso[2]);
     if (monthIso < 1 || monthIso > 12) return null;
     if (Number(iso[3]) < 1 || Number(iso[3]) > daysInMonth_(Number(iso[1]), monthIso)) return null;
-    return { year: Number(iso[1]), month: monthIso };
+    return { year: Number(iso[1]), month: monthIso, day: Number(iso[3]) };
   }
 
   return null;
@@ -256,6 +302,14 @@ function resolveTransactionPeriod_(transaction, fallbackYear) {
 
   if (isCanonicalPeriod_(monthValue)) {
     return { period: String(monthValue), source: "canonical", confident: true };
+  }
+
+  // A canonical period the spreadsheet stored as a date. It still says exactly
+  // which month was meant, and it is more trustworthy than the Date column,
+  // so it is honoured before anything is inferred from the date.
+  var periodCell = periodFromDateCell_(monthValue);
+  if (periodCell) {
+    return { period: periodCell, source: "canonical_date_cell", confident: true };
   }
 
   var parsedDate = parseTransactionDate_(raw.date);
@@ -1569,9 +1623,46 @@ function ensureOmadTransactionHeader_(sheet) {
   }
 }
 
+/**
+ * The value written into the Date column.
+ *
+ * Text like "05/08/2026" is read back through the spreadsheet's own locale,
+ * which is how 5 August became 8 May. A real date carries no ordering to
+ * misread, so anything that can be understood is written as one. Text that
+ * cannot be interpreted is left exactly as it is rather than guessed at.
+ */
+function toSheetDateValue_(value) {
+  if (value && typeof value === "object" && typeof value.getFullYear === "function") {
+    return isNaN(value.getTime()) ? "" : value;
+  }
+  var parsed = parseTransactionDate_(value);
+  if (!parsed) return value === null || value === undefined ? "" : value;
+  return new Date(parsed.year, parsed.month - 1, parsed.day || 1);
+}
+
+/**
+ * Stops the spreadsheet reinterpreting what is written.
+ *
+ * The Month column holds "2026-08"; formatted as text it stays that way
+ * instead of collapsing into 1 August. The Date column is given an explicit
+ * day/month format so it also reads back the way it was written.
+ *
+ * These column numbers are the legacy layout's. The ledger has its own shape
+ * and its own helper, so callers pass its name to opt out.
+ */
+function applyTransactionColumnFormats_(sheet, startRow, numRows, sheetName) {
+  if (sheetName === OMAD_TRANSACTIONS_V2_SHEET) return;
+  if (!sheet || numRows < 1 || typeof sheet.getRange !== "function") return;
+  var monthRange = sheet.getRange(startRow, 3, numRows, 1);
+  if (typeof monthRange.setNumberFormat !== "function") return;
+  monthRange.setNumberFormat("@");
+  sheet.getRange(startRow, 8, numRows, 1).setNumberFormat("dd/MM/yyyy");
+}
+
 function transactionToRow_(t) {
   return [
-    t.id, t.tenant, t.month, t.type, t.amount, t.currency, t.method, t.date,
+    t.id, t.tenant, t.month, t.type, t.amount, t.currency, t.method,
+    toSheetDateValue_(t.date),
     t.comment || "", t.msgId || "", t.requestId || ""
   ];
 }
@@ -1591,7 +1682,10 @@ function normalizeTransaction_(raw) {
   return {
     id: String(t.id || (Date.now() + "_0")),
     tenant: String(t.tenant || "").trim(),
-    month: String(t.month || t.period || currentPeriod_()).trim(),
+    // normalizeMonthValue_ keeps a period a period: a Month cell the
+    // spreadsheet turned into a date becomes "2026-08" again rather than
+    // being stringified into "Sat Aug 01 2026 ...".
+    month: normalizeMonthValue_(t.month || t.period || currentPeriod_()),
     type: t.type === "Expense" ? "Expense" : "Income",
     amount: Number(t.amount) || 0,
     currency: t.currency === "USD" ? "USD" : "UZS",
@@ -1693,6 +1787,7 @@ function safeRewriteOmadTransactions_(doc, incomingTransactions) {
     rows.push(transactionToRow_(incomingTransactions[i]));
   }
   if (rows.length > 0) {
+    applyTransactionColumnFormats_(txSheet, 2, rows.length, sheetName);
     txSheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
   }
 }
@@ -1701,7 +1796,13 @@ function appendOmadTransaction_(doc, transaction) {
   var sheetName = activeTransactionSheetName_(doc);
   var txSheet = doc.getSheetByName(sheetName) || doc.insertSheet(sheetName);
   ensureOmadTransactionHeader_(txSheet);
-  txSheet.appendRow(transactionToRow_(normalizeTransaction_(transaction)));
+
+  // Written through a range rather than appendRow so the column formats are
+  // in place before the values land - afterwards would be too late.
+  var row = txSheet.getLastRow() + 1;
+  applyTransactionColumnFormats_(txSheet, row, 1, sheetName);
+  txSheet.getRange(row, 1, 1, OMAD_TRANSACTION_HEADER.length)
+    .setValues([transactionToRow_(normalizeTransaction_(transaction))]);
 }
 
 /**
@@ -2406,7 +2507,11 @@ function runOmadTransactionReportJob_(doc, job) {
     return;
   }
 
-  var balances = calculateBalancesFromTransactions_(readOmadTransactions_(doc), group[0].month);
+  // The resolved period, not the raw Month cell: balances are compared against
+  // resolved periods, so passing "Avgust" (or a date cell) matched nothing and
+  // every report quoted a month balance of 0.
+  var balances = calculateBalancesFromTransactions_(
+    readOmadTransactions_(doc), transactionPeriod_(group[0]));
   var text = buildOmadGroupReportMessage_(group, balances);
   var existingMessageId = String(job.payload.messageId || group[0].msgId || "");
 
@@ -2777,6 +2882,9 @@ function applyOmadMigration_(doc, options) {
         migratedRowToLedger_(sourceRows[i], resolution.period, migratedAt)));
     }
     if (written.length > 0) {
+      // Formats first: every migrated row carries a canonical period, and the
+      // spreadsheet would otherwise turn all of them into dates on the way in.
+      applyLedgerColumnFormats_(target, 2, written.length);
       target.getRange(2, 1, written.length, LEDGER_HEADER.length).setValues(written);
     }
 
@@ -3094,6 +3202,28 @@ function ledgerSheet_(doc) {
   return sheet;
 }
 
+/**
+ * Keeps the spreadsheet from reinterpreting the ledger's text columns.
+ *
+ * Period holds "2026-08" and the two timestamps hold ISO strings. Without a
+ * text format the sheet stores all three as dates - the same silent rewrite
+ * that put a legacy entry in the wrong month.
+ */
+function applyLedgerColumnFormats_(sheet, startRow, numRows) {
+  if (!sheet || numRows < 1 || typeof sheet.getRange !== "function") return;
+  var periodRange = sheet.getRange(startRow, 7, numRows, 1);
+  if (typeof periodRange.setNumberFormat !== "function") return;
+  periodRange.setNumberFormat("@");
+  sheet.getRange(startRow, 3, numRows, 2).setNumberFormat("@");
+}
+
+/** Appends one ledger row with its text columns protected first. */
+function appendLedgerRow_(sheet, values) {
+  var row = sheet.getLastRow() + 1;
+  applyLedgerColumnFormats_(sheet, row, 1);
+  sheet.getRange(row, 1, 1, LEDGER_HEADER.length).setValues([values]);
+}
+
 function ledgerRowToTransaction_(row, rowNumber) {
   return {
     rowNumber: rowNumber,
@@ -3103,7 +3233,9 @@ function ledgerRowToTransaction_(row, rowNumber) {
     updatedAt: String(row[3] || ""),
     createdBy: String(row[4] || ""),
     source: String(row[5] || TX_SOURCE_WEB),
-    period: String(row[6] || ""),
+    // normalizeMonthValue_ recovers a period the sheet stored as a date
+    // instead of stringifying it into "Sat Aug 01 2026 ...".
+    period: normalizeMonthValue_(row[6]),
     tenant: String(row[7] || ""),
     type: row[8] === "Expense" ? "Expense" : "Income",
     amount: Number(row[9]) || 0,
@@ -3301,7 +3433,7 @@ function createTransaction_(doc, input) {
       schemaVersion: LEDGER_SCHEMA_VERSION
     };
 
-    ledgerSheet_(doc).appendRow(transactionToLedgerRow_(transaction));
+    appendLedgerRow_(ledgerSheet_(doc), transactionToLedgerRow_(transaction));
     appendAuditRow_(doc, "transaction_created", JSON.stringify({
       id: transaction.id, period: transaction.period, source: transaction.source,
       amount: transaction.amount, currency: transaction.currency
@@ -3394,7 +3526,7 @@ function correctTransaction_(doc, input) {
 
     var sheet = ledgerSheet_(doc);
     setLedgerStatus_(sheet, original.rowNumber, TX_STATUS_CORRECTED, now);
-    sheet.appendRow(transactionToLedgerRow_(replacement));
+    appendLedgerRow_(sheet, transactionToLedgerRow_(replacement));
 
     appendAuditRow_(doc, "transaction_corrected", JSON.stringify({
       original: original.id, replacement: replacement.id,

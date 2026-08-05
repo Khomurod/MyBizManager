@@ -36,7 +36,11 @@ function runOmadTransactionReportJob_(doc, job) {
     return;
   }
 
-  var balances = calculateBalancesFromTransactions_(readOmadTransactions_(doc), group[0].month);
+  // The resolved period, not the raw Month cell: balances are compared against
+  // resolved periods, so passing "Avgust" (or a date cell) matched nothing and
+  // every report quoted a month balance of 0.
+  var balances = calculateBalancesFromTransactions_(
+    readOmadTransactions_(doc), transactionPeriod_(group[0]));
   var text = buildOmadGroupReportMessage_(group, balances);
   var existingMessageId = String(job.payload.messageId || group[0].msgId || "");
 

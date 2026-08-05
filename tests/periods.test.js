@@ -66,24 +66,26 @@ test('the same month in two different years is two different periods', () => {
 
 // --------------------------------------------------------------- date parsing
 
+// The day is carried alongside the year and month so a date can be rewritten
+// into the sheet as a real date without losing which day it was.
 test('dd/MM/yyyy dates are parsed', () => {
-  assert.deepStrictEqual(plain(gas.parseTransactionDate_('05/02/2026')), { year: 2026, month: 2 });
-  assert.deepStrictEqual(plain(gas.parseTransactionDate_('31/12/2026')), { year: 2026, month: 12 });
+  assert.deepStrictEqual(plain(gas.parseTransactionDate_('05/02/2026')), { year: 2026, month: 2, day: 5 });
+  assert.deepStrictEqual(plain(gas.parseTransactionDate_('31/12/2026')), { year: 2026, month: 12, day: 31 });
 });
 
 test('ISO dates are parsed', () => {
-  assert.deepStrictEqual(plain(gas.parseTransactionDate_('2026-07-15')), { year: 2026, month: 7 });
-  assert.deepStrictEqual(plain(gas.parseTransactionDate_('2026-07-15T09:30:00.000Z')), { year: 2026, month: 7 });
+  assert.deepStrictEqual(plain(gas.parseTransactionDate_('2026-07-15')), { year: 2026, month: 7, day: 15 });
+  assert.deepStrictEqual(plain(gas.parseTransactionDate_('2026-07-15T09:30:00.000Z')), { year: 2026, month: 7, day: 15 });
 });
 
 test('real Date values from Sheets are parsed', () => {
-  assert.deepStrictEqual(plain(gas.parseTransactionDate_(new Date(2026, 4, 20))), { year: 2026, month: 5 });
+  assert.deepStrictEqual(plain(gas.parseTransactionDate_(new Date(2026, 4, 20))), { year: 2026, month: 5, day: 20 });
 });
 
 test('leap-day handling distinguishes valid from invalid February dates', () => {
-  assert.deepStrictEqual(plain(gas.parseTransactionDate_('29/02/2024')), { year: 2024, month: 2 });
+  assert.deepStrictEqual(plain(gas.parseTransactionDate_('29/02/2024')), { year: 2024, month: 2, day: 29 });
   assert.strictEqual(gas.parseTransactionDate_('29/02/2026'), null, '2026 is not a leap year');
-  assert.deepStrictEqual(plain(gas.parseTransactionDate_('2024-02-29')), { year: 2024, month: 2 });
+  assert.deepStrictEqual(plain(gas.parseTransactionDate_('2024-02-29')), { year: 2024, month: 2, day: 29 });
   assert.strictEqual(gas.parseTransactionDate_('2100-02-29'), null, '2100 is not a leap year');
 });
 

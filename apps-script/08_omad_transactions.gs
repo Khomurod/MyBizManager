@@ -34,9 +34,46 @@ function ensureOmadTransactionHeader_(sheet) {
   }
 }
 
+/**
+ * The value written into the Date column.
+ *
+ * Text like "05/08/2026" is read back through the spreadsheet's own locale,
+ * which is how 5 August became 8 May. A real date carries no ordering to
+ * misread, so anything that can be understood is written as one. Text that
+ * cannot be interpreted is left exactly as it is rather than guessed at.
+ */
+function toSheetDateValue_(value) {
+  if (value && typeof value === "object" && typeof value.getFullYear === "function") {
+    return isNaN(value.getTime()) ? "" : value;
+  }
+  var parsed = parseTransactionDate_(value);
+  if (!parsed) return value === null || value === undefined ? "" : value;
+  return new Date(parsed.year, parsed.month - 1, parsed.day || 1);
+}
+
+/**
+ * Stops the spreadsheet reinterpreting what is written.
+ *
+ * The Month column holds "2026-08"; formatted as text it stays that way
+ * instead of collapsing into 1 August. The Date column is given an explicit
+ * day/month format so it also reads back the way it was written.
+ *
+ * These column numbers are the legacy layout's. The ledger has its own shape
+ * and its own helper, so callers pass its name to opt out.
+ */
+function applyTransactionColumnFormats_(sheet, startRow, numRows, sheetName) {
+  if (sheetName === OMAD_TRANSACTIONS_V2_SHEET) return;
+  if (!sheet || numRows < 1 || typeof sheet.getRange !== "function") return;
+  var monthRange = sheet.getRange(startRow, 3, numRows, 1);
+  if (typeof monthRange.setNumberFormat !== "function") return;
+  monthRange.setNumberFormat("@");
+  sheet.getRange(startRow, 8, numRows, 1).setNumberFormat("dd/MM/yyyy");
+}
+
 function transactionToRow_(t) {
   return [
-    t.id, t.tenant, t.month, t.type, t.amount, t.currency, t.method, t.date,
+    t.id, t.tenant, t.month, t.type, t.amount, t.currency, t.method,
+    toSheetDateValue_(t.date),
     t.comment || "", t.msgId || "", t.requestId || ""
   ];
 }
@@ -56,7 +93,10 @@ function normalizeTransaction_(raw) {
   return {
     id: String(t.id || (Date.now() + "_0")),
     tenant: String(t.tenant || "").trim(),
-    month: String(t.month || t.period || currentPeriod_()).trim(),
+    // normalizeMonthValue_ keeps a period a period: a Month cell the
+    // spreadsheet turned into a date becomes "2026-08" again rather than
+    // being stringified into "Sat Aug 01 2026 ...".
+    month: normalizeMonthValue_(t.month || t.period || currentPeriod_()),
     type: t.type === "Expense" ? "Expense" : "Income",
     amount: Number(t.amount) || 0,
     currency: t.currency === "USD" ? "USD" : "UZS",
@@ -158,6 +198,7 @@ function safeRewriteOmadTransactions_(doc, incomingTransactions) {
     rows.push(transactionToRow_(incomingTransactions[i]));
   }
   if (rows.length > 0) {
+    applyTransactionColumnFormats_(txSheet, 2, rows.length, sheetName);
     txSheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
   }
 }
@@ -166,7 +207,13 @@ function appendOmadTransaction_(doc, transaction) {
   var sheetName = activeTransactionSheetName_(doc);
   var txSheet = doc.getSheetByName(sheetName) || doc.insertSheet(sheetName);
   ensureOmadTransactionHeader_(txSheet);
-  txSheet.appendRow(transactionToRow_(normalizeTransaction_(transaction)));
+
+  // Written through a range rather than appendRow so the column formats are
+  // in place before the values land - afterwards would be too late.
+  var row = txSheet.getLastRow() + 1;
+  applyTransactionColumnFormats_(txSheet, row, 1, sheetName);
+  txSheet.getRange(row, 1, 1, OMAD_TRANSACTION_HEADER.length)
+    .setValues([transactionToRow_(normalizeTransaction_(transaction))]);
 }
 
 /**
