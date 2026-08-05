@@ -1,9 +1,18 @@
 # Migration runbook — running the period migration on the live spreadsheet
 
 This is the step-by-step procedure for the one remaining live action. Everything
-in it is implemented and tested; **it has not been run against the real
-spreadsheet**, because that needs access to the Apps Script project and the
-Drive file.
+in it is implemented and tested.
+
+> **Status as of 2026-08-05: not run. The live app is on the legacy
+> `Omad_Transactions` sheet, `Omad_Transactions_V2` does not exist, and the
+> migration state is `not_started`.** A migration was attempted earlier and
+> rolled back, so treat any earlier "applied" note as out of date. Running this
+> runbook is a separate, approved piece of work - see
+> [LIVE_STATE.md](LIVE_STATE.md).
+>
+> Verification now also compares every migrated row field by field, including
+> each frozen `Amount_UZS` against the rate recorded on that same row. Do not
+> cut over on matching totals alone.
 
 Read the whole page before starting. Every step is reversible until step 8.
 

@@ -1,5 +1,12 @@
 # Telegram sozlash va tokenni almashtirish
 
+> **Live status (2026-08-05).** The webhook points at the active deployment
+> (id ending `…DtCA2W`) and the `processPendingTelegramJobs` trigger runs every
+> 5 minutes. Debug logging no longer records request bodies, so the webhook
+> secret can no longer reach `Telegram_Debug_Log` — but rows written *before*
+> that change may still contain the old secret, and rotating it is still
+> outstanding. See [LIVE_STATE.md](LIVE_STATE.md).
+
 > **⚠️ MUHIM — eski token buzilgan deb hisoblanadi.**
 > `7752185432` bot ID'siga tegishli **ikkita** token ochiq holda GitHub'ga
 > yuklangan (2026-02-02 dan buyon) va git tarixida hozir ham mavjud.
