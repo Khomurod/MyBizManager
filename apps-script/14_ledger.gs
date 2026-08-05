@@ -64,6 +64,28 @@ function ledgerSheet_(doc) {
   return sheet;
 }
 
+/**
+ * Keeps the spreadsheet from reinterpreting the ledger's text columns.
+ *
+ * Period holds "2026-08" and the two timestamps hold ISO strings. Without a
+ * text format the sheet stores all three as dates - the same silent rewrite
+ * that put a legacy entry in the wrong month.
+ */
+function applyLedgerColumnFormats_(sheet, startRow, numRows) {
+  if (!sheet || numRows < 1 || typeof sheet.getRange !== "function") return;
+  var periodRange = sheet.getRange(startRow, 7, numRows, 1);
+  if (typeof periodRange.setNumberFormat !== "function") return;
+  periodRange.setNumberFormat("@");
+  sheet.getRange(startRow, 3, numRows, 2).setNumberFormat("@");
+}
+
+/** Appends one ledger row with its text columns protected first. */
+function appendLedgerRow_(sheet, values) {
+  var row = sheet.getLastRow() + 1;
+  applyLedgerColumnFormats_(sheet, row, 1);
+  sheet.getRange(row, 1, 1, LEDGER_HEADER.length).setValues([values]);
+}
+
 function ledgerRowToTransaction_(row, rowNumber) {
   return {
     rowNumber: rowNumber,
@@ -73,7 +95,9 @@ function ledgerRowToTransaction_(row, rowNumber) {
     updatedAt: String(row[3] || ""),
     createdBy: String(row[4] || ""),
     source: String(row[5] || TX_SOURCE_WEB),
-    period: String(row[6] || ""),
+    // normalizeMonthValue_ recovers a period the sheet stored as a date
+    // instead of stringifying it into "Sat Aug 01 2026 ...".
+    period: normalizeMonthValue_(row[6]),
     tenant: String(row[7] || ""),
     type: row[8] === "Expense" ? "Expense" : "Income",
     amount: Number(row[9]) || 0,
@@ -271,7 +295,7 @@ function createTransaction_(doc, input) {
       schemaVersion: LEDGER_SCHEMA_VERSION
     };
 
-    ledgerSheet_(doc).appendRow(transactionToLedgerRow_(transaction));
+    appendLedgerRow_(ledgerSheet_(doc), transactionToLedgerRow_(transaction));
     appendAuditRow_(doc, "transaction_created", JSON.stringify({
       id: transaction.id, period: transaction.period, source: transaction.source,
       amount: transaction.amount, currency: transaction.currency
@@ -364,7 +388,7 @@ function correctTransaction_(doc, input) {
 
     var sheet = ledgerSheet_(doc);
     setLedgerStatus_(sheet, original.rowNumber, TX_STATUS_CORRECTED, now);
-    sheet.appendRow(transactionToLedgerRow_(replacement));
+    appendLedgerRow_(sheet, transactionToLedgerRow_(replacement));
 
     appendAuditRow_(doc, "transaction_corrected", JSON.stringify({
       original: original.id, replacement: replacement.id,

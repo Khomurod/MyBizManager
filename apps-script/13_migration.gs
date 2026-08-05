@@ -192,6 +192,9 @@ function applyOmadMigration_(doc, options) {
         migratedRowToLedger_(sourceRows[i], resolution.period, migratedAt)));
     }
     if (written.length > 0) {
+      // Formats first: every migrated row carries a canonical period, and the
+      // spreadsheet would otherwise turn all of them into dates on the way in.
+      applyLedgerColumnFormats_(target, 2, written.length);
       target.getRange(2, 1, written.length, LEDGER_HEADER.length).setValues(written);
     }
 
