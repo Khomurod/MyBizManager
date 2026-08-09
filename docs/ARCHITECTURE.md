@@ -51,7 +51,18 @@ filename order. `npm run build` regenerates `script.gs`; `npm run build:check`
 | `13_migration.gs` | Period migration: preview, apply, verify, cutover, rollback |
 | `14_ledger.gs` | Append-only ledger: create / correct / cancel / read / audit |
 | `15_system_status.gs` | Backups, queue, migration state, audit tail, safe diagnostics |
+| `16_tasks_recurrence.gs` | Task module: Asia/Tashkent time + recurrence engine (pure) |
+| `17_tasks_store.gs` | Task module: `Tasks`/`Task_Occurrences` sheets, occurrences, views |
+| `18_tasks_service.gs` | Task module: isolated Telegram namespace (`t_done:`, photo proof) |
+| `19_tasks_scheduler.gs` | Task module: reminder scheduler, queue jobs, web API |
 | `20_api.gs` | `doPost` / `doGet` routing only |
+
+The task-management feature (`/tasks`) is documented separately in
+**[TASKS.md](TASKS.md)**. It is an isolated module: dedicated `Tasks` and
+`Task_Occurrences` sheets, its own `t_done:` Telegram namespace claimed before
+the `/yangi` handler, and its own frontend. It reuses the Telegram bot, the
+`Omad_Job_Queue` and the Telegram settings; it does **not** touch the Omad
+accounting, Café or `/yangi` flows.
 
 ### Frontend modules
 

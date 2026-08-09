@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Vazifalar Boshqaruvi</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f1f5f9; -webkit-tap-highlight-color: transparent; font-family: sans-serif; }
+        .tab-panel { display: none; }
+        .tab-panel.active { display: block; animation: slideUp 0.2s; }
+        @keyframes slideUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .task-tab-btn { background: #ffffff; border-color: #e2e8f0; color: #64748b; }
+        .task-tab-btn.active { background: #2563eb; border-color: #2563eb; color: #ffffff; }
+        #taskTabs { scrollbar-width: none; }
+        #taskTabs::-webkit-scrollbar { display: none; }
+        .card { background: white; border-radius: 16px; padding: 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; margin-bottom: 12px; }
+        #loader { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.9); z-index: 100; justify-content: center; align-items: center; flex-direction: column; }
+        .modal-back { transition: opacity 0.2s ease-out; }
+        .modal-back.hidden { pointer-events: none; opacity: 0; display:flex; }
+        .badge { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
+    </style>
+</head>
+<body class="pb-28 text-slate-800">
+
+    <script src="assets/omad/00-config.js"></script>
+
+    <div id="loader">
+        <i class="fas fa-circle-notch fa-spin text-4xl text-blue-600 mb-4"></i>
+        <p class="text-gray-500 font-bold text-sm">Yuklanmoqda...</p>
+    </div>
+
+    <!-- HEADER -->
+    <div class="bg-white px-4 py-3 sticky top-0 z-40 border-b flex justify-between items-center shadow-sm">
+        <div class="flex items-center gap-2">
+            <div class="bg-blue-600 text-white w-8 h-8 rounded-lg flex items-center justify-center font-bold">✓</div>
+            <h1 class="font-bold text-sm tracking-tight leading-tight">Vazifalar<br>Boshqaruvi</h1>
+        </div>
+        <div class="flex items-center gap-2">
+            <span id="nowStamp" class="text-[10px] font-bold text-slate-400"></span>
+            <button onclick="openAdminKey()" id="adminKeyBtn" class="text-[10px] font-bold px-2 py-1 rounded border">🔑 Admin</button>
+            <a href="omad_admin.html" class="text-[10px] font-bold text-blue-500">Omad →</a>
+        </div>
+    </div>
+
+    <!-- TABS -->
+    <div id="taskTabs" class="flex gap-2 overflow-x-auto p-3 sticky top-[57px] z-30 bg-slate-100">
+        <button onclick="showTaskTab('today')" data-tab="today" class="task-tab-btn active shrink-0 px-3 py-2 rounded-xl text-xs font-bold border">📅 Bugun</button>
+        <button onclick="showTaskTab('tasks')" data-tab="tasks" class="task-tab-btn shrink-0 px-3 py-2 rounded-xl text-xs font-bold border">📝 Vazifalar</button>
+        <button onclick="showTaskTab('routines')" data-tab="routines" class="task-tab-btn shrink-0 px-3 py-2 rounded-xl text-xs font-bold border">🔁 Muntazam</button>
+        <button onclick="showTaskTab('goals')" data-tab="goals" class="task-tab-btn shrink-0 px-3 py-2 rounded-xl text-xs font-bold border">🎯 Maqsadlar</button>
+        <button onclick="showTaskTab('completed')" data-tab="completed" class="task-tab-btn shrink-0 px-3 py-2 rounded-xl text-xs font-bold border">✅ Bajarilgan</button>
+    </div>
+
+    <div id="tgWarn" class="hidden mx-4 mt-2 text-[11px] font-bold rounded-lg p-2 bg-amber-50 text-amber-700 border border-amber-100">
+        ⚠️ Telegram "Vazifalar Guruhi ID" o'rnatilmagan — vazifalar guruhga yuborilmaydi. Omad → Sozlamalar → Telegram.
+    </div>
+
+    <div class="p-4">
+        <div id="panel-today" class="tab-panel active"></div>
+        <div id="panel-tasks" class="tab-panel"></div>
+        <div id="panel-routines" class="tab-panel"></div>
+        <div id="panel-goals" class="tab-panel"></div>
+        <div id="panel-completed" class="tab-panel"></div>
+    </div>
+
+    <!-- FAB -->
+    <button onclick="openTaskForm()" class="fixed bottom-6 right-6 z-40 bg-blue-600 text-white w-14 h-14 rounded-full shadow-lg text-2xl active:scale-95 transition-transform flex items-center justify-center">+</button>
+
+    <!-- CREATE / EDIT MODAL -->
+    <div id="taskModal" class="modal-back hidden fixed inset-0 z-[100] items-end justify-center bg-black/50 backdrop-blur-sm p-3" onclick="closeTaskForm()">
+        <div class="bg-white w-full max-w-md rounded-2xl p-4 shadow-2xl max-h-[90vh] flex flex-col" onclick="event.stopPropagation()">
+            <div class="flex items-center justify-between mb-3">
+                <h3 class="font-bold text-slate-800" id="taskModalTitle">Yangi vazifa</h3>
+                <button onclick="closeTaskForm()" class="w-8 h-8 rounded-full bg-slate-100 text-slate-500"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="overflow-y-auto pr-1 space-y-3">
+                <input type="hidden" id="fId">
+                <div>
+                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Turi</label>
+                    <select id="fType" onchange="onTypeChange()" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                        <option value="once">Bir martalik vazifa</option>
+                        <option value="routine">Muntazam (takrorlanuvchi)</option>
+                        <option value="goal">Maqsad (bosqichli)</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Sarlavha</label>
+                    <input type="text" id="fTitle" maxlength="200" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white" placeholder="Vazifa nomi">
+                </div>
+                <div>
+                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Tavsif</label>
+                    <textarea id="fDesc" rows="2" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white" placeholder="Ixtiyoriy"></textarea>
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                    <div>
+                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Mas'ul</label>
+                        <input type="text" id="fResp" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white" placeholder="Ism">
+                    </div>
+                    <div>
+                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Muhimlik</label>
+                        <select id="fPriority" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                            <option value="low">Past</option>
+                            <option value="normal" selected>Oddiy</option>
+                            <option value="high">Yuqori</option>
+                            <option value="urgent">Shoshilinch</option>
+                        </select>
+                    </div>
+                </div>
+                <label class="flex items-center gap-2 text-sm font-bold text-slate-600">
+                    <input type="checkbox" id="fPhoto" class="w-4 h-4"> 📷 Rasm tasdiqi talab qilinsin
+                </label>
+
+                <!-- ONCE -->
+                <div id="grpOnce" class="grid grid-cols-2 gap-2">
+                    <div>
+                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Muddat (sana)</label>
+                        <input type="date" id="fDeadlineDate" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                    </div>
+                    <div>
+                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Vaqt</label>
+                        <input type="time" id="fDeadlineTime" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                    </div>
+                    <p class="col-span-2 text-[10px] text-slate-400">Muddatsiz qoldirish mumkin.</p>
+                </div>
+
+                <!-- ROUTINE -->
+                <div id="grpRoutine" class="hidden space-y-2">
+                    <div class="grid grid-cols-2 gap-2">
+                        <div>
+                            <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Takror</label>
+                            <select id="fFreq" onchange="onFreqChange()" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                                <option value="daily">Har kuni</option>
+                                <option value="weekly">Haftalik / hafta kunlari</option>
+                                <option value="monthly">Oylik</option>
+                                <option value="custom">Maxsus (N kunda)</option>
+                            </select>
+                        </div>
+                        <div id="grpInterval">
+                            <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase" id="intervalLabel">Interval</label>
+                            <input type="number" id="fInterval" min="1" value="1" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                        </div>
+                    </div>
+                    <div id="grpWeekdays" class="hidden">
+                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Hafta kunlari</label>
+                        <div class="flex flex-wrap gap-1" id="weekdayBoxes"></div>
+                    </div>
+                    <div id="grpMonthDay" class="hidden">
+                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Oyning kuni</label>
+                        <select id="fMonthDay" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white"></select>
+                    </div>
+                    <div class="grid grid-cols-2 gap-2">
+                        <div>
+                            <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Boshlanish</label>
+                            <input type="date" id="fStartDate" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Tugash (ixtiyoriy)</label>
+                            <input type="date" id="fEndDate" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Kunlik muddat vaqti (ixtiyoriy)</label>
+                        <input type="time" id="fDueTime" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                    </div>
+                </div>
+
+                <!-- GOAL -->
+                <div id="grpGoal" class="hidden">
+                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Bosqichlar (har qatorda bittadan)</label>
+                    <textarea id="fSteps" rows="4" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white" placeholder="Joy topish&#10;Ta'mirlash&#10;Ishga tushirish"></textarea>
+                </div>
+
+                <!-- REMINDERS -->
+                <div>
+                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Eslatma vaqtlari (HH:MM, vergul bilan)</label>
+                    <input type="text" id="fReminders" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white" placeholder="09:00, 14:00">
+                    <label id="grpRemindDaily" class="hidden flex items-center gap-2 text-[11px] font-bold text-slate-500 mt-2">
+                        <input type="checkbox" id="fRemindDaily" class="w-4 h-4"> Muddatsiz bo'lsa ham har kuni eslatilsin
+                    </label>
+                </div>
+            </div>
+
+            <div id="taskFormMsg" class="hidden text-[11px] font-bold rounded-lg p-2 mt-2"></div>
+            <button onclick="submitTaskForm()" id="taskSaveBtn" class="w-full mt-3 py-3 bg-blue-600 text-white rounded-lg text-sm font-bold shadow-md active:scale-95 transition-all">💾 Saqlash</button>
+        </div>
+    </div>
+
+    <!-- ADMIN KEY MODAL -->
+    <div id="adminModal" class="modal-back hidden fixed inset-0 z-[110] items-center justify-center bg-black/50 backdrop-blur-sm p-4" onclick="closeAdminKey()">
+        <div class="bg-white w-full max-w-xs rounded-2xl p-4 shadow-2xl" onclick="event.stopPropagation()">
+            <h3 class="font-bold text-slate-800 mb-2">Admin kaliti</h3>
+            <p class="text-[11px] text-slate-400 mb-3">Vazifalarni o'zgartirish uchun. Faqat shu qurilmada saqlanadi.</p>
+            <input type="password" id="adminKeyInput" autocomplete="off" class="w-full p-2 border rounded-lg text-sm bg-white mb-3" placeholder="OMAD_ADMIN_KEY">
+            <button onclick="saveAdminKey()" class="w-full py-2 bg-slate-800 text-white rounded-lg text-sm font-bold">Saqlash</button>
+        </div>
+    </div>
+
+    <div id="toast" class="hidden fixed bottom-24 left-1/2 -translate-x-1/2 z-[120] px-4 py-2 rounded-full text-white text-xs font-bold shadow-lg"></div>
+
+    <script src="assets/tasks/01-tasks-api.js"></script>
+    <script src="assets/tasks/02-tasks-format.js"></script>
+    <script src="assets/tasks/03-tasks-render.js"></script>
+    <script src="assets/tasks/04-tasks-app.js"></script>
+</body>
+</html>

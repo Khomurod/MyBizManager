@@ -78,6 +78,20 @@ Credentials live in Script Properties (`TELEGRAM_BOT_TOKEN`,
 Changing the backend URL means re-running the **Webhook** button, or Telegram
 keeps delivering to the old deployment.
 
+### Tasks (not yet deployed as of this change)
+
+The task-management feature (`/tasks`, see [TASKS.md](TASKS.md)) is delivered
+and tested but requires three manual operator steps before it is live:
+
+1. deploy the regenerated `script.gs` to the `…DtCA2W` deployment (new version);
+2. set **Vazifalar Guruhi ID** in Sozlamalar → Telegram (Script Property
+   `TELEGRAM_TASKS_GROUP_CHAT_ID`) and add the bot to that group;
+3. add a second time-driven trigger for **`processTaskSchedules`** (every 5
+   minutes), separate from the existing `processPendingTelegramJobs` trigger.
+
+Until step 2, task messages are simply not sent; the accounting flows are
+unaffected either way.
+
 ### Secret redaction
 
 `Telegram_Debug_Log` previously recorded the webhook verification secret,

@@ -1,0 +1,14 @@
+# Netlify configuration for the static frontend (auto-deploys `main`).
+#
+# The task-management UI lives at tasks.html; these rewrites serve it at the
+# clean /tasks path required by the feature, without changing any existing page.
+
+[[redirects]]
+  from = "/tasks"
+  to = "/tasks.html"
+  status = 200
+
+[[redirects]]
+  from = "/tasks/"
+  to = "/tasks.html"
+  status = 200

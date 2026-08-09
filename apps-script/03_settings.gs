@@ -16,6 +16,11 @@ var TELEGRAM_PROP_AUTHORIZED_USER_ID = "TELEGRAM_AUTHORIZED_USER_ID";
 
 var TELEGRAM_PROP_GROUP_CHAT_ID = "TELEGRAM_GROUP_CHAT_ID";
 
+// The Tasks group is stored alongside the reporting group, but is a distinct
+// destination: task cards, reminders and completions go here and never mix
+// with the accounting reports.
+var TELEGRAM_PROP_TASKS_GROUP_CHAT_ID = "TELEGRAM_TASKS_GROUP_CHAT_ID";
+
 var TELEGRAM_PROP_WEBHOOK_URL = "TELEGRAM_WEBHOOK_URL";
 
 var TELEGRAM_PROP_WEBHOOK_STATUS = "TELEGRAM_WEBHOOK_STATUS";
@@ -72,6 +77,11 @@ function getAuthorizedTelegramUserId_() {
 
 function getOmadGroupChatId_() {
   return getTelegramSetting_(TELEGRAM_PROP_GROUP_CHAT_ID);
+}
+
+/** The group task cards, reminders and completions are posted to. "" disables. */
+function getTasksGroupChatId_() {
+  return getTelegramSetting_(TELEGRAM_PROP_TASKS_GROUP_CHAT_ID);
 }
 
 function getOrCreateWebhookSecret_() {
@@ -167,6 +177,7 @@ function buildTelegramSettingsView_() {
     tokenConfigured: !!getBotToken_(),
     authorizedUserId: getTelegramSetting_(TELEGRAM_PROP_AUTHORIZED_USER_ID),
     groupChatId: getTelegramSetting_(TELEGRAM_PROP_GROUP_CHAT_ID),
+    tasksGroupChatId: getTelegramSetting_(TELEGRAM_PROP_TASKS_GROUP_CHAT_ID),
     webhookUrl: getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_URL),
     webhookStatus: safeParseJSON_(getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_STATUS), null),
     lastSuccess: safeParseJSON_(getTelegramSetting_(TELEGRAM_PROP_LAST_SUCCESS), null),
@@ -207,6 +218,14 @@ function saveTelegramSettings_(payload) {
   var chatError = validateTelegramChatId_(payload.groupChatId);
   if (chatError) errors.push(chatError);
 
+  // The Tasks group is optional and only validated/stored when supplied, so a
+  // legacy client that does not know about it leaves it untouched.
+  var hasTasksGroup = Object.prototype.hasOwnProperty.call(payload, "tasksGroupChatId");
+  if (hasTasksGroup) {
+    var tasksChatError = validateOptionalTelegramChatId_(payload.tasksGroupChatId);
+    if (tasksChatError) errors.push(tasksChatError);
+  }
+
   if (errors.length > 0) return { status: "error", message: errors.join(" ") };
 
   if (hasToken) {
@@ -216,6 +235,11 @@ function saveTelegramSettings_(payload) {
   setTelegramSetting_(TELEGRAM_PROP_AUTHORIZED_USER_ID, String(payload.authorizedUserId).trim());
   setTelegramSetting_(TELEGRAM_PROP_GROUP_CHAT_ID, String(payload.groupChatId).trim());
   updated.push("authorizedUserId", "groupChatId");
+  if (hasTasksGroup) {
+    // An empty value clears it, disabling the task Telegram integration.
+    setTelegramSetting_(TELEGRAM_PROP_TASKS_GROUP_CHAT_ID, String(payload.tasksGroupChatId || "").trim());
+    updated.push("tasksGroupChatId");
+  }
 
   auditTelegramSettingsChange_(updated);
   return { status: "success", settings: buildTelegramSettingsView_() };

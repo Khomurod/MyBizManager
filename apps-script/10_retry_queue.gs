@@ -234,5 +234,6 @@ function runJob_(doc, job) {
   if (job.type === "omad_transaction_report") return runOmadTransactionReportJob_(doc, job);
   if (job.type === "omad_transaction_delete_report") return runOmadDeleteReportJob_(job);
   if (job.type === "cafe_close_day_report") return runCafeCloseDayReportJob_(job);
+  if (isTaskJobType_(job.type)) return runTaskJob_(doc, job);
   throw new Error("Unknown job type: " + job.type);
 }

@@ -69,6 +69,8 @@ function renderTelegramSettings(settings, botInfo) {
     if (userInput && !userInput.value) userInput.value = s.authorizedUserId || "";
     const groupInput = document.getElementById('tgGroupChatId');
     if (groupInput && !groupInput.value) groupInput.value = s.groupChatId || "";
+    const tasksGroupInput = document.getElementById('tgTasksGroupChatId');
+    if (tasksGroupInput && !tasksGroupInput.value) tasksGroupInput.value = s.tasksGroupChatId || "";
     const hookInput = document.getElementById('tgWebhookUrl');
     if (hookInput && !hookInput.value) hookInput.value = s.webhookUrl || GOOGLE_APP_URL.trim();
 }
@@ -110,10 +112,14 @@ async function tgAdminAction(payload, successText) {
 
 async function saveTelegramSettings() {
     const tokenInput = document.getElementById('tgBotToken');
+    const tasksGroupInput = document.getElementById('tgTasksGroupChatId');
     const payload = {
         action: 'save_telegram_settings',
         authorizedUserId: document.getElementById('tgAuthorizedUserId').value.trim(),
-        groupChatId: document.getElementById('tgGroupChatId').value.trim()
+        groupChatId: document.getElementById('tgGroupChatId').value.trim(),
+        // The field is pre-filled with the stored value on load, so sending it
+        // unconditionally never clears a value the admin did not touch.
+        tasksGroupChatId: tasksGroupInput ? tasksGroupInput.value.trim() : ''
     };
     const token = tokenInput.value.trim();
     if (token) payload.botToken = token;

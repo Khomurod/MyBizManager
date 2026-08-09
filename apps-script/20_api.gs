@@ -26,7 +26,18 @@ function doPost(e) {
         debugLog_(doc, "telegram_webhook_rejected", "missing or invalid webhook secret");
         return okHtmlOutput_();
       }
+      // Task callbacks and Tasks-group photo/reply messages are handled in
+      // their own namespace, entirely separate from the private /yangi flow.
+      // Everything else falls through to the accounting handler unchanged.
+      if (isTaskTelegramUpdate_(payload)) {
+        return handleTaskTelegramUpdate_(payload, doc, configSheet);
+      }
       return handleOmadTelegramUpdate_(payload, doc, configSheet);
+    }
+
+    // ---- Task management --------------------------------------------------
+    if (isTaskAction_(action)) {
+      return handleTaskAction_(action, payload, doc);
     }
 
     // ---- Omad ledger ------------------------------------------------------
@@ -122,6 +133,14 @@ function doGet(e) {
 
   if (action === 'get_cafe') {
     return jsonOutput_(readCafeState_(doc, configSheet));
+  }
+
+  if (action === 'get_tasks') {
+    return jsonOutput_({
+      status: "success",
+      view: buildTaskViews_(doc, Date.now()),
+      config: { tasksGroupConfigured: !!getTasksGroupChatId_() }
+    });
   }
 
   return ContentService.createTextOutput("System Database is Active.");

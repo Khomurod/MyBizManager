@@ -43,7 +43,7 @@ function enforceRateLimit_(bucketKey, maxCalls, windowSeconds) {
 }
 
 function validateTelegramPayloadLengths_(payload) {
-  var fields = ["adminKey", "botToken", "authorizedUserId", "groupChatId", "webhookUrl"];
+  var fields = ["adminKey", "botToken", "authorizedUserId", "groupChatId", "tasksGroupChatId", "webhookUrl"];
   for (var i = 0; i < fields.length; i++) {
     var value = payload && payload[fields[i]];
     if (value !== undefined && value !== null && String(value).length > TELEGRAM_MAX_FIELD_LENGTH) {
@@ -75,6 +75,13 @@ function validateTelegramChatId_(chatId) {
   if (/^@[A-Za-z0-9_]{4,}$/.test(value)) return "";
   if (!/^-?\d{1,20}$/.test(value)) return "Guruh ID raqam (masalan -1001234567890) yoki @username bo'lishi kerak.";
   return "";
+}
+
+/** Like validateTelegramChatId_ but an empty value is allowed (clears it). */
+function validateOptionalTelegramChatId_(chatId) {
+  var value = String(chatId || "").trim();
+  if (!value) return "";
+  return validateTelegramChatId_(value);
 }
 
 // 5e. BUSINESS REPORT JOBS
