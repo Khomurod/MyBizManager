@@ -2023,10 +2023,16 @@ function telegramFetch_(method, body) {
   return response;
 }
 
-function sendTelegramMessage_(chatId, text, replyMarkup, parseMode) {
+function sendTelegramMessage_(chatId, text, replyMarkup, parseMode, options) {
   var body = { chat_id: chatId, text: text };
   if (replyMarkup) body.reply_markup = replyMarkup;
   if (parseMode) body.parse_mode = parseMode;
+  if (options && options.replyToMessageId) {
+    body.reply_to_message_id = Number(options.replyToMessageId) || options.replyToMessageId;
+    // The card can have been deleted; a prompt that cannot attach itself is
+    // still better than no prompt at all.
+    body.allow_sending_without_reply = true;
+  }
   return telegramFetch_("sendMessage", body);
 }
 
@@ -2578,7 +2584,7 @@ function completeJob_(sheet, job) {
   writeJobField_(sheet, job.rowNumber, 10, new Date().toISOString());
 }
 
-function failJob_(sheet, job, error) {
+function failJob_(sheet, job, error, doc) {
   var attempts = job.attempts + 1;
   var exhausted = attempts >= JOB_MAX_ATTEMPTS;
   var delaySeconds = JOB_RETRY_BASE_SECONDS * Math.pow(2, Math.max(0, attempts - 1));
@@ -2586,7 +2592,19 @@ function failJob_(sheet, job, error) {
   writeJobField_(sheet, job.rowNumber, 6, attempts);
   writeJobField_(sheet, job.rowNumber, 7, new Date(new Date().getTime() + delaySeconds * 1000).toISOString());
   writeJobField_(sheet, job.rowNumber, 8, redactSecrets_(error).slice(0, 500));
-  if (exhausted) writeJobField_(sheet, job.rowNumber, 10, new Date().toISOString());
+  if (exhausted) {
+    writeJobField_(sheet, job.rowNumber, 10, new Date().toISOString());
+    // Some jobs leave state behind that only makes sense while they are still
+    // going to be retried.
+    if (doc) {
+      try { onJobPermanentlyFailed_(doc, job); } catch (hookError) {}
+    }
+  }
+}
+
+/** Last-chance cleanup when a job will never be attempted again. */
+function onJobPermanentlyFailed_(doc, job) {
+  if (job.type === "task_proof_prompt") releaseStuckProofPrompt_(doc, job);
 }
 
 function processPendingJobs_(doc, maxJobs) {
@@ -2599,7 +2617,7 @@ function processPendingJobs_(doc, maxJobs) {
       completeJob_(job.sheet, job);
       processed++;
     } catch (error) {
-      failJob_(job.sheet, job, error);
+      failJob_(job.sheet, job, error, doc);
     }
   }
   return processed;
@@ -5251,6 +5269,20 @@ function buildTaskStatusMessage_(occ, nowMs) {
   return buildTaskOccurrenceMessage_(occ);
 }
 
+/**
+ * The ForceReply prompt asking one named person for the proof photo.
+ *
+ * Titles are capped at 200 characters upstream, so nothing here is truncated -
+ * slicing an HTML string could cut an entity in half.
+ */
+function buildTaskProofPromptMessage_(occ, options) {
+  var name = escapeTelegramHtml_((options && options.userName) || occ.completedByName || "");
+  var id = options && options.userId ? String(options.userId) : "";
+  var mention = id ? '<a href="tg://user?id=' + id + '">' + name + '</a>' : name;
+  return "📷 " + mention + ", \"" + escapeTelegramHtml_(occ.title) +
+    "\" ni tasdiqlash uchun shu xabarga javob (reply) qilib rasm yuboring.";
+}
+
 // ------------------------------------------------------------- completion
 
 /**
@@ -5273,6 +5305,8 @@ function completeTaskOccurrence_(doc, occ, options) {
   if (opts.proofMsgId) occ.proofMsgId = String(opts.proofMsgId);
   occ.meta = occ.meta || {};
   occ.meta.source = opts.source || "telegram";
+  // A stale prompt pointer must not be able to match a later photo.
+  occ.meta.proofPromptMsgId = "";
 
   if (occ.dueAt !== "" && isFinite(occ.dueAt)) {
     if (nowMs > occ.dueAt) { occ.onTime = false; occ.lateMs = nowMs - occ.dueAt; }
@@ -5374,21 +5408,35 @@ function handleTaskCallback_(callback, doc) {
   if (occ.status === TASK_STATUS_SKIPPED) { answerCallbackQuery_(callback.id, "Bu vazifa o'tkazib yuborilgan."); return; }
 
   var from = callback.from || {};
+
+  if (occ.status === TASK_STATUS_WAITING) {
+    // The proof is somebody's to deliver. A second presser must not be able to
+    // take the task from them, or to overwrite who is recorded as doing it.
+    if (String(occ.proofAwaitingUserId) === String(from.id)) {
+      enqueueTaskJob_(doc, "task_proof_prompt", occ.id, {
+        occurrenceId: occ.id, userId: String(from.id), userName: taskDisplayName_(from)
+      });
+      answerCallbackQuery_(callback.id, "📷 Rasm kutilmoqda — so'ralgan xabarga javob qiling.");
+    } else {
+      answerCallbackQuery_(callback.id,
+        (occ.completedByName || "Boshqa foydalanuvchi") + " tasdiqlamoqda.");
+    }
+    return;
+  }
+
   if (occ.photoRequired) {
     occ.status = TASK_STATUS_WAITING;
     occ.proofAwaitingUserId = String(from.id || "");
-    occ.completedByName = taskDisplayName_(from); // provisional; confirmed on proof
+    occ.completedByName = taskDisplayName_(from);   // provisional; confirmed on proof
+    occ.meta = occ.meta || {};
+    occ.meta.proofPromptMsgId = "";
+    occ.meta.proofRequestedAt = new Date().toISOString();
     writeOccurrenceRow_(doc, occ);
-    answerCallbackQuery_(callback.id, "📷 Iltimos, rasm yuboring.");
-    try {
-      var prompt = sendTelegramMessage_(getTasksGroupChatId_(),
-        "📷 " + taskDisplayName_(from) + ", \"" + occ.title +
-        "\" ni tasdiqlash uchun shu yerga rasm (foto) yuboring.");
-      var promptId = extractTelegramMessageId_(prompt);
-      if (promptId) { occ.meta = occ.meta || {}; occ.meta.proofPromptMsgId = String(promptId); writeOccurrenceRow_(doc, occ); }
-    } catch (error) {
-      debugLog_(doc, "task_proof_prompt_failed", String(error));
-    }
+
+    enqueueTaskJob_(doc, "task_proof_prompt", occ.id, {
+      occurrenceId: occ.id, userId: String(from.id || ""), userName: taskDisplayName_(from)
+    });
+    answerCallbackQuery_(callback.id, "📷 Iltimos, so'ralgan xabarga rasm bilan javob bering.");
     if (occ.msgId) enqueueTaskJob_(doc, "task_update_message", occ.id, { occurrenceId: occ.id });
     return;
   }
@@ -5399,31 +5447,44 @@ function handleTaskCallback_(callback, doc) {
   answerCallbackQuery_(callback.id, "✅ Bajarildi.");
 }
 
+/**
+ * A photo in the Tasks group.
+ *
+ * Proof is only proof of the thing that was asked for: the photo has to be a
+ * reply to that occurrence's prompt (or to its card), and it has to come from
+ * the person who claimed it. Guessing "probably their most recent pending
+ * task" is how an unrelated photo silently completed the wrong job.
+ */
 function handleTaskGroupMessage_(message, doc) {
-  if (!message.photo || !message.photo.length) return; // only photos complete a proof
+  if (!message.photo || !message.photo.length) return;
   var from = message.from || {};
-  var candidates = [];
+  var replyTo = message.reply_to_message ? String(message.reply_to_message.message_id) : "";
+
+  var pendingForUser = 0;
+  var target = null;
+  var claimedByOther = null;
   var rows = readOccurrenceRows_(doc);
   for (var i = 0; i < rows.length; i++) {
-    if (rows[i].status !== TASK_STATUS_WAITING) continue;
-    if (String(rows[i].proofAwaitingUserId) !== String(from.id)) continue;
-    candidates.push(rows[i]);
+    var occ = rows[i];
+    if (occ.status !== TASK_STATUS_WAITING) continue;
+    if (String(occ.proofAwaitingUserId) === String(from.id)) pendingForUser++;
+    if (!replyTo) continue;
+    var meta = occ.meta || {};
+    var answersThis = String(meta.proofPromptMsgId || "") === replyTo || String(occ.msgId || "") === replyTo;
+    if (!answersThis) continue;
+    if (String(occ.proofAwaitingUserId) === String(from.id)) target = occ;
+    else claimedByOther = occ;
   }
-  if (!candidates.length) return; // no awaiting proof for this user — ignore
 
-  var replyTo = message.reply_to_message ? String(message.reply_to_message.message_id) : "";
-  var target = null;
-  if (replyTo) {
-    for (var j = 0; j < candidates.length; j++) {
-      var meta = candidates[j].meta || {};
-      if (String(candidates[j].msgId) === replyTo || String(meta.proofPromptMsgId) === replyTo) {
-        target = candidates[j]; break;
-      }
-    }
-  }
   if (!target) {
-    candidates.sort(function (a, b) { return String(b.updatedAt).localeCompare(String(a.updatedAt)); });
-    target = candidates[0];
+    if (claimedByOther) {
+      trySendTaskGroupMessage_(doc, "⚠️ Bu vazifani " +
+        (claimedByOther.completedByName || "boshqa foydalanuvchi") + " tasdiqlamoqda.");
+    } else if (pendingForUser > 0) {
+      trySendTaskGroupMessage_(doc,
+        "⚠️ Rasmni qabul qilish uchun so'ralgan xabarga javob (reply) qilib yuboring.");
+    }
+    return;   // an unrelated photo is just a photo
   }
 
   var largest = message.photo[message.photo.length - 1] || {};
@@ -5434,12 +5495,17 @@ function handleTaskGroupMessage_(message, doc) {
     proofFileId: largest.file_id || "",
     proofMsgId: message.message_id
   });
+  trySendTaskGroupMessage_(doc, "✅ Rasm qabul qilindi — \"" + target.title + "\" bajarildi.");
+}
 
+/** Group chatter is never worth failing a webhook over. */
+function trySendTaskGroupMessage_(doc, text) {
+  var chatId = getTasksGroupChatId_();
+  if (!chatId) return;
   try {
-    sendTelegramMessage_(getTasksGroupChatId_(),
-      "✅ Rasm qabul qilindi — \"" + target.title + "\" bajarildi.");
+    sendTelegramMessage_(chatId, text);
   } catch (error) {
-    debugLog_(doc, "task_proof_ack_failed", String(error));
+    debugLog_(doc, "task_group_notice_failed", String(error));
   }
 }
 
@@ -5461,20 +5527,75 @@ function handleTaskGroupMessage_(message, doc) {
 // ============================================================
 
 var TASK_REMINDER_MAX_LATE_MS = 3 * 60 * 60 * 1000; // don't blast reminders missed by >3h
+var TASK_PROOF_PROMPT_TIMEOUT_MS = 30 * 60 * 1000;  // a claim whose prompt never went out
 
 function enqueueTaskJob_(doc, type, relatedId, payload) {
   return enqueueJob_(doc, type, relatedId, payload || {});
 }
 
 function isTaskJobType_(type) {
-  return type === "task_notify" || type === "task_reminder" || type === "task_update_message";
+  return type === "task_notify" || type === "task_reminder" ||
+    type === "task_update_message" || type === "task_proof_prompt";
 }
 
 function runTaskJob_(doc, job) {
   if (job.type === "task_notify") return runTaskNotifyJob_(doc, job);
   if (job.type === "task_reminder") return runTaskReminderJob_(doc, job);
   if (job.type === "task_update_message") return runTaskUpdateMessageJob_(doc, job);
+  if (job.type === "task_proof_prompt") return runTaskProofPromptJob_(doc, job);
   throw new Error("Unknown task job type: " + job.type);
+}
+
+/**
+ * Asks the user who claimed a photo-proof task to reply with the photo.
+ *
+ * ForceReply with `selective` plus a mention targets exactly that person, so
+ * the reply the group is asked for is unambiguous and the photo that comes
+ * back can be matched to this prompt and no other. Sending it as a job means a
+ * Telegram outage retries with the queue's backoff instead of leaving the
+ * occurrence waiting for a message that was never delivered.
+ */
+function runTaskProofPromptJob_(doc, job) {
+  var chatId = getTasksGroupChatId_();
+  if (!chatId) throw new Error("Telegram Tasks group ID o'rnatilmagan.");
+  var occ = findOccurrence_(doc, String(job.payload.occurrenceId || ""));
+  if (!occ) return;
+  if (occ.status !== TASK_STATUS_WAITING) return;                                  // already resolved
+  if (String(occ.proofAwaitingUserId) !== String(job.payload.userId || "")) return; // superseded
+
+  var sent = sendTelegramMessage_(
+    chatId,
+    buildTaskProofPromptMessage_(occ, job.payload),
+    { force_reply: true, selective: true },
+    "HTML",
+    { replyToMessageId: occ.msgId }
+  );
+  var promptId = extractTelegramMessageId_(sent);
+  if (promptId) {
+    occ.meta = occ.meta || {};
+    occ.meta.proofPromptMsgId = String(promptId);
+    writeOccurrenceRow_(doc, occ);
+  }
+}
+
+/**
+ * Puts an occurrence back the way it was when the prompt asking for its photo
+ * could not be delivered. Waiting for a photo nobody was ever asked for is a
+ * lie the group cannot act on.
+ */
+function releaseStuckProofPrompt_(doc, job) {
+  var occ = findOccurrence_(doc, String((job.payload || {}).occurrenceId || ""));
+  if (!occ || occ.status !== TASK_STATUS_WAITING) return;
+  if (occ.meta && occ.meta.proofPromptMsgId) return;   // it did go out
+  occ.status = TASK_STATUS_OPEN;
+  occ.proofAwaitingUserId = "";
+  occ.completedByName = "";
+  occ.meta = occ.meta || {};
+  occ.meta.proofPromptMsgId = "";
+  occ.meta.proofRequestedAt = "";
+  writeOccurrenceRow_(doc, occ);
+  appendAuditRow_(doc, "task_proof_prompt_released", occ.id);
+  if (occ.msgId) enqueueTaskJob_(doc, "task_update_message", occ.id, { occurrenceId: occ.id });
 }
 
 function runTaskNotifyJob_(doc, job) {
@@ -5524,10 +5645,12 @@ function runTaskUpdateMessageJob_(doc, job) {
   var occ = findOccurrence_(doc, String(job.payload.occurrenceId || ""));
   if (!occ || !occ.msgId) return;
 
-  var isEndState = occ.status === TASK_STATUS_COMPLETED || occ.status === TASK_STATUS_CANCELLED ||
-    occ.status === TASK_STATUS_SKIPPED;
+  // The button is live only while the task is genuinely open. While a proof is
+  // pending it belongs to one person, and pressing it again is not how they
+  // deliver it.
+  var showButton = occ.status === TASK_STATUS_OPEN;
   editTelegramMessage_(chatId, occ.msgId, buildTaskStatusMessage_(occ, Date.now()),
-    isEndState ? taskClearedMarkup_() : taskDoneMarkup_(occ.id));
+    showButton ? taskDoneMarkup_(occ.id) : taskClearedMarkup_());
 }
 
 // ---------------------------------------------------------------- scheduler
@@ -5590,6 +5713,17 @@ function runTaskScheduler_(doc, nowMs) {
       // A paused (or cancelled, or orphaned) definition goes quiet immediately,
       // including for occurrences that were materialised before the pause.
       if (!isTaskSendable_(statusByTaskId[occ.taskId])) continue;
+
+      // Backstop: a claim whose prompt never made it out, and whose job is gone
+      // (queue row purged, script killed mid-flight). 30 minutes is comfortably
+      // past the queue's own retry ladder, so this never races it.
+      if (occ.status === TASK_STATUS_WAITING && !(occ.meta && occ.meta.proofPromptMsgId)) {
+        var requestedAt = Date.parse((occ.meta && occ.meta.proofRequestedAt) || "") || 0;
+        if (requestedAt && now - requestedAt > TASK_PROOF_PROMPT_TIMEOUT_MS) {
+          releaseStuckProofPrompt_(doc, { payload: { occurrenceId: occ.id } });
+          continue;
+        }
+      }
 
       // Announce.
       if (!occ.notifiedAt && occ.status === TASK_STATUS_OPEN) {

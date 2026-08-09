@@ -14,20 +14,75 @@
 // ============================================================
 
 var TASK_REMINDER_MAX_LATE_MS = 3 * 60 * 60 * 1000; // don't blast reminders missed by >3h
+var TASK_PROOF_PROMPT_TIMEOUT_MS = 30 * 60 * 1000;  // a claim whose prompt never went out
 
 function enqueueTaskJob_(doc, type, relatedId, payload) {
   return enqueueJob_(doc, type, relatedId, payload || {});
 }
 
 function isTaskJobType_(type) {
-  return type === "task_notify" || type === "task_reminder" || type === "task_update_message";
+  return type === "task_notify" || type === "task_reminder" ||
+    type === "task_update_message" || type === "task_proof_prompt";
 }
 
 function runTaskJob_(doc, job) {
   if (job.type === "task_notify") return runTaskNotifyJob_(doc, job);
   if (job.type === "task_reminder") return runTaskReminderJob_(doc, job);
   if (job.type === "task_update_message") return runTaskUpdateMessageJob_(doc, job);
+  if (job.type === "task_proof_prompt") return runTaskProofPromptJob_(doc, job);
   throw new Error("Unknown task job type: " + job.type);
+}
+
+/**
+ * Asks the user who claimed a photo-proof task to reply with the photo.
+ *
+ * ForceReply with `selective` plus a mention targets exactly that person, so
+ * the reply the group is asked for is unambiguous and the photo that comes
+ * back can be matched to this prompt and no other. Sending it as a job means a
+ * Telegram outage retries with the queue's backoff instead of leaving the
+ * occurrence waiting for a message that was never delivered.
+ */
+function runTaskProofPromptJob_(doc, job) {
+  var chatId = getTasksGroupChatId_();
+  if (!chatId) throw new Error("Telegram Tasks group ID o'rnatilmagan.");
+  var occ = findOccurrence_(doc, String(job.payload.occurrenceId || ""));
+  if (!occ) return;
+  if (occ.status !== TASK_STATUS_WAITING) return;                                  // already resolved
+  if (String(occ.proofAwaitingUserId) !== String(job.payload.userId || "")) return; // superseded
+
+  var sent = sendTelegramMessage_(
+    chatId,
+    buildTaskProofPromptMessage_(occ, job.payload),
+    { force_reply: true, selective: true },
+    "HTML",
+    { replyToMessageId: occ.msgId }
+  );
+  var promptId = extractTelegramMessageId_(sent);
+  if (promptId) {
+    occ.meta = occ.meta || {};
+    occ.meta.proofPromptMsgId = String(promptId);
+    writeOccurrenceRow_(doc, occ);
+  }
+}
+
+/**
+ * Puts an occurrence back the way it was when the prompt asking for its photo
+ * could not be delivered. Waiting for a photo nobody was ever asked for is a
+ * lie the group cannot act on.
+ */
+function releaseStuckProofPrompt_(doc, job) {
+  var occ = findOccurrence_(doc, String((job.payload || {}).occurrenceId || ""));
+  if (!occ || occ.status !== TASK_STATUS_WAITING) return;
+  if (occ.meta && occ.meta.proofPromptMsgId) return;   // it did go out
+  occ.status = TASK_STATUS_OPEN;
+  occ.proofAwaitingUserId = "";
+  occ.completedByName = "";
+  occ.meta = occ.meta || {};
+  occ.meta.proofPromptMsgId = "";
+  occ.meta.proofRequestedAt = "";
+  writeOccurrenceRow_(doc, occ);
+  appendAuditRow_(doc, "task_proof_prompt_released", occ.id);
+  if (occ.msgId) enqueueTaskJob_(doc, "task_update_message", occ.id, { occurrenceId: occ.id });
 }
 
 function runTaskNotifyJob_(doc, job) {
@@ -77,10 +132,12 @@ function runTaskUpdateMessageJob_(doc, job) {
   var occ = findOccurrence_(doc, String(job.payload.occurrenceId || ""));
   if (!occ || !occ.msgId) return;
 
-  var isEndState = occ.status === TASK_STATUS_COMPLETED || occ.status === TASK_STATUS_CANCELLED ||
-    occ.status === TASK_STATUS_SKIPPED;
+  // The button is live only while the task is genuinely open. While a proof is
+  // pending it belongs to one person, and pressing it again is not how they
+  // deliver it.
+  var showButton = occ.status === TASK_STATUS_OPEN;
   editTelegramMessage_(chatId, occ.msgId, buildTaskStatusMessage_(occ, Date.now()),
-    isEndState ? taskClearedMarkup_() : taskDoneMarkup_(occ.id));
+    showButton ? taskDoneMarkup_(occ.id) : taskClearedMarkup_());
 }
 
 // ---------------------------------------------------------------- scheduler
@@ -143,6 +200,17 @@ function runTaskScheduler_(doc, nowMs) {
       // A paused (or cancelled, or orphaned) definition goes quiet immediately,
       // including for occurrences that were materialised before the pause.
       if (!isTaskSendable_(statusByTaskId[occ.taskId])) continue;
+
+      // Backstop: a claim whose prompt never made it out, and whose job is gone
+      // (queue row purged, script killed mid-flight). 30 minutes is comfortably
+      // past the queue's own retry ladder, so this never races it.
+      if (occ.status === TASK_STATUS_WAITING && !(occ.meta && occ.meta.proofPromptMsgId)) {
+        var requestedAt = Date.parse((occ.meta && occ.meta.proofRequestedAt) || "") || 0;
+        if (requestedAt && now - requestedAt > TASK_PROOF_PROMPT_TIMEOUT_MS) {
+          releaseStuckProofPrompt_(doc, { payload: { occurrenceId: occ.id } });
+          continue;
+        }
+      }
 
       // Announce.
       if (!occ.notifiedAt && occ.status === TASK_STATUS_OPEN) {
