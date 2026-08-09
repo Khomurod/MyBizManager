@@ -55,6 +55,82 @@ test('an empty Tasks group id clears it (disables task Telegram integration)', (
   assert.strictEqual(gas.__properties.TELEGRAM_TASKS_GROUP_CHAT_ID, undefined);
 });
 
+test('an @username Tasks group id is rejected', () => {
+  // Incoming callbacks and photos only ever carry the numeric chat.id, so an
+  // @username would send fine and then match nothing at all.
+  const gas = loadScript({ properties: base() });
+  const body = readJsonOutput(gas.doPost(postEvent({
+    action: 'save_telegram_settings', adminKey: ADMIN_KEY,
+    authorizedUserId: '111222333', groupChatId: '-1001234567890', tasksGroupChatId: '@mygroup'
+  })));
+  assert.strictEqual(body.status, 'error');
+  assert.match(body.message, /@username/);
+  assert.strictEqual(gas.__properties.TELEGRAM_TASKS_GROUP_CHAT_ID, undefined);
+});
+
+test('the reporting group still accepts an @username', () => {
+  // It is a send-only destination, and it is already configured live.
+  const gas = loadScript({ properties: base() });
+  const body = readJsonOutput(gas.doPost(postEvent({
+    action: 'save_telegram_settings', adminKey: ADMIN_KEY,
+    authorizedUserId: '111222333', groupChatId: '@omadgroup'
+  })));
+  assert.strictEqual(body.status, 'success');
+  assert.strictEqual(gas.__properties.TELEGRAM_GROUP_CHAT_ID, '@omadgroup');
+});
+
+test('a legacy @username already in Script Properties reads as unconfigured', () => {
+  const gas = loadScript({ properties: base({ TELEGRAM_TASKS_GROUP_CHAT_ID: '@old' }) });
+  assert.strictEqual(gas.getTasksGroupChatId_(), '');
+
+  const body = readJsonOutput(gas.doPost(postEvent({ action: 'get_tasks', adminKey: ADMIN_KEY })));
+  assert.strictEqual(body.config.tasksGroupConfigured, false);
+
+  assert.strictEqual(gas.isTaskTelegramUpdate_({
+    message: { chat: { id: -1009998887777 }, photo: [{ file_id: 'x' }] }
+  }), false, 'nothing is claimed while the id is unusable');
+
+  // It stays visible on the settings page so it can be corrected.
+  assert.strictEqual(gas.buildTelegramSettingsView_().tasksGroupChatId, '@old');
+  assert.strictEqual(gas.buildTelegramSettingsView_().tasksGroupChatIdUsable, false);
+});
+
+test('saving, sending and callbacks agree on one id', () => {
+  const gas = loadScript({ properties: base() });
+  const doc = gas.__spreadsheet;
+
+  readJsonOutput(gas.doPost(postEvent({
+    action: 'save_telegram_settings', adminKey: ADMIN_KEY,
+    authorizedUserId: '111222333', groupChatId: '-1001234567890', tasksGroupChatId: '-1009998887777'
+  })));
+
+  const result = gas.normalizeTaskInput_({ type: 'once', title: 'Ish' }, null);
+  gas.appendTaskRow_(doc, result.task);
+  gas.materializeTaskOccurrences_(doc, result.task, Date.now());
+  gas.runTaskScheduler_(doc, Date.now());
+  gas.processPendingJobs_(doc, 25);
+
+  const card = gas.__sentMessages.find(m => /Yangi vazifa/.test(m.text));
+  assert.ok(card, 'the card went out');
+  assert.strictEqual(String(card.chat_id), '-1009998887777');
+
+  const occ = gas.readOccurrenceRows_(doc)[0];
+  const callback = chatId => ({
+    callback_query: {
+      id: 'cb', data: 't_done:' + occ.id, from: { id: 42, first_name: 'Ali' },
+      message: { chat: { id: chatId, type: 'supergroup' }, message_id: 555 }
+    }
+  });
+
+  gas.doPost(postEvent(callback(-1002222222222)));
+  assert.strictEqual(gas.findOccurrence_(doc, occ.id).status, gas.TASK_STATUS_OPEN,
+    'a callback from another chat is refused');
+
+  gas.doPost(postEvent(callback(-1009998887777)));
+  assert.strictEqual(gas.findOccurrence_(doc, occ.id).status, gas.TASK_STATUS_COMPLETED,
+    'a callback from the configured numeric chat is accepted');
+});
+
 test('an invalid Tasks group id is rejected and nothing is written', () => {
   const gas = loadScript({ properties: base() });
   const body = readJsonOutput(gas.doPost(postEvent({

@@ -480,6 +480,29 @@ function validateOptionalTelegramChatId_(chatId) {
   return validateTelegramChatId_(value);
 }
 
+/**
+ * The Tasks group id must be the numeric chat id.
+ *
+ * Unlike the reporting group - which is only ever a send target - the Tasks
+ * group is also compared against `chat.id` on every incoming callback and
+ * photo, and Telegram only ever sends the number. An @username would send
+ * fine and then silently match nothing.
+ */
+function validateTasksGroupChatId_(chatId) {
+  var value = String(chatId || "").trim();
+  if (!value) return "Vazifalar guruhi ID kiritilmagan.";
+  if (!/^-?\d{1,20}$/.test(value)) {
+    return "Vazifalar guruhi ID raqam bo'lishi kerak (masalan -1001234567890). @username qo'llab-quvvatlanmaydi.";
+  }
+  return "";
+}
+
+/** Like validateTasksGroupChatId_ but empty is allowed (clears it). */
+function validateOptionalTasksGroupChatId_(chatId) {
+  var value = String(chatId || "").trim();
+  return value ? validateTasksGroupChatId_(value) : "";
+}
+
 // 5e. BUSINESS REPORT JOBS
 // ------------------------------------------
 // The browser submits a business operation. The message text is composed here,
@@ -584,9 +607,15 @@ function getOmadGroupChatId_() {
   return getTelegramSetting_(TELEGRAM_PROP_GROUP_CHAT_ID);
 }
 
-/** The group task cards, reminders and completions are posted to. "" disables. */
+/**
+ * The group task cards, reminders and completions are posted to, in the one
+ * form everything can agree on: the numeric chat id. A legacy or hand-edited
+ * non-numeric value reads as "not configured" rather than half-working - the
+ * settings page still shows what is stored so it can be corrected. "" disables.
+ */
 function getTasksGroupChatId_() {
-  return getTelegramSetting_(TELEGRAM_PROP_TASKS_GROUP_CHAT_ID);
+  var value = String(getTelegramSetting_(TELEGRAM_PROP_TASKS_GROUP_CHAT_ID) || "").trim();
+  return /^-?\d{1,20}$/.test(value) ? value : "";
 }
 
 function getOrCreateWebhookSecret_() {
@@ -682,7 +711,10 @@ function buildTelegramSettingsView_() {
     tokenConfigured: !!getBotToken_(),
     authorizedUserId: getTelegramSetting_(TELEGRAM_PROP_AUTHORIZED_USER_ID),
     groupChatId: getTelegramSetting_(TELEGRAM_PROP_GROUP_CHAT_ID),
+    // The raw stored value, so a bad legacy one stays visible and fixable...
     tasksGroupChatId: getTelegramSetting_(TELEGRAM_PROP_TASKS_GROUP_CHAT_ID),
+    // ...alongside whether anything will actually use it.
+    tasksGroupChatIdUsable: !!getTasksGroupChatId_(),
     webhookUrl: getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_URL),
     webhookStatus: safeParseJSON_(getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_STATUS), null),
     lastSuccess: safeParseJSON_(getTelegramSetting_(TELEGRAM_PROP_LAST_SUCCESS), null),
@@ -727,7 +759,7 @@ function saveTelegramSettings_(payload) {
   // legacy client that does not know about it leaves it untouched.
   var hasTasksGroup = Object.prototype.hasOwnProperty.call(payload, "tasksGroupChatId");
   if (hasTasksGroup) {
-    var tasksChatError = validateOptionalTelegramChatId_(payload.tasksGroupChatId);
+    var tasksChatError = validateOptionalTasksGroupChatId_(payload.tasksGroupChatId);
     if (tasksChatError) errors.push(tasksChatError);
   }
 
