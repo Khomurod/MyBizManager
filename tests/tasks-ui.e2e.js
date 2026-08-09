@@ -175,4 +175,38 @@ describe('Tasks UI (browser)', () => {
     assert.strictEqual(saves[0].adminKey, ADMIN_KEY);
     await context.close();
   });
+
+  test('editing a task locks the type select', async () => {
+    const { page, context, backendRequests } = await open();
+    await page.click('[data-tab="routines"]');
+    await page.click('button:has-text("Tahrirlash")');
+    await page.waitForSelector('#taskModal:not(.hidden)');
+
+    assert.strictEqual(await page.isDisabled('#fType'), true, 'the type cannot be changed');
+    assert.strictEqual(await page.isVisible('#typeLockNote'), true);
+
+    await page.click('#taskSaveBtn');
+    await page.waitForTimeout(300);
+
+    const saves = backendRequests.filter(r => r.action === 'save_task');
+    assert.ok(saves.length >= 1);
+    assert.strictEqual(saves[0].id, 't1');
+    assert.strictEqual(saves[0].type, 'routine', 'the submitted type still matches the stored one');
+    await context.close();
+  });
+
+  test('the upcoming section offers no completion button', async () => {
+    const view = mockView();
+    view.today.upcoming = [{
+      id: 'up1', taskId: 't1', title: 'Kelgusi ish', displayStatus: 'Open',
+      priority: 'normal', dueLabel: '15.08.2026', dateKey: '2026-08-15', photoRequired: false
+    }];
+    const { page, context } = await open({ view });
+
+    const html = await page.innerHTML('#panel-today');
+    assert.ok(html.includes('Kelgusi ish'), 'the upcoming item is shown');
+    assert.ok(!html.includes("tasksCompleteOcc('up1')"), 'future work is not completable from the list');
+    assert.ok(html.includes("tasksSkip('up1'"), 'it can still be skipped, with its date passed through');
+    await context.close();
+  });
 });

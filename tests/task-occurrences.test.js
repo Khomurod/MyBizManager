@@ -203,3 +203,54 @@ test('routine streak and completion rate reflect history', () => {
   assert.strictEqual(summary.stats.completed, 3);
   assert.strictEqual(summary.stats.completionRate, 75); // 3 of 4 counted
 });
+
+// ---------------------------------------------- today is not a miss yet
+
+/**
+ * Three completed days plus today, with today in the given state. Today used
+ * to be counted as a failure the moment it existed, so a perfect routine
+ * showed a streak of 0 all morning.
+ */
+function streakWithToday(gas, doc, todayStatus, dueTime) {
+  const payload = {
+    type: 'routine', title: 'Streaky', startKey: '2026-08-07', recurrence: { freq: 'daily' }
+  };
+  if (dueTime) payload.dueTime = dueTime;
+  const task = makeTask(gas, payload);
+
+  [['2026-08-07', gas.TASK_STATUS_COMPLETED],
+   ['2026-08-08', gas.TASK_STATUS_COMPLETED],
+   ['2026-08-09', gas.TASK_STATUS_COMPLETED],
+   [TODAY, todayStatus]].forEach(([key, status]) => {
+    const occ = gas.buildOccurrenceForRoutine_(task, key);
+    occ.status = status;
+    gas.appendOccurrenceRow_(doc, occ);
+  });
+
+  return gas.routineStats_(occurrences(gas, task.id), FIXED_NOW);
+}
+
+test('an open day that is not yet late does not break the streak', () => {
+  const { gas, doc } = fresh();
+  // Due at 20:00, and it is 09:00 — today is neither a success nor a failure.
+  const stats = streakWithToday(gas, doc, gas.TASK_STATUS_OPEN, '20:00');
+  assert.strictEqual(stats.streak, 3);
+  assert.strictEqual(stats.counted, 3);
+  assert.strictEqual(stats.completionRate, 100);
+});
+
+test('an overdue today does break the streak', () => {
+  const { gas, doc } = fresh();
+  // Due at 08:00, and it is 09:00 — the deadline has genuinely been missed.
+  const stats = streakWithToday(gas, doc, gas.TASK_STATUS_OPEN, '08:00');
+  assert.strictEqual(stats.streak, 0);
+  assert.strictEqual(stats.counted, 4);
+});
+
+test('a routine with no due time leaves today neutral', () => {
+  const { gas, doc } = fresh();
+  // No time was set, so nothing about today is late yet.
+  const stats = streakWithToday(gas, doc, gas.TASK_STATUS_OPEN);
+  assert.strictEqual(stats.streak, 3);
+  assert.strictEqual(stats.counted, 3);
+});

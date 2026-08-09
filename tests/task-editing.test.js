@@ -103,7 +103,8 @@ test('editing a one-time task refreshes the posted card', () => {
 
 test('a completed one-time task is not rewritten by an edit', () => {
   const { gas, doc } = setup();
-  const created = save(gas, { type: 'once', title: 'Eski', deadlineKey: '2026-08-12' });
+  // Due today, because work that has not come round yet cannot be completed.
+  const created = save(gas, { type: 'once', title: 'Eski', deadlineKey: serverToday(gas) });
   const occ = occs(gas, doc, created.taskId)[0];
 
   readJsonOutput(gas.doPost(postEvent({

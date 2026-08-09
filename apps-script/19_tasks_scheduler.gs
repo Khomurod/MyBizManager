@@ -186,13 +186,21 @@ function runTaskScheduler_(doc, nowMs) {
     var statusByTaskId = {};
     for (var t = 0; t < tasks.length; t++) statusByTaskId[tasks[t].id] = tasks[t].status;
 
+    // One scan of the occurrence sheet for the whole pass, and one append for
+    // everything it decides to create. A daily routine used to cost a full
+    // scan per task, every five minutes, for ever.
+    var ctx = { occurrences: readOccurrenceRows_(doc), pending: [] };
     for (var g = 0; g < tasks.length; g++) {
       if (tasks[g].status === TASK_DEF_ACTIVE) {
-        generated += materializeTaskOccurrences_(doc, tasks[g], now).length;
+        generated += materializeTaskOccurrences_(doc, tasks[g], now, ctx).length;
       }
     }
+    if (ctx.pending.length) appendOccurrenceRows_(doc, ctx.pending);
 
-    var occurrences = readOccurrenceRows_(doc);
+    // Includes what was just appended, with the row numbers assigned to those
+    // very objects - so a writeOccurrenceRow_ later in this pass lands on the
+    // right row.
+    var occurrences = ctx.occurrences;
     for (var i = 0; i < occurrences.length; i++) {
       var occ = occurrences[i];
 
@@ -647,10 +655,22 @@ function setRoutinePausedAction_(doc, payload, paused) {
   return { status: "success" };
 }
 
+/** An occurrence dated after today - work that has not come round yet. */
+function isFutureOccurrence_(occ, todayKey) {
+  return !!occ.dateKey && occ.dateKey > todayKey;
+}
+
 function skipOccurrenceAction_(doc, payload) {
   var occ = findOccurrence_(doc, payload.occurrenceId);
   if (!occ) return { status: "error", message: "Vazifa topilmadi." };
   if (occ.status === TASK_STATUS_COMPLETED) return { status: "error", message: "Allaqachon bajarilgan." };
+  // Skipping ahead is legitimate ("nobody is in on Friday"), it just has to be
+  // deliberate rather than a misclick on a card in the Kelgusi list.
+  var todayKey = taskTodayKey_(Date.now());
+  if (isFutureOccurrence_(occ, todayKey) && payload.confirmFuture !== true) {
+    return { status: "error", needsFutureConfirm: true, dateKey: occ.dateKey,
+      message: "Kelgusi kunni (" + formatTaskDateKey_(occ.dateKey) + ") o'tkazib yuborishni tasdiqlang." };
+  }
   occ.status = TASK_STATUS_SKIPPED;
   writeOccurrenceRow_(doc, occ);
   if (occ.msgId) enqueueTaskJob_(doc, "task_update_message", occ.id, { occurrenceId: occ.id });
@@ -663,6 +683,10 @@ function completeOccurrenceAction_(doc, payload) {
   if (!occ) return { status: "error", message: "Vazifa topilmadi." };
   if (occ.status === TASK_STATUS_COMPLETED) return { status: "success" }; // idempotent
   if (occ.status === TASK_STATUS_CANCELLED) return { status: "error", message: "Bekor qilingan vazifa." };
+  if (isFutureOccurrence_(occ, taskTodayKey_(Date.now()))) {
+    return { status: "error",
+      message: "Kelgusi kun uchun vazifani oldindan bajarilgan deb belgilab bo'lmaydi." };
+  }
   completeTaskOccurrence_(doc, occ, {
     byId: "",
     byName: String(payload.completedBy || "Admin (panel)"),

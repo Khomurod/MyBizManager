@@ -104,6 +104,17 @@ function tasksSave(payload) { return taskMutation(Object.assign({ action: 'save_
 function tasksCancel(id) { if (confirm('Vazifa bekor qilinsinmi?')) return taskMutation({ action: 'cancel_task', id: id }, 'Bekor qilindi'); }
 function tasksPause(id) { return taskMutation({ action: 'pause_routine', id: id }, "To'xtatildi"); }
 function tasksResume(id) { return taskMutation({ action: 'resume_routine', id: id }, 'Davom ettirildi'); }
-function tasksSkip(occId) { return taskMutation({ action: 'skip_occurrence', occurrenceId: occId }, "O'tkazib yuborildi"); }
+/**
+ * Skipping a day that has not come round yet is legitimate but has to be
+ * deliberate, so a future date is confirmed here before the server is asked.
+ */
+function tasksSkip(occId, futureDateLabel) {
+    const payload = { action: 'skip_occurrence', occurrenceId: occId };
+    if (futureDateLabel) {
+        if (!confirm('Kelgusi kunni (' + futureDateLabel + ') o\'tkazib yuborilsinmi?')) return null;
+        payload.confirmFuture = true;
+    }
+    return taskMutation(payload, "O'tkazib yuborildi");
+}
 function tasksCompleteOcc(occId) { return taskMutation({ action: 'complete_occurrence', occurrenceId: occId }, 'Bajarildi'); }
 function tasksReopen(occId) { return taskMutation({ action: 'reopen_occurrence', occurrenceId: occId }, 'Qayta ochildi'); }

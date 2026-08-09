@@ -411,11 +411,16 @@ function writeOccurrenceRow_(doc, occ) {
  * the ones this call created. Idempotent: an occurrence is keyed by
  * (taskId, dateKey) for routines/one-time and (taskId, stepIndex) for goals,
  * so re-running never duplicates and never disturbs completed history.
+ *
+ * `ctx` is an optional per-pass working set: the occurrence rows already read
+ * from the sheet, plus the rows this pass wants to add. Passing one turns a
+ * scan-per-task into a single scan and a single append for the whole pass.
+ * Called without one it behaves exactly as before.
  */
-function materializeTaskOccurrences_(doc, task, nowMs) {
+function materializeTaskOccurrences_(doc, task, nowMs, ctx) {
   if (task.status === TASK_DEF_CANCELLED) return [];
   var todayKey = taskTodayKey_(nowMs);
-  var existing = occurrencesForTask_(readOccurrenceRows_(doc), task.id);
+  var existing = occurrencesForTask_(ctx ? ctx.occurrences : readOccurrenceRows_(doc), task.id);
 
   var byDate = {};
   var byStep = {};
@@ -448,7 +453,11 @@ function materializeTaskOccurrences_(doc, task, nowMs) {
     }
   }
 
-  for (var c = 0; c < created.length; c++) appendOccurrenceRow_(doc, created[c]);
+  if (ctx) {
+    for (var c = 0; c < created.length; c++) { ctx.pending.push(created[c]); ctx.occurrences.push(created[c]); }
+  } else {
+    for (var a = 0; a < created.length; a++) appendOccurrenceRow_(doc, created[a]);
+  }
   return created;
 }
 
@@ -568,6 +577,12 @@ function routineStats_(occurrences, nowMs) {
   for (var i = 0; i < occurrences.length; i++) {
     var o = occurrences[i];
     if (!o.dateKey || o.dateKey > todayKey) continue;
+    // Today is not a miss until it is actually late. An open day that still has
+    // hours left on the clock is neither a success nor a failure, so it neither
+    // extends the streak nor ends it.
+    if (o.dateKey === todayKey &&
+        (o.status === TASK_STATUS_OPEN || o.status === TASK_STATUS_WAITING) &&
+        occurrenceDisplayStatus_(o, nowMs) !== "Overdue") continue;
     past.push(o);
   }
   past.sort(function (a, b) { return a.dateKey < b.dateKey ? 1 : (a.dateKey > b.dateKey ? -1 : 0); });
