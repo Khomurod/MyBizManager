@@ -54,7 +54,7 @@ filename order. `npm run build` regenerates `script.gs`; `npm run build:check`
 | `16_tasks_recurrence.gs` | Task module: Asia/Tashkent time + recurrence engine (pure) |
 | `17_tasks_store.gs` | Task module: `Tasks`/`Task_Occurrences` sheets, occurrences, views |
 | `18_tasks_service.gs` | Task module: isolated Telegram namespace (`t_done:`, photo proof) |
-| `19_tasks_scheduler.gs` | Task module: reminder scheduler, queue jobs, web API |
+| `19_tasks_scheduler.gs` | Task module: reminder scheduler, queue jobs, edit reconciliation, web API |
 | `20_api.gs` | `doPost` / `doGet` routing only |
 
 The task-management feature (`/tasks`) is documented separately in
@@ -184,6 +184,15 @@ degrades to "the report is late", never "the money is wrong". Jobs are claimed
 under the script lock (status `Processing`), retried with exponential backoff
 starting at ~30s, and give up after 5 attempts. `processPendingTelegramJobs`
 is the entry point for a time-driven trigger.
+
+Job types: `omad_transaction_report`, `omad_transaction_delete_report`,
+`cafe_close_day_report`, and the task module's `task_notify`, `task_reminder`,
+`task_update_message` and `task_proof_prompt` (see [TASKS.md](TASKS.md)).
+
+A job that exhausts its attempts gets one last call to
+`onJobPermanentlyFailed_`, so a job type that left state behind can clean it up
+— `task_proof_prompt` uses this to release an occurrence that would otherwise
+wait for ever for a photo prompt that was never delivered.
 
 ### Fast saving
 

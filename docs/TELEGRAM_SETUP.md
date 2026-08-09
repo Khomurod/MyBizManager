@@ -50,6 +50,29 @@ Botni guruhga qo'shing, guruhda biror xabar yozing, so'ng brauzerda oching:
 `https://api.telegram.org/bot<TOKEN>/getUpdates` — javobdagi
 `message.chat.id` guruh ID'si (odatda `-100...` bilan boshlanadi).
 
+### Vazifalar guruhi uchun raqamli ID
+
+**Vazifalar Guruhi ID** (`TELEGRAM_TASKS_GROUP_CHAT_ID`) faqat **raqamli**
+chat ID bo'lishi kerak, masalan `-1001234567890`. `@username` qabul
+qilinmaydi — saqlashda xato qaytariladi, va Script Properties'da eskidan
+qolgan `@username` "sozlanmagan" deb o'qiladi.
+
+Sababi: hisobot guruhidan farqli o'laroq (u faqat xabar yuboriladigan
+manzil), vazifalar guruhi har bir kelayotgan tugma bosilishi va rasm uchun
+`chat.id` bilan solishtiriladi. Telegram esa yangilanishlarda faqat raqamni
+yuboradi — `@username` bilan xabar yuborish ishlaydi, lekin hech qanday
+javob mos kelmaydi va hammasi jimgina tashlab yuboriladi.
+
+Raqamli ID'ni olish:
+
+1. botni guruhga qo'shing va guruhda biror xabar yozing;
+2. `https://api.telegram.org/bot<TOKEN>/getUpdates` ni oching va
+   `message.chat.id` ni oling; yoki
+3. guruhga `@userinfobot` kabi botni qo'shib, u ko'rsatgan ID'ni oling.
+
+Superguruhga aylantirilgan guruhning ID'si o'zgaradi (`-100...` prefiksi
+qo'shiladi) — bunday holda ID'ni qayta kiriting.
+
 ## 3. Panel orqali kiritish
 
 **Omad Admin → Sozlamalar → Telegram**:
