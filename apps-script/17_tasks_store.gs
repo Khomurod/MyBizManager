@@ -69,7 +69,9 @@ function normalizeTaskTimes_(times) {
   var seen = {};
   var out = [];
   for (var i = 0; i < source.length; i++) {
-    var t = String(source[i] || "").trim();
+    // Tolerant of a value the spreadsheet already rewrote, so a reminder list
+    // that was stored oddly still parses instead of vanishing.
+    var t = taskTimeKeyFromCell_(source[i]);
     if (isTaskTimeKey_(t) && !seen[t]) { seen[t] = true; out.push(t); }
   }
   out.sort();
@@ -94,6 +96,51 @@ function taskColumnIndex_(header, name) {
   return header.indexOf(name) + 1; // 1-based sheet column
 }
 
+// Columns whose value must reach the sheet as exact text. Everything here is
+// a date key, a clock time or an ISO stamp: values a spreadsheet will happily
+// reinterpret as a date of its own choosing if the column is not text.
+var TASKS_TEXT_COLUMNS = [
+  "Due_Time", "Deadline_Key", "Deadline_Time", "Start_Key", "End_Key",
+  "Created_At", "Updated_At"
+];
+
+var TASK_OCC_TEXT_COLUMNS = [
+  "Date_Key", "Notified_At", "Completed_At", "Created_At", "Updated_At"
+];
+
+/** Column numbers for `names`, merged into contiguous [start, count] spans. */
+function taskTextColumnSpans_(header, names) {
+  var cols = [];
+  for (var i = 0; i < names.length; i++) {
+    var index = header.indexOf(names[i]) + 1;
+    if (index > 0) cols.push(index);
+  }
+  cols.sort(function (a, b) { return a - b; });
+  var spans = [];
+  for (var c = 0; c < cols.length; c++) {
+    var last = spans[spans.length - 1];
+    if (last && cols[c] === last[0] + last[1]) last[1]++;
+    else spans.push([cols[c], 1]);
+  }
+  return spans;
+}
+
+/**
+ * Stops the spreadsheet reinterpreting what is about to be written.
+ *
+ * Must run BEFORE the values land: a number format applied afterwards
+ * reformats an already-coerced value, it does not recover it.
+ */
+function applyTaskTextFormats_(sheet, header, names, startRow, numRows) {
+  if (!sheet || numRows < 1 || typeof sheet.getRange !== "function") return;
+  var probe = sheet.getRange(startRow, 1, numRows, 1);
+  if (typeof probe.setNumberFormat !== "function") return; // older host / test double
+  var spans = taskTextColumnSpans_(header, names);
+  for (var s = 0; s < spans.length; s++) {
+    sheet.getRange(startRow, spans[s][0], numRows, spans[s][1]).setNumberFormat("@");
+  }
+}
+
 // ------------------------------------------------------------ task records
 
 function taskFromRow_(row) {
@@ -109,11 +156,11 @@ function taskFromRow_(row) {
     recurrence: normalizeTaskRecurrence_(safeParseJSON_(i("Recurrence_JSON"), {})),
     reminderTimes: normalizeTaskTimes_(safeParseJSON_(i("Reminder_Times_JSON"), [])),
     remindDaily: parseTaskBool_(i("Remind_Daily")),
-    dueTime: isTaskTimeKey_(i("Due_Time")) ? String(i("Due_Time")) : "",
-    deadlineKey: isTaskDateKey_(i("Deadline_Key")) ? String(i("Deadline_Key")) : "",
-    deadlineTime: isTaskTimeKey_(i("Deadline_Time")) ? String(i("Deadline_Time")) : "",
-    startKey: isTaskDateKey_(i("Start_Key")) ? String(i("Start_Key")) : "",
-    endKey: isTaskDateKey_(i("End_Key")) ? String(i("End_Key")) : "",
+    dueTime: taskTimeKeyFromCell_(i("Due_Time")),
+    deadlineKey: taskDateKeyFromCell_(i("Deadline_Key")),
+    deadlineTime: taskTimeKeyFromCell_(i("Deadline_Time")),
+    startKey: taskDateKeyFromCell_(i("Start_Key")),
+    endKey: taskDateKeyFromCell_(i("End_Key")),
     status: String(i("Status") || TASK_DEF_ACTIVE),
     steps: normalizeGoalSteps_(safeParseJSON_(i("Steps_JSON"), [])),
     createdAt: String(i("Created_At") || ""),
@@ -184,12 +231,16 @@ function findTask_(doc, taskId) {
 }
 
 function appendTaskRow_(doc, task) {
-  tasksSheet_(doc).appendRow(taskToRow_(task));
+  var sheet = tasksSheet_(doc);
+  var row = sheet.getLastRow() + 1;
+  applyTaskTextFormats_(sheet, TASKS_HEADER, TASKS_TEXT_COLUMNS, row, 1);
+  sheet.appendRow(taskToRow_(task));
 }
 
 function updateTaskRow_(doc, task) {
   var sheet = tasksSheet_(doc);
   if (!task.rowNumber) return;
+  applyTaskTextFormats_(sheet, TASKS_HEADER, TASKS_TEXT_COLUMNS, task.rowNumber, 1);
   sheet.getRange(task.rowNumber, 1, 1, TASKS_HEADER.length).setValues([taskToRow_(task)]);
 }
 
@@ -203,7 +254,7 @@ function occurrenceFromRow_(row) {
     taskId: String(i("Task_ID") || ""),
     taskType: String(i("Task_Type") || ""),
     title: String(i("Title") || ""),
-    dateKey: isTaskDateKey_(i("Date_Key")) ? String(i("Date_Key")) : "",
+    dateKey: taskDateKeyFromCell_(i("Date_Key")),
     stepIndex: i("Step_Index") === "" || i("Step_Index") === null || i("Step_Index") === undefined
       ? "" : Number(i("Step_Index")),
     dueAt: dueRaw === "" || dueRaw === null || dueRaw === undefined ? "" : Number(dueRaw),
@@ -291,7 +342,24 @@ function occurrencesForTask_(rows, taskId) {
 }
 
 function appendOccurrenceRow_(doc, occ) {
-  taskOccurrencesSheet_(doc).appendRow(occurrenceToRow_(occ));
+  var sheet = taskOccurrencesSheet_(doc);
+  var row = sheet.getLastRow() + 1;
+  applyTaskTextFormats_(sheet, TASK_OCC_HEADER, TASK_OCC_TEXT_COLUMNS, row, 1);
+  sheet.appendRow(occurrenceToRow_(occ));
+  occ.rowNumber = row;
+}
+
+/** Appends many occurrences in one write, protecting their text columns first. */
+function appendOccurrenceRows_(doc, occurrences) {
+  if (!occurrences || !occurrences.length) return [];
+  var sheet = taskOccurrencesSheet_(doc);
+  var startRow = sheet.getLastRow() + 1;
+  applyTaskTextFormats_(sheet, TASK_OCC_HEADER, TASK_OCC_TEXT_COLUMNS, startRow, occurrences.length);
+  var values = [];
+  for (var i = 0; i < occurrences.length; i++) values.push(occurrenceToRow_(occurrences[i]));
+  sheet.getRange(startRow, 1, values.length, TASK_OCC_HEADER.length).setValues(values);
+  for (var r = 0; r < occurrences.length; r++) occurrences[r].rowNumber = startRow + r;
+  return occurrences;
 }
 
 /** Rewrites a single occurrence row from an in-memory object. */
@@ -299,6 +367,7 @@ function writeOccurrenceRow_(doc, occ) {
   var sheet = taskOccurrencesSheet_(doc);
   if (!occ.rowNumber) return;
   occ.updatedAt = new Date().toISOString();
+  applyTaskTextFormats_(sheet, TASK_OCC_HEADER, TASK_OCC_TEXT_COLUMNS, occ.rowNumber, 1);
   sheet.getRange(occ.rowNumber, 1, 1, TASK_OCC_HEADER.length).setValues([occurrenceToRow_(occ)]);
 }
 

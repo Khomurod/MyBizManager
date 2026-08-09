@@ -20,6 +20,11 @@ const SCRIPT_PATH = path.join(__dirname, '..', 'script.gs');
  * month, so Sheets gives up and leaves those as text - which is exactly why
  * only some rows were ever corrupted. Cells formatted as plain text ("@")
  * are left alone, which is the defence the fix relies on.
+ *
+ * The task sheets are rewritten by two further shapes: a bare ISO date
+ * (YYYY-MM-DD) becomes a real date in every locale, and a bare clock time
+ * (HH:mm) becomes a time anchored to Sheets' 1899-12-30 epoch. Those two are
+ * how the task module lost every start, end, deadline and occurrence key.
  */
 function coerceLikeSheets(value, format) {
   if (typeof value !== 'string') return value;
@@ -32,6 +37,14 @@ function coerceLikeSheets(value, format) {
     if (first >= 1 && first <= 12) return new Date(Number(dmy[3]), first - 1, second);
     return value;
   }
+
+  // A bare ISO date is a date to Sheets in every locale, and a bare HH:mm is a
+  // time - which is exactly how the task sheets lost their keys.
+  const ymd = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (ymd) return new Date(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3]));
+
+  const hm = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(value);
+  if (hm) return new Date(1899, 11, 30, Number(hm[1]), Number(hm[2]));
 
   const yearMonth = /^(\d{4})-(\d{2})$/.exec(value);
   if (yearMonth) return new Date(Number(yearMonth[1]), Number(yearMonth[2]) - 1, 1);

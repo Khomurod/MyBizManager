@@ -4144,6 +4144,56 @@ function isTaskTimeKey_(value) {
   return /^([01]\d|2[0-3]):[0-5]\d$/.test(String(value || ""));
 }
 
+/**
+ * A YYYY-MM-DD key from whatever the sheet handed back.
+ *
+ * Exact text wins. A cell the spreadsheet already turned into a real date is
+ * recovered from its local year/month/day - the same convention
+ * parseTransactionDate_ uses for the accounting columns - so rows written
+ * before these columns were text-formatted still read correctly instead of
+ * silently becoming "". Anything else is not a date key and returns "".
+ */
+function taskDateKeyFromCell_(value) {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value === "object" && typeof value.getFullYear === "function") {
+    if (isNaN(value.getTime())) return "";
+    return value.getFullYear() + "-" + taskPad2_(value.getMonth() + 1) + "-" + taskPad2_(value.getDate());
+  }
+  var text = String(value).trim();
+  if (isTaskDateKey_(text)) return text;
+  // A full timestamp in a date column is an instant, not a calendar date;
+  // read it in the same local frame a Date cell would have been read in.
+  if (/^\d{4}-\d{2}-\d{2}T/.test(text)) {
+    var instant = new Date(text);
+    if (!isNaN(instant.getTime())) {
+      return instant.getFullYear() + "-" + taskPad2_(instant.getMonth() + 1) + "-" + taskPad2_(instant.getDate());
+    }
+  }
+  return "";
+}
+
+/**
+ * An HH:mm key from whatever the sheet handed back. Sheets stores a bare
+ * "20:00" as 1899-12-30T20:00, so a time cell arrives as a Date whose clock
+ * fields are the only part that means anything.
+ */
+function taskTimeKeyFromCell_(value) {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value === "object" && typeof value.getHours === "function") {
+    if (isNaN(value.getTime())) return "";
+    return taskPad2_(value.getHours()) + ":" + taskPad2_(value.getMinutes());
+  }
+  var text = String(value).trim();
+  if (isTaskTimeKey_(text)) return text;
+  if (/^\d{4}-\d{2}-\d{2}T/.test(text)) {
+    var instant = new Date(text);
+    if (!isNaN(instant.getTime())) return taskPad2_(instant.getHours()) + ":" + taskPad2_(instant.getMinutes());
+  }
+  var hm = /^(\d{1,2}):([0-5]\d)/.exec(text);
+  if (hm && Number(hm[1]) <= 23) return taskPad2_(hm[1]) + ":" + hm[2];
+  return "";
+}
+
 /** The epoch ms of a Tashkent wall-clock (dateKey + optional HH:mm). NaN if bad. */
 function taskInstantMs_(dateKey, timeKey) {
   var dm = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateKey || ""));
@@ -4395,7 +4445,9 @@ function normalizeTaskTimes_(times) {
   var seen = {};
   var out = [];
   for (var i = 0; i < source.length; i++) {
-    var t = String(source[i] || "").trim();
+    // Tolerant of a value the spreadsheet already rewrote, so a reminder list
+    // that was stored oddly still parses instead of vanishing.
+    var t = taskTimeKeyFromCell_(source[i]);
     if (isTaskTimeKey_(t) && !seen[t]) { seen[t] = true; out.push(t); }
   }
   out.sort();
@@ -4420,6 +4472,51 @@ function taskColumnIndex_(header, name) {
   return header.indexOf(name) + 1; // 1-based sheet column
 }
 
+// Columns whose value must reach the sheet as exact text. Everything here is
+// a date key, a clock time or an ISO stamp: values a spreadsheet will happily
+// reinterpret as a date of its own choosing if the column is not text.
+var TASKS_TEXT_COLUMNS = [
+  "Due_Time", "Deadline_Key", "Deadline_Time", "Start_Key", "End_Key",
+  "Created_At", "Updated_At"
+];
+
+var TASK_OCC_TEXT_COLUMNS = [
+  "Date_Key", "Notified_At", "Completed_At", "Created_At", "Updated_At"
+];
+
+/** Column numbers for `names`, merged into contiguous [start, count] spans. */
+function taskTextColumnSpans_(header, names) {
+  var cols = [];
+  for (var i = 0; i < names.length; i++) {
+    var index = header.indexOf(names[i]) + 1;
+    if (index > 0) cols.push(index);
+  }
+  cols.sort(function (a, b) { return a - b; });
+  var spans = [];
+  for (var c = 0; c < cols.length; c++) {
+    var last = spans[spans.length - 1];
+    if (last && cols[c] === last[0] + last[1]) last[1]++;
+    else spans.push([cols[c], 1]);
+  }
+  return spans;
+}
+
+/**
+ * Stops the spreadsheet reinterpreting what is about to be written.
+ *
+ * Must run BEFORE the values land: a number format applied afterwards
+ * reformats an already-coerced value, it does not recover it.
+ */
+function applyTaskTextFormats_(sheet, header, names, startRow, numRows) {
+  if (!sheet || numRows < 1 || typeof sheet.getRange !== "function") return;
+  var probe = sheet.getRange(startRow, 1, numRows, 1);
+  if (typeof probe.setNumberFormat !== "function") return; // older host / test double
+  var spans = taskTextColumnSpans_(header, names);
+  for (var s = 0; s < spans.length; s++) {
+    sheet.getRange(startRow, spans[s][0], numRows, spans[s][1]).setNumberFormat("@");
+  }
+}
+
 // ------------------------------------------------------------ task records
 
 function taskFromRow_(row) {
@@ -4435,11 +4532,11 @@ function taskFromRow_(row) {
     recurrence: normalizeTaskRecurrence_(safeParseJSON_(i("Recurrence_JSON"), {})),
     reminderTimes: normalizeTaskTimes_(safeParseJSON_(i("Reminder_Times_JSON"), [])),
     remindDaily: parseTaskBool_(i("Remind_Daily")),
-    dueTime: isTaskTimeKey_(i("Due_Time")) ? String(i("Due_Time")) : "",
-    deadlineKey: isTaskDateKey_(i("Deadline_Key")) ? String(i("Deadline_Key")) : "",
-    deadlineTime: isTaskTimeKey_(i("Deadline_Time")) ? String(i("Deadline_Time")) : "",
-    startKey: isTaskDateKey_(i("Start_Key")) ? String(i("Start_Key")) : "",
-    endKey: isTaskDateKey_(i("End_Key")) ? String(i("End_Key")) : "",
+    dueTime: taskTimeKeyFromCell_(i("Due_Time")),
+    deadlineKey: taskDateKeyFromCell_(i("Deadline_Key")),
+    deadlineTime: taskTimeKeyFromCell_(i("Deadline_Time")),
+    startKey: taskDateKeyFromCell_(i("Start_Key")),
+    endKey: taskDateKeyFromCell_(i("End_Key")),
     status: String(i("Status") || TASK_DEF_ACTIVE),
     steps: normalizeGoalSteps_(safeParseJSON_(i("Steps_JSON"), [])),
     createdAt: String(i("Created_At") || ""),
@@ -4510,12 +4607,16 @@ function findTask_(doc, taskId) {
 }
 
 function appendTaskRow_(doc, task) {
-  tasksSheet_(doc).appendRow(taskToRow_(task));
+  var sheet = tasksSheet_(doc);
+  var row = sheet.getLastRow() + 1;
+  applyTaskTextFormats_(sheet, TASKS_HEADER, TASKS_TEXT_COLUMNS, row, 1);
+  sheet.appendRow(taskToRow_(task));
 }
 
 function updateTaskRow_(doc, task) {
   var sheet = tasksSheet_(doc);
   if (!task.rowNumber) return;
+  applyTaskTextFormats_(sheet, TASKS_HEADER, TASKS_TEXT_COLUMNS, task.rowNumber, 1);
   sheet.getRange(task.rowNumber, 1, 1, TASKS_HEADER.length).setValues([taskToRow_(task)]);
 }
 
@@ -4529,7 +4630,7 @@ function occurrenceFromRow_(row) {
     taskId: String(i("Task_ID") || ""),
     taskType: String(i("Task_Type") || ""),
     title: String(i("Title") || ""),
-    dateKey: isTaskDateKey_(i("Date_Key")) ? String(i("Date_Key")) : "",
+    dateKey: taskDateKeyFromCell_(i("Date_Key")),
     stepIndex: i("Step_Index") === "" || i("Step_Index") === null || i("Step_Index") === undefined
       ? "" : Number(i("Step_Index")),
     dueAt: dueRaw === "" || dueRaw === null || dueRaw === undefined ? "" : Number(dueRaw),
@@ -4617,7 +4718,24 @@ function occurrencesForTask_(rows, taskId) {
 }
 
 function appendOccurrenceRow_(doc, occ) {
-  taskOccurrencesSheet_(doc).appendRow(occurrenceToRow_(occ));
+  var sheet = taskOccurrencesSheet_(doc);
+  var row = sheet.getLastRow() + 1;
+  applyTaskTextFormats_(sheet, TASK_OCC_HEADER, TASK_OCC_TEXT_COLUMNS, row, 1);
+  sheet.appendRow(occurrenceToRow_(occ));
+  occ.rowNumber = row;
+}
+
+/** Appends many occurrences in one write, protecting their text columns first. */
+function appendOccurrenceRows_(doc, occurrences) {
+  if (!occurrences || !occurrences.length) return [];
+  var sheet = taskOccurrencesSheet_(doc);
+  var startRow = sheet.getLastRow() + 1;
+  applyTaskTextFormats_(sheet, TASK_OCC_HEADER, TASK_OCC_TEXT_COLUMNS, startRow, occurrences.length);
+  var values = [];
+  for (var i = 0; i < occurrences.length; i++) values.push(occurrenceToRow_(occurrences[i]));
+  sheet.getRange(startRow, 1, values.length, TASK_OCC_HEADER.length).setValues(values);
+  for (var r = 0; r < occurrences.length; r++) occurrences[r].rowNumber = startRow + r;
+  return occurrences;
 }
 
 /** Rewrites a single occurrence row from an in-memory object. */
@@ -4625,6 +4743,7 @@ function writeOccurrenceRow_(doc, occ) {
   var sheet = taskOccurrencesSheet_(doc);
   if (!occ.rowNumber) return;
   occ.updatedAt = new Date().toISOString();
+  applyTaskTextFormats_(sheet, TASK_OCC_HEADER, TASK_OCC_TEXT_COLUMNS, occ.rowNumber, 1);
   sheet.getRange(occ.rowNumber, 1, 1, TASK_OCC_HEADER.length).setValues([occurrenceToRow_(occ)]);
 }
 
