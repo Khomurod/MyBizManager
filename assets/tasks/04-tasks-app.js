@@ -45,6 +45,9 @@ function onTypeChange() {
     document.getElementById('grpGoal').classList.toggle('hidden', type !== 'goal');
     // Rolling daily reminders only make sense for a deadline-less one-time task.
     document.getElementById('grpRemindDaily').classList.toggle('hidden', type !== 'once');
+    // A goal step has no deadline to hang a single reminder on, so the server
+    // repeats them daily; there is nothing to choose, only something to say.
+    document.getElementById('goalRemindNote').classList.toggle('hidden', type !== 'goal');
     if (type === 'routine') onFreqChange();
 }
 

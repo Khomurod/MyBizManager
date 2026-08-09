@@ -5060,7 +5060,10 @@ function buildTaskViews_(doc, nowMs) {
 
   for (var i = 0; i < occurrences.length; i++) {
     var occ = occurrences[i];
-    if (occ.taskType === "goal") continue; // goals show under Goals, by progress
+    // Goal steps stay in the Maqsadlar tab, by progress. Bugun is reserved for
+    // dated work, and a step has no date - this is the documented rule, not an
+    // oversight. They are still announced to the group by the scheduler.
+    if (occ.taskType === "goal") continue;
     var view = decorateOccurrence_(occ, now);
 
     if (occ.status === TASK_STATUS_COMPLETED) {
@@ -5740,7 +5743,6 @@ function runTaskScheduler_(doc, nowMs) {
     var occurrences = readOccurrenceRows_(doc);
     for (var i = 0; i < occurrences.length; i++) {
       var occ = occurrences[i];
-      if (occ.taskType === "goal") continue;
 
       // A paused (or cancelled, or orphaned) definition goes quiet immediately,
       // including for occurrences that were materialised before the pause.
@@ -5759,7 +5761,10 @@ function runTaskScheduler_(doc, nowMs) {
 
       // Announce.
       if (!occ.notifiedAt && occ.status === TASK_STATUS_OPEN) {
-        var due = occ.taskType === "once" || (occ.dateKey && occ.dateKey <= todayKey);
+        // A goal step and a deadline-less one-time task are the same thing to
+        // the group: something to do now, with no date attached.
+        var due = occ.taskType === "once" || occ.taskType === "goal" ||
+          (occ.dateKey && occ.dateKey <= todayKey);
         if (due) {
           enqueueTaskJob_(doc, "task_notify", occ.id, { occurrenceId: occ.id });
           occ.notifiedAt = new Date(now).toISOString();

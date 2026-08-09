@@ -634,7 +634,10 @@ function buildTaskViews_(doc, nowMs) {
 
   for (var i = 0; i < occurrences.length; i++) {
     var occ = occurrences[i];
-    if (occ.taskType === "goal") continue; // goals show under Goals, by progress
+    // Goal steps stay in the Maqsadlar tab, by progress. Bugun is reserved for
+    // dated work, and a step has no date - this is the documented rule, not an
+    // oversight. They are still announced to the group by the scheduler.
+    if (occ.taskType === "goal") continue;
     var view = decorateOccurrence_(occ, now);
 
     if (occ.status === TASK_STATUS_COMPLETED) {
