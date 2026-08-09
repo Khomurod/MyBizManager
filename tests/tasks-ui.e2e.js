@@ -68,15 +68,22 @@ describe('Tasks UI (browser)', () => {
     if (server) server.close();
   });
 
-  async function open() {
+  /**
+   * @param {object} options
+   * @param {boolean} options.withKey  seed sessionStorage with the admin key
+   *        (default true). Without it the board is not readable at all.
+   * @param {object} options.view      override the mock view.
+   */
+  async function open(options = {}) {
+    const withKey = options.withKey !== false;
     const backendRequests = [];
     const telegramRequests = [];
     const context = await browser.newContext();
-    await context.addInitScript((key) => {
+    await context.addInitScript((args) => {
       localStorage.setItem('omad_role', 'omad_admin');
       localStorage.setItem('omad_token', 'omad_admin_active');
-      sessionStorage.setItem('tasks_admin_key', key);
-    }, ADMIN_KEY);
+      if (args.withKey) sessionStorage.setItem('tasks_admin_key', args.key);
+    }, { key: ADMIN_KEY, withKey });
 
     // Stub the render-blocking CDNs so the page loads without any network.
     await context.route('**cdn.tailwindcss.com**', route => route.fulfill({ status: 200, contentType: 'application/javascript', body: '' }));
@@ -91,7 +98,7 @@ describe('Tasks UI (browser)', () => {
       let payload = {};
       if (req.method() === 'POST') { try { payload = JSON.parse(req.postData() || '{}'); } catch (e) { payload = {}; } }
       backendRequests.push(payload);
-      let body = { status: 'success', view: mockView(), config: { tasksGroupConfigured: true } };
+      let body = { status: 'success', view: options.view || mockView(), config: { tasksGroupConfigured: true } };
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
     });
 
@@ -100,16 +107,36 @@ describe('Tasks UI (browser)', () => {
     page.on('pageerror', err => consoleErrors.push(String(err)));
     await page.goto(`${baseUrl}/tasks.html`);
     await page.waitForFunction(() => typeof window.renderAllTasks === 'function');
-    await page.waitForFunction(() => document.querySelector('#panel-today .card') !== null);
+    if (withKey) {
+      await page.waitForFunction(() => document.querySelector('#panel-today .card') !== null);
+    }
     return { page, context, backendRequests, telegramRequests, consoleErrors };
   }
 
   test('the Today tab renders overdue and due-today items', async () => {
-    const { page, context, telegramRequests, consoleErrors } = await open();
+    const { page, context, backendRequests, telegramRequests, consoleErrors } = await open();
     const today = await page.textContent('#panel-today');
     assert.match(today, /Muddati o'tgan ish/);
     assert.match(today, /Bugungi ish/);
+
+    const reads = backendRequests.filter(r => r.action === 'get_tasks');
+    assert.ok(reads.length >= 1, 'the board was read');
+    assert.strictEqual(reads[0].adminKey, ADMIN_KEY, 'the read carries the admin key');
+
     assert.deepStrictEqual(telegramRequests, [], 'the browser never calls Telegram directly');
+    assert.deepStrictEqual(consoleErrors, []);
+    await context.close();
+  });
+
+  test('the page asks for the admin key before showing anything', async () => {
+    const { page, context, backendRequests, consoleErrors } = await open({ withKey: false });
+
+    await page.waitForSelector('#adminModal:not(.hidden)');
+    const panel = await page.textContent('#panel-today');
+    assert.match(panel, /admin kalitini kiriting/i);
+
+    assert.deepStrictEqual(backendRequests.filter(r => r.action === 'get_tasks'), [],
+      'nothing was requested without a key');
     assert.deepStrictEqual(consoleErrors, []);
     await context.close();
   });

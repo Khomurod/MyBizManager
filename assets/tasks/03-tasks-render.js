@@ -19,6 +19,13 @@ function renderAllTasks() {
     if (keyBtn) keyBtn.className = 'text-[10px] font-bold px-2 py-1 rounded border ' +
         (tasksAdminKey() ? 'bg-green-50 text-green-600 border-green-200' : 'text-slate-500');
 
+    if (TASKS_STATE.needsKey && !TASKS_STATE.view) {
+        // An empty board would read as "nothing to do" rather than "not shown".
+        const prompt = emptyNote('Vazifalarni ko\'rish uchun admin kalitini kiriting. 🔑');
+        TASK_TABS.forEach(t => { const p = document.getElementById('panel-' + t); if (p) p.innerHTML = prompt; });
+        return;
+    }
+
     renderTodayPanel();
     renderTasksPanel();
     renderRoutinesPanel();

@@ -67,9 +67,18 @@ test('an invalid Tasks group id is rejected and nothing is written', () => {
 
 // ------------------------------------------------------------ read access
 
-test('get_tasks returns a view without requiring an admin key', () => {
+test('get_tasks refuses an anonymous read', () => {
+  // The task board is internal company information, so a read is gated exactly
+  // like a mutation. This inverts the original expectation deliberately.
   const gas = loadScript({ properties: base() });
   const body = readJsonOutput(gas.doPost(postEvent({ action: 'get_tasks' })));
+  assert.strictEqual(body.status, 'error');
+  assert.strictEqual(body.view, undefined);
+});
+
+test('get_tasks returns a view when the admin key is supplied', () => {
+  const gas = loadScript({ properties: base() });
+  const body = readJsonOutput(gas.doPost(postEvent({ action: 'get_tasks', adminKey: ADMIN_KEY })));
   assert.strictEqual(body.status, 'success');
   assert.ok(body.view && body.view.today, 'the Today view is present');
   assert.ok(Array.isArray(body.view.tasks));

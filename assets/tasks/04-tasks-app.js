@@ -204,8 +204,9 @@ function closeAdminKey() { document.getElementById('adminModal').classList.add('
 function saveAdminKey() {
     setTasksAdminKey(document.getElementById('adminKeyInput').value.trim());
     closeAdminKey();
-    renderAllTasks();
     taskToast('Admin kaliti saqlandi');
+    // The board could not be read without a key, so entering one is a reload.
+    loadTasks();
 }
 
 // ---------------------------------------------------------------- bootstrap

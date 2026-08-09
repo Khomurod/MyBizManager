@@ -5775,6 +5775,10 @@ function processTaskSchedules() {
 
 // ---------------------------------------------------------------- web API
 
+// The panel does one read per load and one per mutation, so this is generous
+// for the admin and mean to anyone guessing keys.
+var TASK_READ_RATE_LIMIT = 30;
+
 function isTaskReadAction_(action) {
   return action === "get_tasks";
 }
@@ -5792,6 +5796,14 @@ function isTaskAction_(action) {
 
 function handleTaskAction_(action, payload, doc) {
   if (isTaskReadAction_(action)) {
+    // The task board is internal company information: who is responsible for
+    // what, when it is due, and who has been missing deadlines. It is gated
+    // like a mutation, and throttled before the key is compared so the
+    // endpoint cannot be used to guess it.
+    var throttled = enforceRateLimit_("tasks_read", TASK_READ_RATE_LIMIT, TELEGRAM_RATE_WINDOW_SECONDS);
+    if (throttled) return jsonOutput_({ status: "error", message: throttled });
+    var readError = checkAdminKey_(payload);
+    if (readError) return jsonOutput_({ status: "error", message: readError });
     return jsonOutput_({
       status: "success",
       view: buildTaskViews_(doc, Date.now()),
@@ -6319,6 +6331,15 @@ function doGet(e) {
   var doc = SpreadsheetApp.getActiveSpreadsheet();
   var configSheet = doc.getSheetByName("System_Config");
 
+  if (action === 'get_tasks') {
+    // A GET puts its parameters in the URL, which is exactly where an admin key
+    // must never be. Task reads are POST-only.
+    return jsonOutput_({
+      status: "error",
+      message: "Vazifalar ma'lumoti faqat POST va admin kaliti bilan olinadi."
+    });
+  }
+
   if (!configSheet) return jsonOutput_({ status: "empty" });
 
   if (action === 'get_omad') {
@@ -6333,14 +6354,6 @@ function doGet(e) {
 
   if (action === 'get_cafe') {
     return jsonOutput_(readCafeState_(doc, configSheet));
-  }
-
-  if (action === 'get_tasks') {
-    return jsonOutput_({
-      status: "success",
-      view: buildTaskViews_(doc, Date.now()),
-      config: { tasksGroupConfigured: !!getTasksGroupChatId_() }
-    });
   }
 
   return ContentService.createTextOutput("System Database is Active.");

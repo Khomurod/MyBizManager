@@ -4,11 +4,12 @@
 // Tasks — API client & state
 // ----------------------------------------------------------
 // Reuses GOOGLE_APP_URL and the admin access guard from assets/omad/00-config.js
-// (the single source of truth for the backend URL). Reads are open; mutations
-// carry the admin key, which is entered once and kept only in sessionStorage.
+// (the single source of truth for the backend URL). Every call - read as well
+// as mutation - carries the admin key, which is entered once and kept only in
+// sessionStorage.
 // ==========================================================
 
-const TASKS_STATE = { view: null, config: null };
+const TASKS_STATE = { view: null, config: null, needsKey: false };
 const TASKS_ADMIN_KEY_STORE = 'tasks_admin_key';
 
 async function tasksApiCall(payload) {
@@ -34,12 +35,30 @@ function setTasksAdminKey(value) {
 }
 
 async function loadTasks() {
+    const key = tasksAdminKey();
+    if (!key) {
+        // The board is admin-only now; there is nothing to show without a key.
+        TASKS_STATE.view = null;
+        TASKS_STATE.needsKey = true;
+        renderAllTasks();
+        openAdminKey();
+        return;
+    }
     taskLoader(true);
     try {
-        const data = await tasksApiCall({ action: 'get_tasks' });
+        const data = await tasksApiCall({ action: 'get_tasks', adminKey: key });
         if (data && data.status === 'success') {
             TASKS_STATE.view = data.view;
             TASKS_STATE.config = data.config;
+            TASKS_STATE.needsKey = false;
+        } else {
+            const message = (data && data.message) || "Ma'lumotni yuklab bo'lmadi";
+            if (/admin kalit/i.test(message)) {
+                setTasksAdminKey('');
+                TASKS_STATE.needsKey = true;
+                openAdminKey();
+            }
+            taskToast(message, true);
         }
     } catch (e) {
         taskToast("Ma'lumotni yuklab bo'lmadi", true);
