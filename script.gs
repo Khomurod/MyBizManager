@@ -5441,6 +5441,11 @@ function runTaskNotifyJob_(doc, job) {
   var occ = findOccurrence_(doc, String(job.payload.occurrenceId || ""));
   if (!occ) return; // deleted before it went out
 
+  // The definition can be paused between enqueue and send; the queue must not
+  // deliver a message the admin has already stopped.
+  var notifyTask = findTask_(doc, occ.taskId);
+  if (notifyTask && (notifyTask.status === TASK_DEF_PAUSED || notifyTask.status === TASK_DEF_CANCELLED)) return;
+
   // If it already reached an end state before the card was sent, send the
   // status card (no button) rather than a stale "new task" with a live button.
   if (occ.status !== TASK_STATUS_OPEN) {
@@ -5463,6 +5468,11 @@ function runTaskReminderJob_(doc, job) {
   // Completion (or cancellation/skip) between enqueue and send stops the ping.
   if (occ.status !== TASK_STATUS_OPEN) return;
 
+  // The definition can be paused between enqueue and send; the queue must not
+  // deliver a message the admin has already stopped.
+  var remindTask = findTask_(doc, occ.taskId);
+  if (remindTask && (remindTask.status === TASK_DEF_PAUSED || remindTask.status === TASK_DEF_CANCELLED)) return;
+
   sendTelegramMessage_(chatId, buildTaskReminderMessage_(occ), taskDoneMarkup_(occ.id));
 }
 
@@ -5479,6 +5489,23 @@ function runTaskUpdateMessageJob_(doc, job) {
 }
 
 // ---------------------------------------------------------------- scheduler
+
+/**
+ * Whether the scheduler may still speak for a task. A paused routine must not
+ * announce or remind - not even for the occurrences that were already
+ * materialised on to the sheet before it was paused - and an occurrence whose
+ * definition has gone is not something to keep pinging a group about.
+ */
+function isTaskSendable_(taskStatus) {
+  return taskStatus === TASK_DEF_ACTIVE;
+}
+
+/** True when any reminder slot has already been acted on for this occurrence. */
+function hasAnyReminderSent_(occ) {
+  var sent = occ.remindersSent || {};
+  for (var key in sent) if (Object.prototype.hasOwnProperty.call(sent, key)) return true;
+  return false;
+}
 
 /** Which reminder dates apply to an occurrence right now. */
 function taskReminderDatesFor_(occ, todayKey) {
@@ -5504,9 +5531,12 @@ function runTaskScheduler_(doc, nowMs) {
   var reminders = 0;
   try {
     var tasks = readTaskRows_(doc);
-    for (var t = 0; t < tasks.length; t++) {
-      if (tasks[t].status === TASK_DEF_ACTIVE) {
-        generated += materializeTaskOccurrences_(doc, tasks[t], now).length;
+    var statusByTaskId = {};
+    for (var t = 0; t < tasks.length; t++) statusByTaskId[tasks[t].id] = tasks[t].status;
+
+    for (var g = 0; g < tasks.length; g++) {
+      if (tasks[g].status === TASK_DEF_ACTIVE) {
+        generated += materializeTaskOccurrences_(doc, tasks[g], now).length;
       }
     }
 
@@ -5514,6 +5544,10 @@ function runTaskScheduler_(doc, nowMs) {
     for (var i = 0; i < occurrences.length; i++) {
       var occ = occurrences[i];
       if (occ.taskType === "goal") continue;
+
+      // A paused (or cancelled, or orphaned) definition goes quiet immediately,
+      // including for occurrences that were materialised before the pause.
+      if (!isTaskSendable_(statusByTaskId[occ.taskId])) continue;
 
       // Announce.
       if (!occ.notifiedAt && occ.status === TASK_STATUS_OPEN) {
@@ -5695,7 +5729,7 @@ function pruneReplaceableRoutineOccurrences_(doc, taskId, todayKey) {
   deleteOccurrenceRowsWhere_(doc, function (occ) {
     return occ.taskId === String(taskId) &&
       occ.status === TASK_STATUS_OPEN &&
-      !occ.notifiedAt && !occ.msgId &&
+      !occ.notifiedAt && !occ.msgId && !hasAnyReminderSent_(occ) &&
       occ.dateKey && occ.dateKey > todayKey;
   });
 }
@@ -5739,6 +5773,15 @@ function setRoutinePausedAction_(doc, payload, paused) {
   task.status = paused ? TASK_DEF_PAUSED : TASK_DEF_ACTIVE;
   task.updatedAt = new Date().toISOString();
   updateTaskRow_(doc, task);
+
+  if (paused) {
+    // Pre-generated days nobody has seen are not history; leaving them on the
+    // sheet would keep a paused routine visible in "Kelgusi" and would revive
+    // it the moment the guard is bypassed. Announced days, completed days and
+    // skipped days are history and stay exactly as they are.
+    pruneReplaceableRoutineOccurrences_(doc, task.id, taskTodayKey_(Date.now()));
+  }
+
   appendAuditRow_(doc, paused ? "routine_paused" : "routine_resumed", task.id);
   return { status: "success" };
 }
