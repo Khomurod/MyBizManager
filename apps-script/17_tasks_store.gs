@@ -197,6 +197,10 @@ function taskToRow_(task) {
   return TASKS_HEADER.map(function (name) { return map[name]; });
 }
 
+function newGoalStepId_() {
+  return "step_" + Utilities.getUuid().split("-").join("");
+}
+
 function normalizeGoalSteps_(steps) {
   var source = Array.isArray(steps) ? steps : [];
   var out = [];
@@ -204,9 +208,38 @@ function normalizeGoalSteps_(steps) {
     var step = typeof source[i] === "string" ? { title: source[i] } : (source[i] || {});
     var title = String(step.title || "").trim();
     if (!title) continue;
-    out.push({ title: title, photoRequired: parseTaskBool_(step.photoRequired) });
+    var entry = { title: title };
+    if (step.id) entry.id = String(step.id).slice(0, 64);
+    // Absent means "inherit from the goal". Only an explicit value overrides,
+    // which is why this key is not written unless one was supplied.
+    if (step.photoRequired !== undefined && step.photoRequired !== null && step.photoRequired !== "") {
+      entry.photoRequired = parseTaskBool_(step.photoRequired);
+    }
+    out.push(entry);
   }
   return out;
+}
+
+/** The photo rule that actually applies to a step. */
+function effectiveStepPhotoRequired_(task, step) {
+  if (step && step.photoRequired !== undefined) return !!step.photoRequired;
+  return !!task.photoRequired;
+}
+
+/** "<goal title> — <step title>", the label a step-occurrence carries. */
+function goalStepTitle_(task, step, index) {
+  return task.title + " — " + ((step && step.title) || ("Qadam " + (index + 1)));
+}
+
+/**
+ * Whether a goal's reminder times apply to its steps.
+ *
+ * A step has no due date, so there is no single moment to remind about. If the
+ * admin set reminder times on the goal, the only reading that does what they
+ * asked is "every day until the step is done".
+ */
+function goalRemindDaily_(task) {
+  return !!(task.reminderTimes && task.reminderTimes.length);
 }
 
 function readTaskRows_(doc) {
@@ -388,7 +421,11 @@ function materializeTaskOccurrences_(doc, task, nowMs) {
   var byStep = {};
   for (var e = 0; e < existing.length; e++) {
     if (existing[e].dateKey) byDate[existing[e].dateKey] = existing[e];
-    if (existing[e].stepIndex !== "") byStep[existing[e].stepIndex] = existing[e];
+    // A removed step's row is history and must not block a new step from
+    // taking its index.
+    if (existing[e].stepIndex !== "" && !(existing[e].meta && existing[e].meta.removedStep)) {
+      byStep[existing[e].stepIndex] = existing[e];
+    }
   }
 
   var created = [];
@@ -471,9 +508,11 @@ function buildOccurrenceForGoalStep_(task, stepIndex) {
   var occ = baseOccurrence_(task);
   var step = task.steps[stepIndex] || {};
   occ.stepIndex = stepIndex;
-  occ.title = task.title + " — " + (step.title || ("Qadam " + (stepIndex + 1)));
-  occ.photoRequired = step.photoRequired !== undefined ? !!step.photoRequired : !!task.photoRequired;
+  occ.title = goalStepTitle_(task, step, stepIndex);
+  occ.photoRequired = effectiveStepPhotoRequired_(task, step);
+  occ.remindDaily = goalRemindDaily_(task);
   occ.dueAt = "";
+  occ.meta = { stepId: step.id || "" };
   return occ;
 }
 
@@ -561,9 +600,12 @@ function goalProgress_(occurrences) {
   var total = 0;
   var done = 0;
   for (var i = 0; i < occurrences.length; i++) {
-    if (occurrences[i].stepIndex === "") continue;
+    var occ = occurrences[i];
+    if (occ.stepIndex === "") continue;
+    if (occ.meta && occ.meta.removedStep) continue;      // history, not current scope
+    if (occ.status === TASK_STATUS_CANCELLED || occ.status === TASK_STATUS_SKIPPED) continue;
     total++;
-    if (occurrences[i].status === TASK_STATUS_COMPLETED) done++;
+    if (occ.status === TASK_STATUS_COMPLETED) done++;
   }
   return { done: done, total: total, percent: total > 0 ? Math.round((done / total) * 100) : 0 };
 }
@@ -658,7 +700,7 @@ function buildTaskViews_(doc, nowMs) {
     if (task.type === "goal") {
       summary.progress = goalProgress_(taskOccs);
       summary.stepOccurrences = taskOccs
-        .filter(function (o) { return o.stepIndex !== ""; })
+        .filter(function (o) { return o.stepIndex !== "" && !(o.meta && o.meta.removedStep); })
         .sort(function (a, b) { return Number(a.stepIndex) - Number(b.stepIndex); })
         .map(function (o) { return decorateOccurrence_(o, now); });
     }
