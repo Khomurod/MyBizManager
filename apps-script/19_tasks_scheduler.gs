@@ -96,16 +96,22 @@ function runTaskNotifyJob_(doc, job) {
   var notifyTask = findTask_(doc, occ.taskId);
   if (notifyTask && (notifyTask.status === TASK_DEF_PAUSED || notifyTask.status === TASK_DEF_CANCELLED)) return;
 
+  // The card carries the task's brief; the lookup above already has it, so this
+  // costs nothing extra. Cards are HTML so a long description can be collapsed.
+  var notifyDescription = notifyTask ? notifyTask.description : "";
+
   // If it already reached an end state before the card was sent, send the
   // status card (no button) rather than a stale "new task" with a live button.
   if (occ.status !== TASK_STATUS_OPEN) {
-    var response = sendTelegramMessage_(chatId, buildTaskStatusMessage_(occ, Date.now()), taskClearedMarkup_());
+    var response = sendTelegramMessage_(chatId,
+      buildTaskStatusMessage_(occ, Date.now(), notifyDescription), taskClearedMarkup_(), "HTML");
     var doneId = extractTelegramMessageId_(response);
     if (doneId && !occ.msgId) { occ.msgId = String(doneId); writeOccurrenceRow_(doc, occ); }
     return;
   }
 
-  var sent = sendTelegramMessage_(chatId, buildTaskOccurrenceMessage_(occ), taskDoneMarkup_(occ.id));
+  var sent = sendTelegramMessage_(chatId,
+    buildTaskOccurrenceMessage_(occ, notifyDescription), taskDoneMarkup_(occ.id), "HTML");
   var msgId = extractTelegramMessageId_(sent);
   if (msgId) { occ.msgId = String(msgId); writeOccurrenceRow_(doc, occ); }
 }
@@ -123,7 +129,9 @@ function runTaskReminderJob_(doc, job) {
   var remindTask = findTask_(doc, occ.taskId);
   if (remindTask && (remindTask.status === TASK_DEF_PAUSED || remindTask.status === TASK_DEF_CANCELLED)) return;
 
-  sendTelegramMessage_(chatId, buildTaskReminderMessage_(occ), taskDoneMarkup_(occ.id));
+  sendTelegramMessage_(chatId,
+    buildTaskReminderMessage_(occ, remindTask ? remindTask.description : ""),
+    taskDoneMarkup_(occ.id), "HTML");
 }
 
 function runTaskUpdateMessageJob_(doc, job) {
@@ -136,8 +144,12 @@ function runTaskUpdateMessageJob_(doc, job) {
   // pending it belongs to one person, and pressing it again is not how they
   // deliver it.
   var showButton = occ.status === TASK_STATUS_OPEN;
-  editTelegramMessage_(chatId, occ.msgId, buildTaskStatusMessage_(occ, Date.now()),
-    showButton ? taskDoneMarkup_(occ.id) : taskClearedMarkup_());
+  // Matches the parse mode the card was first sent with; an edit that dropped
+  // HTML would show the markup as literal text.
+  var updateTask = findTask_(doc, occ.taskId);
+  editTelegramMessage_(chatId, occ.msgId,
+    buildTaskStatusMessage_(occ, Date.now(), updateTask ? updateTask.description : ""),
+    showButton ? taskDoneMarkup_(occ.id) : taskClearedMarkup_(), "HTML");
 }
 
 // ---------------------------------------------------------------- scheduler
