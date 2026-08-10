@@ -107,10 +107,17 @@ test('username is never used for authorization', () => {
 
 // --------------------------------------------------------- /yangi gating
 
-test('authorized user gets the /yangi keyboard', () => {
+test('authorized user gets the /yangi keyboard, including the task wizard button', () => {
   const gas = loadScript({ properties: props(), sheets: tenantSheets() });
   gas.doPost(postEvent(message(AUTHORIZED_ID, '/yangi')));
-  assert.ok(gas.__sentMessages.some(m => m.text.includes('operatsiya turini tanlang')));
+
+  const card = gas.__sentMessages.find(m => m.text.includes('operatsiya turini tanlang'));
+  assert.ok(card, 'the keyboard was sent');
+  // Matching the prompt text alone proves nothing about the buttons being
+  // reachable, which is the part that actually starts a flow.
+  const data = card.reply_markup.inline_keyboard
+    .reduce((acc, row) => acc.concat(row.map(b => b.callback_data)), []);
+  assert.deepStrictEqual(data, ['bot_type:Income', 'bot_type:Expense', 'bot_vz_type']);
 });
 
 test('unauthorized /yangi is refused and creates no session', () => {
@@ -128,13 +135,63 @@ test('unauthorized inline callback is refused and creates no session', () => {
   assert.ok(gas.__sentMessages.some(m => m.text.includes("huquqi yo'q")));
 });
 
-test('every callback step is gated: type, tenant, currency', () => {
-  ['bot_type:Expense', 'bot_ten:0', 'bot_spec:Umumiy Bankdan', 'bot_curr:USD'].forEach(data => {
+test('every callback step is gated: type, tenant, currency, and the task wizard', () => {
+  // "No session and no transaction" is not enough on its own. A t_-prefixed
+  // callback satisfies both while bypassing isAuthorizedTelegramUser_ entirely:
+  // isTaskTelegramUpdate_ claims the whole t_ namespace before any chat or user
+  // check runs. So each prefix must also be seen to be *refused*, and must
+  // leave the Tasks sheet untouched.
+  [
+    'bot_type:Expense', 'bot_ten:0', 'bot_spec:Umumiy Bankdan', 'bot_curr:USD',
+    'bot_vz_type', 'bot_vz_t:once', 'bot_vz_pri:high', 'bot_vz_save'
+  ].forEach(data => {
     const gas = loadScript({ properties: props(), sheets: tenantSheets() });
     gas.doPost(postEvent(callback(INTRUDER_ID, data)));
     assert.deepStrictEqual(Object.keys(gas.__cache), [], `session created for ${data}`);
     assert.deepStrictEqual(txRows(gas), [], `transaction created for ${data}`);
+    assert.ok(gas.__sentMessages.some(m => m.text.includes("huquqi yo'q")), `not refused for ${data}`);
+    assert.strictEqual(gas.__spreadsheet.getSheetByName('Tasks'), null, `Tasks sheet touched by ${data}`);
   });
+});
+
+test('an unrecognised t_ callback is refused rather than quietly answered', () => {
+  // isTaskTelegramUpdate_ hands the whole t_ namespace to handleTaskCallback_
+  // without a chat or user check. Only t_done: is ever sent, so anything else
+  // arriving here came from somebody guessing.
+  const gas = loadScript({ properties: props({ TELEGRAM_TASKS_GROUP_CHAT_ID: '-1009998887777' }) });
+  gas.doPost(postEvent(callback(INTRUDER_ID, 't_vazifa:anything', 'supergroup')));
+
+  assert.strictEqual(gas.__spreadsheet.getSheetByName('Tasks'), null, 'no task data was read or written');
+  assert.deepStrictEqual(txRows(gas), []);
+  const answers = gas.__fetchCalls
+    .filter(c => /\/answerCallbackQuery$/.test(c.url))
+    .map(c => JSON.parse(c.params.payload));
+  assert.ok(answers.some(a => String(a.text || '').includes('ishlamaydi')),
+    'the press was answered with a refusal, not an empty acknowledgement');
+});
+
+test('an intruder cannot drive a pre-seeded task wizard session to a save', () => {
+  // The analogue of gate #4: holding a live session is not authorization.
+  const gas = loadScript({
+    properties: props({ TELEGRAM_TASKS_GROUP_CHAT_ID: '-1009998887777' }),
+    sheets: tenantSheets(),
+    cache: {
+      [`yangi_${INTRUDER_ID}`]: JSON.stringify({
+        flow: 'task', sessionId: 'sess-intruder', step: 'vz_confirm', msgId: 10,
+        draft: {
+          type: 'once', title: 'Intruder', description: '', responsible: '',
+          priority: 'normal', photoRequired: false, deadlineKey: '', deadlineTime: '',
+          recurrence: { freq: 'daily', interval: 1, weekdays: [], monthDay: 1, intervalDays: 1 },
+          startKey: '', endKey: '', dueTime: '', steps: [], reminderTimes: []
+        }
+      })
+    }
+  });
+
+  gas.doPost(postEvent(callback(INTRUDER_ID, 'bot_vz_save')));
+
+  assert.strictEqual(gas.__spreadsheet.getSheetByName('Tasks'), null, 'no task was written');
+  assert.ok(gas.__sentMessages.some(m => m.text.includes("huquqi yo'q")));
 });
 
 test('amount and description steps are gated even with a pre-seeded session', () => {

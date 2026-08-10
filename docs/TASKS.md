@@ -2,8 +2,20 @@
 
 An isolated task-management module bolted onto the existing MyBizManager
 backend. It reuses the Telegram bot, the `Omad_Job_Queue` retry infrastructure
-and the Telegram settings, but keeps its data, its Telegram namespace and its
-frontend entirely separate from the Omad accounting, Café and `/yangi` flows.
+and the Telegram settings, but keeps its data and its frontend entirely
+separate from the Omad accounting and Café flows.
+
+**The isolation is one-way, deliberately.** The rule is:
+
+> Tasks never touch financial data. The private `/yangi` conversation may
+> **create** tasks, through the same four authorization gates that protect the
+> accounting flow, and reading only the `Tasks` sheet.
+
+Task data, task callbacks and task completion never read or write a
+transaction, tenant, rate or backup — `tests/task-isolation.test.js` and a
+source-level guard in `tests/static-analysis.test.js` enforce that. What the
+private bot *may* do is file a new task, through the
+[`📋 Vazifa` wizard](#creating-a-task-from-the-bot).
 
 Live URL: **<https://omad-d.netlify.app/tasks>** (served from `tasks.html` via
 the `netlify.toml` rewrite).
@@ -90,6 +102,74 @@ already in Script Properties reads as "not configured" rather than
 half-working, because incoming callbacks and photos only ever carry `chat.id`.
 Empty disables the task Telegram integration cleanly.
 
+## Creating a task from the bot
+
+`/yangi` offers a third button, **📋 Vazifa**, which walks the authorized user
+through a new task one question at a time and creates it. A one-off task is six
+taps and two typed lines; a title-only task is three taps and one line.
+
+```
+Vazifa turini tanlang  →  sarlavha  →  tavsif  →  mas'ul  →  muhimlik  →  rasm
+   once     →  muddat sanasi → muddat vaqti
+   routine  →  takrorlanish → (kunlar | oy kuni | interval) → boshlanish → tugash → vaqt
+   goal     →  bosqichlar, birma-bir
+                                    →  eslatma vaqtlari  →  tasdiqlash  →  ✅ Saqlash
+```
+
+Every optional step has a skip. `❌ Bekor` and `/bekor` abandon the draft;
+`/yangi` restarts it. A tap on a superseded card re-renders the step the user is
+actually on rather than mutating the draft.
+
+### Why `bot_vz` and not `t_`
+
+`isTaskTelegramUpdate_` claims **any** callback whose data starts with `t_`,
+before any chat or user check — the chat gate lives inside `handleTaskCallback_`
+and applies only to `t_done:`. A `t_`-prefixed wizard would therefore have sat
+on the one code path with no authorization gate.
+
+Every wizard callback uses **`bot_vz`** instead, so it is dispatched from
+`processOmadCallback_`, behind the private-chat check and the authorization
+gate, and re-checks authorization itself before writing. Unrecognised `t_`
+callbacks are now refused explicitly rather than silently answered.
+
+### The session
+
+The wizard reuses the accounting session key `"yangi_" + fromId`, discriminated
+by `flow: "task"` — one session per user, one TTL, one cleanup path, and
+`/yangi` already wipes it. Every wizard step id is `vz_*`, so a draft can never
+fall through into `await_amount` / `await_desc` and write a financial row.
+
+`19a_tasks_wizard.gs` never receives `configSheet`. That is what makes "the
+wizard reads no financial config" structural rather than a promise, and
+`tests/static-analysis.test.js` additionally fails the build if the module so
+much as names an accounting helper or sheet.
+
+### Saving exactly once
+
+The script lock serialises concurrent deliveries; a second one runs only after
+the first finished, finds the task by `Meta_JSON.tgRequestId`
+(`tg_<fromId>_<sessionId>`) and reports the same success rather than creating a
+duplicate. Removing the session on success turns every later redelivery into an
+ordinary expiry. There is deliberately **no** "currently saving" flag: under the
+lock it could only be seen by a delivery arriving after a run died mid-save, and
+there refusing the retry is worse than allowing it.
+
+`normalizeTaskInput_` accepts `meta` and `createdBy` on a **new** task for this;
+an edit keeps whatever the row already had, so the web UI is unaffected.
+Wizard-created tasks carry `Created_By = "telegram:<id>"` and an extra
+`task_created_via_telegram` audit row.
+
+### What the confirmation promises
+
+"✅ Vazifa yaratildi va guruhga **yuboriladi**" — *will be* sent, never *was*
+sent. Only one queued job drains inline (`JOB_QUEUE_INLINE_BATCH = 1`), a
+future-dated routine announces nothing today, and with no Tasks group configured
+the card never goes out at all. The task is created regardless.
+
+Wizard messages are **plain text with no `parse_mode`**. Titles and step text
+are free-form input, and staying out of HTML mode removes the whole escaping bug
+class from this surface. The group cards remain HTML and remain escaped.
+
 ## Telegram — isolation from `/yangi`
 
 A task update is claimed **before** the accounting handler:
@@ -105,10 +185,17 @@ doPost → Telegram webhook (verified by ?wh= secret) →
   accounting `bot_type:`/`bot_ten:`/`bot_curr:` callbacks), and
 - photo / reply messages inside the configured Tasks group.
 
-Everything else falls through to the unchanged `/yangi` flow, which only ever
-runs in a private chat with the single authorized user. Even when the Tasks
-group and the reporting group are the **same** chat, a task completion writes no
-financial record and `/yangi` is unaffected (`tests/task-isolation.test.js`).
+Everything else falls through to the `/yangi` flow, which only ever runs in a
+private chat with the single authorized user — including the `bot_vz` wizard
+callbacks, which is exactly why they use that prefix. Even when the Tasks group
+and the reporting group are the **same** chat, a task completion writes no
+financial record and the accounting flow is unaffected
+(`tests/task-isolation.test.js`).
+
+A callback that starts with `t_` but is not `t_done:` is refused with
+*"Bu tugma bu yerda ishlamaydi."* rather than answered as though it were a
+button this bot offers — `t_done:` is the only thing ever sent, so anything else
+arriving here came from somebody guessing.
 
 ### Card format
 
@@ -329,8 +416,13 @@ tests/task-access.test.js        reads are admin-gated, POST-only, throttled
 tests/task-goals.test.js         step announcing, inherited photo rule, daily reminders
 tests/task-scheduler.test.js     one read + one batched write; future-work guards
 tests/task-card-format.test.js   card HTML: description, collapsing, escaping
+tests/task-telegram-wizard.test.js  the 📋 Vazifa wizard end to end, all three types
 tests/tasks-ui.e2e.js            the /tasks page in Chromium (auto-skips w/o Playwright)
 ```
+
+`tests/telegram-authorization.test.js` gates the `bot_vz` family alongside the
+accounting callbacks, and `tests/static-analysis.test.js` fails the build if
+`19a_tasks_wizard.gs` names an accounting helper or sheet.
 
 Run with `npm test` (unit) and `npm run test:e2e` (browser), as with the rest
 of the app. `npm run build` regenerates `script.gs` after any `apps-script/`

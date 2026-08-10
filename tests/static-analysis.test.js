@@ -60,6 +60,39 @@ function appsScriptModules() {
     .map(f => ({ name: `apps-script/${f}`, code: fs.readFileSync(path.join(dir, f), 'utf8') }));
 }
 
+// --------------------------------------------------------- module boundaries
+
+test('the task wizard never reaches into accounting data', () => {
+  // The wizard runs inside the private /yangi conversation, which is where the
+  // money lives, so the isolation rule has to be enforced structurally rather
+  // than by review. Withholding `configSheet` from its entry points stops the
+  // accidental case; this stops the deliberate one, because `doc` is in scope
+  // and everything is one global namespace.
+  //
+  // Any genuinely new need here is a design decision, not a rename: change the
+  // list only alongside the isolation documentation it mirrors.
+  const forbidden = [
+    'getActiveTenantNames_', 'normalizeTenantList_', 'readOmadTransactions_',
+    'safeSaveOmad_', 'backupOmadState_', 'calculateActuals_', 'toUZS_',
+    'Omad_Tenants', 'Omad_Rates', 'Omad_Transactions', 'Omad_Backups',
+    'Omad_Template_Expenses', 'System_Config'
+  ];
+
+  const wizard = appsScriptModules().find(m => m.name.endsWith('19a_tasks_wizard.gs'));
+  assert.ok(wizard, 'the wizard module exists');
+
+  // Comments explain the rule by naming what is banned, so only real code counts.
+  const code = wizard.code
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .filter(line => !/^\s*\/\//.test(line))
+    .join('\n');
+
+  const offenders = forbidden.filter(name => code.indexOf(name) !== -1);
+  assert.deepStrictEqual(offenders, [],
+    `19a_tasks_wizard.gs must not touch accounting data: ${offenders.join(', ')}`);
+});
+
 // ------------------------------------------------------------ secret scanning
 
 test('no Telegram bot token is committed anywhere in the working tree', () => {

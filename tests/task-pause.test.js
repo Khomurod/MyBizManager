@@ -19,10 +19,21 @@ const { loadScript, postEvent, readJsonOutput } = require('./gas-harness');
 const VALID_TOKEN = '123456789:AAFakeTokenForTestsOnly_0123456789abcd';
 const TASKS_GROUP = '-1009998887777';
 const ADMIN_KEY = 'test-admin-key';
-const FIXED_NOW = Date.UTC(2026, 7, 10, 4, 0, 0); // 2026-08-10 09:00 Asia/Tashkent
-const TODAY = '2026-08-10';
-const TOMORROW = '2026-08-11';
 const DAY_MS = 86400000;
+
+// Anchored to the real Tashkent day, not a literal date. Pausing and pruning
+// call Date.now() internally, so a fixture pinned to a fixed calendar day
+// disagrees with the code under test for the five hours each evening when UTC
+// and Tashkent are on different dates — and the suite went red every night.
+const TASHKENT_OFFSET_MS = 5 * 3600000; // UTC+5, year round
+function tashkentKey(ms) {
+  return new Date(ms + TASHKENT_OFFSET_MS).toISOString().slice(0, 10);
+}
+const TODAY = tashkentKey(Date.now());
+const FIXED_NOW = Date.parse(TODAY + 'T09:00:00+05:00');
+const TOMORROW = tashkentKey(FIXED_NOW + DAY_MS);
+const DAY_AFTER = tashkentKey(FIXED_NOW + 2 * DAY_MS);
+const DAY_THREE = tashkentKey(FIXED_NOW + 3 * DAY_MS);
 
 function setup() {
   const gas = loadScript({
@@ -122,12 +133,12 @@ test('pausing removes only the unseen future', () => {
   today.msgId = '555';
   gas.writeOccurrenceRow_(doc, today);
 
-  const completed = rows.find(o => o.dateKey === '2026-08-12');
+  const completed = rows.find(o => o.dateKey === DAY_AFTER);
   completed.status = gas.TASK_STATUS_COMPLETED;
   completed.completedByName = 'Ali';
   gas.writeOccurrenceRow_(doc, completed);
 
-  const skipped = rows.find(o => o.dateKey === '2026-08-13');
+  const skipped = rows.find(o => o.dateKey === DAY_THREE);
   skipped.status = gas.TASK_STATUS_SKIPPED;
   gas.writeOccurrenceRow_(doc, skipped);
 
@@ -135,14 +146,14 @@ test('pausing removes only the unseen future', () => {
 
   const after = occurrencesFor(gas, doc, task.id);
   const keys = after.map(o => o.dateKey).sort();
-  assert.deepStrictEqual(keys, [TODAY, '2026-08-12', '2026-08-13'],
+  assert.deepStrictEqual(keys, [TODAY, DAY_AFTER, DAY_THREE],
     'every un-announced future day is gone, history is not');
 
   assert.strictEqual(after.find(o => o.dateKey === TODAY).status, gas.TASK_STATUS_OPEN);
   assert.strictEqual(after.find(o => o.dateKey === TODAY).msgId, '555');
-  assert.strictEqual(after.find(o => o.dateKey === '2026-08-12').status, gas.TASK_STATUS_COMPLETED);
-  assert.strictEqual(after.find(o => o.dateKey === '2026-08-12').completedByName, 'Ali');
-  assert.strictEqual(after.find(o => o.dateKey === '2026-08-13').status, gas.TASK_STATUS_SKIPPED);
+  assert.strictEqual(after.find(o => o.dateKey === DAY_AFTER).status, gas.TASK_STATUS_COMPLETED);
+  assert.strictEqual(after.find(o => o.dateKey === DAY_AFTER).completedByName, 'Ali');
+  assert.strictEqual(after.find(o => o.dateKey === DAY_THREE).status, gas.TASK_STATUS_SKIPPED);
 });
 
 test('a day that already pinged the group is treated as announced', () => {
@@ -214,7 +225,7 @@ test('resuming regenerates without duplicating', () => {
   const { gas, doc } = setup();
   const task = makeRoutine(gas);
 
-  const completed = occurrencesFor(gas, doc, task.id).find(o => o.dateKey === '2026-08-12');
+  const completed = occurrencesFor(gas, doc, task.id).find(o => o.dateKey === DAY_AFTER);
   completed.status = gas.TASK_STATUS_COMPLETED;
   gas.writeOccurrenceRow_(doc, completed);
 
@@ -225,7 +236,7 @@ test('resuming regenerates without duplicating', () => {
   const after = occurrencesFor(gas, doc, task.id);
   const keys = after.map(o => o.dateKey);
   assert.strictEqual(new Set(keys).size, keys.length, 'exactly one occurrence per due date');
-  assert.strictEqual(after.find(o => o.dateKey === '2026-08-12').status, gas.TASK_STATUS_COMPLETED,
+  assert.strictEqual(after.find(o => o.dateKey === DAY_AFTER).status, gas.TASK_STATUS_COMPLETED,
     'completed history survived the pause/resume cycle');
 });
 

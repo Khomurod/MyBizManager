@@ -377,8 +377,14 @@ function normalizeTaskInput_(payload, existing) {
     recurrence: {},
     createdAt: existing ? existing.createdAt : nowIso,
     updatedAt: nowIso,
-    createdBy: existing ? existing.createdBy : String(payload.createdBy || "admin"),
-    meta: existing ? existing.meta : {}
+    // Bounded the way 14_ledger.gs already bounds the same concept.
+    createdBy: existing ? existing.createdBy : String(payload.createdBy || "admin").slice(0, 120),
+    // A new task may carry caller metadata; the Telegram wizard uses it for the
+    // durable idempotency key it has no Request_ID column for. An edit keeps
+    // whatever the row already had, so the web UI — which sends neither field —
+    // behaves exactly as before.
+    meta: existing ? existing.meta
+      : (payload.meta && typeof payload.meta === "object" && !Array.isArray(payload.meta) ? payload.meta : {})
   };
 
   if (type === "once") {

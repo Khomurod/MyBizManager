@@ -21,7 +21,12 @@ const { loadScript, postEvent, readJsonOutput } = require('./gas-harness');
 const VALID_TOKEN = '123456789:AAFakeTokenForTestsOnly_0123456789abcd';
 const TASKS_GROUP = '-1009998887777';
 const ADMIN_KEY = 'test-admin-key';
-const FIXED_NOW = Date.UTC(2026, 7, 10, 4, 0, 0); // 2026-08-10 09:00 Asia/Tashkent
+// Anchored to the real Tashkent day: the scheduler and materialisation call
+// Date.now() internally, so a fixture pinned to a literal date disagrees with
+// them for the five hours each evening when UTC and Tashkent differ.
+const TASHKENT_OFFSET_MS = 5 * 3600000; // UTC+5, year round
+const FIXED_NOW = Date.parse(
+  new Date(Date.now() + TASHKENT_OFFSET_MS).toISOString().slice(0, 10) + 'T09:00:00+05:00');
 
 function setup() {
   const gas = loadScript({
