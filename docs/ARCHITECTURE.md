@@ -55,14 +55,27 @@ filename order. `npm run build` regenerates `script.gs`; `npm run build:check`
 | `17_tasks_store.gs` | Task module: `Tasks`/`Task_Occurrences` sheets, occurrences, views |
 | `18_tasks_service.gs` | Task module: isolated Telegram namespace (`t_done:`, photo proof) |
 | `19_tasks_scheduler.gs` | Task module: reminder scheduler, queue jobs, edit reconciliation, web API |
+| `19a_tasks_wizard.gs` | Task module: the `📋 Vazifa` branch of `/yangi` — state machine, keyboards, task creation |
 | `20_api.gs` | `doPost` / `doGet` routing only |
 
 The task-management feature (`/tasks`) is documented separately in
 **[TASKS.md](TASKS.md)**. It is an isolated module: dedicated `Tasks` and
 `Task_Occurrences` sheets, its own `t_done:` Telegram namespace claimed before
 the `/yangi` handler, and its own frontend. It reuses the Telegram bot, the
-`Omad_Job_Queue` and the Telegram settings; it does **not** touch the Omad
-accounting, Café or `/yangi` flows.
+`Omad_Job_Queue` and the Telegram settings.
+
+The isolation is **one-way**:
+
+> Tasks never touch financial data. The private `/yangi` conversation may
+> **create** tasks, through the same four authorization gates that protect the
+> accounting flow, and reading only the `Tasks` sheet.
+
+Nothing in the task module reads or writes an Omad transaction, tenant, rate or
+backup. The `📋 Vazifa` branch of `/yangi` (`19a_tasks_wizard.gs`) goes the
+other way — it files a task from the private bot. Its callbacks use the
+`bot_vz` prefix so they stay behind the private-chat check and the
+authorization gate, and the module is never handed `configSheet`, so accounting
+config is structurally out of reach.
 
 ### Frontend modules
 

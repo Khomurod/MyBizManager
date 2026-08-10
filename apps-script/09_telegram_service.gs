@@ -230,7 +230,7 @@ function handleOmadTelegramUpdate_(update, doc, configSheet) {
 
   if (callback) {
     answerCallbackQuery_(callback.id);
-    processOmadCallback_(callback, chatId, key, cache, configSheet, fromId);
+    processOmadCallback_(callback, chatId, key, cache, doc, configSheet, fromId);
     return okHtmlOutput_();
   }
 
@@ -239,10 +239,18 @@ function handleOmadTelegramUpdate_(update, doc, configSheet) {
     cache.remove(key);
     debugLog_(doc, "telegram_yangi_triggered", JSON.stringify({ chatId: chatId, fromId: fromId }));
     sendTelegramMessage_(chatId, "Iltimos, operatsiya turini tanlang:", {
-      inline_keyboard: [[
-        { text: "🟢 Kirim", callback_data: "bot_type:Income" },
-        { text: "🔴 Chiqim", callback_data: "bot_type:Expense" }
-      ]]
+      inline_keyboard: [
+        [
+          { text: "🟢 Kirim", callback_data: "bot_type:Income" },
+          { text: "🔴 Chiqim", callback_data: "bot_type:Expense" }
+        ],
+        // The task wizard. `bot_vz` and not `t_`: a t_-prefixed callback is
+        // claimed by isTaskTelegramUpdate_, which applies neither the
+        // private-chat check nor the authorization gate.
+        [
+          { text: "📋 Vazifa", callback_data: "bot_vz_type" }
+        ]
+      ]
     });
     return okHtmlOutput_();
   }
@@ -251,7 +259,7 @@ function handleOmadTelegramUpdate_(update, doc, configSheet) {
   return okHtmlOutput_();
 }
 
-function processOmadCallback_(callback, chatId, key, cache, configSheet, fromId) {
+function processOmadCallback_(callback, chatId, key, cache, doc, configSheet, fromId) {
   // Gate #2: re-checked on every inline button callback (type, tenant,
   // expense source and currency selection all arrive through here).
   if (!isAuthorizedTelegramUser_(fromId)) {
@@ -260,6 +268,16 @@ function processOmadCallback_(callback, chatId, key, cache, configSheet, fromId)
   }
 
   var data = String(callback.data || "");
+
+  // The task wizard, handled before the accounting session is even read. It
+  // deliberately does not receive configSheet: "the wizard never reads
+  // financial config" is then enforced by this signature rather than by
+  // discipline.
+  if (data.indexOf("bot_vz") === 0) {
+    handleTaskWizardCallback_(callback, chatId, key, cache, data, doc, fromId);
+    return;
+  }
+
   var state = safeParseJSON_(cache.get(key), {});
 
   if (data.indexOf("bot_type:") === 0) {
@@ -319,6 +337,14 @@ function processOmadTextStep_(text, chatId, key, cache, doc, configSheet, fromId
 
   var state = safeParseJSON_(cache.get(key), null);
   if (!state || !state.step) return;
+
+  // The task wizard shares this session key, discriminated by `flow`. Every
+  // wizard step id is vz_*, so it can never fall through into await_amount or
+  // await_desc and write a financial row.
+  if (state.flow === WIZARD_FLOW) {
+    handleTaskWizardText_(text, chatId, key, cache, state, doc, fromId);
+    return;
+  }
 
   if (state.step === "await_amount") {
     var amount = Number(text.replace(/\s/g, ""));

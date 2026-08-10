@@ -306,7 +306,11 @@ function handleTaskTelegramUpdate_(update, doc, configSheet) {
 function handleTaskCallback_(callback, doc) {
   var data = String(callback.data || "");
   if (data.indexOf(TASK_DONE_CALLBACK) !== 0) {
-    answerCallbackQuery_(callback.id);
+    // isTaskTelegramUpdate_ claims the whole `t_` namespace before any chat or
+    // user check runs, so this is the one branch reachable by anybody at all.
+    // Refuse it explicitly rather than answering it as though it were a button
+    // this bot offers — nothing but t_done: is ever sent.
+    answerCallbackQuery_(callback.id, "Bu tugma bu yerda ishlamaydi.");
     return;
   }
 

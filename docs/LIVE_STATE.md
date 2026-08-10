@@ -97,6 +97,13 @@ and tested but requires three manual operator steps before it is live:
 Until step 2, task messages are simply not sent; the accounting flows are
 unaffected either way.
 
+**Creating tasks from the bot** (the `📋 Vazifa` button on `/yangi`) ships in
+the same deployment and needs **no** extra configuration — no new Script
+Properties, no webhook change. `TELEGRAM_AUTHORIZED_USER_ID` already decides
+who may use it. Once the backend is deployed, the next `/yangi` shows three
+buttons instead of two. Without step 2 the task is still created; only the
+group card is not sent.
+
 **Dates.** The task sheets now protect their own date, time and timestamp
 columns by formatting them as text before writing, exactly as the accounting
 sheets do (see *Dates* below). Reads also recover a cell that an older write

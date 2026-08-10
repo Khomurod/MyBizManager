@@ -4,6 +4,11 @@
  * The task Telegram namespace must not disturb the private `/yangi` accounting
  * flow or the financial ledger — even when the Tasks group and the reporting
  * group are the same chat.
+ *
+ * Since the `📋 Vazifa` wizard, the boundary is one-way rather than two-way:
+ * the private conversation MAY create tasks, through the same authorization
+ * gates. What still holds — and is what this file exists to pin — is that
+ * tasks never read or write financial data, in either direction.
  */
 
 const test = require('node:test');
@@ -97,6 +102,76 @@ test('an accounting callback still reaches the accounting handler, not the task 
   }));
   const session = JSON.parse(gas.__cache['yangi_' + AUTHORIZED_ID] || '{}');
   assert.strictEqual(session.type, 'Income', 'the accounting session was started');
+  // The key is dual-purpose now, so `type` alone no longer proves which flow
+  // owns it. The wizard never writes a top-level `type`, and never omits `flow`.
+  assert.strictEqual(session.flow, undefined, 'and it is an accounting session, not a wizard one');
+});
+
+test('the task wizard writes tasks and never touches financial storage', () => {
+  const gas = loadScript({ properties: props(TASKS_GROUP), sheets: sheets() });
+
+  const tap = data => gas.doPost(postEvent({
+    callback_query: {
+      id: 'cb', data: data, from: { id: AUTHORIZED_ID },
+      message: { chat: { id: AUTHORIZED_ID, type: 'private' }, message_id: 60 }
+    }
+  }));
+  const say = text => gas.doPost(postEvent({
+    message: { chat: { id: AUTHORIZED_ID, type: 'private' }, from: { id: AUTHORIZED_ID }, text: text }
+  }));
+
+  say('/yangi');
+  tap('bot_vz_type');
+  tap('bot_vz_t:once');
+  say('Vazifa, pulga tegmaydi');
+  tap('bot_vz_skip:desc');
+  tap('bot_vz_skip:resp');
+  tap('bot_vz_pri:normal');
+  tap('bot_vz_photo:0');
+  tap('bot_vz_skip:date');
+  tap('bot_vz_skip:reminders');
+  tap('bot_vz_save');
+
+  assert.strictEqual(gas.readTaskRows_(gas.__spreadsheet).length, 1, 'the task was created');
+
+  // Sheet absence, not row counts: all three are created lazily, so `null` is
+  // the only assertion that distinguishes "never touched" from "touched and
+  // wrote nothing".
+  assert.strictEqual(gas.__spreadsheet.getSheetByName('Omad_Transactions'), null);
+  assert.strictEqual(gas.__spreadsheet.getSheetByName('Omad_Transactions_V2'), null);
+  assert.strictEqual(gas.__spreadsheet.getSheetByName('Omad_Backups'), null);
+  assert.strictEqual(gas.__spreadsheet.getSheetByName('Omad_Transaction_Archive'), null);
+  assert.deepStrictEqual(Object.keys(gas.__cache), [], 'and no session was left behind');
+});
+
+test('the task wizard completes with no accounting configuration at all', () => {
+  // Structural proof rather than an assertion someone can weaken later: with an
+  // empty System_Config, any read of tenants or rates would surface here.
+  const gas = loadScript({ properties: props(TASKS_GROUP), sheets: { System_Config: [] } });
+
+  const tap = data => gas.doPost(postEvent({
+    callback_query: {
+      id: 'cb', data: data, from: { id: AUTHORIZED_ID },
+      message: { chat: { id: AUTHORIZED_ID, type: 'private' }, message_id: 61 }
+    }
+  }));
+  const say = text => gas.doPost(postEvent({
+    message: { chat: { id: AUTHORIZED_ID, type: 'private' }, from: { id: AUTHORIZED_ID }, text: text }
+  }));
+
+  say('/yangi');
+  tap('bot_vz_type');
+  tap('bot_vz_t:once');
+  say('Konfiguratsiyasiz');
+  tap('bot_vz_skip:desc');
+  tap('bot_vz_skip:resp');
+  tap('bot_vz_pri:normal');
+  tap('bot_vz_photo:0');
+  tap('bot_vz_skip:date');
+  tap('bot_vz_skip:reminders');
+  tap('bot_vz_save');
+
+  assert.strictEqual(gas.readTaskRows_(gas.__spreadsheet).length, 1);
 });
 
 test('a photo in the Tasks group with nothing awaiting proof starts no /yangi and writes nothing', () => {
