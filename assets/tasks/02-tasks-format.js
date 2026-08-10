@@ -14,9 +14,8 @@ function taskToast(text, isError) {
     const el = document.getElementById('toast');
     if (!el) return;
     el.textContent = text;
-    el.className = 'fixed bottom-24 left-1/2 -translate-x-1/2 z-[120] px-4 py-2 rounded-full text-white text-xs font-bold shadow-lg ' +
-        (isError ? 'bg-red-500' : 'bg-slate-800');
-    el.classList.remove('hidden');
+    // Positioned above the bottom nav and the FAB by .toast in tasks.html.
+    el.className = 'toast' + (isError ? ' toast--error' : '');
     if (taskToastTimer) clearTimeout(taskToastTimer);
     taskToastTimer = setTimeout(() => el.classList.add('hidden'), 2600);
 }
@@ -45,8 +44,13 @@ const TASK_STATUS_CLASSES = {
     Cancelled: 'bg-slate-100 text-slate-500', Skipped: 'bg-slate-100 text-slate-500'
 };
 
+/**
+ * Priority is shown only when it is not the default. "Oddiy" on every card is
+ * noise that steals width from the title without telling anyone anything.
+ */
 function taskPriorityBadge(priority) {
     const p = priority || 'normal';
+    if (p === 'normal') return '';
     return '<span class="badge ' + (TASK_PRIORITY_CLASSES[p] || TASK_PRIORITY_CLASSES.normal) + '">' +
         (TASK_PRIORITY_LABELS[p] || p) + '</span>';
 }
@@ -65,4 +69,38 @@ function taskDefStatusBadge(status) {
     };
     const entry = map[status] || ['—', 'bg-slate-100 text-slate-500'];
     return '<span class="badge ' + entry[1] + '">' + entry[0] + '</span>';
+}
+
+/**
+ * The one status line that carries the card: when the work is due, and what
+ * state it is in. Placed directly under the title so scanning a list is
+ * title → time → everything else.
+ */
+function taskWhenLine(occ) {
+    const label = occ.dueLabel || '';
+    if (occ.displayStatus === 'Completed') {
+        return '<p class="when when--done">✅ Bajarildi' +
+            (occ.lateLabel ? ' • ' + escapeTaskHtml(occ.lateLabel) + ' kech'
+                : (occ.onTime === true ? ' • o\'z vaqtida' : '')) + '</p>';
+    }
+    if (occ.displayStatus === 'Overdue') {
+        return '<p class="when when--late">⏰ ' + escapeTaskHtml(label || 'Muddati o\'tgan') +
+            (occ.lateLabel ? ' • ' + escapeTaskHtml(occ.lateLabel) + ' kech' : '') + '</p>';
+    }
+    if (occ.displayStatus === 'WaitingProof') {
+        return '<p class="when when--wait">📷 Rasm kutilmoqda' +
+            (label ? ' • ' + escapeTaskHtml(label) : '') + '</p>';
+    }
+    if (!label) return '<p class="when">🕓 Muddatsiz</p>';
+    return '<p class="when">🕓 ' + escapeTaskHtml(label) + '</p>';
+}
+
+/** Secondary metadata: who owns it, and whether a photo is needed. */
+function taskMetaLine(occ, extras) {
+    const parts = [];
+    if (occ.responsible) parts.push('👤 ' + escapeTaskHtml(occ.responsible));
+    if (occ.photoRequired) parts.push('📷 Rasm');
+    (extras || []).forEach(part => parts.push(part));
+    if (!parts.length) return '';
+    return '<p class="meta">' + parts.map(p => '<span>' + p + '</span>').join('') + '</p>';
 }

@@ -7,6 +7,17 @@
  * an in-test mock, and asserts the page renders every tab, never calls Telegram
  * directly, and posts a well-formed save_task with the admin key.
  *
+ * The second half is the mobile contract: /tasks is a phone-first page, so it
+ * is checked at real handset widths (320-430px) for horizontal overflow,
+ * reachable navigation, tap-target sizes, cards that survive long titles, a
+ * create sheet that fits next to the keyboard, and chrome (bottom nav, FAB)
+ * that never sits on top of content. The backend payloads are asserted at a
+ * phone width too, because the redesign must not have changed what is sent.
+ *
+ * NOTE: the Tailwind CDN is stubbed out below, so every layout assertion here
+ * exercises the page's own CSS - which is exactly where the app-shell layout
+ * lives, and why it must not depend on the CDN arriving.
+ *
  * Skipped automatically when Playwright is not installed.
  */
 
@@ -73,12 +84,14 @@ describe('Tasks UI (browser)', () => {
    * @param {boolean} options.withKey  seed sessionStorage with the admin key
    *        (default true). Without it the board is not readable at all.
    * @param {object} options.view      override the mock view.
+   * @param {object} options.viewport  {width, height} to emulate a handset.
    */
   async function open(options = {}) {
     const withKey = options.withKey !== false;
     const backendRequests = [];
     const telegramRequests = [];
-    const context = await browser.newContext();
+    const context = await browser.newContext(
+      options.viewport ? { viewport: options.viewport, hasTouch: true, isMobile: true } : {});
     await context.addInitScript((args) => {
       localStorage.setItem('omad_role', 'omad_admin');
       localStorage.setItem('omad_token', 'omad_admin_active');
@@ -192,6 +205,377 @@ describe('Tasks UI (browser)', () => {
     assert.ok(saves.length >= 1);
     assert.strictEqual(saves[0].id, 't1');
     assert.strictEqual(saves[0].type, 'routine', 'the submitted type still matches the stored one');
+    await context.close();
+  });
+
+  // ------------------------------------------------------------ mobile shell
+
+  /** Real handset widths, narrowest first. 320 is the floor we support. */
+  const PHONES = [320, 360, 375, 390, 430];
+
+  /** A view designed to break a fragile layout: no spaces to wrap on. */
+  function longTextView() {
+    const view = mockView();
+    const monster = 'Filialdagi kassa hisobotini tekshirish va tasdiqlash uchun juda uzun nomlanган vazifa';
+    view.today.overdue = [{
+      id: 'lo1', taskId: 't1', title: monster + ' ' + 'X'.repeat(60),
+      displayStatus: 'Overdue', priority: 'urgent',
+      responsible: 'Abdurahmonov Abdulhamidjon Abdulaziz' + 'o'.repeat(40),
+      dueLabel: '10.08.2026 08:00', photoRequired: true, lateLabel: '3h 20m'
+    }];
+    view.today.needsAttention = [{
+      id: 'lo2', taskId: 't1', title: 'A'.repeat(120), displayStatus: 'Open',
+      priority: 'normal', responsible: 'B'.repeat(80), dueLabel: '10.08.2026 20:00',
+      photoRequired: false
+    }];
+    return view;
+  }
+
+  /**
+   * The page must never scroll sideways.
+   *
+   * Measured against documentElement.clientWidth, NOT window.innerWidth: in an
+   * emulated mobile context Chromium widens the layout viewport to fit
+   * overflowing content, so innerWidth grows with the overflow and comparing
+   * against it would always pass. clientWidth stays at the device width.
+   */
+  async function horizontalOverflow(page) {
+    return page.evaluate(() => ({
+      docScroll: document.documentElement.scrollWidth,
+      bodyScroll: document.body.scrollWidth,
+      viewport: document.documentElement.clientWidth,
+      // The furthest right edge of anything laid out on the page.
+      widest: Array.from(document.querySelectorAll('body *')).reduce((max, el) => {
+        const box = el.getBoundingClientRect();
+        return box.width ? Math.max(max, box.right) : max;
+      }, 0)
+    }));
+  }
+
+  for (const width of PHONES) {
+    test(`the shell fits a ${width}px phone without horizontal overflow`, async () => {
+      const { page, context, consoleErrors } = await open({
+        viewport: { width, height: 780 }, view: longTextView()
+      });
+
+      const overflow = await horizontalOverflow(page);
+      assert.strictEqual(overflow.viewport, width, 'the layout viewport is the device width');
+      assert.ok(overflow.docScroll <= width + 1,
+        `document scrolls sideways at ${width}px: ${overflow.docScroll} > ${width}`);
+      assert.ok(overflow.bodyScroll <= width + 1,
+        `body scrolls sideways at ${width}px: ${overflow.bodyScroll} > ${width}`);
+      assert.ok(overflow.widest <= width + 1,
+        `an element extends past the viewport at ${width}px: ${overflow.widest}`);
+
+      // Long unbroken titles and names wrap inside the card.
+      const card = await page.locator('#panel-today .card').first().boundingBox();
+      assert.ok(card.width <= width, `a card is wider than the screen at ${width}px`);
+      assert.ok(card.height > 80, 'the long title wrapped rather than being clipped to one line');
+
+      assert.deepStrictEqual(consoleErrors, []);
+      await context.close();
+    });
+
+    test(`bottom navigation is usable and clear of content at ${width}px`, async () => {
+      const { page, context } = await open({ viewport: { width, height: 780 } });
+
+      const nav = await page.locator('nav.nav').boundingBox();
+      assert.ok(nav, 'the bottom navigation is present');
+      assert.ok(nav.x >= 0 && nav.width <= width + 1, 'the nav sits inside the viewport');
+      assert.ok(Math.abs((nav.y + nav.height) - 780) <= 1, 'the nav is pinned to the bottom');
+
+      // All five destinations, each a comfortable tap target.
+      const buttons = page.locator('nav.nav [data-tab]');
+      assert.strictEqual(await buttons.count(), 5);
+      for (let i = 0; i < 5; i++) {
+        const box = await buttons.nth(i).boundingBox();
+        assert.ok(box.height >= 44, `nav item ${i} is only ${box.height}px tall at ${width}px`);
+        assert.ok(box.width >= 40, `nav item ${i} is only ${box.width}px wide at ${width}px`);
+        assert.ok(box.x >= -0.5 && box.x + box.width <= width + 0.5,
+          `nav item ${i} spills outside the screen at ${width}px`);
+      }
+
+      // The FAB floats above the nav, not on top of it.
+      const fab = await page.locator('.fab').boundingBox();
+      assert.ok(fab.y + fab.height <= nav.y + 1,
+        `the FAB overlaps the bottom navigation at ${width}px`);
+      assert.ok(fab.x + fab.width <= width, 'the FAB stays on screen');
+
+      // Content scrolled to the bottom still clears the nav.
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      const lastBottom = await page.evaluate(() => {
+        const cards = document.querySelectorAll('#panel-today .card, #panel-today .fold');
+        const last = cards[cards.length - 1];
+        return last ? last.getBoundingClientRect().bottom : 0;
+      });
+      const navTop = (await page.locator('nav.nav').boundingBox()).y;
+      assert.ok(lastBottom <= navTop + 1,
+        `the last card is hidden behind the nav at ${width}px (${lastBottom} > ${navTop})`);
+
+      await context.close();
+    });
+
+    test(`tap targets and text are phone-sized at ${width}px`, async () => {
+      const { page, context } = await open({ viewport: { width, height: 780 } });
+
+      // The primary action on a card.
+      const primary = page.locator('#panel-today .btn--primary').first();
+      const box = await primary.boundingBox();
+      assert.ok(box.height >= 44, `"Bajarildi" is only ${box.height}px tall at ${width}px`);
+      assert.ok(box.width >= 100, 'the primary action is the dominant control');
+
+      // Its secondary sibling is still tappable, just not dominant.
+      const skip = await page.locator('#panel-today .btn--icon').first().boundingBox();
+      assert.ok(skip.height >= 44 && skip.width >= 44,
+        `the skip control is ${skip.width}x${skip.height} at ${width}px`);
+      assert.ok(skip.width < box.width, 'skip is visually subordinate to Bajarildi');
+
+      // Header controls are real buttons, not 10px text.
+      for (const sel of ['#adminKeyBtn', '.hdr__tools a']) {
+        const tool = await page.locator(sel).boundingBox();
+        assert.ok(tool.height >= 40 && tool.width >= 40,
+          `${sel} is ${tool.width}x${tool.height} at ${width}px`);
+      }
+
+      // Card text is readable: prose at 13px+, short badge labels at 11px+.
+      const fonts = await page.evaluate(() => {
+        const min = sel => {
+          let m = 99;
+          document.querySelectorAll(sel).forEach(n => {
+            m = Math.min(m, parseFloat(getComputedStyle(n).fontSize));
+          });
+          return m === 99 ? null : m;
+        };
+        return {
+          title: min('#panel-today .t-title'),
+          prose: Math.min(min('#panel-today .when'), min('#panel-today .meta span')),
+          badge: min('#panel-today .badge'),
+          action: min('#panel-today .btn')
+        };
+      });
+      assert.ok(fonts.title >= 15, `titles are ${fonts.title}px at ${width}px`);
+      assert.ok(fonts.prose >= 13, `card prose drops to ${fonts.prose}px at ${width}px`);
+      // A normal-priority card carries no badge at all, which is the point.
+      assert.ok(fonts.badge === null || fonts.badge >= 11,
+        `badges drop to ${fonts.badge}px at ${width}px`);
+      assert.ok(fonts.action >= 14, `action labels drop to ${fonts.action}px at ${width}px`);
+
+      await context.close();
+    });
+
+    test(`the create sheet fits a ${width}px phone`, async () => {
+      const { page, context } = await open({ viewport: { width, height: 780 } });
+      await page.click('.fab');
+      await page.waitForSelector('#taskModal:not(.hidden)');
+
+      const sheet = await page.locator('#taskModal .sheet').boundingBox();
+      assert.ok(sheet.x >= -0.5 && sheet.x + sheet.width <= width + 0.5,
+        `the sheet spills sideways at ${width}px`);
+      assert.ok(sheet.y + sheet.height <= 781, 'the sheet fits within the viewport height');
+
+      // One column on a phone: the paired fields stack instead of squeezing.
+      const columns = await page.evaluate(() =>
+        getComputedStyle(document.querySelector('#taskModal .f-grid')).gridTemplateColumns.split(' ').length);
+      assert.strictEqual(columns, 1, `paired inputs are side by side at ${width}px`);
+
+      // Save is reachable without hunting for it, and full width.
+      const save = await page.locator('#taskSaveBtn').boundingBox();
+      assert.ok(save.height >= 44, 'Save is a comfortable target');
+      assert.ok(save.y + save.height <= 781, 'Save is on screen without scrolling the sheet');
+      assert.ok(save.width >= sheet.width - 40, 'Save spans the sheet');
+
+      // Inputs are 16px, so focusing one does not make iOS zoom the page.
+      const inputFont = await page.evaluate(() =>
+        parseFloat(getComputedStyle(document.getElementById('fTitle')).fontSize));
+      assert.ok(inputFont >= 16, `inputs are ${inputFont}px, which triggers iOS auto-zoom`);
+
+      const overflow = await horizontalOverflow(page);
+      assert.ok(overflow.docScroll <= width + 1, 'the open sheet causes no sideways scroll');
+      assert.ok(overflow.widest <= width + 1, 'no field extends past the viewport');
+
+      await context.close();
+    });
+  }
+
+  test('the sheet stays usable when the keyboard shrinks the viewport', async () => {
+    // A 390px phone with the keyboard up leaves roughly this much height.
+    const { page, context } = await open({ viewport: { width: 390, height: 420 } });
+    await page.click('.fab');
+    await page.waitForSelector('#taskModal:not(.hidden)');
+
+    const sheet = await page.locator('#taskModal .sheet').boundingBox();
+    assert.ok(sheet.y + sheet.height <= 421, 'the sheet is bounded by the visible area');
+
+    // Save stays pinned in the footer rather than scrolling away with the body.
+    const save = await page.locator('#taskSaveBtn').boundingBox();
+    assert.ok(save.y + save.height <= 421, 'Save is still on screen with the keyboard up');
+
+    await page.locator('#taskModal .sheet__body').evaluate(el => { el.scrollTop = el.scrollHeight; });
+    const afterScroll = await page.locator('#taskSaveBtn').boundingBox();
+    assert.ok(Math.abs(afterScroll.y - save.y) <= 1, 'Save does not move when the form scrolls');
+
+    // The form body is what scrolls, and it has somewhere to scroll to.
+    const scrollable = await page.locator('#taskModal .sheet__body')
+      .evaluate(el => el.scrollHeight > el.clientHeight);
+    assert.strictEqual(scrollable, true, 'the field list scrolls inside the sheet');
+
+    await context.close();
+  });
+
+  test('every tab is reachable from the bottom navigation on a phone', async () => {
+    const { page, context } = await open({ viewport: { width: 360, height: 780 } });
+
+    for (const [tab, expected] of [['tasks', /Bir martalik|Bugungi ish/], ['routines', /Har kunlik hisobot/],
+      ['goals', /Yangi filial/], ['completed', /Bajarilgan ish/], ['today', /Bugungi ish/]]) {
+      await page.click(`nav.nav [data-tab="${tab}"]`);
+      await page.waitForFunction(
+        id => document.getElementById(id).classList.contains('active'), 'panel-' + tab);
+      assert.match(await page.textContent('#panel-' + tab), expected, `${tab} panel rendered`);
+      const active = await page.locator(`nav.nav [data-tab="${tab}"].active`).count();
+      assert.strictEqual(active, 1, `${tab} is marked active in the nav`);
+    }
+
+    await context.close();
+  });
+
+  // ------------------------------------------------- payloads are unchanged
+
+  test('a phone-width save sends exactly the same payload as before', async () => {
+    const { page, context, backendRequests } = await open({ viewport: { width: 320, height: 780 } });
+    await page.click('.fab');
+    await page.waitForSelector('#taskModal:not(.hidden)');
+
+    await page.fill('#fTitle', 'Yangi test vazifa');
+    await page.fill('#fDesc', 'Izoh');
+    await page.fill('#fResp', 'Ali');
+    await page.selectOption('#fPriority', 'high');
+    await page.check('#fPhoto');
+    await page.selectOption('#fType', 'once');
+    await page.fill('#fDeadlineDate', '2026-08-20');
+    await page.fill('#fDeadlineTime', '17:30');
+
+    // Reminders come from individual rows now, not a comma-separated string.
+    await page.click('#reminderList ~ .rep__add');
+    await page.locator('#reminderList input').nth(0).fill('09:00');
+    await page.click('#reminderList ~ .rep__add');
+    await page.locator('#reminderList input').nth(1).fill('14:00');
+
+    await page.click('#taskSaveBtn');
+    await page.waitForTimeout(300);
+
+    const saves = backendRequests.filter(r => r.action === 'save_task');
+    assert.strictEqual(saves.length, 1);
+    const sent = saves[0];
+    assert.strictEqual(sent.type, 'once');
+    assert.strictEqual(sent.title, 'Yangi test vazifa');
+    assert.strictEqual(sent.description, 'Izoh');
+    assert.strictEqual(sent.responsible, 'Ali');
+    assert.strictEqual(sent.priority, 'high');
+    assert.strictEqual(sent.photoRequired, true);
+    assert.strictEqual(sent.deadlineKey, '2026-08-20');
+    assert.strictEqual(sent.deadlineTime, '17:30');
+    assert.strictEqual(sent.remindDaily, false);
+    assert.deepStrictEqual(sent.reminderTimes, ['09:00', '14:00'],
+      'the repeater produces the same HH:MM array the text field used to');
+    assert.strictEqual(sent.adminKey, ADMIN_KEY);
+    assert.strictEqual(sent.id, undefined, 'a new task carries no id');
+
+    await context.close();
+  });
+
+  test('goal steps are sent as the same array of titles', async () => {
+    const { page, context, backendRequests } = await open({ viewport: { width: 375, height: 780 } });
+    await page.click('.fab');
+    await page.waitForSelector('#taskModal:not(.hidden)');
+
+    await page.fill('#fTitle', 'Yangi filial');
+    await page.selectOption('#fType', 'goal');
+
+    // Switching to a goal offers one step row; add two more.
+    await page.locator('#stepList input').nth(0).fill('Joy topish');
+    await page.click('#grpGoal .rep__add');
+    await page.locator('#stepList input').nth(1).fill('Ta\'mirlash');
+    await page.click('#grpGoal .rep__add');
+    await page.locator('#stepList input').nth(2).fill('Ishga tushirish');
+
+    // An empty row must not become an empty step.
+    await page.click('#grpGoal .rep__add');
+
+    await page.click('#taskSaveBtn');
+    await page.waitForTimeout(300);
+
+    const saves = backendRequests.filter(r => r.action === 'save_task');
+    assert.strictEqual(saves.length, 1);
+    assert.strictEqual(saves[0].type, 'goal');
+    assert.deepStrictEqual(saves[0].steps, ['Joy topish', 'Ta\'mirlash', 'Ishga tushirish']);
+
+    await context.close();
+  });
+
+  test('a goal with no step is refused before any request is sent', async () => {
+    const { page, context, backendRequests } = await open({ viewport: { width: 360, height: 780 } });
+    await page.click('.fab');
+    await page.waitForSelector('#taskModal:not(.hidden)');
+    await page.fill('#fTitle', 'Bo\'sh maqsad');
+    await page.selectOption('#fType', 'goal');
+    await page.click('#taskSaveBtn');
+    await page.waitForTimeout(200);
+
+    assert.deepStrictEqual(backendRequests.filter(r => r.action === 'save_task'), []);
+    assert.match(await page.textContent('#taskFormMsg'), /bosqich/i);
+    await context.close();
+  });
+
+  test('editing a routine prefills the reminder rows and resends them', async () => {
+    const { page, context, backendRequests } = await open({ viewport: { width: 390, height: 780 } });
+    await page.click('nav.nav [data-tab="routines"]');
+    await page.click('button:has-text("Tahrirlash")');
+    await page.waitForSelector('#taskModal:not(.hidden)');
+
+    // The mock routine has one reminder at 09:00; it must arrive as a row.
+    const values = await page.locator('#reminderList input').evaluateAll(
+      els => els.map(e => e.value));
+    assert.deepStrictEqual(values, ['09:00'], 'the stored reminder is shown as a row');
+
+    await page.click('#taskSaveBtn');
+    await page.waitForTimeout(300);
+
+    const saves = backendRequests.filter(r => r.action === 'save_task');
+    assert.strictEqual(saves[0].id, 't1');
+    assert.strictEqual(saves[0].type, 'routine');
+    assert.deepStrictEqual(saves[0].reminderTimes, ['09:00'],
+      'an untouched reminder list round-trips unchanged');
+    await context.close();
+  });
+
+  // ------------------------------------------------------------- desktop
+
+  test('desktop keeps a readable measure and two-column pairs', async () => {
+    const { page, context } = await open({ viewport: { width: 1280, height: 900 } });
+
+    const panels = await page.locator('.panels').boundingBox();
+    assert.ok(panels.width <= 780, 'content is not stretched across the whole desktop width');
+    assert.ok(panels.x > 100, 'content is centred');
+
+    await page.click('.fab');
+    await page.waitForSelector('#taskModal:not(.hidden)');
+    const columns = await page.evaluate(() =>
+      getComputedStyle(document.querySelector('#taskModal .f-grid')).gridTemplateColumns.split(' ').length);
+    assert.strictEqual(columns, 2, 'paired inputs sit side by side on desktop');
+
+    // The sheet becomes a centred dialog rather than staying bottom-anchored.
+    const sheet = await page.locator('#taskModal .sheet').boundingBox();
+    assert.ok(sheet.y > 20, 'the sheet is centred on desktop');
+    assert.ok(sheet.width <= 560, 'the sheet keeps a dialog width');
+
+    await context.close();
+  });
+
+  test('user zoom is not disabled', async () => {
+    const { page, context } = await open();
+    const viewport = await page.getAttribute('meta[name="viewport"]', 'content');
+    assert.ok(!/user-scalable\s*=\s*no/i.test(viewport), 'pinch-zoom must stay available');
+    assert.ok(!/maximum-scale/i.test(viewport), 'maximum-scale blocks zoom on iOS');
     await context.close();
   });
 
