@@ -94,9 +94,10 @@ function sendTelegramMessage_(chatId, text, replyMarkup, parseMode, options) {
   return telegramFetch_("sendMessage", body);
 }
 
-function editTelegramMessage_(chatId, messageId, text, replyMarkup) {
+function editTelegramMessage_(chatId, messageId, text, replyMarkup, parseMode) {
   var body = { chat_id: chatId, message_id: messageId, text: text };
   if (replyMarkup) body.reply_markup = replyMarkup;
+  if (parseMode) body.parse_mode = parseMode;
   return telegramFetch_("editMessageText", body);
 }
 

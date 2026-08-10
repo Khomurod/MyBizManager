@@ -5,19 +5,26 @@
 // ----------------------------------------------------------
 // Pure view of TASKS_STATE. The backend has already resolved every status,
 // due label and late duration in Asia/Tashkent, so this only lays them out.
+//
+// Phone-first: a card is scanned in the order title → when → who, and the one
+// action that matters (Bajarildi) is a full-width button, while edit / cancel /
+// skip stay as quiet text or icon controls.
 // ==========================================================
 
 function renderAllTasks() {
     const view = TASKS_STATE.view;
     const stamp = document.getElementById('nowStamp');
-    if (stamp && view) stamp.textContent = view.nowLabel || '';
+    if (stamp) stamp.textContent = view ? (view.nowLabel || '') : '';
 
     const warn = document.getElementById('tgWarn');
     if (warn) warn.classList.toggle('hidden', !(TASKS_STATE.config && TASKS_STATE.config.tasksGroupConfigured === false));
 
     const keyBtn = document.getElementById('adminKeyBtn');
-    if (keyBtn) keyBtn.className = 'text-[10px] font-bold px-2 py-1 rounded border ' +
-        (tasksAdminKey() ? 'bg-green-50 text-green-600 border-green-200' : 'text-slate-500');
+    if (keyBtn) {
+        const stored = !!tasksAdminKey();
+        keyBtn.classList.toggle('icon-btn--ok', stored);
+        keyBtn.setAttribute('aria-label', stored ? 'Admin kaliti saqlangan' : 'Admin kalitini kiriting');
+    }
 
     if (TASKS_STATE.needsKey && !TASKS_STATE.view) {
         // An empty board would read as "nothing to do" rather than "not shown".
@@ -34,58 +41,80 @@ function renderAllTasks() {
 }
 
 function emptyNote(text) {
-    return '<p class="text-center text-slate-400 text-xs py-8">' + escapeTaskHtml(text) + '</p>';
+    return '<p class="empty">' + escapeTaskHtml(text) + '</p>';
 }
 
-/** One occurrence row. `mode` picks which action buttons appear. */
+/** The accent stripe that makes a card's state readable at a glance. */
+function cardFlagClass(displayStatus) {
+    if (displayStatus === 'Overdue') return ' card--flag card--overdue';
+    if (displayStatus === 'WaitingProof') return ' card--flag card--waiting';
+    if (displayStatus === 'Completed') return ' card--flag card--done';
+    return '';
+}
+
+/** One occurrence card. `mode` picks which actions appear. */
 function occCard(occ, mode) {
-    const meta = [];
-    if (occ.responsible) meta.push('👤 ' + escapeTaskHtml(occ.responsible));
-    if (occ.dueLabel) meta.push('📅 ' + escapeTaskHtml(occ.dueLabel));
-    if (occ.photoRequired) meta.push('📷');
-    if (occ.lateLabel) meta.push('<span class="text-red-500">⚠️ ' + escapeTaskHtml(occ.lateLabel) + ' kech</span>');
+    const extras = [];
     if (mode === 'completed') {
-        if (occ.completedByName) meta.push('✓ ' + escapeTaskHtml(occ.completedByName));
-        if (occ.onTime === true && !occ.lateLabel) meta.push('<span class="text-green-600">⏱ vaqtida</span>');
-        if (occ.hasProof) meta.push('🖼');
+        if (occ.completedByName) extras.push('✓ ' + escapeTaskHtml(occ.completedByName));
+        if (occ.hasProof) extras.push('🖼 Rasm bor');
     }
 
     let actions = '';
     if (mode === 'open') {
+        // One prominent action, one subordinate icon — not two equal halves.
         actions =
-            '<div class="flex gap-2 mt-2">' +
-            '<button onclick="tasksCompleteOcc(\'' + occ.id + '\')" class="flex-1 py-1.5 bg-green-600 text-white rounded-lg text-[11px] font-bold active:scale-95">✅ Bajarildi</button>' +
-            '<button onclick="tasksSkip(\'' + occ.id + '\')" class="flex-1 py-1.5 bg-slate-100 text-slate-600 rounded-lg text-[11px] font-bold active:scale-95">⏭ O\'tkazish</button>' +
+            '<div class="acts">' +
+            '<button onclick="tasksCompleteOcc(\'' + occ.id + '\')" class="btn btn--primary">✅ Bajarildi</button>' +
+            '<button onclick="tasksSkip(\'' + occ.id + '\')" class="btn btn--ghost btn--icon" ' +
+            'aria-label="O\'tkazib yuborish" title="O\'tkazib yuborish">⏭</button>' +
             '</div>';
     } else if (mode === 'completed') {
-        actions = '<div class="flex mt-2"><button onclick="tasksReopen(\'' + occ.id + '\')" class="text-[11px] font-bold text-blue-500">↩ Qayta ochish</button></div>';
+        actions = '<div class="subacts">' +
+            '<button onclick="tasksReopen(\'' + occ.id + '\')" class="lnk">↩ Qayta ochish</button>' +
+            '</div>';
     } else if (mode === 'upcoming') {
         // Future work is shown, not actioned: completing something that has not
         // come round yet is almost always a misclick.
+        const label = escapeTaskHtml(occ.dueLabel || occ.dateKey || '');
         actions =
-            '<div class="flex gap-2 mt-2 items-center">' +
-            '<span class="text-[10px] font-bold text-slate-400">' + escapeTaskHtml(occ.dueLabel || occ.dateKey || '') + '</span>' +
-            '<button onclick="tasksSkip(\'' + occ.id + '\', \'' + escapeTaskHtml(occ.dueLabel || occ.dateKey || '') + '\')" ' +
-            'class="ml-auto py-1.5 px-3 bg-slate-100 text-slate-600 rounded-lg text-[11px] font-bold active:scale-95">⏭ O\'tkazish</button>' +
+            '<div class="subacts">' +
+            '<button onclick="tasksSkip(\'' + occ.id + '\', \'' + label + '\')" class="lnk lnk--muted">' +
+            '⏭ O\'tkazish</button>' +
             '</div>';
     }
 
-    return '<div class="card !p-3 !mb-2">' +
-        '<div class="flex items-start justify-between gap-2">' +
-        '<p class="font-bold text-sm text-slate-800">' + escapeTaskHtml(occ.title) + '</p>' +
-        '<div class="flex gap-1 shrink-0">' + taskPriorityBadge(occ.priority) + taskStatusBadge(occ.displayStatus) + '</div>' +
+    return '<div class="card' + cardFlagClass(occ.displayStatus) + '">' +
+        '<div class="row">' +
+        '<div class="row__grow">' +
+        '<p class="t-title">' + escapeTaskHtml(occ.title) + '</p>' +
         '</div>' +
-        (meta.length ? '<p class="text-[11px] text-slate-500 mt-1 flex flex-wrap gap-2">' + meta.join('<span class="text-slate-300">•</span>') + '</p>' : '') +
+        '<div class="badges">' + taskPriorityBadge(occ.priority) + '</div>' +
+        '</div>' +
+        taskWhenLine(occ) +
+        taskMetaLine(occ, extras) +
         actions +
         '</div>';
 }
 
-function section(title, items, mode, accent) {
+function section(title, items, mode, tone) {
     if (!items || !items.length) return '';
-    return '<div class="mb-4">' +
-        '<h3 class="text-[11px] font-bold uppercase tracking-wider mb-2 ' + (accent || 'text-slate-400') + '">' +
-        escapeTaskHtml(title) + ' (' + items.length + ')</h3>' +
-        items.map(o => occCard(o, mode)).join('') + '</div>';
+    return '<section class="sec' + (tone ? ' sec--' + tone : '') + '">' +
+        '<h2 class="sec__h">' + escapeTaskHtml(title) + '<span class="sec__n">' + items.length + '</span></h2>' +
+        items.map(o => occCard(o, mode)).join('') +
+        '</section>';
+}
+
+/**
+ * A collapsed group. Used for work that is not today's business — the future
+ * and the already-finished — so Today opens on what actually needs doing.
+ */
+function foldSection(title, items, mode) {
+    if (!items || !items.length) return '';
+    return '<details class="fold">' +
+        '<summary>' + escapeTaskHtml(title) + '<span class="sec__n">' + items.length + '</span></summary>' +
+        '<div class="fold__body">' + items.map(o => occCard(o, mode)).join('') + '</div>' +
+        '</details>';
 }
 
 function renderTodayPanel() {
@@ -93,22 +122,37 @@ function renderTodayPanel() {
     const view = TASKS_STATE.view;
     if (!view) { panel.innerHTML = emptyNote('...'); return; }
     const t = view.today;
-    const total = t.overdue.length + t.needsAttention.length + t.waitingProof.length + t.upcoming.length + t.completedToday.length;
-    if (total === 0) { panel.innerHTML = emptyNote("Bugun uchun vazifa yo'q. ➕ tugmasi bilan qo'shing."); return; }
+    const total = t.overdue.length + t.needsAttention.length + t.waitingProof.length +
+        t.upcoming.length + t.completedToday.length;
+    if (total === 0) {
+        panel.innerHTML = emptyNote("Bugun uchun vazifa yo'q.\n➕ tugmasi bilan qo'shing.");
+        return;
+    }
 
+    const live = t.overdue.length + t.needsAttention.length + t.waitingProof.length;
+    const allClear = live === 0
+        ? '<p class="empty">Bugungi ishlar tugadi. 🎉</p>'
+        : '';
+
+    // Overdue first, then today's work, then pending proofs. Future and
+    // finished work is folded away so it never dominates the screen.
     panel.innerHTML =
-        section('🔴 Diqqat — muddati o\'tgan', t.overdue, 'open', 'text-red-500') +
-        section('📌 Bugun bajarilishi kerak', t.needsAttention, 'open', 'text-slate-500') +
-        section('⏳ Rasm kutilmoqda', t.waitingProof, 'open', 'text-amber-600') +
-        section('🗓 Kelgusi', t.upcoming, 'upcoming', 'text-slate-400') +
-        section('✅ Bugun bajarilgan', t.completedToday, 'completed', 'text-green-600');
+        section("🔴 Muddati o'tgan", t.overdue, 'open', 'danger') +
+        section('📌 Bugun bajarilishi kerak', t.needsAttention, 'open') +
+        section('⏳ Rasm kutilmoqda', t.waitingProof, 'open', 'warn') +
+        allClear +
+        foldSection('🗓 Kelgusi ishlar', t.upcoming, 'upcoming') +
+        foldSection('✅ Bugun bajarilgan', t.completedToday, 'completed');
 }
 
+/** Definition-level actions: quiet text controls under a divider. */
 function defActionsRow(task, extra) {
-    return '<div class="flex flex-wrap gap-2 mt-2 pt-2 border-t border-slate-100">' +
+    return '<div class="subacts">' +
         (extra || '') +
-        '<button onclick="openTaskForm(\'' + task.id + '\')" class="text-[11px] font-bold text-blue-500">✏️ Tahrirlash</button>' +
-        (task.status !== 'cancelled' ? '<button onclick="tasksCancel(\'' + task.id + '\')" class="text-[11px] font-bold text-red-500">🗑 Bekor qilish</button>' : '') +
+        '<button onclick="openTaskForm(\'' + task.id + '\')" class="lnk">✏️ Tahrirlash</button>' +
+        (task.status !== 'cancelled'
+            ? '<button onclick="tasksCancel(\'' + task.id + '\')" class="lnk lnk--danger">🗑 Bekor qilish</button>'
+            : '') +
         '</div>';
 }
 
@@ -121,20 +165,23 @@ function renderTasksPanel() {
 
     panel.innerHTML = tasks.map(task => {
         const occ = task.occurrence;
-        const canAct = occ && (occ.displayStatus === 'Open' || occ.displayStatus === 'Overdue' || occ.displayStatus === 'WaitingProof');
+        const canAct = occ && (occ.displayStatus === 'Open' || occ.displayStatus === 'Overdue' ||
+            occ.displayStatus === 'WaitingProof');
         const act = canAct
-            ? '<button onclick="tasksCompleteOcc(\'' + occ.id + '\')" class="text-[11px] font-bold text-green-600">✅ Bajarildi</button>'
+            ? '<button onclick="tasksCompleteOcc(\'' + occ.id + '\')" class="lnk lnk--ok">✅ Bajarildi</button>'
             : '';
-        return '<div class="card !p-3">' +
-            '<div class="flex items-start justify-between gap-2">' +
-            '<p class="font-bold text-sm">' + escapeTaskHtml(task.title) + '</p>' +
-            '<div class="flex gap-1 shrink-0">' + taskPriorityBadge(task.priority) + (occ ? taskStatusBadge(occ.displayStatus) : '') + '</div>' +
+        return '<div class="card' + (occ ? cardFlagClass(occ.displayStatus) : '') + '">' +
+            '<div class="row">' +
+            '<div class="row__grow"><p class="t-title">' + escapeTaskHtml(task.title) + '</p></div>' +
+            '<div class="badges">' + taskPriorityBadge(task.priority) +
+            (occ ? taskStatusBadge(occ.displayStatus) : '') + '</div>' +
             '</div>' +
-            (task.description ? '<p class="text-[11px] text-slate-500 mt-1">' + escapeTaskHtml(task.description) + '</p>' : '') +
-            '<p class="text-[11px] text-slate-500 mt-1">' +
-            (task.responsible ? '👤 ' + escapeTaskHtml(task.responsible) + ' ' : '') +
-            (occ && occ.dueLabel ? '📅 ' + escapeTaskHtml(occ.dueLabel) : '📅 muddatsiz') +
-            (task.photoRequired ? ' 📷' : '') + '</p>' +
+            (occ ? taskWhenLine(occ) : '<p class="when">🕓 Muddatsiz</p>') +
+            taskMetaLine({
+                responsible: task.responsible,
+                photoRequired: task.photoRequired
+            }) +
+            (task.description ? '<p class="desc">' + escapeTaskHtml(task.description) + '</p>' : '') +
             defActionsRow(task, act) +
             '</div>';
     }).join('');
@@ -151,31 +198,44 @@ function renderRoutinesPanel() {
         const stats = task.stats || {};
         const today = task.todayOccurrence;
         const pauseBtn = task.status === 'paused'
-            ? '<button onclick="tasksResume(\'' + task.id + '\')" class="text-[11px] font-bold text-green-600">▶️ Davom ettirish</button>'
-            : (task.status === 'active' ? '<button onclick="tasksPause(\'' + task.id + '\')" class="text-[11px] font-bold text-amber-600">⏸ To\'xtatish</button>' : '');
+            ? '<button onclick="tasksResume(\'' + task.id + '\')" class="lnk lnk--ok">▶️ Davom ettirish</button>'
+            : (task.status === 'active'
+                ? '<button onclick="tasksPause(\'' + task.id + '\')" class="lnk lnk--warn">⏸ To\'xtatish</button>'
+                : '');
+
         let todayRow = '';
         if (today) {
-            const canAct = today.displayStatus === 'Open' || today.displayStatus === 'Overdue' || today.displayStatus === 'WaitingProof';
-            todayRow = '<div class="bg-slate-50 rounded-lg p-2 mt-2 flex items-center justify-between">' +
-                '<span class="text-[11px] font-bold text-slate-600">Bugun: ' + taskStatusBadge(today.displayStatus) + '</span>' +
-                (canAct ? '<span class="flex gap-2">' +
-                    '<button onclick="tasksCompleteOcc(\'' + today.id + '\')" class="text-[11px] font-bold text-green-600">✅</button>' +
-                    '<button onclick="tasksSkip(\'' + today.id + '\')" class="text-[11px] font-bold text-slate-500">⏭ Bugun o\'tkazish</button>' +
-                    '</span>' : '') +
+            const canAct = today.displayStatus === 'Open' || today.displayStatus === 'Overdue' ||
+                today.displayStatus === 'WaitingProof';
+            todayRow = '<div class="today-strip">' +
+                '<span>Bugun: ' + taskStatusBadge(today.displayStatus) + '</span>' +
+                (canAct
+                    ? '<span class="today-strip__act acts" style="margin:0;">' +
+                      '<button onclick="tasksCompleteOcc(\'' + today.id + '\')" class="btn btn--primary" ' +
+                      'style="min-height:42px;padding:0 14px;">✅ Bajarildi</button>' +
+                      '<button onclick="tasksSkip(\'' + today.id + '\')" class="btn btn--ghost btn--icon" ' +
+                      'style="min-height:42px;width:42px;" aria-label="Bugun o\'tkazish" title="Bugun o\'tkazish">⏭</button>' +
+                      '</span>'
+                    : '') +
                 '</div>';
         }
-        return '<div class="card !p-3">' +
-            '<div class="flex items-start justify-between gap-2">' +
-            '<p class="font-bold text-sm">' + escapeTaskHtml(task.title) + '</p>' +
-            '<div class="flex gap-1 shrink-0">' + taskPriorityBadge(task.priority) + taskDefStatusBadge(task.status) + '</div>' +
+
+        return '<div class="card">' +
+            '<div class="row">' +
+            '<div class="row__grow"><p class="t-title">' + escapeTaskHtml(task.title) + '</p></div>' +
+            '<div class="badges">' + taskPriorityBadge(task.priority) + taskDefStatusBadge(task.status) + '</div>' +
             '</div>' +
-            '<p class="text-[11px] text-slate-500 mt-1">🔁 ' + escapeTaskHtml(task.recurrenceLabel || '') +
-            (task.responsible ? ' • 👤 ' + escapeTaskHtml(task.responsible) : '') +
-            (task.photoRequired ? ' • 📷' : '') + '</p>' +
-            (task.reminderTimes && task.reminderTimes.length ? '<p class="text-[11px] text-slate-400 mt-0.5">🔔 ' + task.reminderTimes.map(escapeTaskHtml).join(', ') + '</p>' : '') +
-            '<div class="flex gap-3 mt-2 text-[11px]">' +
-            '<span class="font-bold text-orange-600">🔥 ' + (stats.streak || 0) + ' kun</span>' +
-            (stats.completionRate !== null && stats.completionRate !== undefined ? '<span class="font-bold text-blue-600">📊 ' + stats.completionRate + '%</span>' : '') +
+            '<p class="when">🔁 ' + escapeTaskHtml(task.recurrenceLabel || '') +
+            (task.dueTime ? ' • ' + escapeTaskHtml(task.dueTime) : '') + '</p>' +
+            taskMetaLine(
+                { responsible: task.responsible, photoRequired: task.photoRequired },
+                (task.reminderTimes && task.reminderTimes.length)
+                    ? ['🔔 ' + task.reminderTimes.map(escapeTaskHtml).join(', ')]
+                    : []) +
+            '<div class="stats">' +
+            '<span class="stat">🔥 ' + (stats.streak || 0) + ' kun</span>' +
+            (stats.completionRate !== null && stats.completionRate !== undefined
+                ? '<span class="stat">📊 ' + stats.completionRate + '%</span>' : '') +
             '</div>' +
             todayRow +
             defActionsRow(task, pauseBtn) +
@@ -195,22 +255,28 @@ function renderGoalsPanel() {
         const steps = (task.stepOccurrences || []).map(step => {
             const done = step.displayStatus === 'Completed';
             const btn = done
-                ? '<button onclick="tasksReopen(\'' + step.id + '\')" class="text-[11px] text-slate-400">↩</button>'
-                : '<button onclick="tasksCompleteOcc(\'' + step.id + '\')" class="text-[11px] font-bold text-green-600">✅</button>';
-            return '<div class="flex items-center justify-between py-1 border-b border-slate-50">' +
-                '<span class="text-[12px] ' + (done ? 'line-through text-slate-400' : 'text-slate-700') + '">' +
-                (done ? '☑ ' : '☐ ') + escapeTaskHtml(step.title.split(' — ').slice(1).join(' — ') || step.title) + '</span>' + btn +
+                ? '<button onclick="tasksReopen(\'' + step.id + '\')" class="step__btn" ' +
+                  'aria-label="Qayta ochish" title="Qayta ochish">↩</button>'
+                : '<button onclick="tasksCompleteOcc(\'' + step.id + '\')" class="step__btn step__btn--ok" ' +
+                  'aria-label="Bajarildi" title="Bajarildi">✅</button>';
+            // The step title is stored as "<goal> — <step>"; show only the step.
+            const short = step.title.split(' — ').slice(1).join(' — ') || step.title;
+            return '<div class="step' + (done ? ' step--done' : '') + '">' +
+                '<span class="step__txt">' + (done ? '☑ ' : '☐ ') + escapeTaskHtml(short) + '</span>' +
+                btn +
                 '</div>';
         }).join('');
-        return '<div class="card !p-3">' +
-            '<div class="flex items-start justify-between gap-2">' +
-            '<p class="font-bold text-sm">🎯 ' + escapeTaskHtml(task.title) + '</p>' +
-            '<div class="flex gap-1 shrink-0">' + taskDefStatusBadge(task.status) + '</div>' +
+
+        return '<div class="card">' +
+            '<div class="row">' +
+            '<div class="row__grow"><p class="t-title t-title--lg">🎯 ' + escapeTaskHtml(task.title) + '</p></div>' +
+            '<div class="badges">' + taskDefStatusBadge(task.status) + '</div>' +
             '</div>' +
-            '<div class="mt-2"><div class="flex justify-between text-[11px] font-bold text-slate-500 mb-1">' +
-            '<span>Jarayon</span><span>' + progress.done + '/' + progress.total + ' (' + progress.percent + '%)</span></div>' +
-            '<div class="w-full bg-slate-100 rounded-full h-2"><div class="bg-blue-600 h-2 rounded-full" style="width:' + progress.percent + '%"></div></div></div>' +
-            '<div class="mt-2">' + steps + '</div>' +
+            taskMetaLine({ responsible: task.responsible, photoRequired: task.photoRequired }) +
+            '<div class="prog__head"><span>Jarayon</span>' +
+            '<span>' + progress.done + '/' + progress.total + ' • ' + progress.percent + '%</span></div>' +
+            '<div class="prog"><div class="prog__fill" style="width:' + progress.percent + '%"></div></div>' +
+            '<div class="steps">' + steps + '</div>' +
             defActionsRow(task) +
             '</div>';
     }).join('');
@@ -222,5 +288,8 @@ function renderCompletedPanel() {
     if (!view) return;
     const items = view.recentCompleted || [];
     if (!items.length) { panel.innerHTML = emptyNote("Hali bajarilgan vazifa yo'q."); return; }
-    panel.innerHTML = items.map(o => occCard(o, 'completed')).join('');
+    panel.innerHTML = '<section class="sec">' +
+        '<h2 class="sec__h">✅ Bajarilgan<span class="sec__n">' + items.length + '</span></h2>' +
+        items.map(o => occCard(o, 'completed')).join('') +
+        '</section>';
 }

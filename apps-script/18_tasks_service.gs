@@ -44,10 +44,74 @@ function taskDisplayName_(from) {
 }
 
 // --------------------------------------------------------- message building
+//
+// Every task card is sent with parse_mode HTML, so a long description can use
+// Telegram's expandable blockquote. That means EVERY interpolated value has to
+// go through escapeTelegramHtml_ - a task titled "Ali & Vali <test>" would
+// otherwise make Telegram reject the whole send with a 400.
+
+// A description shorter than this reads better as a plain line than as a
+// collapsed quote nobody bothers to open.
+var TASK_CARD_DESC_INLINE_MAX = 150;
+// Matches the description cap in normalizeTaskInput_.
+var TASK_CARD_DESC_MAX_CHARS = 2000;
+// Descending budgets tried when the assembled card would overflow.
+var TASK_CARD_DESC_BUDGETS = [TASK_CARD_DESC_MAX_CHARS, 900, 400, 180];
+
+/** Clips raw text to `budget` characters, preferring a word boundary. */
+function clipTaskText_(text, budget) {
+  var raw = String(text === null || text === undefined ? "" : text).trim();
+  if (raw.length <= budget) return raw;
+  var cut = raw.slice(0, budget);
+  var atWord = cut.replace(/\s+\S*$/, "");
+  // A single unbroken word has no boundary to fall back to.
+  return (atWord.length > budget * 0.6 ? atWord : cut) + "…";
+}
+
+/**
+ * The description block of a card, as HTML.
+ *
+ * Long descriptions go into an expandable blockquote: the card stays scannable
+ * in a busy group and the full text is one tap away, collapsed by Telegram
+ * itself rather than truncated by us.
+ *
+ * The budget is applied to the RAW text, before escaping. Escaping can multiply
+ * length ("&" becomes "&amp;"), and clipping already-escaped HTML risks cutting
+ * an entity - or a tag - in half, which Telegram rejects outright.
+ */
+function taskCardDescriptionBlock_(description, budget) {
+  var limit = budget === undefined ? TASK_CARD_DESC_MAX_CHARS : budget;
+  var clipped = clipTaskText_(description, limit);
+  if (!clipped) return "";
+  var safe = escapeTelegramHtml_(clipped);
+  if (clipped.length <= TASK_CARD_DESC_INLINE_MAX) return "📝 " + safe;
+  return "<blockquote expandable>" + safe + "</blockquote>";
+}
+
+/**
+ * Appends the description to a card, shrinking it until the whole message fits
+ * inside Telegram's limit. A description that cannot be made to fit is dropped
+ * entirely rather than cut mid-tag.
+ */
+function withTaskDescription_(headLines, description) {
+  var head = headLines.join("\n");
+  for (var i = 0; i < TASK_CARD_DESC_BUDGETS.length; i++) {
+    var block = taskCardDescriptionBlock_(description, TASK_CARD_DESC_BUDGETS[i]);
+    if (!block) return head;
+    var text = head + "\n" + block;
+    if (text.length <= TELEGRAM_MAX_TEXT_LENGTH) return text;
+  }
+  return head;
+}
+
+/** The task title, bounded and escaped, whatever the sheet actually holds. */
+function taskCardTitle_(title) {
+  return escapeTelegramHtml_(clipTaskText_(title, 200));
+}
 
 function buildTaskCardBody_(occ) {
   var lines = [];
-  lines.push("👤 Mas'ul: " + (occ.responsible || "—"));
+  lines.push("👤 Mas'ul: " + escapeTelegramHtml_(clipTaskText_(occ.responsible, 200) || "—"));
   if (occ.dueAt !== "" && isFinite(occ.dueAt)) {
     lines.push("📅 Muddat: " + formatTaskInstant_(occ.dueAt));
   } else if (occ.dateKey) {
@@ -60,32 +124,43 @@ function buildTaskCardBody_(occ) {
 }
 
 /** The message posted when a task/occurrence first appears in the group. */
-function buildTaskOccurrenceMessage_(occ) {
-  return [
+function buildTaskOccurrenceMessage_(occ, description) {
+  return withTaskDescription_([
     "🆕 " + taskPriorityEmoji_(occ.priority) + " Yangi vazifa",
     "",
-    "📌 " + occ.title,
+    "📌 " + taskCardTitle_(occ.title),
     buildTaskCardBody_(occ)
-  ].join("\n").slice(0, TELEGRAM_MAX_TEXT_LENGTH);
+  ], description);
 }
 
 /** The message posted as a reminder for an open occurrence. */
-function buildTaskReminderMessage_(occ) {
-  return [
+function buildTaskReminderMessage_(occ, description) {
+  return withTaskDescription_([
     "🔔 " + taskPriorityEmoji_(occ.priority) + " Eslatma",
     "",
-    "📌 " + occ.title,
+    "📌 " + taskCardTitle_(occ.title),
     buildTaskCardBody_(occ)
-  ].join("\n").slice(0, TELEGRAM_MAX_TEXT_LENGTH);
+  ], description);
 }
 
-/** The message an occurrence's card is edited into once it reaches an end state. */
-function buildTaskStatusMessage_(occ, nowMs) {
+/**
+ * The message an occurrence's card is edited into once it reaches an end state.
+ *
+ * No description here: a finished card is about the outcome - who did it, when,
+ * and whether it was on time - not about the brief.
+ *
+ * Every value is escaped and length-bounded, so this is always valid HTML and
+ * always well inside the limit; there is deliberately no slice() on the result,
+ * because slicing assembled HTML is what cuts a tag in half.
+ */
+function buildTaskStatusMessage_(occ, nowMs, description) {
   var display = occurrenceDisplayStatus_(occ, nowMs === undefined ? Date.now() : nowMs);
+  var title = taskCardTitle_(occ.title);
+  var who = escapeTelegramHtml_(clipTaskText_(occ.completedByName, 200) || "—");
 
   if (occ.status === TASK_STATUS_COMPLETED) {
-    var lines = ["✅ Bajarildi", "", "📌 " + occ.title];
-    lines.push("👤 Bajardi: " + (occ.completedByName || "—"));
+    var lines = ["✅ Bajarildi", "", "📌 " + title];
+    lines.push("👤 Bajardi: " + who);
     if (occ.completedAt) lines.push("🕒 " + formatTaskInstant_(Date.parse(occ.completedAt)));
     if (occ.onTime === false && occ.lateMs !== "" && Number(occ.lateMs) > 0) {
       lines.push("⚠️ " + formatTaskDuration_(occ.lateMs) + " kech bajarildi");
@@ -93,22 +168,23 @@ function buildTaskStatusMessage_(occ, nowMs) {
       lines.push("⏱ O'z vaqtida");
     }
     if (occ.proofFileId) lines.push("📷 Rasm bilan tasdiqlangan");
-    return lines.join("\n").slice(0, TELEGRAM_MAX_TEXT_LENGTH);
+    return lines.join("\n");
   }
 
   if (occ.status === TASK_STATUS_WAITING) {
-    return ["⏳ Rasm kutilmoqda", "", "📌 " + occ.title,
-      "👤 " + (occ.completedByName || "—") + " bajarildi deb belgiladi.",
-      "📷 Tasdiqlash uchun rasm yuboring."].join("\n").slice(0, TELEGRAM_MAX_TEXT_LENGTH);
+    return ["⏳ Rasm kutilmoqda", "", "📌 " + title,
+      "👤 " + who + " bajarildi deb belgiladi.",
+      "📷 Tasdiqlash uchun rasm yuboring."].join("\n");
   }
 
   if (occ.status === TASK_STATUS_CANCELLED) {
-    return ["🚫 Bekor qilindi", "", "📌 " + occ.title].join("\n");
+    return ["🚫 Bekor qilindi", "", "📌 " + title].join("\n");
   }
   if (occ.status === TASK_STATUS_SKIPPED) {
-    return ["⏭ O'tkazib yuborildi", "", "📌 " + occ.title].join("\n");
+    return ["⏭ O'tkazib yuborildi", "", "📌 " + title].join("\n");
   }
-  return buildTaskOccurrenceMessage_(occ);
+  // Still open (a reopened card, say): it is a task card again, description included.
+  return buildTaskOccurrenceMessage_(occ, description);
 }
 
 /**

@@ -1,7 +1,12 @@
 'use strict';
 
 // ==========================================================
-// Tasks — app shell: tabs, the create/edit form and bootstrap
+// Tasks — app shell: bottom navigation, the create/edit sheet and bootstrap
+// ----------------------------------------------------------
+// The reminder times and the goal steps are edited as one row per value
+// instead of a comma-separated string and a multiline textarea. The payload
+// they produce is unchanged: reminderTimes stays an array of "HH:MM" strings
+// and steps stays an array of titles, exactly as the backend already expects.
 // ==========================================================
 
 const TASK_TABS = ['today', 'tasks', 'routines', 'goals', 'completed'];
@@ -14,9 +19,87 @@ function showTaskTab(name) {
         const panel = document.getElementById('panel-' + t);
         if (panel) panel.classList.toggle('active', t === tab);
     });
-    document.querySelectorAll('.task-tab-btn').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.tab === tab);
+    document.querySelectorAll('[data-tab]').forEach(btn => {
+        const isActive = btn.dataset.tab === tab;
+        btn.classList.toggle('active', isActive);
+        btn.setAttribute('aria-current', isActive ? 'page' : 'false');
     });
+    // Switching tabs on a phone should start at the top of the new list.
+    window.scrollTo({ top: 0, behavior: 'auto' });
+}
+
+// -------------------------------------------------------------- repeaters
+
+/** Shows the "nothing here yet" note only while a repeater is empty. */
+function syncRepeaterEmpty(listId, emptyId) {
+    const list = document.getElementById(listId);
+    const note = document.getElementById(emptyId);
+    if (!list || !note) return;
+    note.classList.toggle('hidden', list.children.length > 0);
+}
+
+function clearRepeater(listId, emptyId) {
+    const list = document.getElementById(listId);
+    if (list) list.innerHTML = '';
+    syncRepeaterEmpty(listId, emptyId);
+}
+
+/** Removes the row a delete button belongs to. */
+function removeRepeaterRow(button) {
+    const row = button.closest('.rep__row');
+    if (!row) return;
+    const list = row.parentElement;
+    row.remove();
+    if (list && list.id === 'reminderList') syncRepeaterEmpty('reminderList', 'reminderEmpty');
+    if (list && list.id === 'stepList') syncRepeaterEmpty('stepList', 'stepEmpty');
+}
+
+/** Every non-empty value in a repeater, in the order shown. */
+function repeaterValues(listId) {
+    const list = document.getElementById(listId);
+    if (!list) return [];
+    return Array.from(list.querySelectorAll('input'))
+        .map(input => String(input.value || '').trim())
+        .filter(Boolean);
+}
+
+function repeaterRow(inputHtml, label) {
+    const row = document.createElement('div');
+    row.className = 'rep__row';
+    row.innerHTML = inputHtml +
+        '<button type="button" class="rep__del" onclick="removeRepeaterRow(this)" ' +
+        'aria-label="' + label + '" title="' + label + '">✕</button>';
+    return row;
+}
+
+/** A native time picker per reminder — no comma-separated typing. */
+function addReminderRow(value) {
+    const list = document.getElementById('reminderList');
+    if (!list) return;
+    const row = repeaterRow(
+        '<input type="time" class="f-input" value="' + escapeTaskHtml(value || '') + '">',
+        "Eslatmani o'chirish");
+    list.appendChild(row);
+    syncRepeaterEmpty('reminderList', 'reminderEmpty');
+    if (!value) {
+        const input = row.querySelector('input');
+        if (input) input.focus();
+    }
+}
+
+function addStepRow(value) {
+    const list = document.getElementById('stepList');
+    if (!list) return;
+    const row = repeaterRow(
+        '<input type="text" class="f-input" maxlength="200" placeholder="Bosqich nomi" value="' +
+        escapeTaskHtml(value || '') + '">',
+        "Bosqichni o'chirish");
+    list.appendChild(row);
+    syncRepeaterEmpty('stepList', 'stepEmpty');
+    if (!value) {
+        const input = row.querySelector('input');
+        if (input) input.focus();
+    }
 }
 
 // ---------------------------------------------------------------- the form
@@ -25,8 +108,7 @@ function buildWeekdayBoxes() {
     const wrap = document.getElementById('weekdayBoxes');
     if (!wrap) return;
     wrap.innerHTML = TASK_WEEKDAYS.map(([label, wd]) =>
-        '<label class="flex items-center gap-1 px-2 py-1 border rounded-lg text-[11px] font-bold text-slate-600">' +
-        '<input type="checkbox" class="wd-box" data-wd="' + wd + '"> ' + label + '</label>').join('');
+        '<label><input type="checkbox" class="wd-box" data-wd="' + wd + '"> ' + label + '</label>').join('');
 }
 
 function buildMonthDayOptions() {
@@ -49,6 +131,10 @@ function onTypeChange() {
     // repeats them daily; there is nothing to choose, only something to say.
     document.getElementById('goalRemindNote').classList.toggle('hidden', type !== 'goal');
     if (type === 'routine') onFreqChange();
+    // A goal needs at least one step, so offer a row rather than an empty list.
+    if (type === 'goal' && document.getElementById('stepList').children.length === 0) {
+        addStepRow('');
+    }
 }
 
 function onFreqChange() {
@@ -64,7 +150,7 @@ function onFreqChange() {
 }
 
 function resetTaskForm() {
-    ['fId', 'fTitle', 'fDesc', 'fResp', 'fDeadlineDate', 'fDeadlineTime', 'fEndDate', 'fDueTime', 'fSteps', 'fReminders']
+    ['fId', 'fTitle', 'fDesc', 'fResp', 'fDeadlineDate', 'fDeadlineTime', 'fEndDate', 'fDueTime']
         .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
     document.getElementById('fType').value = 'once';
     document.getElementById('fType').disabled = false;
@@ -76,6 +162,8 @@ function resetTaskForm() {
     document.getElementById('fPhoto').checked = false;
     document.getElementById('fRemindDaily').checked = false;
     document.querySelectorAll('.wd-box').forEach(b => { b.checked = false; });
+    clearRepeater('reminderList', 'reminderEmpty');
+    clearRepeater('stepList', 'stepEmpty');
     const start = document.getElementById('fStartDate');
     if (start) start.value = (TASKS_STATE.view && TASKS_STATE.view.todayKey) || new Date().toISOString().slice(0, 10);
     taskFormMsg('', false, true);
@@ -93,6 +181,7 @@ function openTaskForm(taskId) {
     }
     onTypeChange();
     document.getElementById('taskModal').classList.remove('hidden');
+    document.getElementById('taskModal').querySelector('.sheet__body').scrollTop = 0;
 }
 
 function prefillTaskForm(task) {
@@ -108,8 +197,10 @@ function prefillTaskForm(task) {
     document.getElementById('fResp').value = task.responsible || '';
     document.getElementById('fPriority').value = task.priority || 'normal';
     document.getElementById('fPhoto').checked = !!task.photoRequired;
-    document.getElementById('fReminders').value = (task.reminderTimes || []).join(', ');
     document.getElementById('fRemindDaily').checked = !!task.remindDaily;
+
+    clearRepeater('reminderList', 'reminderEmpty');
+    (task.reminderTimes || []).forEach(time => addReminderRow(time));
 
     if (task.type === 'once') {
         document.getElementById('fDeadlineDate').value = task.deadlineKey || '';
@@ -128,7 +219,8 @@ function prefillTaskForm(task) {
             b.checked = (r.weekdays || []).indexOf(Number(b.dataset.wd)) !== -1;
         });
     } else if (task.type === 'goal') {
-        document.getElementById('fSteps').value = (task.steps || []).map(s => s.title).join('\n');
+        clearRepeater('stepList', 'stepEmpty');
+        (task.steps || []).forEach(step => addStepRow(step.title));
     }
 }
 
@@ -139,13 +231,16 @@ function taskFormMsg(text, isError, hide) {
     if (!box) return;
     if (hide || !text) { box.classList.add('hidden'); box.textContent = ''; return; }
     box.textContent = text;
-    box.className = 'text-[11px] font-bold rounded-lg p-2 mt-2 ' +
-        (isError ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-700');
-    box.classList.remove('hidden');
+    box.className = 'f-msg ' + (isError ? 'f-msg--err' : 'f-msg--ok');
 }
 
-function parseReminderTimes(raw) {
-    return String(raw || '').split(',').map(s => s.trim()).filter(Boolean).map(s => {
+/**
+ * Normalises a clock value to "HH:MM". Native time inputs already produce it;
+ * this keeps a hand-typed "9:05" working the way the old text field did.
+ */
+function parseReminderTimes(values) {
+    const source = Array.isArray(values) ? values : String(values || '').split(',');
+    return source.map(s => String(s).trim()).filter(Boolean).map(s => {
         const m = /^(\d{1,2}):(\d{2})$/.exec(s);
         if (!m) return s; // let the server reject it
         return (m[1].length === 1 ? '0' + m[1] : m[1]) + ':' + m[2];
@@ -164,7 +259,7 @@ function submitTaskForm() {
         responsible: document.getElementById('fResp').value.trim(),
         priority: document.getElementById('fPriority').value,
         photoRequired: document.getElementById('fPhoto').checked,
-        reminderTimes: parseReminderTimes(document.getElementById('fReminders').value)
+        reminderTimes: parseReminderTimes(repeaterValues('reminderList'))
     };
     const id = document.getElementById('fId').value;
     if (id) payload.id = id;
@@ -189,7 +284,7 @@ function submitTaskForm() {
         payload.endKey = document.getElementById('fEndDate').value;
         payload.dueTime = document.getElementById('fDueTime').value;
     } else if (type === 'goal') {
-        payload.steps = document.getElementById('fSteps').value.split('\n').map(s => s.trim()).filter(Boolean);
+        payload.steps = repeaterValues('stepList');
         if (!payload.steps.length) { taskFormMsg('Kamida bitta bosqich kiriting.', true); return; }
     }
 

@@ -2,106 +2,364 @@
 <html lang="uz">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Vazifalar Boshqaruvi</title>
+    <!-- No maximum-scale / user-scalable: pinch-zoom must stay available. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#ffffff">
+    <title>Vazifalar</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
-        body { background-color: #f1f5f9; -webkit-tap-highlight-color: transparent; font-family: sans-serif; }
+        /* ==================================================================
+           The /tasks layout is written as real CSS rather than utility
+           classes on purpose: it is a phone-first app shell, and its
+           structure - the bottom nav, the cards, the sheet, the tap target
+           sizes - must not depend on a CDN stylesheet arriving. Tailwind is
+           still loaded and still used for incidental colour on badges.
+           ================================================================== */
+        :root {
+            --bg: #f1f5f9;
+            --line: #e2e8f0;
+            --line-soft: #f1f5f9;
+            --ink: #0f172a;
+            --muted: #64748b;
+            --muted-soft: #94a3b8;
+            --brand: #2563eb;
+            --ok: #16a34a;
+            --danger: #dc2626;
+            --warn: #d97706;
+            --nav-h: 58px;
+            --safe-b: env(safe-area-inset-bottom, 0px);
+            --safe-t: env(safe-area-inset-top, 0px);
+        }
+        *, *::before, *::after { box-sizing: border-box; }
+        html { -webkit-text-size-adjust: 100%; }
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--ink);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            font-size: 15px;
+            line-height: 1.45;
+            -webkit-tap-highlight-color: transparent;
+            /* Room for the bottom nav plus the phone's home indicator. */
+            padding-bottom: calc(var(--nav-h) + var(--safe-b) + 12px);
+        }
+        button { font-family: inherit; }
+
+        /* ------------------------------------------------------------ header */
+        .hdr { position: sticky; top: 0; z-index: 50; background: #fff; border-bottom: 1px solid var(--line); padding-top: var(--safe-t); }
+        .hdr__row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 16px; min-height: 56px; }
+        .hdr__id { min-width: 0; }
+        .hdr__t { margin: 0; font-size: 18px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.2; }
+        .hdr__sub { margin: 1px 0 0; font-size: 12.5px; color: var(--muted); line-height: 1.3; }
+        .hdr__tools { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+        .icon-btn {
+            width: 42px; height: 42px; border-radius: 12px; border: 1px solid var(--line);
+            background: #fff; color: var(--muted); font-size: 17px; text-decoration: none;
+            display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+        }
+        .icon-btn:active { transform: scale(0.95); }
+        .icon-btn--ok { border-color: #bbf7d0; background: #f0fdf4; }
+
+        /* ------------------------------------------------------------ panels */
+        .panels { padding: 14px 16px 4px; }
         .tab-panel { display: none; }
-        .tab-panel.active { display: block; animation: slideUp 0.2s; }
-        @keyframes slideUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        .task-tab-btn { background: #ffffff; border-color: #e2e8f0; color: #64748b; }
-        .task-tab-btn.active { background: #2563eb; border-color: #2563eb; color: #ffffff; }
-        #taskTabs { scrollbar-width: none; }
-        #taskTabs::-webkit-scrollbar { display: none; }
-        .card { background: white; border-radius: 16px; padding: 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; margin-bottom: 12px; }
-        #loader { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.9); z-index: 100; justify-content: center; align-items: center; flex-direction: column; }
-        .modal-back { transition: opacity 0.2s ease-out; }
-        .modal-back.hidden { pointer-events: none; opacity: 0; display:flex; }
-        .badge { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
+        .tab-panel.active { display: block; animation: riseIn 0.18s ease-out; }
+        @keyframes riseIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+        @media (prefers-reduced-motion: reduce) { .tab-panel.active { animation: none; } }
+
+        .warn { margin: 12px 16px 0; padding: 11px 13px; border-radius: 12px; background: #fffbeb; border: 1px solid #fde68a; color: #92400e; font-size: 13px; line-height: 1.45; }
+        .warn.hidden { display: none; }
+        /* pre-line so an empty state can break its own lines. */
+        .empty { text-align: center; color: var(--muted-soft); font-size: 14px; line-height: 1.55; padding: 44px 12px; margin: 0; white-space: pre-line; }
+
+        /* ----------------------------------------------------------- sections */
+        .sec { margin-bottom: 20px; }
+        .sec__h { display: flex; align-items: center; gap: 8px; margin: 0 0 9px; font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+        .sec__n { flex: 0 0 auto; background: var(--line); color: #475569; border-radius: 999px; padding: 1px 8px; font-size: 12px; font-weight: 800; }
+        .sec--danger .sec__h { color: var(--danger); }
+        .sec--danger .sec__n { background: #fee2e2; color: #b91c1c; }
+        .sec--warn .sec__h { color: var(--warn); }
+        .sec--warn .sec__n { background: #fef3c7; color: #92400e; }
+
+        /* Progressive disclosure: future and finished work is one tap away
+           instead of pushing today's work off the screen. */
+        .fold { background: #fff; border: 1px solid var(--line); border-radius: 14px; margin-bottom: 12px; }
+        .fold > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 8px; min-height: 52px; padding: 0 14px; font-size: 14px; font-weight: 700; color: var(--muted); }
+        .fold > summary::-webkit-details-marker { display: none; }
+        .fold > summary::after { content: '▾'; margin-left: auto; font-size: 15px; color: var(--muted-soft); }
+        .fold[open] > summary::after { content: '▴'; }
+        .fold__body { padding: 2px 10px 10px; }
+
+        /* -------------------------------------------------------------- cards */
+        .card { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 13px; margin-bottom: 10px; }
+        .card--flag { border-left: 3px solid var(--line); }
+        .card--overdue { border-left-color: var(--danger); }
+        .card--waiting { border-left-color: var(--warn); }
+        .card--done { border-left-color: var(--ok); }
+
+        .row { display: flex; align-items: flex-start; gap: 10px; }
+        .row__grow { flex: 1 1 auto; min-width: 0; }
+        /* Long titles and names wrap instead of stretching the card. */
+        .t-title { margin: 0; font-size: 15.5px; font-weight: 700; line-height: 1.35; overflow-wrap: anywhere; }
+        .t-title--lg { font-size: 16px; }
+        .badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; flex: 0 0 auto; max-width: 44%; }
+        .badge { font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 999px; white-space: nowrap; background: #f1f5f9; color: #475569; }
+
+        /* The one line the eye should land on second: when it is due. */
+        .when { display: flex; align-items: center; gap: 6px; margin: 7px 0 0; font-size: 13.5px; font-weight: 700; color: #475569; overflow-wrap: anywhere; }
+        .when--late { color: var(--danger); }
+        .when--wait { color: var(--warn); }
+        .when--done { color: var(--ok); }
+        .meta { display: flex; flex-wrap: wrap; gap: 5px 12px; margin: 6px 0 0; font-size: 13px; color: var(--muted); }
+        .meta > span { min-width: 0; overflow-wrap: anywhere; }
+        .desc { margin: 7px 0 0; font-size: 13.5px; color: var(--muted); overflow-wrap: anywhere; }
+
+        /* ------------------------------------------------------------ buttons */
+        .acts { display: flex; align-items: center; gap: 8px; margin-top: 11px; }
+        .btn {
+            min-height: 46px; padding: 0 16px; border-radius: 12px; border: 1px solid transparent;
+            font-size: 14.5px; font-weight: 700; cursor: pointer; background: #fff; color: var(--ink);
+            display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+        }
+        .btn:active { transform: scale(0.97); }
+        .btn--primary { background: var(--ok); color: #fff; flex: 1 1 auto; min-width: 0; }
+        .btn--brand { background: var(--brand); color: #fff; }
+        .btn--ghost { background: #f1f5f9; color: var(--muted); }
+        /* Secondary actions are square icon buttons: still a full tap target,
+           but visually subordinate to the primary one. */
+        .btn--icon { width: 46px; padding: 0; flex: 0 0 auto; font-size: 16px; }
+        .btn--block { width: 100%; }
+        .btn[disabled] { opacity: 0.5; }
+
+        /* Definition-level actions stay quiet: text buttons under a divider. */
+        .subacts { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line-soft); }
+        .lnk { background: none; border: 0; padding: 8px 4px; min-height: 40px; font-size: 13.5px; font-weight: 700; cursor: pointer; color: var(--brand); }
+        .lnk--danger { color: var(--danger); }
+        .lnk--warn { color: var(--warn); }
+        .lnk--ok { color: var(--ok); }
+        .lnk--muted { color: var(--muted); }
+
+        .stats { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+        .stat { font-size: 13px; font-weight: 800; background: #f8fafc; border: 1px solid var(--line); border-radius: 10px; padding: 5px 10px; white-space: nowrap; }
+
+        .today-strip { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: #f8fafc; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin: 10px 0 0; font-size: 13.5px; }
+        .today-strip__act { flex: 0 0 auto; }
+
+        /* --------------------------------------------------------------- goals */
+        .prog { height: 8px; background: var(--line); border-radius: 999px; overflow: hidden; margin-top: 6px; }
+        .prog__fill { height: 100%; background: var(--brand); border-radius: 999px; }
+        .prog__head { display: flex; justify-content: space-between; gap: 8px; margin-top: 12px; font-size: 13px; font-weight: 700; color: var(--muted); }
+        .steps { margin-top: 10px; }
+        .step { display: flex; align-items: center; gap: 10px; padding: 4px 0; border-bottom: 1px solid var(--line-soft); }
+        .step:last-child { border-bottom: 0; }
+        .step__txt { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; font-size: 14px; }
+        .step--done .step__txt { text-decoration: line-through; color: var(--muted-soft); }
+        .step__btn { flex: 0 0 auto; width: 44px; height: 44px; border-radius: 10px; border: 1px solid var(--line); background: #fff; font-size: 15px; cursor: pointer; }
+        .step__btn--ok { border-color: #bbf7d0; background: #f0fdf4; }
+
+        /* ---------------------------------------------------------- bottom nav */
+        .nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 60; background: #fff; border-top: 1px solid var(--line); padding-bottom: var(--safe-b); }
+        .nav__row { display: grid; grid-template-columns: repeat(5, 1fr); }
+        .nav-btn {
+            appearance: none; background: none; border: 0; cursor: pointer; color: var(--muted);
+            min-height: 56px; padding: 7px 1px 6px;
+            display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+        }
+        .nav-btn__ico { font-size: 19px; line-height: 1; }
+        .nav-btn__lbl { font-size: 12px; font-weight: 700; letter-spacing: -0.02em; white-space: nowrap; }
+        .nav-btn.active { color: var(--brand); }
+        .nav-btn.active .nav-btn__lbl { font-weight: 800; }
+        .nav-btn__dot { position: absolute; }
+        @media (max-width: 359px) { .nav-btn__lbl { font-size: 10.5px; } .nav-btn__ico { font-size: 18px; } }
+
+        /* The FAB sits above the nav, never on top of it. */
+        .fab {
+            position: fixed; right: 16px; bottom: calc(var(--nav-h) + var(--safe-b) + 14px); z-index: 55;
+            width: 56px; height: 56px; border-radius: 999px; border: 0; background: var(--brand); color: #fff;
+            font-size: 28px; line-height: 1; cursor: pointer; box-shadow: 0 8px 20px rgba(37, 99, 235, 0.35);
+            display: flex; align-items: center; justify-content: center;
+        }
+        .fab:active { transform: scale(0.94); }
+
+        /* ------------------------------------------------------- sheet / modal */
+        .sheet-back { position: fixed; inset: 0; z-index: 100; display: flex; align-items: flex-end; justify-content: center; background: rgba(15, 23, 42, 0.55); transition: opacity 0.2s ease-out; }
+        .sheet-back.hidden { display: flex; opacity: 0; pointer-events: none; }
+        .sheet { background: #fff; width: 100%; max-width: 540px; border-radius: 20px 20px 0 0; max-height: 94vh; display: flex; flex-direction: column; overflow: hidden; }
+        @supports (max-height: 94dvh) { .sheet { max-height: 94dvh; } }
+        .sheet__grip { width: 40px; height: 4px; border-radius: 999px; background: #cbd5e1; margin: 8px auto 2px; flex: 0 0 auto; }
+        .sheet__head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 16px 10px; border-bottom: 1px solid var(--line); flex: 0 0 auto; }
+        .sheet__title { margin: 0; font-size: 16.5px; font-weight: 800; }
+        .sheet__body { flex: 1 1 auto; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 14px 16px 10px; display: flex; flex-direction: column; gap: 15px; }
+        /* Save stays put while the body scrolls, and clears the home indicator. */
+        .sheet__foot { flex: 0 0 auto; padding: 10px 16px calc(10px + var(--safe-b)); border-top: 1px solid var(--line); background: #fff; }
+        @media (min-width: 640px) {
+            .sheet-back { align-items: center; padding: 16px; }
+            .sheet { border-radius: 20px; max-height: 88vh; }
+            .sheet__grip { display: none; }
+        }
+        .dialog-back { position: fixed; inset: 0; z-index: 110; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(15, 23, 42, 0.55); transition: opacity 0.2s ease-out; }
+        .dialog-back.hidden { display: flex; opacity: 0; pointer-events: none; }
+        .dialog { background: #fff; width: 100%; max-width: 360px; border-radius: 18px; padding: 18px; }
+
+        /* --------------------------------------------------------------- forms */
+        .field { display: flex; flex-direction: column; min-width: 0; }
+        .f-label { margin-bottom: 6px; font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+        /* 16px keeps iOS from zooming the page when a field is focused. */
+        .f-input { width: 100%; min-width: 0; padding: 11px 12px; border: 1px solid #cbd5e1; border-radius: 12px; background: #fff; color: var(--ink); font-family: inherit; font-size: 16px; }
+        .f-input:focus { outline: 2px solid #bfdbfe; outline-offset: 1px; border-color: var(--brand); }
+        textarea.f-input { resize: vertical; min-height: 72px; }
+        .f-hint { margin: 6px 0 0; font-size: 12.5px; color: var(--muted-soft); line-height: 1.45; }
+        .f-hint.hidden { display: none; }
+        .f-check { display: flex; align-items: center; gap: 10px; min-height: 46px; font-size: 14px; font-weight: 700; color: #475569; cursor: pointer; }
+        .f-check.hidden { display: none; }
+        .f-check input { width: 20px; height: 20px; flex: 0 0 auto; }
+        /* One column on phones; two only when there is genuinely room. */
+        .f-grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
+        @media (min-width: 480px) { .f-grid { grid-template-columns: 1fr 1fr; } }
+        .f-block { display: flex; flex-direction: column; gap: 14px; }
+        .f-block.hidden, .field.hidden, .f-grid.hidden { display: none; }
+        .f-msg { margin: 0 0 10px; padding: 10px 12px; border-radius: 12px; font-size: 13px; font-weight: 700; }
+        .f-msg.hidden { display: none; }
+        .f-msg--err { background: #fef2f2; color: #b91c1c; }
+        .f-msg--ok { background: #f0fdf4; color: #15803d; }
+
+        .wd { display: flex; flex-wrap: wrap; gap: 6px; }
+        .wd label { display: inline-flex; align-items: center; gap: 6px; min-height: 42px; padding: 8px 11px; border: 1px solid #cbd5e1; border-radius: 11px; font-size: 13.5px; font-weight: 700; color: #475569; cursor: pointer; }
+        .wd input { width: 18px; height: 18px; }
+
+        /* Repeaters: one row per reminder time / per goal step, so neither is a
+           comma-separated string the user has to get right by hand. */
+        .rep { display: flex; flex-direction: column; gap: 8px; }
+        .rep__row { display: flex; align-items: center; gap: 8px; }
+        .rep__row .f-input { flex: 1 1 auto; }
+        .rep__del { flex: 0 0 auto; width: 46px; height: 46px; border-radius: 12px; border: 1px solid var(--line); background: #f8fafc; color: var(--danger); font-size: 17px; cursor: pointer; }
+        .rep__add { width: 100%; min-height: 46px; border-radius: 12px; border: 1px dashed #cbd5e1; background: #f8fafc; color: var(--brand); font-size: 14px; font-weight: 800; cursor: pointer; }
+        .rep__empty { margin: 0; font-size: 13px; color: var(--muted-soft); }
+        .rep__empty.hidden { display: none; }
+
+        /* -------------------------------------------------------------- chrome */
+        #loader { display: none; position: fixed; inset: 0; z-index: 120; background: rgba(255, 255, 255, 0.9); justify-content: center; align-items: center; flex-direction: column; gap: 14px; }
+        .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--nav-h) + var(--safe-b) + 86px); z-index: 130; max-width: calc(100vw - 32px); padding: 11px 18px; border-radius: 999px; background: var(--ink); color: #fff; font-size: 13.5px; font-weight: 700; text-align: center; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.28); }
+        .toast--error { background: var(--danger); }
+        .toast.hidden { display: none; }
+        .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+
+        /* ------------------------------------------------------------ desktop
+           Mobile is the priority, but a phone layout stretched across 1400px
+           is not "working well on desktop". Content gets a readable measure
+           and the nav becomes a centred bar rather than a full-width strip. */
+        @media (min-width: 720px) {
+            .hdr__row, .panels, .warn { max-width: 760px; margin-left: auto; margin-right: auto; }
+            .nav__row { max-width: 560px; margin: 0 auto; }
+            body { font-size: 15.5px; }
+            /* A thumb-width button makes sense on a phone; an 800px-wide one
+               does not. On desktop the primary action takes its own size. */
+            .acts { justify-content: flex-start; }
+            .btn--primary { flex: 0 0 auto; min-width: 200px; }
+        }
     </style>
 </head>
-<body class="pb-28 text-slate-800">
+<body>
 
     <script src="assets/omad/00-config.js"></script>
 
     <div id="loader">
-        <i class="fas fa-circle-notch fa-spin text-4xl text-blue-600 mb-4"></i>
+        <i class="fas fa-circle-notch fa-spin text-4xl text-blue-600"></i>
         <p class="text-gray-500 font-bold text-sm">Yuklanmoqda...</p>
     </div>
 
     <!-- HEADER -->
-    <div class="bg-white px-4 py-3 sticky top-0 z-40 border-b flex justify-between items-center shadow-sm">
-        <div class="flex items-center gap-2">
-            <div class="bg-blue-600 text-white w-8 h-8 rounded-lg flex items-center justify-center font-bold">✓</div>
-            <h1 class="font-bold text-sm tracking-tight leading-tight">Vazifalar<br>Boshqaruvi</h1>
+    <header class="hdr">
+        <div class="hdr__row">
+            <div class="hdr__id">
+                <h1 class="hdr__t">Vazifalar</h1>
+                <p id="nowStamp" class="hdr__sub"></p>
+            </div>
+            <div class="hdr__tools">
+                <button onclick="openAdminKey()" id="adminKeyBtn" class="icon-btn" aria-label="Admin kaliti">🔑</button>
+                <a href="omad_admin.html" class="icon-btn" aria-label="Omad paneliga qaytish">🏠</a>
+            </div>
         </div>
-        <div class="flex items-center gap-2">
-            <span id="nowStamp" class="text-[10px] font-bold text-slate-400"></span>
-            <button onclick="openAdminKey()" id="adminKeyBtn" class="text-[10px] font-bold px-2 py-1 rounded border">🔑 Admin</button>
-            <a href="omad_admin.html" class="text-[10px] font-bold text-blue-500">Omad →</a>
-        </div>
+    </header>
+
+    <div id="tgWarn" class="warn hidden">
+        ⚠️ Telegram "Vazifalar Guruhi ID" o'rnatilmagan — vazifalar guruhga yuborilmaydi.
+        Omad → Sozlamalar → Telegram.
     </div>
 
-    <!-- TABS -->
-    <div id="taskTabs" class="flex gap-2 overflow-x-auto p-3 sticky top-[57px] z-30 bg-slate-100">
-        <button onclick="showTaskTab('today')" data-tab="today" class="task-tab-btn active shrink-0 px-3 py-2 rounded-xl text-xs font-bold border">📅 Bugun</button>
-        <button onclick="showTaskTab('tasks')" data-tab="tasks" class="task-tab-btn shrink-0 px-3 py-2 rounded-xl text-xs font-bold border">📝 Vazifalar</button>
-        <button onclick="showTaskTab('routines')" data-tab="routines" class="task-tab-btn shrink-0 px-3 py-2 rounded-xl text-xs font-bold border">🔁 Muntazam</button>
-        <button onclick="showTaskTab('goals')" data-tab="goals" class="task-tab-btn shrink-0 px-3 py-2 rounded-xl text-xs font-bold border">🎯 Maqsadlar</button>
-        <button onclick="showTaskTab('completed')" data-tab="completed" class="task-tab-btn shrink-0 px-3 py-2 rounded-xl text-xs font-bold border">✅ Bajarilgan</button>
-    </div>
-
-    <div id="tgWarn" class="hidden mx-4 mt-2 text-[11px] font-bold rounded-lg p-2 bg-amber-50 text-amber-700 border border-amber-100">
-        ⚠️ Telegram "Vazifalar Guruhi ID" o'rnatilmagan — vazifalar guruhga yuborilmaydi. Omad → Sozlamalar → Telegram.
-    </div>
-
-    <div class="p-4">
+    <main class="panels">
         <div id="panel-today" class="tab-panel active"></div>
         <div id="panel-tasks" class="tab-panel"></div>
         <div id="panel-routines" class="tab-panel"></div>
         <div id="panel-goals" class="tab-panel"></div>
         <div id="panel-completed" class="tab-panel"></div>
-    </div>
+    </main>
 
     <!-- FAB -->
-    <button onclick="openTaskForm()" class="fixed bottom-6 right-6 z-40 bg-blue-600 text-white w-14 h-14 rounded-full shadow-lg text-2xl active:scale-95 transition-transform flex items-center justify-center">+</button>
+    <button onclick="openTaskForm()" class="fab" aria-label="Yangi vazifa qo'shish">+</button>
 
-    <!-- CREATE / EDIT MODAL -->
-    <div id="taskModal" class="modal-back hidden fixed inset-0 z-[100] items-end justify-center bg-black/50 backdrop-blur-sm p-3" onclick="closeTaskForm()">
-        <div class="bg-white w-full max-w-md rounded-2xl p-4 shadow-2xl max-h-[90vh] flex flex-col" onclick="event.stopPropagation()">
-            <div class="flex items-center justify-between mb-3">
-                <h3 class="font-bold text-slate-800" id="taskModalTitle">Yangi vazifa</h3>
-                <button onclick="closeTaskForm()" class="w-8 h-8 rounded-full bg-slate-100 text-slate-500"><i class="fas fa-times"></i></button>
+    <!-- BOTTOM NAVIGATION -->
+    <nav class="nav" aria-label="Asosiy navigatsiya">
+        <div class="nav__row">
+            <button onclick="showTaskTab('today')" data-tab="today" class="nav-btn active" aria-label="Bugun">
+                <span class="nav-btn__ico" aria-hidden="true">📅</span><span class="nav-btn__lbl">Bugun</span>
+            </button>
+            <button onclick="showTaskTab('tasks')" data-tab="tasks" class="nav-btn" aria-label="Vazifalar">
+                <span class="nav-btn__ico" aria-hidden="true">📝</span><span class="nav-btn__lbl">Vazifalar</span>
+            </button>
+            <button onclick="showTaskTab('routines')" data-tab="routines" class="nav-btn" aria-label="Muntazam">
+                <span class="nav-btn__ico" aria-hidden="true">🔁</span><span class="nav-btn__lbl">Muntazam</span>
+            </button>
+            <button onclick="showTaskTab('goals')" data-tab="goals" class="nav-btn" aria-label="Maqsadlar">
+                <span class="nav-btn__ico" aria-hidden="true">🎯</span><span class="nav-btn__lbl">Maqsadlar</span>
+            </button>
+            <button onclick="showTaskTab('completed')" data-tab="completed" class="nav-btn" aria-label="Tarix">
+                <span class="nav-btn__ico" aria-hidden="true">✅</span><span class="nav-btn__lbl">Tarix</span>
+            </button>
+        </div>
+    </nav>
+
+    <!-- CREATE / EDIT SHEET -->
+    <div id="taskModal" class="sheet-back hidden" onclick="closeTaskForm()">
+        <div class="sheet" onclick="event.stopPropagation()" role="dialog" aria-modal="true" aria-labelledby="taskModalTitle">
+            <div class="sheet__grip" aria-hidden="true"></div>
+            <div class="sheet__head">
+                <h3 class="sheet__title" id="taskModalTitle">Yangi vazifa</h3>
+                <button onclick="closeTaskForm()" class="icon-btn" aria-label="Yopish">✕</button>
             </div>
-            <div class="overflow-y-auto pr-1 space-y-3">
+
+            <div class="sheet__body">
                 <input type="hidden" id="fId">
-                <div>
-                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Turi</label>
-                    <select id="fType" onchange="onTypeChange()" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+
+                <div class="field">
+                    <label class="f-label" for="fType">Turi</label>
+                    <select id="fType" onchange="onTypeChange()" class="f-input">
                         <option value="once">Bir martalik vazifa</option>
                         <option value="routine">Muntazam (takrorlanuvchi)</option>
                         <option value="goal">Maqsad (bosqichli)</option>
                     </select>
-                    <p id="typeLockNote" class="hidden text-[10px] text-slate-400 mt-1">Tur yaratilgandan keyin o'zgartirilmaydi.</p>
+                    <p id="typeLockNote" class="f-hint hidden">Tur yaratilgandan keyin o'zgartirilmaydi.</p>
                 </div>
-                <div>
-                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Sarlavha</label>
-                    <input type="text" id="fTitle" maxlength="200" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white" placeholder="Vazifa nomi">
+
+                <div class="field">
+                    <label class="f-label" for="fTitle">Sarlavha</label>
+                    <input type="text" id="fTitle" maxlength="200" class="f-input" placeholder="Vazifa nomi">
                 </div>
-                <div>
-                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Tavsif</label>
-                    <textarea id="fDesc" rows="2" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white" placeholder="Ixtiyoriy"></textarea>
+
+                <div class="field">
+                    <label class="f-label" for="fDesc">Tavsif</label>
+                    <textarea id="fDesc" rows="2" class="f-input" placeholder="Ixtiyoriy"></textarea>
                 </div>
-                <div class="grid grid-cols-2 gap-2">
-                    <div>
-                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Mas'ul</label>
-                        <input type="text" id="fResp" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white" placeholder="Ism">
+
+                <div class="f-grid">
+                    <div class="field">
+                        <label class="f-label" for="fResp">Mas'ul</label>
+                        <input type="text" id="fResp" class="f-input" placeholder="Ism">
                     </div>
-                    <div>
-                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Muhimlik</label>
-                        <select id="fPriority" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                    <div class="field">
+                        <label class="f-label" for="fPriority">Muhimlik</label>
+                        <select id="fPriority" class="f-input">
                             <option value="low">Past</option>
                             <option value="normal" selected>Oddiy</option>
                             <option value="high">Yuqori</option>
@@ -109,99 +367,106 @@
                         </select>
                     </div>
                 </div>
-                <label class="flex items-center gap-2 text-sm font-bold text-slate-600">
-                    <input type="checkbox" id="fPhoto" class="w-4 h-4"> 📷 Rasm tasdiqi talab qilinsin
+
+                <label class="f-check" for="fPhoto">
+                    <input type="checkbox" id="fPhoto"> 📷 Rasm tasdiqi talab qilinsin
                 </label>
 
                 <!-- ONCE -->
-                <div id="grpOnce" class="grid grid-cols-2 gap-2">
-                    <div>
-                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Muddat (sana)</label>
-                        <input type="date" id="fDeadlineDate" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                <div id="grpOnce" class="f-block">
+                    <div class="field">
+                        <label class="f-label" for="fDeadlineDate">Muddat sanasi</label>
+                        <input type="date" id="fDeadlineDate" class="f-input">
                     </div>
-                    <div>
-                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Vaqt</label>
-                        <input type="time" id="fDeadlineTime" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                    <div class="field">
+                        <label class="f-label" for="fDeadlineTime">Muddat vaqti</label>
+                        <input type="time" id="fDeadlineTime" class="f-input">
+                        <p class="f-hint">Ikkalasini ham bo'sh qoldirsangiz — muddatsiz vazifa.</p>
                     </div>
-                    <p class="col-span-2 text-[10px] text-slate-400">Muddatsiz qoldirish mumkin.</p>
                 </div>
 
                 <!-- ROUTINE -->
-                <div id="grpRoutine" class="hidden space-y-2">
-                    <div class="grid grid-cols-2 gap-2">
-                        <div>
-                            <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Takror</label>
-                            <select id="fFreq" onchange="onFreqChange()" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
-                                <option value="daily">Har kuni</option>
-                                <option value="weekly">Haftalik / hafta kunlari</option>
-                                <option value="monthly">Oylik</option>
-                                <option value="custom">Maxsus (N kunda)</option>
-                            </select>
-                        </div>
-                        <div id="grpInterval">
-                            <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase" id="intervalLabel">Interval</label>
-                            <input type="number" id="fInterval" min="1" value="1" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
-                        </div>
+                <div id="grpRoutine" class="f-block hidden">
+                    <div class="field">
+                        <label class="f-label" for="fFreq">Takrorlanish</label>
+                        <select id="fFreq" onchange="onFreqChange()" class="f-input">
+                            <option value="daily">Har kuni</option>
+                            <option value="weekly">Haftalik / hafta kunlari</option>
+                            <option value="monthly">Oylik</option>
+                            <option value="custom">Maxsus (N kunda)</option>
+                        </select>
                     </div>
-                    <div id="grpWeekdays" class="hidden">
-                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Hafta kunlari</label>
-                        <div class="flex flex-wrap gap-1" id="weekdayBoxes"></div>
+                    <div id="grpInterval" class="field">
+                        <label class="f-label" for="fInterval" id="intervalLabel">Interval</label>
+                        <input type="number" id="fInterval" min="1" value="1" inputmode="numeric" class="f-input">
                     </div>
-                    <div id="grpMonthDay" class="hidden">
-                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Oyning kuni</label>
-                        <select id="fMonthDay" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white"></select>
+                    <div id="grpWeekdays" class="field hidden">
+                        <span class="f-label">Hafta kunlari</span>
+                        <div class="wd" id="weekdayBoxes"></div>
                     </div>
-                    <div class="grid grid-cols-2 gap-2">
-                        <div>
-                            <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Boshlanish</label>
-                            <input type="date" id="fStartDate" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
-                        </div>
-                        <div>
-                            <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Tugash (ixtiyoriy)</label>
-                            <input type="date" id="fEndDate" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
-                        </div>
+                    <div id="grpMonthDay" class="field hidden">
+                        <label class="f-label" for="fMonthDay">Oyning kuni</label>
+                        <select id="fMonthDay" class="f-input"></select>
                     </div>
-                    <div>
-                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Kunlik muddat vaqti (ixtiyoriy)</label>
-                        <input type="time" id="fDueTime" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                    <div class="field">
+                        <label class="f-label" for="fStartDate">Boshlanish sanasi</label>
+                        <input type="date" id="fStartDate" class="f-input">
+                    </div>
+                    <div class="field">
+                        <label class="f-label" for="fEndDate">Tugash sanasi (ixtiyoriy)</label>
+                        <input type="date" id="fEndDate" class="f-input">
+                    </div>
+                    <div class="field">
+                        <label class="f-label" for="fDueTime">Kunlik muddat vaqti (ixtiyoriy)</label>
+                        <input type="time" id="fDueTime" class="f-input">
                     </div>
                 </div>
 
                 <!-- GOAL -->
-                <div id="grpGoal" class="hidden">
-                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Bosqichlar (har qatorda bittadan)</label>
-                    <textarea id="fSteps" rows="4" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white" placeholder="Joy topish&#10;Ta'mirlash&#10;Ishga tushirish"></textarea>
+                <div id="grpGoal" class="field hidden">
+                    <span class="f-label">Bosqichlar</span>
+                    <div class="rep">
+                        <p id="stepEmpty" class="rep__empty">Hali bosqich qo'shilmagan.</p>
+                        <div id="stepList" class="rep"></div>
+                        <button type="button" onclick="addStepRow()" class="rep__add">＋ Bosqich qo'shish</button>
+                    </div>
                 </div>
 
                 <!-- REMINDERS -->
-                <div>
-                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Eslatma vaqtlari (HH:MM, vergul bilan)</label>
-                    <input type="text" id="fReminders" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white" placeholder="09:00, 14:00">
-                    <label id="grpRemindDaily" class="hidden flex items-center gap-2 text-[11px] font-bold text-slate-500 mt-2">
-                        <input type="checkbox" id="fRemindDaily" class="w-4 h-4"> Muddatsiz bo'lsa ham har kuni eslatilsin
+                <div class="field">
+                    <span class="f-label">Eslatma vaqtlari</span>
+                    <div class="rep">
+                        <p id="reminderEmpty" class="rep__empty">Eslatma yo'q.</p>
+                        <div id="reminderList" class="rep"></div>
+                        <button type="button" onclick="addReminderRow()" class="rep__add">＋ Eslatma qo'shish</button>
+                    </div>
+                    <label id="grpRemindDaily" class="f-check hidden" for="fRemindDaily">
+                        <input type="checkbox" id="fRemindDaily"> Muddatsiz bo'lsa ham har kuni eslatilsin
                     </label>
-                    <p id="goalRemindNote" class="hidden text-[10px] text-slate-400 mt-1">
+                    <p id="goalRemindNote" class="f-hint hidden">
                         Maqsad qadamlari uchun eslatmalar qadam bajarilgunicha har kuni takrorlanadi.
                     </p>
                 </div>
             </div>
 
-            <div id="taskFormMsg" class="hidden text-[11px] font-bold rounded-lg p-2 mt-2"></div>
-            <button onclick="submitTaskForm()" id="taskSaveBtn" class="w-full mt-3 py-3 bg-blue-600 text-white rounded-lg text-sm font-bold shadow-md active:scale-95 transition-all">💾 Saqlash</button>
+            <div class="sheet__foot">
+                <div id="taskFormMsg" class="f-msg hidden"></div>
+                <button onclick="submitTaskForm()" id="taskSaveBtn" class="btn btn--brand btn--block">💾 Saqlash</button>
+            </div>
         </div>
     </div>
 
     <!-- ADMIN KEY MODAL -->
-    <div id="adminModal" class="modal-back hidden fixed inset-0 z-[110] items-center justify-center bg-black/50 backdrop-blur-sm p-4" onclick="closeAdminKey()">
-        <div class="bg-white w-full max-w-xs rounded-2xl p-4 shadow-2xl" onclick="event.stopPropagation()">
-            <h3 class="font-bold text-slate-800 mb-2">Admin kaliti</h3>
-            <p class="text-[11px] text-slate-400 mb-3">Vazifalarni o'zgartirish uchun. Faqat shu qurilmada saqlanadi.</p>
-            <input type="password" id="adminKeyInput" autocomplete="off" class="w-full p-2 border rounded-lg text-sm bg-white mb-3" placeholder="OMAD_ADMIN_KEY">
-            <button onclick="saveAdminKey()" class="w-full py-2 bg-slate-800 text-white rounded-lg text-sm font-bold">Saqlash</button>
+    <div id="adminModal" class="dialog-back hidden" onclick="closeAdminKey()">
+        <div class="dialog" onclick="event.stopPropagation()" role="dialog" aria-modal="true" aria-labelledby="adminModalTitle">
+            <h3 class="sheet__title" id="adminModalTitle">Admin kaliti</h3>
+            <p class="f-hint" style="margin-bottom:14px;">Vazifalarni ko'rish va o'zgartirish uchun. Faqat shu qurilmada saqlanadi.</p>
+            <input type="password" id="adminKeyInput" autocomplete="off" class="f-input" placeholder="OMAD_ADMIN_KEY" style="margin-bottom:12px;">
+            <button onclick="saveAdminKey()" class="btn btn--block" style="background:#0f172a;color:#fff;">Saqlash</button>
         </div>
     </div>
 
-    <div id="toast" class="hidden fixed bottom-24 left-1/2 -translate-x-1/2 z-[120] px-4 py-2 rounded-full text-white text-xs font-bold shadow-lg"></div>
+    <div id="toast" class="toast hidden"></div>
 
     <script src="assets/tasks/01-tasks-api.js"></script>
     <script src="assets/tasks/02-tasks-format.js"></script>

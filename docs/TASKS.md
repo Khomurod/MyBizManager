@@ -110,6 +110,37 @@ runs in a private chat with the single authorized user. Even when the Tasks
 group and the reporting group are the **same** chat, a task completion writes no
 financial record and `/yangi` is unaffected (`tests/task-isolation.test.js`).
 
+### Card format
+
+Task cards are sent — and edited — with `parse_mode: "HTML"`. A card shows the
+title, responsible person, deadline and photo rule, followed by the task's
+**description**:
+
+- shorter than `TASK_CARD_DESC_INLINE_MAX` (150 characters) → a plain `📝` line;
+- longer → `<blockquote expandable>`, so Telegram collapses it. The group sees a
+  scannable card and the full brief is one tap away.
+
+The completed / cancelled / skipped card carries **no** description: a finished
+card is about the outcome, not the brief. Reminders do carry it. A goal step
+shows its parent goal's description.
+
+Because the cards are HTML, **every interpolated value is escaped**
+(`escapeTelegramHtml_`). A task titled `Ali & Vali <test>` would otherwise make
+Telegram reject the send with a 400 and lose the card entirely. Two rules follow
+from that and are enforced in `18_tasks_service.gs`:
+
+- the description budget is applied to the **raw** text *before* escaping —
+  escaping multiplies length (`&` → `&amp;`), and clipping escaped HTML can cut
+  an entity or a tag in half, which Telegram also rejects;
+- the assembled message is length-checked against `TELEGRAM_MAX_TEXT_LENGTH`,
+  retrying with smaller description budgets, and the description is dropped
+  outright rather than truncated unsafely. There is deliberately no `slice()` on
+  a finished card string.
+
+`tests/task-card-format.test.js` pins all of this, including that an edit uses
+the same parse mode the card was sent with — an edit that dropped it would
+display the markup as literal text.
+
 ### Completion flow
 
 `✅ Ish bajarildi` (callback `t_done:<occurrenceId>`), gated to the configured
@@ -297,6 +328,7 @@ tests/task-proof.test.js         claim → ForceReply prompt → reply-only matc
 tests/task-access.test.js        reads are admin-gated, POST-only, throttled
 tests/task-goals.test.js         step announcing, inherited photo rule, daily reminders
 tests/task-scheduler.test.js     one read + one batched write; future-work guards
+tests/task-card-format.test.js   card HTML: description, collapsing, escaping
 tests/tasks-ui.e2e.js            the /tasks page in Chromium (auto-skips w/o Playwright)
 ```
 
