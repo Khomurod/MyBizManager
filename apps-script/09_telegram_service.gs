@@ -81,10 +81,16 @@ function telegramFetch_(method, body) {
   return response;
 }
 
-function sendTelegramMessage_(chatId, text, replyMarkup, parseMode) {
+function sendTelegramMessage_(chatId, text, replyMarkup, parseMode, options) {
   var body = { chat_id: chatId, text: text };
   if (replyMarkup) body.reply_markup = replyMarkup;
   if (parseMode) body.parse_mode = parseMode;
+  if (options && options.replyToMessageId) {
+    body.reply_to_message_id = Number(options.replyToMessageId) || options.replyToMessageId;
+    // The card can have been deleted; a prompt that cannot attach itself is
+    // still better than no prompt at all.
+    body.allow_sending_without_reply = true;
+  }
   return telegramFetch_("sendMessage", body);
 }
 

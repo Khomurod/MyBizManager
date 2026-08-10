@@ -79,9 +79,15 @@ function getOmadGroupChatId_() {
   return getTelegramSetting_(TELEGRAM_PROP_GROUP_CHAT_ID);
 }
 
-/** The group task cards, reminders and completions are posted to. "" disables. */
+/**
+ * The group task cards, reminders and completions are posted to, in the one
+ * form everything can agree on: the numeric chat id. A legacy or hand-edited
+ * non-numeric value reads as "not configured" rather than half-working - the
+ * settings page still shows what is stored so it can be corrected. "" disables.
+ */
 function getTasksGroupChatId_() {
-  return getTelegramSetting_(TELEGRAM_PROP_TASKS_GROUP_CHAT_ID);
+  var value = String(getTelegramSetting_(TELEGRAM_PROP_TASKS_GROUP_CHAT_ID) || "").trim();
+  return /^-?\d{1,20}$/.test(value) ? value : "";
 }
 
 function getOrCreateWebhookSecret_() {
@@ -177,7 +183,10 @@ function buildTelegramSettingsView_() {
     tokenConfigured: !!getBotToken_(),
     authorizedUserId: getTelegramSetting_(TELEGRAM_PROP_AUTHORIZED_USER_ID),
     groupChatId: getTelegramSetting_(TELEGRAM_PROP_GROUP_CHAT_ID),
+    // The raw stored value, so a bad legacy one stays visible and fixable...
     tasksGroupChatId: getTelegramSetting_(TELEGRAM_PROP_TASKS_GROUP_CHAT_ID),
+    // ...alongside whether anything will actually use it.
+    tasksGroupChatIdUsable: !!getTasksGroupChatId_(),
     webhookUrl: getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_URL),
     webhookStatus: safeParseJSON_(getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_STATUS), null),
     lastSuccess: safeParseJSON_(getTelegramSetting_(TELEGRAM_PROP_LAST_SUCCESS), null),
@@ -222,7 +231,7 @@ function saveTelegramSettings_(payload) {
   // legacy client that does not know about it leaves it untouched.
   var hasTasksGroup = Object.prototype.hasOwnProperty.call(payload, "tasksGroupChatId");
   if (hasTasksGroup) {
-    var tasksChatError = validateOptionalTelegramChatId_(payload.tasksGroupChatId);
+    var tasksChatError = validateOptionalTasksGroupChatId_(payload.tasksGroupChatId);
     if (tasksChatError) errors.push(tasksChatError);
   }
 

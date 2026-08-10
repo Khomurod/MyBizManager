@@ -54,6 +54,56 @@ function isTaskTimeKey_(value) {
   return /^([01]\d|2[0-3]):[0-5]\d$/.test(String(value || ""));
 }
 
+/**
+ * A YYYY-MM-DD key from whatever the sheet handed back.
+ *
+ * Exact text wins. A cell the spreadsheet already turned into a real date is
+ * recovered from its local year/month/day - the same convention
+ * parseTransactionDate_ uses for the accounting columns - so rows written
+ * before these columns were text-formatted still read correctly instead of
+ * silently becoming "". Anything else is not a date key and returns "".
+ */
+function taskDateKeyFromCell_(value) {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value === "object" && typeof value.getFullYear === "function") {
+    if (isNaN(value.getTime())) return "";
+    return value.getFullYear() + "-" + taskPad2_(value.getMonth() + 1) + "-" + taskPad2_(value.getDate());
+  }
+  var text = String(value).trim();
+  if (isTaskDateKey_(text)) return text;
+  // A full timestamp in a date column is an instant, not a calendar date;
+  // read it in the same local frame a Date cell would have been read in.
+  if (/^\d{4}-\d{2}-\d{2}T/.test(text)) {
+    var instant = new Date(text);
+    if (!isNaN(instant.getTime())) {
+      return instant.getFullYear() + "-" + taskPad2_(instant.getMonth() + 1) + "-" + taskPad2_(instant.getDate());
+    }
+  }
+  return "";
+}
+
+/**
+ * An HH:mm key from whatever the sheet handed back. Sheets stores a bare
+ * "20:00" as 1899-12-30T20:00, so a time cell arrives as a Date whose clock
+ * fields are the only part that means anything.
+ */
+function taskTimeKeyFromCell_(value) {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value === "object" && typeof value.getHours === "function") {
+    if (isNaN(value.getTime())) return "";
+    return taskPad2_(value.getHours()) + ":" + taskPad2_(value.getMinutes());
+  }
+  var text = String(value).trim();
+  if (isTaskTimeKey_(text)) return text;
+  if (/^\d{4}-\d{2}-\d{2}T/.test(text)) {
+    var instant = new Date(text);
+    if (!isNaN(instant.getTime())) return taskPad2_(instant.getHours()) + ":" + taskPad2_(instant.getMinutes());
+  }
+  var hm = /^(\d{1,2}):([0-5]\d)/.exec(text);
+  if (hm && Number(hm[1]) <= 23) return taskPad2_(hm[1]) + ":" + hm[2];
+  return "";
+}
+
 /** The epoch ms of a Tashkent wall-clock (dateKey + optional HH:mm). NaN if bad. */
 function taskInstantMs_(dateKey, timeKey) {
   var dm = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateKey || ""));

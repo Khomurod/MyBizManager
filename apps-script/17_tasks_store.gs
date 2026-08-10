@@ -69,7 +69,9 @@ function normalizeTaskTimes_(times) {
   var seen = {};
   var out = [];
   for (var i = 0; i < source.length; i++) {
-    var t = String(source[i] || "").trim();
+    // Tolerant of a value the spreadsheet already rewrote, so a reminder list
+    // that was stored oddly still parses instead of vanishing.
+    var t = taskTimeKeyFromCell_(source[i]);
     if (isTaskTimeKey_(t) && !seen[t]) { seen[t] = true; out.push(t); }
   }
   out.sort();
@@ -94,6 +96,51 @@ function taskColumnIndex_(header, name) {
   return header.indexOf(name) + 1; // 1-based sheet column
 }
 
+// Columns whose value must reach the sheet as exact text. Everything here is
+// a date key, a clock time or an ISO stamp: values a spreadsheet will happily
+// reinterpret as a date of its own choosing if the column is not text.
+var TASKS_TEXT_COLUMNS = [
+  "Due_Time", "Deadline_Key", "Deadline_Time", "Start_Key", "End_Key",
+  "Created_At", "Updated_At"
+];
+
+var TASK_OCC_TEXT_COLUMNS = [
+  "Date_Key", "Notified_At", "Completed_At", "Created_At", "Updated_At"
+];
+
+/** Column numbers for `names`, merged into contiguous [start, count] spans. */
+function taskTextColumnSpans_(header, names) {
+  var cols = [];
+  for (var i = 0; i < names.length; i++) {
+    var index = header.indexOf(names[i]) + 1;
+    if (index > 0) cols.push(index);
+  }
+  cols.sort(function (a, b) { return a - b; });
+  var spans = [];
+  for (var c = 0; c < cols.length; c++) {
+    var last = spans[spans.length - 1];
+    if (last && cols[c] === last[0] + last[1]) last[1]++;
+    else spans.push([cols[c], 1]);
+  }
+  return spans;
+}
+
+/**
+ * Stops the spreadsheet reinterpreting what is about to be written.
+ *
+ * Must run BEFORE the values land: a number format applied afterwards
+ * reformats an already-coerced value, it does not recover it.
+ */
+function applyTaskTextFormats_(sheet, header, names, startRow, numRows) {
+  if (!sheet || numRows < 1 || typeof sheet.getRange !== "function") return;
+  var probe = sheet.getRange(startRow, 1, numRows, 1);
+  if (typeof probe.setNumberFormat !== "function") return; // older host / test double
+  var spans = taskTextColumnSpans_(header, names);
+  for (var s = 0; s < spans.length; s++) {
+    sheet.getRange(startRow, spans[s][0], numRows, spans[s][1]).setNumberFormat("@");
+  }
+}
+
 // ------------------------------------------------------------ task records
 
 function taskFromRow_(row) {
@@ -109,11 +156,11 @@ function taskFromRow_(row) {
     recurrence: normalizeTaskRecurrence_(safeParseJSON_(i("Recurrence_JSON"), {})),
     reminderTimes: normalizeTaskTimes_(safeParseJSON_(i("Reminder_Times_JSON"), [])),
     remindDaily: parseTaskBool_(i("Remind_Daily")),
-    dueTime: isTaskTimeKey_(i("Due_Time")) ? String(i("Due_Time")) : "",
-    deadlineKey: isTaskDateKey_(i("Deadline_Key")) ? String(i("Deadline_Key")) : "",
-    deadlineTime: isTaskTimeKey_(i("Deadline_Time")) ? String(i("Deadline_Time")) : "",
-    startKey: isTaskDateKey_(i("Start_Key")) ? String(i("Start_Key")) : "",
-    endKey: isTaskDateKey_(i("End_Key")) ? String(i("End_Key")) : "",
+    dueTime: taskTimeKeyFromCell_(i("Due_Time")),
+    deadlineKey: taskDateKeyFromCell_(i("Deadline_Key")),
+    deadlineTime: taskTimeKeyFromCell_(i("Deadline_Time")),
+    startKey: taskDateKeyFromCell_(i("Start_Key")),
+    endKey: taskDateKeyFromCell_(i("End_Key")),
     status: String(i("Status") || TASK_DEF_ACTIVE),
     steps: normalizeGoalSteps_(safeParseJSON_(i("Steps_JSON"), [])),
     createdAt: String(i("Created_At") || ""),
@@ -150,6 +197,10 @@ function taskToRow_(task) {
   return TASKS_HEADER.map(function (name) { return map[name]; });
 }
 
+function newGoalStepId_() {
+  return "step_" + Utilities.getUuid().split("-").join("");
+}
+
 function normalizeGoalSteps_(steps) {
   var source = Array.isArray(steps) ? steps : [];
   var out = [];
@@ -157,9 +208,38 @@ function normalizeGoalSteps_(steps) {
     var step = typeof source[i] === "string" ? { title: source[i] } : (source[i] || {});
     var title = String(step.title || "").trim();
     if (!title) continue;
-    out.push({ title: title, photoRequired: parseTaskBool_(step.photoRequired) });
+    var entry = { title: title };
+    if (step.id) entry.id = String(step.id).slice(0, 64);
+    // Absent means "inherit from the goal". Only an explicit value overrides,
+    // which is why this key is not written unless one was supplied.
+    if (step.photoRequired !== undefined && step.photoRequired !== null && step.photoRequired !== "") {
+      entry.photoRequired = parseTaskBool_(step.photoRequired);
+    }
+    out.push(entry);
   }
   return out;
+}
+
+/** The photo rule that actually applies to a step. */
+function effectiveStepPhotoRequired_(task, step) {
+  if (step && step.photoRequired !== undefined) return !!step.photoRequired;
+  return !!task.photoRequired;
+}
+
+/** "<goal title> — <step title>", the label a step-occurrence carries. */
+function goalStepTitle_(task, step, index) {
+  return task.title + " — " + ((step && step.title) || ("Qadam " + (index + 1)));
+}
+
+/**
+ * Whether a goal's reminder times apply to its steps.
+ *
+ * A step has no due date, so there is no single moment to remind about. If the
+ * admin set reminder times on the goal, the only reading that does what they
+ * asked is "every day until the step is done".
+ */
+function goalRemindDaily_(task) {
+  return !!(task.reminderTimes && task.reminderTimes.length);
 }
 
 function readTaskRows_(doc) {
@@ -184,12 +264,16 @@ function findTask_(doc, taskId) {
 }
 
 function appendTaskRow_(doc, task) {
-  tasksSheet_(doc).appendRow(taskToRow_(task));
+  var sheet = tasksSheet_(doc);
+  var row = sheet.getLastRow() + 1;
+  applyTaskTextFormats_(sheet, TASKS_HEADER, TASKS_TEXT_COLUMNS, row, 1);
+  sheet.appendRow(taskToRow_(task));
 }
 
 function updateTaskRow_(doc, task) {
   var sheet = tasksSheet_(doc);
   if (!task.rowNumber) return;
+  applyTaskTextFormats_(sheet, TASKS_HEADER, TASKS_TEXT_COLUMNS, task.rowNumber, 1);
   sheet.getRange(task.rowNumber, 1, 1, TASKS_HEADER.length).setValues([taskToRow_(task)]);
 }
 
@@ -203,7 +287,7 @@ function occurrenceFromRow_(row) {
     taskId: String(i("Task_ID") || ""),
     taskType: String(i("Task_Type") || ""),
     title: String(i("Title") || ""),
-    dateKey: isTaskDateKey_(i("Date_Key")) ? String(i("Date_Key")) : "",
+    dateKey: taskDateKeyFromCell_(i("Date_Key")),
     stepIndex: i("Step_Index") === "" || i("Step_Index") === null || i("Step_Index") === undefined
       ? "" : Number(i("Step_Index")),
     dueAt: dueRaw === "" || dueRaw === null || dueRaw === undefined ? "" : Number(dueRaw),
@@ -291,7 +375,24 @@ function occurrencesForTask_(rows, taskId) {
 }
 
 function appendOccurrenceRow_(doc, occ) {
-  taskOccurrencesSheet_(doc).appendRow(occurrenceToRow_(occ));
+  var sheet = taskOccurrencesSheet_(doc);
+  var row = sheet.getLastRow() + 1;
+  applyTaskTextFormats_(sheet, TASK_OCC_HEADER, TASK_OCC_TEXT_COLUMNS, row, 1);
+  sheet.appendRow(occurrenceToRow_(occ));
+  occ.rowNumber = row;
+}
+
+/** Appends many occurrences in one write, protecting their text columns first. */
+function appendOccurrenceRows_(doc, occurrences) {
+  if (!occurrences || !occurrences.length) return [];
+  var sheet = taskOccurrencesSheet_(doc);
+  var startRow = sheet.getLastRow() + 1;
+  applyTaskTextFormats_(sheet, TASK_OCC_HEADER, TASK_OCC_TEXT_COLUMNS, startRow, occurrences.length);
+  var values = [];
+  for (var i = 0; i < occurrences.length; i++) values.push(occurrenceToRow_(occurrences[i]));
+  sheet.getRange(startRow, 1, values.length, TASK_OCC_HEADER.length).setValues(values);
+  for (var r = 0; r < occurrences.length; r++) occurrences[r].rowNumber = startRow + r;
+  return occurrences;
 }
 
 /** Rewrites a single occurrence row from an in-memory object. */
@@ -299,6 +400,7 @@ function writeOccurrenceRow_(doc, occ) {
   var sheet = taskOccurrencesSheet_(doc);
   if (!occ.rowNumber) return;
   occ.updatedAt = new Date().toISOString();
+  applyTaskTextFormats_(sheet, TASK_OCC_HEADER, TASK_OCC_TEXT_COLUMNS, occ.rowNumber, 1);
   sheet.getRange(occ.rowNumber, 1, 1, TASK_OCC_HEADER.length).setValues([occurrenceToRow_(occ)]);
 }
 
@@ -309,17 +411,26 @@ function writeOccurrenceRow_(doc, occ) {
  * the ones this call created. Idempotent: an occurrence is keyed by
  * (taskId, dateKey) for routines/one-time and (taskId, stepIndex) for goals,
  * so re-running never duplicates and never disturbs completed history.
+ *
+ * `ctx` is an optional per-pass working set: the occurrence rows already read
+ * from the sheet, plus the rows this pass wants to add. Passing one turns a
+ * scan-per-task into a single scan and a single append for the whole pass.
+ * Called without one it behaves exactly as before.
  */
-function materializeTaskOccurrences_(doc, task, nowMs) {
+function materializeTaskOccurrences_(doc, task, nowMs, ctx) {
   if (task.status === TASK_DEF_CANCELLED) return [];
   var todayKey = taskTodayKey_(nowMs);
-  var existing = occurrencesForTask_(readOccurrenceRows_(doc), task.id);
+  var existing = occurrencesForTask_(ctx ? ctx.occurrences : readOccurrenceRows_(doc), task.id);
 
   var byDate = {};
   var byStep = {};
   for (var e = 0; e < existing.length; e++) {
     if (existing[e].dateKey) byDate[existing[e].dateKey] = existing[e];
-    if (existing[e].stepIndex !== "") byStep[existing[e].stepIndex] = existing[e];
+    // A removed step's row is history and must not block a new step from
+    // taking its index.
+    if (existing[e].stepIndex !== "" && !(existing[e].meta && existing[e].meta.removedStep)) {
+      byStep[existing[e].stepIndex] = existing[e];
+    }
   }
 
   var created = [];
@@ -342,7 +453,11 @@ function materializeTaskOccurrences_(doc, task, nowMs) {
     }
   }
 
-  for (var c = 0; c < created.length; c++) appendOccurrenceRow_(doc, created[c]);
+  if (ctx) {
+    for (var c = 0; c < created.length; c++) { ctx.pending.push(created[c]); ctx.occurrences.push(created[c]); }
+  } else {
+    for (var a = 0; a < created.length; a++) appendOccurrenceRow_(doc, created[a]);
+  }
   return created;
 }
 
@@ -402,9 +517,11 @@ function buildOccurrenceForGoalStep_(task, stepIndex) {
   var occ = baseOccurrence_(task);
   var step = task.steps[stepIndex] || {};
   occ.stepIndex = stepIndex;
-  occ.title = task.title + " — " + (step.title || ("Qadam " + (stepIndex + 1)));
-  occ.photoRequired = step.photoRequired !== undefined ? !!step.photoRequired : !!task.photoRequired;
+  occ.title = goalStepTitle_(task, step, stepIndex);
+  occ.photoRequired = effectiveStepPhotoRequired_(task, step);
+  occ.remindDaily = goalRemindDaily_(task);
   occ.dueAt = "";
+  occ.meta = { stepId: step.id || "" };
   return occ;
 }
 
@@ -460,6 +577,12 @@ function routineStats_(occurrences, nowMs) {
   for (var i = 0; i < occurrences.length; i++) {
     var o = occurrences[i];
     if (!o.dateKey || o.dateKey > todayKey) continue;
+    // Today is not a miss until it is actually late. An open day that still has
+    // hours left on the clock is neither a success nor a failure, so it neither
+    // extends the streak nor ends it.
+    if (o.dateKey === todayKey &&
+        (o.status === TASK_STATUS_OPEN || o.status === TASK_STATUS_WAITING) &&
+        occurrenceDisplayStatus_(o, nowMs) !== "Overdue") continue;
     past.push(o);
   }
   past.sort(function (a, b) { return a.dateKey < b.dateKey ? 1 : (a.dateKey > b.dateKey ? -1 : 0); });
@@ -492,9 +615,12 @@ function goalProgress_(occurrences) {
   var total = 0;
   var done = 0;
   for (var i = 0; i < occurrences.length; i++) {
-    if (occurrences[i].stepIndex === "") continue;
+    var occ = occurrences[i];
+    if (occ.stepIndex === "") continue;
+    if (occ.meta && occ.meta.removedStep) continue;      // history, not current scope
+    if (occ.status === TASK_STATUS_CANCELLED || occ.status === TASK_STATUS_SKIPPED) continue;
     total++;
-    if (occurrences[i].status === TASK_STATUS_COMPLETED) done++;
+    if (occ.status === TASK_STATUS_COMPLETED) done++;
   }
   return { done: done, total: total, percent: total > 0 ? Math.round((done / total) * 100) : 0 };
 }
@@ -523,7 +649,10 @@ function buildTaskViews_(doc, nowMs) {
 
   for (var i = 0; i < occurrences.length; i++) {
     var occ = occurrences[i];
-    if (occ.taskType === "goal") continue; // goals show under Goals, by progress
+    // Goal steps stay in the Maqsadlar tab, by progress. Bugun is reserved for
+    // dated work, and a step has no date - this is the documented rule, not an
+    // oversight. They are still announced to the group by the scheduler.
+    if (occ.taskType === "goal") continue;
     var view = decorateOccurrence_(occ, now);
 
     if (occ.status === TASK_STATUS_COMPLETED) {
@@ -589,7 +718,7 @@ function buildTaskViews_(doc, nowMs) {
     if (task.type === "goal") {
       summary.progress = goalProgress_(taskOccs);
       summary.stepOccurrences = taskOccs
-        .filter(function (o) { return o.stepIndex !== ""; })
+        .filter(function (o) { return o.stepIndex !== "" && !(o.meta && o.meta.removedStep); })
         .sort(function (a, b) { return Number(a.stepIndex) - Number(b.stepIndex); })
         .map(function (o) { return decorateOccurrence_(o, now); });
     }

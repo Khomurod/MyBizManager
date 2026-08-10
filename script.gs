@@ -480,6 +480,29 @@ function validateOptionalTelegramChatId_(chatId) {
   return validateTelegramChatId_(value);
 }
 
+/**
+ * The Tasks group id must be the numeric chat id.
+ *
+ * Unlike the reporting group - which is only ever a send target - the Tasks
+ * group is also compared against `chat.id` on every incoming callback and
+ * photo, and Telegram only ever sends the number. An @username would send
+ * fine and then silently match nothing.
+ */
+function validateTasksGroupChatId_(chatId) {
+  var value = String(chatId || "").trim();
+  if (!value) return "Vazifalar guruhi ID kiritilmagan.";
+  if (!/^-?\d{1,20}$/.test(value)) {
+    return "Vazifalar guruhi ID raqam bo'lishi kerak (masalan -1001234567890). @username qo'llab-quvvatlanmaydi.";
+  }
+  return "";
+}
+
+/** Like validateTasksGroupChatId_ but empty is allowed (clears it). */
+function validateOptionalTasksGroupChatId_(chatId) {
+  var value = String(chatId || "").trim();
+  return value ? validateTasksGroupChatId_(value) : "";
+}
+
 // 5e. BUSINESS REPORT JOBS
 // ------------------------------------------
 // The browser submits a business operation. The message text is composed here,
@@ -584,9 +607,15 @@ function getOmadGroupChatId_() {
   return getTelegramSetting_(TELEGRAM_PROP_GROUP_CHAT_ID);
 }
 
-/** The group task cards, reminders and completions are posted to. "" disables. */
+/**
+ * The group task cards, reminders and completions are posted to, in the one
+ * form everything can agree on: the numeric chat id. A legacy or hand-edited
+ * non-numeric value reads as "not configured" rather than half-working - the
+ * settings page still shows what is stored so it can be corrected. "" disables.
+ */
 function getTasksGroupChatId_() {
-  return getTelegramSetting_(TELEGRAM_PROP_TASKS_GROUP_CHAT_ID);
+  var value = String(getTelegramSetting_(TELEGRAM_PROP_TASKS_GROUP_CHAT_ID) || "").trim();
+  return /^-?\d{1,20}$/.test(value) ? value : "";
 }
 
 function getOrCreateWebhookSecret_() {
@@ -682,7 +711,10 @@ function buildTelegramSettingsView_() {
     tokenConfigured: !!getBotToken_(),
     authorizedUserId: getTelegramSetting_(TELEGRAM_PROP_AUTHORIZED_USER_ID),
     groupChatId: getTelegramSetting_(TELEGRAM_PROP_GROUP_CHAT_ID),
+    // The raw stored value, so a bad legacy one stays visible and fixable...
     tasksGroupChatId: getTelegramSetting_(TELEGRAM_PROP_TASKS_GROUP_CHAT_ID),
+    // ...alongside whether anything will actually use it.
+    tasksGroupChatIdUsable: !!getTasksGroupChatId_(),
     webhookUrl: getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_URL),
     webhookStatus: safeParseJSON_(getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_STATUS), null),
     lastSuccess: safeParseJSON_(getTelegramSetting_(TELEGRAM_PROP_LAST_SUCCESS), null),
@@ -727,7 +759,7 @@ function saveTelegramSettings_(payload) {
   // legacy client that does not know about it leaves it untouched.
   var hasTasksGroup = Object.prototype.hasOwnProperty.call(payload, "tasksGroupChatId");
   if (hasTasksGroup) {
-    var tasksChatError = validateOptionalTelegramChatId_(payload.tasksGroupChatId);
+    var tasksChatError = validateOptionalTasksGroupChatId_(payload.tasksGroupChatId);
     if (tasksChatError) errors.push(tasksChatError);
   }
 
@@ -2023,10 +2055,16 @@ function telegramFetch_(method, body) {
   return response;
 }
 
-function sendTelegramMessage_(chatId, text, replyMarkup, parseMode) {
+function sendTelegramMessage_(chatId, text, replyMarkup, parseMode, options) {
   var body = { chat_id: chatId, text: text };
   if (replyMarkup) body.reply_markup = replyMarkup;
   if (parseMode) body.parse_mode = parseMode;
+  if (options && options.replyToMessageId) {
+    body.reply_to_message_id = Number(options.replyToMessageId) || options.replyToMessageId;
+    // The card can have been deleted; a prompt that cannot attach itself is
+    // still better than no prompt at all.
+    body.allow_sending_without_reply = true;
+  }
   return telegramFetch_("sendMessage", body);
 }
 
@@ -2578,7 +2616,7 @@ function completeJob_(sheet, job) {
   writeJobField_(sheet, job.rowNumber, 10, new Date().toISOString());
 }
 
-function failJob_(sheet, job, error) {
+function failJob_(sheet, job, error, doc) {
   var attempts = job.attempts + 1;
   var exhausted = attempts >= JOB_MAX_ATTEMPTS;
   var delaySeconds = JOB_RETRY_BASE_SECONDS * Math.pow(2, Math.max(0, attempts - 1));
@@ -2586,7 +2624,19 @@ function failJob_(sheet, job, error) {
   writeJobField_(sheet, job.rowNumber, 6, attempts);
   writeJobField_(sheet, job.rowNumber, 7, new Date(new Date().getTime() + delaySeconds * 1000).toISOString());
   writeJobField_(sheet, job.rowNumber, 8, redactSecrets_(error).slice(0, 500));
-  if (exhausted) writeJobField_(sheet, job.rowNumber, 10, new Date().toISOString());
+  if (exhausted) {
+    writeJobField_(sheet, job.rowNumber, 10, new Date().toISOString());
+    // Some jobs leave state behind that only makes sense while they are still
+    // going to be retried.
+    if (doc) {
+      try { onJobPermanentlyFailed_(doc, job); } catch (hookError) {}
+    }
+  }
+}
+
+/** Last-chance cleanup when a job will never be attempted again. */
+function onJobPermanentlyFailed_(doc, job) {
+  if (job.type === "task_proof_prompt") releaseStuckProofPrompt_(doc, job);
 }
 
 function processPendingJobs_(doc, maxJobs) {
@@ -2599,7 +2649,7 @@ function processPendingJobs_(doc, maxJobs) {
       completeJob_(job.sheet, job);
       processed++;
     } catch (error) {
-      failJob_(job.sheet, job, error);
+      failJob_(job.sheet, job, error, doc);
     }
   }
   return processed;
@@ -4144,6 +4194,56 @@ function isTaskTimeKey_(value) {
   return /^([01]\d|2[0-3]):[0-5]\d$/.test(String(value || ""));
 }
 
+/**
+ * A YYYY-MM-DD key from whatever the sheet handed back.
+ *
+ * Exact text wins. A cell the spreadsheet already turned into a real date is
+ * recovered from its local year/month/day - the same convention
+ * parseTransactionDate_ uses for the accounting columns - so rows written
+ * before these columns were text-formatted still read correctly instead of
+ * silently becoming "". Anything else is not a date key and returns "".
+ */
+function taskDateKeyFromCell_(value) {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value === "object" && typeof value.getFullYear === "function") {
+    if (isNaN(value.getTime())) return "";
+    return value.getFullYear() + "-" + taskPad2_(value.getMonth() + 1) + "-" + taskPad2_(value.getDate());
+  }
+  var text = String(value).trim();
+  if (isTaskDateKey_(text)) return text;
+  // A full timestamp in a date column is an instant, not a calendar date;
+  // read it in the same local frame a Date cell would have been read in.
+  if (/^\d{4}-\d{2}-\d{2}T/.test(text)) {
+    var instant = new Date(text);
+    if (!isNaN(instant.getTime())) {
+      return instant.getFullYear() + "-" + taskPad2_(instant.getMonth() + 1) + "-" + taskPad2_(instant.getDate());
+    }
+  }
+  return "";
+}
+
+/**
+ * An HH:mm key from whatever the sheet handed back. Sheets stores a bare
+ * "20:00" as 1899-12-30T20:00, so a time cell arrives as a Date whose clock
+ * fields are the only part that means anything.
+ */
+function taskTimeKeyFromCell_(value) {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value === "object" && typeof value.getHours === "function") {
+    if (isNaN(value.getTime())) return "";
+    return taskPad2_(value.getHours()) + ":" + taskPad2_(value.getMinutes());
+  }
+  var text = String(value).trim();
+  if (isTaskTimeKey_(text)) return text;
+  if (/^\d{4}-\d{2}-\d{2}T/.test(text)) {
+    var instant = new Date(text);
+    if (!isNaN(instant.getTime())) return taskPad2_(instant.getHours()) + ":" + taskPad2_(instant.getMinutes());
+  }
+  var hm = /^(\d{1,2}):([0-5]\d)/.exec(text);
+  if (hm && Number(hm[1]) <= 23) return taskPad2_(hm[1]) + ":" + hm[2];
+  return "";
+}
+
 /** The epoch ms of a Tashkent wall-clock (dateKey + optional HH:mm). NaN if bad. */
 function taskInstantMs_(dateKey, timeKey) {
   var dm = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateKey || ""));
@@ -4395,7 +4495,9 @@ function normalizeTaskTimes_(times) {
   var seen = {};
   var out = [];
   for (var i = 0; i < source.length; i++) {
-    var t = String(source[i] || "").trim();
+    // Tolerant of a value the spreadsheet already rewrote, so a reminder list
+    // that was stored oddly still parses instead of vanishing.
+    var t = taskTimeKeyFromCell_(source[i]);
     if (isTaskTimeKey_(t) && !seen[t]) { seen[t] = true; out.push(t); }
   }
   out.sort();
@@ -4420,6 +4522,51 @@ function taskColumnIndex_(header, name) {
   return header.indexOf(name) + 1; // 1-based sheet column
 }
 
+// Columns whose value must reach the sheet as exact text. Everything here is
+// a date key, a clock time or an ISO stamp: values a spreadsheet will happily
+// reinterpret as a date of its own choosing if the column is not text.
+var TASKS_TEXT_COLUMNS = [
+  "Due_Time", "Deadline_Key", "Deadline_Time", "Start_Key", "End_Key",
+  "Created_At", "Updated_At"
+];
+
+var TASK_OCC_TEXT_COLUMNS = [
+  "Date_Key", "Notified_At", "Completed_At", "Created_At", "Updated_At"
+];
+
+/** Column numbers for `names`, merged into contiguous [start, count] spans. */
+function taskTextColumnSpans_(header, names) {
+  var cols = [];
+  for (var i = 0; i < names.length; i++) {
+    var index = header.indexOf(names[i]) + 1;
+    if (index > 0) cols.push(index);
+  }
+  cols.sort(function (a, b) { return a - b; });
+  var spans = [];
+  for (var c = 0; c < cols.length; c++) {
+    var last = spans[spans.length - 1];
+    if (last && cols[c] === last[0] + last[1]) last[1]++;
+    else spans.push([cols[c], 1]);
+  }
+  return spans;
+}
+
+/**
+ * Stops the spreadsheet reinterpreting what is about to be written.
+ *
+ * Must run BEFORE the values land: a number format applied afterwards
+ * reformats an already-coerced value, it does not recover it.
+ */
+function applyTaskTextFormats_(sheet, header, names, startRow, numRows) {
+  if (!sheet || numRows < 1 || typeof sheet.getRange !== "function") return;
+  var probe = sheet.getRange(startRow, 1, numRows, 1);
+  if (typeof probe.setNumberFormat !== "function") return; // older host / test double
+  var spans = taskTextColumnSpans_(header, names);
+  for (var s = 0; s < spans.length; s++) {
+    sheet.getRange(startRow, spans[s][0], numRows, spans[s][1]).setNumberFormat("@");
+  }
+}
+
 // ------------------------------------------------------------ task records
 
 function taskFromRow_(row) {
@@ -4435,11 +4582,11 @@ function taskFromRow_(row) {
     recurrence: normalizeTaskRecurrence_(safeParseJSON_(i("Recurrence_JSON"), {})),
     reminderTimes: normalizeTaskTimes_(safeParseJSON_(i("Reminder_Times_JSON"), [])),
     remindDaily: parseTaskBool_(i("Remind_Daily")),
-    dueTime: isTaskTimeKey_(i("Due_Time")) ? String(i("Due_Time")) : "",
-    deadlineKey: isTaskDateKey_(i("Deadline_Key")) ? String(i("Deadline_Key")) : "",
-    deadlineTime: isTaskTimeKey_(i("Deadline_Time")) ? String(i("Deadline_Time")) : "",
-    startKey: isTaskDateKey_(i("Start_Key")) ? String(i("Start_Key")) : "",
-    endKey: isTaskDateKey_(i("End_Key")) ? String(i("End_Key")) : "",
+    dueTime: taskTimeKeyFromCell_(i("Due_Time")),
+    deadlineKey: taskDateKeyFromCell_(i("Deadline_Key")),
+    deadlineTime: taskTimeKeyFromCell_(i("Deadline_Time")),
+    startKey: taskDateKeyFromCell_(i("Start_Key")),
+    endKey: taskDateKeyFromCell_(i("End_Key")),
     status: String(i("Status") || TASK_DEF_ACTIVE),
     steps: normalizeGoalSteps_(safeParseJSON_(i("Steps_JSON"), [])),
     createdAt: String(i("Created_At") || ""),
@@ -4476,6 +4623,10 @@ function taskToRow_(task) {
   return TASKS_HEADER.map(function (name) { return map[name]; });
 }
 
+function newGoalStepId_() {
+  return "step_" + Utilities.getUuid().split("-").join("");
+}
+
 function normalizeGoalSteps_(steps) {
   var source = Array.isArray(steps) ? steps : [];
   var out = [];
@@ -4483,9 +4634,38 @@ function normalizeGoalSteps_(steps) {
     var step = typeof source[i] === "string" ? { title: source[i] } : (source[i] || {});
     var title = String(step.title || "").trim();
     if (!title) continue;
-    out.push({ title: title, photoRequired: parseTaskBool_(step.photoRequired) });
+    var entry = { title: title };
+    if (step.id) entry.id = String(step.id).slice(0, 64);
+    // Absent means "inherit from the goal". Only an explicit value overrides,
+    // which is why this key is not written unless one was supplied.
+    if (step.photoRequired !== undefined && step.photoRequired !== null && step.photoRequired !== "") {
+      entry.photoRequired = parseTaskBool_(step.photoRequired);
+    }
+    out.push(entry);
   }
   return out;
+}
+
+/** The photo rule that actually applies to a step. */
+function effectiveStepPhotoRequired_(task, step) {
+  if (step && step.photoRequired !== undefined) return !!step.photoRequired;
+  return !!task.photoRequired;
+}
+
+/** "<goal title> — <step title>", the label a step-occurrence carries. */
+function goalStepTitle_(task, step, index) {
+  return task.title + " — " + ((step && step.title) || ("Qadam " + (index + 1)));
+}
+
+/**
+ * Whether a goal's reminder times apply to its steps.
+ *
+ * A step has no due date, so there is no single moment to remind about. If the
+ * admin set reminder times on the goal, the only reading that does what they
+ * asked is "every day until the step is done".
+ */
+function goalRemindDaily_(task) {
+  return !!(task.reminderTimes && task.reminderTimes.length);
 }
 
 function readTaskRows_(doc) {
@@ -4510,12 +4690,16 @@ function findTask_(doc, taskId) {
 }
 
 function appendTaskRow_(doc, task) {
-  tasksSheet_(doc).appendRow(taskToRow_(task));
+  var sheet = tasksSheet_(doc);
+  var row = sheet.getLastRow() + 1;
+  applyTaskTextFormats_(sheet, TASKS_HEADER, TASKS_TEXT_COLUMNS, row, 1);
+  sheet.appendRow(taskToRow_(task));
 }
 
 function updateTaskRow_(doc, task) {
   var sheet = tasksSheet_(doc);
   if (!task.rowNumber) return;
+  applyTaskTextFormats_(sheet, TASKS_HEADER, TASKS_TEXT_COLUMNS, task.rowNumber, 1);
   sheet.getRange(task.rowNumber, 1, 1, TASKS_HEADER.length).setValues([taskToRow_(task)]);
 }
 
@@ -4529,7 +4713,7 @@ function occurrenceFromRow_(row) {
     taskId: String(i("Task_ID") || ""),
     taskType: String(i("Task_Type") || ""),
     title: String(i("Title") || ""),
-    dateKey: isTaskDateKey_(i("Date_Key")) ? String(i("Date_Key")) : "",
+    dateKey: taskDateKeyFromCell_(i("Date_Key")),
     stepIndex: i("Step_Index") === "" || i("Step_Index") === null || i("Step_Index") === undefined
       ? "" : Number(i("Step_Index")),
     dueAt: dueRaw === "" || dueRaw === null || dueRaw === undefined ? "" : Number(dueRaw),
@@ -4617,7 +4801,24 @@ function occurrencesForTask_(rows, taskId) {
 }
 
 function appendOccurrenceRow_(doc, occ) {
-  taskOccurrencesSheet_(doc).appendRow(occurrenceToRow_(occ));
+  var sheet = taskOccurrencesSheet_(doc);
+  var row = sheet.getLastRow() + 1;
+  applyTaskTextFormats_(sheet, TASK_OCC_HEADER, TASK_OCC_TEXT_COLUMNS, row, 1);
+  sheet.appendRow(occurrenceToRow_(occ));
+  occ.rowNumber = row;
+}
+
+/** Appends many occurrences in one write, protecting their text columns first. */
+function appendOccurrenceRows_(doc, occurrences) {
+  if (!occurrences || !occurrences.length) return [];
+  var sheet = taskOccurrencesSheet_(doc);
+  var startRow = sheet.getLastRow() + 1;
+  applyTaskTextFormats_(sheet, TASK_OCC_HEADER, TASK_OCC_TEXT_COLUMNS, startRow, occurrences.length);
+  var values = [];
+  for (var i = 0; i < occurrences.length; i++) values.push(occurrenceToRow_(occurrences[i]));
+  sheet.getRange(startRow, 1, values.length, TASK_OCC_HEADER.length).setValues(values);
+  for (var r = 0; r < occurrences.length; r++) occurrences[r].rowNumber = startRow + r;
+  return occurrences;
 }
 
 /** Rewrites a single occurrence row from an in-memory object. */
@@ -4625,6 +4826,7 @@ function writeOccurrenceRow_(doc, occ) {
   var sheet = taskOccurrencesSheet_(doc);
   if (!occ.rowNumber) return;
   occ.updatedAt = new Date().toISOString();
+  applyTaskTextFormats_(sheet, TASK_OCC_HEADER, TASK_OCC_TEXT_COLUMNS, occ.rowNumber, 1);
   sheet.getRange(occ.rowNumber, 1, 1, TASK_OCC_HEADER.length).setValues([occurrenceToRow_(occ)]);
 }
 
@@ -4635,17 +4837,26 @@ function writeOccurrenceRow_(doc, occ) {
  * the ones this call created. Idempotent: an occurrence is keyed by
  * (taskId, dateKey) for routines/one-time and (taskId, stepIndex) for goals,
  * so re-running never duplicates and never disturbs completed history.
+ *
+ * `ctx` is an optional per-pass working set: the occurrence rows already read
+ * from the sheet, plus the rows this pass wants to add. Passing one turns a
+ * scan-per-task into a single scan and a single append for the whole pass.
+ * Called without one it behaves exactly as before.
  */
-function materializeTaskOccurrences_(doc, task, nowMs) {
+function materializeTaskOccurrences_(doc, task, nowMs, ctx) {
   if (task.status === TASK_DEF_CANCELLED) return [];
   var todayKey = taskTodayKey_(nowMs);
-  var existing = occurrencesForTask_(readOccurrenceRows_(doc), task.id);
+  var existing = occurrencesForTask_(ctx ? ctx.occurrences : readOccurrenceRows_(doc), task.id);
 
   var byDate = {};
   var byStep = {};
   for (var e = 0; e < existing.length; e++) {
     if (existing[e].dateKey) byDate[existing[e].dateKey] = existing[e];
-    if (existing[e].stepIndex !== "") byStep[existing[e].stepIndex] = existing[e];
+    // A removed step's row is history and must not block a new step from
+    // taking its index.
+    if (existing[e].stepIndex !== "" && !(existing[e].meta && existing[e].meta.removedStep)) {
+      byStep[existing[e].stepIndex] = existing[e];
+    }
   }
 
   var created = [];
@@ -4668,7 +4879,11 @@ function materializeTaskOccurrences_(doc, task, nowMs) {
     }
   }
 
-  for (var c = 0; c < created.length; c++) appendOccurrenceRow_(doc, created[c]);
+  if (ctx) {
+    for (var c = 0; c < created.length; c++) { ctx.pending.push(created[c]); ctx.occurrences.push(created[c]); }
+  } else {
+    for (var a = 0; a < created.length; a++) appendOccurrenceRow_(doc, created[a]);
+  }
   return created;
 }
 
@@ -4728,9 +4943,11 @@ function buildOccurrenceForGoalStep_(task, stepIndex) {
   var occ = baseOccurrence_(task);
   var step = task.steps[stepIndex] || {};
   occ.stepIndex = stepIndex;
-  occ.title = task.title + " — " + (step.title || ("Qadam " + (stepIndex + 1)));
-  occ.photoRequired = step.photoRequired !== undefined ? !!step.photoRequired : !!task.photoRequired;
+  occ.title = goalStepTitle_(task, step, stepIndex);
+  occ.photoRequired = effectiveStepPhotoRequired_(task, step);
+  occ.remindDaily = goalRemindDaily_(task);
   occ.dueAt = "";
+  occ.meta = { stepId: step.id || "" };
   return occ;
 }
 
@@ -4786,6 +5003,12 @@ function routineStats_(occurrences, nowMs) {
   for (var i = 0; i < occurrences.length; i++) {
     var o = occurrences[i];
     if (!o.dateKey || o.dateKey > todayKey) continue;
+    // Today is not a miss until it is actually late. An open day that still has
+    // hours left on the clock is neither a success nor a failure, so it neither
+    // extends the streak nor ends it.
+    if (o.dateKey === todayKey &&
+        (o.status === TASK_STATUS_OPEN || o.status === TASK_STATUS_WAITING) &&
+        occurrenceDisplayStatus_(o, nowMs) !== "Overdue") continue;
     past.push(o);
   }
   past.sort(function (a, b) { return a.dateKey < b.dateKey ? 1 : (a.dateKey > b.dateKey ? -1 : 0); });
@@ -4818,9 +5041,12 @@ function goalProgress_(occurrences) {
   var total = 0;
   var done = 0;
   for (var i = 0; i < occurrences.length; i++) {
-    if (occurrences[i].stepIndex === "") continue;
+    var occ = occurrences[i];
+    if (occ.stepIndex === "") continue;
+    if (occ.meta && occ.meta.removedStep) continue;      // history, not current scope
+    if (occ.status === TASK_STATUS_CANCELLED || occ.status === TASK_STATUS_SKIPPED) continue;
     total++;
-    if (occurrences[i].status === TASK_STATUS_COMPLETED) done++;
+    if (occ.status === TASK_STATUS_COMPLETED) done++;
   }
   return { done: done, total: total, percent: total > 0 ? Math.round((done / total) * 100) : 0 };
 }
@@ -4849,7 +5075,10 @@ function buildTaskViews_(doc, nowMs) {
 
   for (var i = 0; i < occurrences.length; i++) {
     var occ = occurrences[i];
-    if (occ.taskType === "goal") continue; // goals show under Goals, by progress
+    // Goal steps stay in the Maqsadlar tab, by progress. Bugun is reserved for
+    // dated work, and a step has no date - this is the documented rule, not an
+    // oversight. They are still announced to the group by the scheduler.
+    if (occ.taskType === "goal") continue;
     var view = decorateOccurrence_(occ, now);
 
     if (occ.status === TASK_STATUS_COMPLETED) {
@@ -4915,7 +5144,7 @@ function buildTaskViews_(doc, nowMs) {
     if (task.type === "goal") {
       summary.progress = goalProgress_(taskOccs);
       summary.stepOccurrences = taskOccs
-        .filter(function (o) { return o.stepIndex !== ""; })
+        .filter(function (o) { return o.stepIndex !== "" && !(o.meta && o.meta.removedStep); })
         .sort(function (a, b) { return Number(a.stepIndex) - Number(b.stepIndex); })
         .map(function (o) { return decorateOccurrence_(o, now); });
     }
@@ -5090,6 +5319,20 @@ function buildTaskStatusMessage_(occ, nowMs) {
   return buildTaskOccurrenceMessage_(occ);
 }
 
+/**
+ * The ForceReply prompt asking one named person for the proof photo.
+ *
+ * Titles are capped at 200 characters upstream, so nothing here is truncated -
+ * slicing an HTML string could cut an entity in half.
+ */
+function buildTaskProofPromptMessage_(occ, options) {
+  var name = escapeTelegramHtml_((options && options.userName) || occ.completedByName || "");
+  var id = options && options.userId ? String(options.userId) : "";
+  var mention = id ? '<a href="tg://user?id=' + id + '">' + name + '</a>' : name;
+  return "📷 " + mention + ", \"" + escapeTelegramHtml_(occ.title) +
+    "\" ni tasdiqlash uchun shu xabarga javob (reply) qilib rasm yuboring.";
+}
+
 // ------------------------------------------------------------- completion
 
 /**
@@ -5112,6 +5355,8 @@ function completeTaskOccurrence_(doc, occ, options) {
   if (opts.proofMsgId) occ.proofMsgId = String(opts.proofMsgId);
   occ.meta = occ.meta || {};
   occ.meta.source = opts.source || "telegram";
+  // A stale prompt pointer must not be able to match a later photo.
+  occ.meta.proofPromptMsgId = "";
 
   if (occ.dueAt !== "" && isFinite(occ.dueAt)) {
     if (nowMs > occ.dueAt) { occ.onTime = false; occ.lateMs = nowMs - occ.dueAt; }
@@ -5213,21 +5458,35 @@ function handleTaskCallback_(callback, doc) {
   if (occ.status === TASK_STATUS_SKIPPED) { answerCallbackQuery_(callback.id, "Bu vazifa o'tkazib yuborilgan."); return; }
 
   var from = callback.from || {};
+
+  if (occ.status === TASK_STATUS_WAITING) {
+    // The proof is somebody's to deliver. A second presser must not be able to
+    // take the task from them, or to overwrite who is recorded as doing it.
+    if (String(occ.proofAwaitingUserId) === String(from.id)) {
+      enqueueTaskJob_(doc, "task_proof_prompt", occ.id, {
+        occurrenceId: occ.id, userId: String(from.id), userName: taskDisplayName_(from)
+      });
+      answerCallbackQuery_(callback.id, "📷 Rasm kutilmoqda — so'ralgan xabarga javob qiling.");
+    } else {
+      answerCallbackQuery_(callback.id,
+        (occ.completedByName || "Boshqa foydalanuvchi") + " tasdiqlamoqda.");
+    }
+    return;
+  }
+
   if (occ.photoRequired) {
     occ.status = TASK_STATUS_WAITING;
     occ.proofAwaitingUserId = String(from.id || "");
-    occ.completedByName = taskDisplayName_(from); // provisional; confirmed on proof
+    occ.completedByName = taskDisplayName_(from);   // provisional; confirmed on proof
+    occ.meta = occ.meta || {};
+    occ.meta.proofPromptMsgId = "";
+    occ.meta.proofRequestedAt = new Date().toISOString();
     writeOccurrenceRow_(doc, occ);
-    answerCallbackQuery_(callback.id, "📷 Iltimos, rasm yuboring.");
-    try {
-      var prompt = sendTelegramMessage_(getTasksGroupChatId_(),
-        "📷 " + taskDisplayName_(from) + ", \"" + occ.title +
-        "\" ni tasdiqlash uchun shu yerga rasm (foto) yuboring.");
-      var promptId = extractTelegramMessageId_(prompt);
-      if (promptId) { occ.meta = occ.meta || {}; occ.meta.proofPromptMsgId = String(promptId); writeOccurrenceRow_(doc, occ); }
-    } catch (error) {
-      debugLog_(doc, "task_proof_prompt_failed", String(error));
-    }
+
+    enqueueTaskJob_(doc, "task_proof_prompt", occ.id, {
+      occurrenceId: occ.id, userId: String(from.id || ""), userName: taskDisplayName_(from)
+    });
+    answerCallbackQuery_(callback.id, "📷 Iltimos, so'ralgan xabarga rasm bilan javob bering.");
     if (occ.msgId) enqueueTaskJob_(doc, "task_update_message", occ.id, { occurrenceId: occ.id });
     return;
   }
@@ -5238,31 +5497,44 @@ function handleTaskCallback_(callback, doc) {
   answerCallbackQuery_(callback.id, "✅ Bajarildi.");
 }
 
+/**
+ * A photo in the Tasks group.
+ *
+ * Proof is only proof of the thing that was asked for: the photo has to be a
+ * reply to that occurrence's prompt (or to its card), and it has to come from
+ * the person who claimed it. Guessing "probably their most recent pending
+ * task" is how an unrelated photo silently completed the wrong job.
+ */
 function handleTaskGroupMessage_(message, doc) {
-  if (!message.photo || !message.photo.length) return; // only photos complete a proof
+  if (!message.photo || !message.photo.length) return;
   var from = message.from || {};
-  var candidates = [];
+  var replyTo = message.reply_to_message ? String(message.reply_to_message.message_id) : "";
+
+  var pendingForUser = 0;
+  var target = null;
+  var claimedByOther = null;
   var rows = readOccurrenceRows_(doc);
   for (var i = 0; i < rows.length; i++) {
-    if (rows[i].status !== TASK_STATUS_WAITING) continue;
-    if (String(rows[i].proofAwaitingUserId) !== String(from.id)) continue;
-    candidates.push(rows[i]);
+    var occ = rows[i];
+    if (occ.status !== TASK_STATUS_WAITING) continue;
+    if (String(occ.proofAwaitingUserId) === String(from.id)) pendingForUser++;
+    if (!replyTo) continue;
+    var meta = occ.meta || {};
+    var answersThis = String(meta.proofPromptMsgId || "") === replyTo || String(occ.msgId || "") === replyTo;
+    if (!answersThis) continue;
+    if (String(occ.proofAwaitingUserId) === String(from.id)) target = occ;
+    else claimedByOther = occ;
   }
-  if (!candidates.length) return; // no awaiting proof for this user — ignore
 
-  var replyTo = message.reply_to_message ? String(message.reply_to_message.message_id) : "";
-  var target = null;
-  if (replyTo) {
-    for (var j = 0; j < candidates.length; j++) {
-      var meta = candidates[j].meta || {};
-      if (String(candidates[j].msgId) === replyTo || String(meta.proofPromptMsgId) === replyTo) {
-        target = candidates[j]; break;
-      }
-    }
-  }
   if (!target) {
-    candidates.sort(function (a, b) { return String(b.updatedAt).localeCompare(String(a.updatedAt)); });
-    target = candidates[0];
+    if (claimedByOther) {
+      trySendTaskGroupMessage_(doc, "⚠️ Bu vazifani " +
+        (claimedByOther.completedByName || "boshqa foydalanuvchi") + " tasdiqlamoqda.");
+    } else if (pendingForUser > 0) {
+      trySendTaskGroupMessage_(doc,
+        "⚠️ Rasmni qabul qilish uchun so'ralgan xabarga javob (reply) qilib yuboring.");
+    }
+    return;   // an unrelated photo is just a photo
   }
 
   var largest = message.photo[message.photo.length - 1] || {};
@@ -5273,12 +5545,17 @@ function handleTaskGroupMessage_(message, doc) {
     proofFileId: largest.file_id || "",
     proofMsgId: message.message_id
   });
+  trySendTaskGroupMessage_(doc, "✅ Rasm qabul qilindi — \"" + target.title + "\" bajarildi.");
+}
 
+/** Group chatter is never worth failing a webhook over. */
+function trySendTaskGroupMessage_(doc, text) {
+  var chatId = getTasksGroupChatId_();
+  if (!chatId) return;
   try {
-    sendTelegramMessage_(getTasksGroupChatId_(),
-      "✅ Rasm qabul qilindi — \"" + target.title + "\" bajarildi.");
+    sendTelegramMessage_(chatId, text);
   } catch (error) {
-    debugLog_(doc, "task_proof_ack_failed", String(error));
+    debugLog_(doc, "task_group_notice_failed", String(error));
   }
 }
 
@@ -5300,20 +5577,75 @@ function handleTaskGroupMessage_(message, doc) {
 // ============================================================
 
 var TASK_REMINDER_MAX_LATE_MS = 3 * 60 * 60 * 1000; // don't blast reminders missed by >3h
+var TASK_PROOF_PROMPT_TIMEOUT_MS = 30 * 60 * 1000;  // a claim whose prompt never went out
 
 function enqueueTaskJob_(doc, type, relatedId, payload) {
   return enqueueJob_(doc, type, relatedId, payload || {});
 }
 
 function isTaskJobType_(type) {
-  return type === "task_notify" || type === "task_reminder" || type === "task_update_message";
+  return type === "task_notify" || type === "task_reminder" ||
+    type === "task_update_message" || type === "task_proof_prompt";
 }
 
 function runTaskJob_(doc, job) {
   if (job.type === "task_notify") return runTaskNotifyJob_(doc, job);
   if (job.type === "task_reminder") return runTaskReminderJob_(doc, job);
   if (job.type === "task_update_message") return runTaskUpdateMessageJob_(doc, job);
+  if (job.type === "task_proof_prompt") return runTaskProofPromptJob_(doc, job);
   throw new Error("Unknown task job type: " + job.type);
+}
+
+/**
+ * Asks the user who claimed a photo-proof task to reply with the photo.
+ *
+ * ForceReply with `selective` plus a mention targets exactly that person, so
+ * the reply the group is asked for is unambiguous and the photo that comes
+ * back can be matched to this prompt and no other. Sending it as a job means a
+ * Telegram outage retries with the queue's backoff instead of leaving the
+ * occurrence waiting for a message that was never delivered.
+ */
+function runTaskProofPromptJob_(doc, job) {
+  var chatId = getTasksGroupChatId_();
+  if (!chatId) throw new Error("Telegram Tasks group ID o'rnatilmagan.");
+  var occ = findOccurrence_(doc, String(job.payload.occurrenceId || ""));
+  if (!occ) return;
+  if (occ.status !== TASK_STATUS_WAITING) return;                                  // already resolved
+  if (String(occ.proofAwaitingUserId) !== String(job.payload.userId || "")) return; // superseded
+
+  var sent = sendTelegramMessage_(
+    chatId,
+    buildTaskProofPromptMessage_(occ, job.payload),
+    { force_reply: true, selective: true },
+    "HTML",
+    { replyToMessageId: occ.msgId }
+  );
+  var promptId = extractTelegramMessageId_(sent);
+  if (promptId) {
+    occ.meta = occ.meta || {};
+    occ.meta.proofPromptMsgId = String(promptId);
+    writeOccurrenceRow_(doc, occ);
+  }
+}
+
+/**
+ * Puts an occurrence back the way it was when the prompt asking for its photo
+ * could not be delivered. Waiting for a photo nobody was ever asked for is a
+ * lie the group cannot act on.
+ */
+function releaseStuckProofPrompt_(doc, job) {
+  var occ = findOccurrence_(doc, String((job.payload || {}).occurrenceId || ""));
+  if (!occ || occ.status !== TASK_STATUS_WAITING) return;
+  if (occ.meta && occ.meta.proofPromptMsgId) return;   // it did go out
+  occ.status = TASK_STATUS_OPEN;
+  occ.proofAwaitingUserId = "";
+  occ.completedByName = "";
+  occ.meta = occ.meta || {};
+  occ.meta.proofPromptMsgId = "";
+  occ.meta.proofRequestedAt = "";
+  writeOccurrenceRow_(doc, occ);
+  appendAuditRow_(doc, "task_proof_prompt_released", occ.id);
+  if (occ.msgId) enqueueTaskJob_(doc, "task_update_message", occ.id, { occurrenceId: occ.id });
 }
 
 function runTaskNotifyJob_(doc, job) {
@@ -5321,6 +5653,11 @@ function runTaskNotifyJob_(doc, job) {
   if (!chatId) throw new Error("Telegram Tasks group ID o'rnatilmagan.");
   var occ = findOccurrence_(doc, String(job.payload.occurrenceId || ""));
   if (!occ) return; // deleted before it went out
+
+  // The definition can be paused between enqueue and send; the queue must not
+  // deliver a message the admin has already stopped.
+  var notifyTask = findTask_(doc, occ.taskId);
+  if (notifyTask && (notifyTask.status === TASK_DEF_PAUSED || notifyTask.status === TASK_DEF_CANCELLED)) return;
 
   // If it already reached an end state before the card was sent, send the
   // status card (no button) rather than a stale "new task" with a live button.
@@ -5344,6 +5681,11 @@ function runTaskReminderJob_(doc, job) {
   // Completion (or cancellation/skip) between enqueue and send stops the ping.
   if (occ.status !== TASK_STATUS_OPEN) return;
 
+  // The definition can be paused between enqueue and send; the queue must not
+  // deliver a message the admin has already stopped.
+  var remindTask = findTask_(doc, occ.taskId);
+  if (remindTask && (remindTask.status === TASK_DEF_PAUSED || remindTask.status === TASK_DEF_CANCELLED)) return;
+
   sendTelegramMessage_(chatId, buildTaskReminderMessage_(occ), taskDoneMarkup_(occ.id));
 }
 
@@ -5353,13 +5695,32 @@ function runTaskUpdateMessageJob_(doc, job) {
   var occ = findOccurrence_(doc, String(job.payload.occurrenceId || ""));
   if (!occ || !occ.msgId) return;
 
-  var isEndState = occ.status === TASK_STATUS_COMPLETED || occ.status === TASK_STATUS_CANCELLED ||
-    occ.status === TASK_STATUS_SKIPPED;
+  // The button is live only while the task is genuinely open. While a proof is
+  // pending it belongs to one person, and pressing it again is not how they
+  // deliver it.
+  var showButton = occ.status === TASK_STATUS_OPEN;
   editTelegramMessage_(chatId, occ.msgId, buildTaskStatusMessage_(occ, Date.now()),
-    isEndState ? taskClearedMarkup_() : taskDoneMarkup_(occ.id));
+    showButton ? taskDoneMarkup_(occ.id) : taskClearedMarkup_());
 }
 
 // ---------------------------------------------------------------- scheduler
+
+/**
+ * Whether the scheduler may still speak for a task. A paused routine must not
+ * announce or remind - not even for the occurrences that were already
+ * materialised on to the sheet before it was paused - and an occurrence whose
+ * definition has gone is not something to keep pinging a group about.
+ */
+function isTaskSendable_(taskStatus) {
+  return taskStatus === TASK_DEF_ACTIVE;
+}
+
+/** True when any reminder slot has already been acted on for this occurrence. */
+function hasAnyReminderSent_(occ) {
+  var sent = occ.remindersSent || {};
+  for (var key in sent) if (Object.prototype.hasOwnProperty.call(sent, key)) return true;
+  return false;
+}
 
 /** Which reminder dates apply to an occurrence right now. */
 function taskReminderDatesFor_(occ, todayKey) {
@@ -5385,20 +5746,48 @@ function runTaskScheduler_(doc, nowMs) {
   var reminders = 0;
   try {
     var tasks = readTaskRows_(doc);
-    for (var t = 0; t < tasks.length; t++) {
-      if (tasks[t].status === TASK_DEF_ACTIVE) {
-        generated += materializeTaskOccurrences_(doc, tasks[t], now).length;
+    var statusByTaskId = {};
+    for (var t = 0; t < tasks.length; t++) statusByTaskId[tasks[t].id] = tasks[t].status;
+
+    // One scan of the occurrence sheet for the whole pass, and one append for
+    // everything it decides to create. A daily routine used to cost a full
+    // scan per task, every five minutes, for ever.
+    var ctx = { occurrences: readOccurrenceRows_(doc), pending: [] };
+    for (var g = 0; g < tasks.length; g++) {
+      if (tasks[g].status === TASK_DEF_ACTIVE) {
+        generated += materializeTaskOccurrences_(doc, tasks[g], now, ctx).length;
       }
     }
+    if (ctx.pending.length) appendOccurrenceRows_(doc, ctx.pending);
 
-    var occurrences = readOccurrenceRows_(doc);
+    // Includes what was just appended, with the row numbers assigned to those
+    // very objects - so a writeOccurrenceRow_ later in this pass lands on the
+    // right row.
+    var occurrences = ctx.occurrences;
     for (var i = 0; i < occurrences.length; i++) {
       var occ = occurrences[i];
-      if (occ.taskType === "goal") continue;
+
+      // A paused (or cancelled, or orphaned) definition goes quiet immediately,
+      // including for occurrences that were materialised before the pause.
+      if (!isTaskSendable_(statusByTaskId[occ.taskId])) continue;
+
+      // Backstop: a claim whose prompt never made it out, and whose job is gone
+      // (queue row purged, script killed mid-flight). 30 minutes is comfortably
+      // past the queue's own retry ladder, so this never races it.
+      if (occ.status === TASK_STATUS_WAITING && !(occ.meta && occ.meta.proofPromptMsgId)) {
+        var requestedAt = Date.parse((occ.meta && occ.meta.proofRequestedAt) || "") || 0;
+        if (requestedAt && now - requestedAt > TASK_PROOF_PROMPT_TIMEOUT_MS) {
+          releaseStuckProofPrompt_(doc, { payload: { occurrenceId: occ.id } });
+          continue;
+        }
+      }
 
       // Announce.
       if (!occ.notifiedAt && occ.status === TASK_STATUS_OPEN) {
-        var due = occ.taskType === "once" || (occ.dateKey && occ.dateKey <= todayKey);
+        // A goal step and a deadline-less one-time task are the same thing to
+        // the group: something to do now, with no date attached.
+        var due = occ.taskType === "once" || occ.taskType === "goal" ||
+          (occ.dateKey && occ.dateKey <= todayKey);
         if (due) {
           enqueueTaskJob_(doc, "task_notify", occ.id, { occurrenceId: occ.id });
           occ.notifiedAt = new Date(now).toISOString();
@@ -5446,6 +5835,10 @@ function processTaskSchedules() {
 
 // ---------------------------------------------------------------- web API
 
+// The panel does one read per load and one per mutation, so this is generous
+// for the admin and mean to anyone guessing keys.
+var TASK_READ_RATE_LIMIT = 30;
+
 function isTaskReadAction_(action) {
   return action === "get_tasks";
 }
@@ -5463,6 +5856,14 @@ function isTaskAction_(action) {
 
 function handleTaskAction_(action, payload, doc) {
   if (isTaskReadAction_(action)) {
+    // The task board is internal company information: who is responsible for
+    // what, when it is due, and who has been missing deadlines. It is gated
+    // like a mutation, and throttled before the key is compared so the
+    // endpoint cannot be used to guess it.
+    var throttled = enforceRateLimit_("tasks_read", TASK_READ_RATE_LIMIT, TELEGRAM_RATE_WINDOW_SECONDS);
+    if (throttled) return jsonOutput_({ status: "error", message: throttled });
+    var readError = checkAdminKey_(payload);
+    if (readError) return jsonOutput_({ status: "error", message: readError });
     return jsonOutput_({
       status: "success",
       view: buildTaskViews_(doc, Date.now()),
@@ -5495,7 +5896,11 @@ function handleTaskAction_(action, payload, doc) {
 
 /** Builds a validated task object from a web payload. Returns {task} or {error}. */
 function normalizeTaskInput_(payload, existing) {
-  var type = TASK_TYPES.indexOf(String(payload.type)) !== -1 ? String(payload.type) : (existing ? existing.type : "");
+  // The type decides which columns mean anything and what an occurrence even
+  // is. There is no safe migration from one shape to another - a once-task's
+  // single occurrence and a routine's dated history are not interchangeable -
+  // so an existing task keeps the type it was created with.
+  var type = existing ? existing.type : (TASK_TYPES.indexOf(String(payload.type)) !== -1 ? String(payload.type) : "");
   if (TASK_TYPES.indexOf(type) === -1) return { error: "Vazifa turi noto'g'ri." };
 
   var title = String(payload.title || (existing ? existing.title : "")).trim();
@@ -5550,25 +5955,205 @@ function normalizeTaskInput_(payload, existing) {
 function saveTaskAction_(doc, payload) {
   var existing = payload.id ? findTask_(doc, payload.id) : null;
   if (payload.id && !existing) return { status: "error", message: "Vazifa topilmadi." };
+  if (existing && payload.type && String(payload.type) !== existing.type) {
+    return { status: "error", message: "Vazifa turini o'zgartirib bo'lmaydi. Yangi vazifa yarating." };
+  }
 
   var normalized = normalizeTaskInput_(payload, existing);
   if (normalized.error) return { status: "error", message: normalized.error };
   var task = normalized.task;
+  var nowMs = Date.now();
+  var todayKey = taskTodayKey_(nowMs);
+  var previousSteps = existing ? (existing.steps || []) : [];
+
+  if (task.type === "goal") task.steps = mergeGoalSteps_(previousSteps, task.steps);
 
   if (existing) {
     task.rowNumber = existing.rowNumber;
     updateTaskRow_(doc, task);
-    // Re-plan the future: drop not-yet-sent upcoming occurrences so an edited
-    // schedule takes effect, while completed/announced history is preserved.
-    if (task.type === "routine") pruneReplaceableRoutineOccurrences_(doc, task.id, taskTodayKey_(Date.now()));
+    if (task.type === "routine") reconcileRoutineOccurrences_(doc, task, todayKey);
+    else if (task.type === "once") reconcileOnceOccurrence_(doc, task);
+    else reconcileGoalOccurrences_(doc, task, previousSteps);
     appendAuditRow_(doc, "task_updated", task.id + " " + task.type);
   } else {
     appendTaskRow_(doc, task);
     appendAuditRow_(doc, "task_created", task.id + " " + task.type);
   }
 
-  materializeTaskOccurrences_(doc, task, Date.now());
+  materializeTaskOccurrences_(doc, task, nowMs);
+  // Removing the last unfinished step is a completion just as much as ticking
+  // it off is.
+  if (task.type === "goal") maybeCompleteGoal_(doc, task.id, nowMs);
   return { status: "success", taskId: task.id };
+}
+
+/**
+ * Pushes an edited one-time task on to the occurrence that is still live.
+ *
+ * The occurrence is what people actually see and complete; leaving it on the
+ * old deadline, the old owner and the old photo rule is the difference between
+ * an edit and a lie. History (completed / cancelled / skipped) is never
+ * rewritten.
+ */
+function reconcileOnceOccurrence_(doc, task) {
+  var rows = occurrencesForTask_(readOccurrenceRows_(doc), task.id);
+  for (var i = 0; i < rows.length; i++) {
+    var occ = rows[i];
+    if (occ.status === TASK_STATUS_COMPLETED || occ.status === TASK_STATUS_CANCELLED ||
+        occ.status === TASK_STATUS_SKIPPED) continue;
+
+    occ.title = task.title;
+    occ.responsible = task.responsible || "";
+    occ.priority = task.priority || "normal";
+    occ.photoRequired = !!task.photoRequired;
+    occ.reminderTimes = task.reminderTimes || [];
+    occ.remindDaily = !!task.remindDaily;
+    occ.dateKey = task.deadlineKey || "";
+    occ.dueAt = task.deadlineKey ? taskInstantMs_(task.deadlineKey, task.deadlineTime || "23:59") : "";
+    writeOccurrenceRow_(doc, occ);
+    if (occ.msgId) enqueueTaskJob_(doc, "task_update_message", occ.id, { occurrenceId: occ.id });
+  }
+}
+
+/**
+ * Pairs the submitted step list with the steps that already exist, so an
+ * occurrence keeps belonging to the same piece of work across an edit.
+ *
+ * Matching order matters:
+ *   1. an id the client sent back - unambiguous;
+ *   2. an unchanged title - survives inserting or deleting a step in the middle,
+ *      which position alone cannot;
+ *   3. the same position - which is what a plain rename looks like once the
+ *      unchanged titles have been claimed;
+ *   4. anything still unmatched is genuinely new and gets a fresh id.
+ */
+function mergeGoalSteps_(existingSteps, incomingSteps) {
+  var existing = Array.isArray(existingSteps) ? existingSteps : [];
+  var incoming = Array.isArray(incomingSteps) ? incomingSteps : [];
+  var byId = {};
+  var used = {};
+  for (var e = 0; e < existing.length; e++) if (existing[e].id) byId[existing[e].id] = existing[e];
+
+  var out = new Array(incoming.length);
+  var pending = [];
+
+  for (var i = 0; i < incoming.length; i++) {
+    var id = incoming[i].id;
+    if (id && byId[id] && !used[id]) { used[id] = true; out[i] = { id: id }; }
+    else pending.push(i);
+  }
+  for (var t = 0; t < pending.length; t++) {
+    var ti = pending[t];
+    for (var x = 0; x < existing.length; x++) {
+      if (!existing[x].id || used[existing[x].id]) continue;
+      if (existing[x].title === incoming[ti].title) { used[existing[x].id] = true; out[ti] = { id: existing[x].id }; break; }
+    }
+  }
+  for (var p = 0; p < pending.length; p++) {
+    var pi = pending[p];
+    if (out[pi]) continue;
+    var atPosition = existing[pi];
+    if (atPosition && atPosition.id && !used[atPosition.id]) { used[atPosition.id] = true; out[pi] = { id: atPosition.id }; }
+  }
+  for (var n = 0; n < out.length; n++) {
+    if (!out[n]) out[n] = { id: newGoalStepId_() };
+    out[n].title = incoming[n].title;
+    if (incoming[n].photoRequired !== undefined) out[n].photoRequired = incoming[n].photoRequired;
+  }
+  return out;
+}
+
+/**
+ * Re-points a goal's step-occurrences at the edited step list.
+ *
+ * Completed work is never deleted or re-scored: a step that disappears keeps
+ * its row (and its proof, and who did it) and is simply taken out of the
+ * goal's progress. An unfinished step that disappears is cancelled, so the
+ * group card is withdrawn rather than left hanging.
+ */
+function reconcileGoalOccurrences_(doc, task, previousSteps) {
+  var rows = occurrencesForTask_(readOccurrenceRows_(doc), task.id);
+  var idByOldIndex = {};
+  for (var p = 0; p < previousSteps.length; p++) idByOldIndex[p] = previousSteps[p].id || "";
+  var newIndexById = {};
+  for (var n = 0; n < task.steps.length; n++) newIndexById[task.steps[n].id] = n;
+
+  for (var i = 0; i < rows.length; i++) {
+    var occ = rows[i];
+    if (occ.stepIndex === "") continue;
+    occ.meta = occ.meta || {};
+    var stepId = occ.meta.stepId || idByOldIndex[Number(occ.stepIndex)] || "";
+    var newIndex = (stepId && newIndexById[stepId] !== undefined) ? newIndexById[stepId] : undefined;
+
+    if (newIndex === undefined) {
+      occ.meta.removedStep = true;
+      if (occ.status === TASK_STATUS_OPEN || occ.status === TASK_STATUS_WAITING) {
+        occ.status = TASK_STATUS_CANCELLED;
+        occ.proofAwaitingUserId = "";
+      }
+      writeOccurrenceRow_(doc, occ);
+      if (occ.msgId) enqueueTaskJob_(doc, "task_update_message", occ.id, { occurrenceId: occ.id });
+      continue;
+    }
+
+    var step = task.steps[newIndex];
+    occ.meta.stepId = step.id;
+    delete occ.meta.removedStep;
+    occ.stepIndex = newIndex;
+    occ.title = goalStepTitle_(task, step, newIndex);
+    if (occ.status !== TASK_STATUS_COMPLETED) {
+      occ.responsible = task.responsible || "";
+      occ.priority = task.priority || "normal";
+      occ.photoRequired = effectiveStepPhotoRequired_(task, step);
+      occ.reminderTimes = task.reminderTimes || [];
+      occ.remindDaily = goalRemindDaily_(task);
+    }
+    writeOccurrenceRow_(doc, occ);
+    if (occ.msgId && occ.status === TASK_STATUS_OPEN) {
+      enqueueTaskJob_(doc, "task_update_message", occ.id, { occurrenceId: occ.id });
+    }
+  }
+}
+
+/**
+ * Re-plans a routine after an edit.
+ *
+ * Anything from today forward that nobody has seen is replaced outright, so a
+ * changed cadence, owner or due time takes effect. Anything already announced
+ * is history in progress: its fields are refreshed in place, and it is only
+ * withdrawn when the new schedule no longer contains its day.
+ */
+function reconcileRoutineOccurrences_(doc, task, todayKey) {
+  deleteOccurrenceRowsWhere_(doc, function (occ) {
+    return occ.taskId === String(task.id) &&
+      occ.status === TASK_STATUS_OPEN &&
+      !occ.notifiedAt && !occ.msgId && !hasAnyReminderSent_(occ) &&
+      occ.dateKey && occ.dateKey >= todayKey;
+  });
+
+  var rows = occurrencesForTask_(readOccurrenceRows_(doc), task.id);
+  for (var i = 0; i < rows.length; i++) {
+    var occ = rows[i];
+    if (!occ.dateKey || occ.dateKey < todayKey) continue;   // the past is history
+    if (occ.status !== TASK_STATUS_OPEN) continue;          // waiting/done/skipped stay put
+
+    if (!routineOccursOnKey_(task.recurrence, task.startKey, task.endKey, occ.dateKey)) {
+      occ.status = TASK_STATUS_CANCELLED;
+      writeOccurrenceRow_(doc, occ);
+      if (occ.msgId) enqueueTaskJob_(doc, "task_update_message", occ.id, { occurrenceId: occ.id });
+      continue;
+    }
+
+    occ.title = task.title;
+    occ.responsible = task.responsible || "";
+    occ.priority = task.priority || "normal";
+    occ.photoRequired = !!task.photoRequired;
+    occ.reminderTimes = task.reminderTimes || [];
+    occ.remindDaily = !!task.remindDaily;
+    occ.dueAt = task.dueTime ? taskInstantMs_(occ.dateKey, task.dueTime) : "";
+    writeOccurrenceRow_(doc, occ);
+    if (occ.msgId) enqueueTaskJob_(doc, "task_update_message", occ.id, { occurrenceId: occ.id });
+  }
 }
 
 /** Removes upcoming routine occurrences that have neither been sent nor acted on. */
@@ -5576,7 +6161,7 @@ function pruneReplaceableRoutineOccurrences_(doc, taskId, todayKey) {
   deleteOccurrenceRowsWhere_(doc, function (occ) {
     return occ.taskId === String(taskId) &&
       occ.status === TASK_STATUS_OPEN &&
-      !occ.notifiedAt && !occ.msgId &&
+      !occ.notifiedAt && !occ.msgId && !hasAnyReminderSent_(occ) &&
       occ.dateKey && occ.dateKey > todayKey;
   });
 }
@@ -5620,14 +6205,35 @@ function setRoutinePausedAction_(doc, payload, paused) {
   task.status = paused ? TASK_DEF_PAUSED : TASK_DEF_ACTIVE;
   task.updatedAt = new Date().toISOString();
   updateTaskRow_(doc, task);
+
+  if (paused) {
+    // Pre-generated days nobody has seen are not history; leaving them on the
+    // sheet would keep a paused routine visible in "Kelgusi" and would revive
+    // it the moment the guard is bypassed. Announced days, completed days and
+    // skipped days are history and stay exactly as they are.
+    pruneReplaceableRoutineOccurrences_(doc, task.id, taskTodayKey_(Date.now()));
+  }
+
   appendAuditRow_(doc, paused ? "routine_paused" : "routine_resumed", task.id);
   return { status: "success" };
+}
+
+/** An occurrence dated after today - work that has not come round yet. */
+function isFutureOccurrence_(occ, todayKey) {
+  return !!occ.dateKey && occ.dateKey > todayKey;
 }
 
 function skipOccurrenceAction_(doc, payload) {
   var occ = findOccurrence_(doc, payload.occurrenceId);
   if (!occ) return { status: "error", message: "Vazifa topilmadi." };
   if (occ.status === TASK_STATUS_COMPLETED) return { status: "error", message: "Allaqachon bajarilgan." };
+  // Skipping ahead is legitimate ("nobody is in on Friday"), it just has to be
+  // deliberate rather than a misclick on a card in the Kelgusi list.
+  var todayKey = taskTodayKey_(Date.now());
+  if (isFutureOccurrence_(occ, todayKey) && payload.confirmFuture !== true) {
+    return { status: "error", needsFutureConfirm: true, dateKey: occ.dateKey,
+      message: "Kelgusi kunni (" + formatTaskDateKey_(occ.dateKey) + ") o'tkazib yuborishni tasdiqlang." };
+  }
   occ.status = TASK_STATUS_SKIPPED;
   writeOccurrenceRow_(doc, occ);
   if (occ.msgId) enqueueTaskJob_(doc, "task_update_message", occ.id, { occurrenceId: occ.id });
@@ -5640,6 +6246,10 @@ function completeOccurrenceAction_(doc, payload) {
   if (!occ) return { status: "error", message: "Vazifa topilmadi." };
   if (occ.status === TASK_STATUS_COMPLETED) return { status: "success" }; // idempotent
   if (occ.status === TASK_STATUS_CANCELLED) return { status: "error", message: "Bekor qilingan vazifa." };
+  if (isFutureOccurrence_(occ, taskTodayKey_(Date.now()))) {
+    return { status: "error",
+      message: "Kelgusi kun uchun vazifani oldindan bajarilgan deb belgilab bo'lmaydi." };
+  }
   completeTaskOccurrence_(doc, occ, {
     byId: "",
     byName: String(payload.completedBy || "Admin (panel)"),
@@ -5797,6 +6407,15 @@ function doGet(e) {
   var doc = SpreadsheetApp.getActiveSpreadsheet();
   var configSheet = doc.getSheetByName("System_Config");
 
+  if (action === 'get_tasks') {
+    // A GET puts its parameters in the URL, which is exactly where an admin key
+    // must never be. Task reads are POST-only.
+    return jsonOutput_({
+      status: "error",
+      message: "Vazifalar ma'lumoti faqat POST va admin kaliti bilan olinadi."
+    });
+  }
+
   if (!configSheet) return jsonOutput_({ status: "empty" });
 
   if (action === 'get_omad') {
@@ -5811,14 +6430,6 @@ function doGet(e) {
 
   if (action === 'get_cafe') {
     return jsonOutput_(readCafeState_(doc, configSheet));
-  }
-
-  if (action === 'get_tasks') {
-    return jsonOutput_({
-      status: "success",
-      view: buildTaskViews_(doc, Date.now()),
-      config: { tasksGroupConfigured: !!getTasksGroupChatId_() }
-    });
   }
 
   return ContentService.createTextOutput("System Database is Active.");

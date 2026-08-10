@@ -1,6 +1,13 @@
 # Task Manager — remediation specification
 
-**Status:** specification only. No production code has been changed yet.
+> **Implemented in `a95961f..b015c45`.** All eight work items (WI-1…WI-8) are
+> done and the eight defects in §2 no longer reproduce. This document is kept
+> as the record of what was wrong and why each fix is shaped the way it is; the
+> living documentation is [TASKS.md](TASKS.md), [LIVE_STATE.md](LIVE_STATE.md),
+> [TELEGRAM_SETUP.md](TELEGRAM_SETUP.md) and
+> [ARCHITECTURE.md](ARCHITECTURE.md). Nothing here is outstanding work.
+
+**Status:** implemented (see above). Written as a specification.
 **Baseline commit:** `8b6f135` (`origin/main` — verified identical to it).
 **Target branch:** `claude/task-manager-fixes-swd8p2`.
 **Audience:** the engineer/agent implementing the fixes. This document is the

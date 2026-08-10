@@ -19,6 +19,13 @@ function renderAllTasks() {
     if (keyBtn) keyBtn.className = 'text-[10px] font-bold px-2 py-1 rounded border ' +
         (tasksAdminKey() ? 'bg-green-50 text-green-600 border-green-200' : 'text-slate-500');
 
+    if (TASKS_STATE.needsKey && !TASKS_STATE.view) {
+        // An empty board would read as "nothing to do" rather than "not shown".
+        const prompt = emptyNote('Vazifalarni ko\'rish uchun admin kalitini kiriting. 🔑');
+        TASK_TABS.forEach(t => { const p = document.getElementById('panel-' + t); if (p) p.innerHTML = prompt; });
+        return;
+    }
+
     renderTodayPanel();
     renderTasksPanel();
     renderRoutinesPanel();
@@ -52,6 +59,15 @@ function occCard(occ, mode) {
             '</div>';
     } else if (mode === 'completed') {
         actions = '<div class="flex mt-2"><button onclick="tasksReopen(\'' + occ.id + '\')" class="text-[11px] font-bold text-blue-500">↩ Qayta ochish</button></div>';
+    } else if (mode === 'upcoming') {
+        // Future work is shown, not actioned: completing something that has not
+        // come round yet is almost always a misclick.
+        actions =
+            '<div class="flex gap-2 mt-2 items-center">' +
+            '<span class="text-[10px] font-bold text-slate-400">' + escapeTaskHtml(occ.dueLabel || occ.dateKey || '') + '</span>' +
+            '<button onclick="tasksSkip(\'' + occ.id + '\', \'' + escapeTaskHtml(occ.dueLabel || occ.dateKey || '') + '\')" ' +
+            'class="ml-auto py-1.5 px-3 bg-slate-100 text-slate-600 rounded-lg text-[11px] font-bold active:scale-95">⏭ O\'tkazish</button>' +
+            '</div>';
     }
 
     return '<div class="card !p-3 !mb-2">' +
@@ -84,7 +100,7 @@ function renderTodayPanel() {
         section('🔴 Diqqat — muddati o\'tgan', t.overdue, 'open', 'text-red-500') +
         section('📌 Bugun bajarilishi kerak', t.needsAttention, 'open', 'text-slate-500') +
         section('⏳ Rasm kutilmoqda', t.waitingProof, 'open', 'text-amber-600') +
-        section('🗓 Kelgusi', t.upcoming, 'open', 'text-slate-400') +
+        section('🗓 Kelgusi', t.upcoming, 'upcoming', 'text-slate-400') +
         section('✅ Bugun bajarilgan', t.completedToday, 'completed', 'text-green-600');
 }
 

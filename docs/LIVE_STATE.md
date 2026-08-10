@@ -85,12 +85,23 @@ and tested but requires three manual operator steps before it is live:
 
 1. deploy the regenerated `script.gs` to the `…DtCA2W` deployment (new version);
 2. set **Vazifalar Guruhi ID** in Sozlamalar → Telegram (Script Property
-   `TELEGRAM_TASKS_GROUP_CHAT_ID`) and add the bot to that group;
+   `TELEGRAM_TASKS_GROUP_CHAT_ID`) and add the bot to that group. It must be the
+   group's **numeric** chat id — an `@username` is refused, because incoming
+   callbacks and photos only ever carry `chat.id`;
 3. add a second time-driven trigger for **`processTaskSchedules`** (every 5
-   minutes), separate from the existing `processPendingTelegramJobs` trigger.
+   minutes), separate from the existing `processPendingTelegramJobs` trigger;
+4. make sure **`OMAD_ADMIN_KEY`** is set in Script Properties — the /tasks page
+   now requires it to *read* the board, not only to change it. Without it the
+   page shows a key prompt and no data.
 
 Until step 2, task messages are simply not sent; the accounting flows are
 unaffected either way.
+
+**Dates.** The task sheets now protect their own date, time and timestamp
+columns by formatting them as text before writing, exactly as the accounting
+sheets do (see *Dates* below). Reads also recover a cell that an older write
+already let the spreadsheet coerce, so any rows written before this change heal
+themselves the next time they are updated.
 
 ### Secret redaction
 

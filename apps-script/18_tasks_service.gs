@@ -111,6 +111,20 @@ function buildTaskStatusMessage_(occ, nowMs) {
   return buildTaskOccurrenceMessage_(occ);
 }
 
+/**
+ * The ForceReply prompt asking one named person for the proof photo.
+ *
+ * Titles are capped at 200 characters upstream, so nothing here is truncated -
+ * slicing an HTML string could cut an entity in half.
+ */
+function buildTaskProofPromptMessage_(occ, options) {
+  var name = escapeTelegramHtml_((options && options.userName) || occ.completedByName || "");
+  var id = options && options.userId ? String(options.userId) : "";
+  var mention = id ? '<a href="tg://user?id=' + id + '">' + name + '</a>' : name;
+  return "📷 " + mention + ", \"" + escapeTelegramHtml_(occ.title) +
+    "\" ni tasdiqlash uchun shu xabarga javob (reply) qilib rasm yuboring.";
+}
+
 // ------------------------------------------------------------- completion
 
 /**
@@ -133,6 +147,8 @@ function completeTaskOccurrence_(doc, occ, options) {
   if (opts.proofMsgId) occ.proofMsgId = String(opts.proofMsgId);
   occ.meta = occ.meta || {};
   occ.meta.source = opts.source || "telegram";
+  // A stale prompt pointer must not be able to match a later photo.
+  occ.meta.proofPromptMsgId = "";
 
   if (occ.dueAt !== "" && isFinite(occ.dueAt)) {
     if (nowMs > occ.dueAt) { occ.onTime = false; occ.lateMs = nowMs - occ.dueAt; }
@@ -234,21 +250,35 @@ function handleTaskCallback_(callback, doc) {
   if (occ.status === TASK_STATUS_SKIPPED) { answerCallbackQuery_(callback.id, "Bu vazifa o'tkazib yuborilgan."); return; }
 
   var from = callback.from || {};
+
+  if (occ.status === TASK_STATUS_WAITING) {
+    // The proof is somebody's to deliver. A second presser must not be able to
+    // take the task from them, or to overwrite who is recorded as doing it.
+    if (String(occ.proofAwaitingUserId) === String(from.id)) {
+      enqueueTaskJob_(doc, "task_proof_prompt", occ.id, {
+        occurrenceId: occ.id, userId: String(from.id), userName: taskDisplayName_(from)
+      });
+      answerCallbackQuery_(callback.id, "📷 Rasm kutilmoqda — so'ralgan xabarga javob qiling.");
+    } else {
+      answerCallbackQuery_(callback.id,
+        (occ.completedByName || "Boshqa foydalanuvchi") + " tasdiqlamoqda.");
+    }
+    return;
+  }
+
   if (occ.photoRequired) {
     occ.status = TASK_STATUS_WAITING;
     occ.proofAwaitingUserId = String(from.id || "");
-    occ.completedByName = taskDisplayName_(from); // provisional; confirmed on proof
+    occ.completedByName = taskDisplayName_(from);   // provisional; confirmed on proof
+    occ.meta = occ.meta || {};
+    occ.meta.proofPromptMsgId = "";
+    occ.meta.proofRequestedAt = new Date().toISOString();
     writeOccurrenceRow_(doc, occ);
-    answerCallbackQuery_(callback.id, "📷 Iltimos, rasm yuboring.");
-    try {
-      var prompt = sendTelegramMessage_(getTasksGroupChatId_(),
-        "📷 " + taskDisplayName_(from) + ", \"" + occ.title +
-        "\" ni tasdiqlash uchun shu yerga rasm (foto) yuboring.");
-      var promptId = extractTelegramMessageId_(prompt);
-      if (promptId) { occ.meta = occ.meta || {}; occ.meta.proofPromptMsgId = String(promptId); writeOccurrenceRow_(doc, occ); }
-    } catch (error) {
-      debugLog_(doc, "task_proof_prompt_failed", String(error));
-    }
+
+    enqueueTaskJob_(doc, "task_proof_prompt", occ.id, {
+      occurrenceId: occ.id, userId: String(from.id || ""), userName: taskDisplayName_(from)
+    });
+    answerCallbackQuery_(callback.id, "📷 Iltimos, so'ralgan xabarga rasm bilan javob bering.");
     if (occ.msgId) enqueueTaskJob_(doc, "task_update_message", occ.id, { occurrenceId: occ.id });
     return;
   }
@@ -259,31 +289,44 @@ function handleTaskCallback_(callback, doc) {
   answerCallbackQuery_(callback.id, "✅ Bajarildi.");
 }
 
+/**
+ * A photo in the Tasks group.
+ *
+ * Proof is only proof of the thing that was asked for: the photo has to be a
+ * reply to that occurrence's prompt (or to its card), and it has to come from
+ * the person who claimed it. Guessing "probably their most recent pending
+ * task" is how an unrelated photo silently completed the wrong job.
+ */
 function handleTaskGroupMessage_(message, doc) {
-  if (!message.photo || !message.photo.length) return; // only photos complete a proof
+  if (!message.photo || !message.photo.length) return;
   var from = message.from || {};
-  var candidates = [];
+  var replyTo = message.reply_to_message ? String(message.reply_to_message.message_id) : "";
+
+  var pendingForUser = 0;
+  var target = null;
+  var claimedByOther = null;
   var rows = readOccurrenceRows_(doc);
   for (var i = 0; i < rows.length; i++) {
-    if (rows[i].status !== TASK_STATUS_WAITING) continue;
-    if (String(rows[i].proofAwaitingUserId) !== String(from.id)) continue;
-    candidates.push(rows[i]);
+    var occ = rows[i];
+    if (occ.status !== TASK_STATUS_WAITING) continue;
+    if (String(occ.proofAwaitingUserId) === String(from.id)) pendingForUser++;
+    if (!replyTo) continue;
+    var meta = occ.meta || {};
+    var answersThis = String(meta.proofPromptMsgId || "") === replyTo || String(occ.msgId || "") === replyTo;
+    if (!answersThis) continue;
+    if (String(occ.proofAwaitingUserId) === String(from.id)) target = occ;
+    else claimedByOther = occ;
   }
-  if (!candidates.length) return; // no awaiting proof for this user — ignore
 
-  var replyTo = message.reply_to_message ? String(message.reply_to_message.message_id) : "";
-  var target = null;
-  if (replyTo) {
-    for (var j = 0; j < candidates.length; j++) {
-      var meta = candidates[j].meta || {};
-      if (String(candidates[j].msgId) === replyTo || String(meta.proofPromptMsgId) === replyTo) {
-        target = candidates[j]; break;
-      }
-    }
-  }
   if (!target) {
-    candidates.sort(function (a, b) { return String(b.updatedAt).localeCompare(String(a.updatedAt)); });
-    target = candidates[0];
+    if (claimedByOther) {
+      trySendTaskGroupMessage_(doc, "⚠️ Bu vazifani " +
+        (claimedByOther.completedByName || "boshqa foydalanuvchi") + " tasdiqlamoqda.");
+    } else if (pendingForUser > 0) {
+      trySendTaskGroupMessage_(doc,
+        "⚠️ Rasmni qabul qilish uchun so'ralgan xabarga javob (reply) qilib yuboring.");
+    }
+    return;   // an unrelated photo is just a photo
   }
 
   var largest = message.photo[message.photo.length - 1] || {};
@@ -294,11 +337,16 @@ function handleTaskGroupMessage_(message, doc) {
     proofFileId: largest.file_id || "",
     proofMsgId: message.message_id
   });
+  trySendTaskGroupMessage_(doc, "✅ Rasm qabul qilindi — \"" + target.title + "\" bajarildi.");
+}
 
+/** Group chatter is never worth failing a webhook over. */
+function trySendTaskGroupMessage_(doc, text) {
+  var chatId = getTasksGroupChatId_();
+  if (!chatId) return;
   try {
-    sendTelegramMessage_(getTasksGroupChatId_(),
-      "✅ Rasm qabul qilindi — \"" + target.title + "\" bajarildi.");
+    sendTelegramMessage_(chatId, text);
   } catch (error) {
-    debugLog_(doc, "task_proof_ack_failed", String(error));
+    debugLog_(doc, "task_group_notice_failed", String(error));
   }
 }

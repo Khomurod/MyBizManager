@@ -45,6 +45,9 @@ function onTypeChange() {
     document.getElementById('grpGoal').classList.toggle('hidden', type !== 'goal');
     // Rolling daily reminders only make sense for a deadline-less one-time task.
     document.getElementById('grpRemindDaily').classList.toggle('hidden', type !== 'once');
+    // A goal step has no deadline to hang a single reminder on, so the server
+    // repeats them daily; there is nothing to choose, only something to say.
+    document.getElementById('goalRemindNote').classList.toggle('hidden', type !== 'goal');
     if (type === 'routine') onFreqChange();
 }
 
@@ -64,6 +67,9 @@ function resetTaskForm() {
     ['fId', 'fTitle', 'fDesc', 'fResp', 'fDeadlineDate', 'fDeadlineTime', 'fEndDate', 'fDueTime', 'fSteps', 'fReminders']
         .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
     document.getElementById('fType').value = 'once';
+    document.getElementById('fType').disabled = false;
+    const typeNote = document.getElementById('typeLockNote');
+    if (typeNote) typeNote.classList.add('hidden');
     document.getElementById('fPriority').value = 'normal';
     document.getElementById('fFreq').value = 'daily';
     document.getElementById('fInterval').value = '1';
@@ -92,6 +98,11 @@ function openTaskForm(taskId) {
 function prefillTaskForm(task) {
     document.getElementById('fId').value = task.id;
     document.getElementById('fType').value = task.type;
+    // The backend refuses a type change outright, so the select must not offer
+    // one. The hint says why, rather than leaving a disabled control unexplained.
+    document.getElementById('fType').disabled = true;
+    const typeNote = document.getElementById('typeLockNote');
+    if (typeNote) typeNote.classList.remove('hidden');
     document.getElementById('fTitle').value = task.title || '';
     document.getElementById('fDesc').value = task.description || '';
     document.getElementById('fResp').value = task.responsible || '';
@@ -196,8 +207,9 @@ function closeAdminKey() { document.getElementById('adminModal').classList.add('
 function saveAdminKey() {
     setTasksAdminKey(document.getElementById('adminKeyInput').value.trim());
     closeAdminKey();
-    renderAllTasks();
     taskToast('Admin kaliti saqlandi');
+    // The board could not be read without a key, so entering one is a reload.
+    loadTasks();
 }
 
 // ---------------------------------------------------------------- bootstrap

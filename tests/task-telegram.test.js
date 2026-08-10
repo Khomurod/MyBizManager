@@ -122,15 +122,22 @@ test('a proof-required task waits for a photo, then completes with the file id',
   assert.strictEqual(live.status, gas.TASK_STATUS_WAITING);
   assert.strictEqual(String(live.proofAwaitingUserId), '7777');
 
+  // The prompt is a queued job now, so drain before looking for it.
+  gas.processPendingJobs_(doc, 25);
   const prompts = gas.__sentMessages.filter(m => String(m.chat_id) === TASKS_GROUP && /rasm/i.test(m.text));
   assert.ok(prompts.length >= 1, 'the user is asked for a photo');
 
-  // Send a photo -> completed with the largest photo file id.
+  const promptMsgId = gas.findOccurrence_(doc, occ.id).meta.proofPromptMsgId;
+  assert.ok(promptMsgId, 'the prompt message id was recorded');
+
+  // Send a photo *as a reply to that prompt* -> completed with the largest
+  // photo file id. A photo that answers nothing no longer completes anything.
   gas.doPost(postEvent({
     message: {
       chat: { id: Number(TASKS_GROUP), type: 'supergroup' },
       from: { id: 7777, first_name: 'Vali' },
       message_id: 900,
+      reply_to_message: { message_id: Number(promptMsgId) },
       photo: [{ file_id: 'small_1' }, { file_id: 'big_2' }]
     }
   }));

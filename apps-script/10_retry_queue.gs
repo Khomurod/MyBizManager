@@ -165,7 +165,7 @@ function completeJob_(sheet, job) {
   writeJobField_(sheet, job.rowNumber, 10, new Date().toISOString());
 }
 
-function failJob_(sheet, job, error) {
+function failJob_(sheet, job, error, doc) {
   var attempts = job.attempts + 1;
   var exhausted = attempts >= JOB_MAX_ATTEMPTS;
   var delaySeconds = JOB_RETRY_BASE_SECONDS * Math.pow(2, Math.max(0, attempts - 1));
@@ -173,7 +173,19 @@ function failJob_(sheet, job, error) {
   writeJobField_(sheet, job.rowNumber, 6, attempts);
   writeJobField_(sheet, job.rowNumber, 7, new Date(new Date().getTime() + delaySeconds * 1000).toISOString());
   writeJobField_(sheet, job.rowNumber, 8, redactSecrets_(error).slice(0, 500));
-  if (exhausted) writeJobField_(sheet, job.rowNumber, 10, new Date().toISOString());
+  if (exhausted) {
+    writeJobField_(sheet, job.rowNumber, 10, new Date().toISOString());
+    // Some jobs leave state behind that only makes sense while they are still
+    // going to be retried.
+    if (doc) {
+      try { onJobPermanentlyFailed_(doc, job); } catch (hookError) {}
+    }
+  }
+}
+
+/** Last-chance cleanup when a job will never be attempted again. */
+function onJobPermanentlyFailed_(doc, job) {
+  if (job.type === "task_proof_prompt") releaseStuckProofPrompt_(doc, job);
 }
 
 function processPendingJobs_(doc, maxJobs) {
@@ -186,7 +198,7 @@ function processPendingJobs_(doc, maxJobs) {
       completeJob_(job.sheet, job);
       processed++;
     } catch (error) {
-      failJob_(job.sheet, job, error);
+      failJob_(job.sheet, job, error, doc);
     }
   }
   return processed;
