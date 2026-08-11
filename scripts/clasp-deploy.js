@@ -88,6 +88,17 @@ function parseJsonEnv(name) {
   }
 }
 
+/** Parses a JSON secret without exiting, so every problem can be collected. */
+function tryParseJsonEnv(name) {
+  const raw = readEnv(name);
+  if (!raw) return { problem: `${name} is not set — add it as a repository secret.` };
+  try {
+    return { value: JSON.parse(raw) };
+  } catch (error) {
+    return { problem: `${name} is not valid JSON — re-copy the file contents verbatim.` };
+  }
+}
+
 /** The `.clasp.json` clasp should use, regenerated rather than trusted. */
 function writeProjectConfig(dir, scriptId, projectId) {
   fs.mkdirSync(dir, { recursive: true });
@@ -100,40 +111,89 @@ function moduleFiles() {
   return fs.readdirSync(SRC_DIR).filter(name => name.endsWith('.gs')).sort();
 }
 
+/**
+ * Adds markdown to the run's summary page, so the outcome is legible without
+ * opening the log. A no-op outside Actions; the log always carries the same
+ * facts in plain text.
+ */
+function writeStepSummary(lines) {
+  const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+  if (summaryPath) fs.appendFileSync(summaryPath, lines.join('\n') + '\n');
+}
+
 // ------------------------------------------------------------------ preflight
 
 /**
  * Fails closed unless everything a deployment needs is present, then writes the
  * credential file and the config `clasp pull` will run against.
+ *
+ * Every secret is checked before anything exits, so one run tells the operator
+ * the whole list rather than one item per round trip — which matters because
+ * the only way to retry is another deployment run. The report goes to the step
+ * summary too, so a failure is legible from the run page without opening logs.
+ * Nothing sensitive is printed: presence, and ids masked to their ends.
  */
 function preflight() {
-  const clasprc = parseJsonEnv('CLASPRC_JSON');
-  const claspJson = parseJsonEnv('CLASP_JSON');
-  const deploymentId = readEnv('APPS_SCRIPT_DEPLOYMENT_ID');
+  const clasprc = tryParseJsonEnv('CLASPRC_JSON');
+  const claspJson = tryParseJsonEnv('CLASP_JSON');
+  const deploymentId = readEnv('APPS_SCRIPT_DEPLOYMENT_ID').trim();
+  const problems = [];
+  const status = [];
+
+  if (clasprc.problem) {
+    problems.push(clasprc.problem);
+    status.push(['CLASPRC_JSON', '❌ missing or unreadable']);
+  } else if (!(clasprc.value &&
+      (clasprc.value.tokens || clasprc.value.token || clasprc.value.access_token))) {
+    problems.push('CLASPRC_JSON does not look like a clasp credentials file — ' +
+      'run `clasp login` locally and copy ~/.clasprc.json verbatim.');
+    status.push(['CLASPRC_JSON', '❌ not a clasp credentials file']);
+  } else {
+    status.push(['CLASPRC_JSON', '✅ present']);
+  }
+
+  let scriptId = '';
+  if (claspJson.problem) {
+    problems.push(claspJson.problem);
+    status.push(['CLASP_JSON', '❌ missing or unreadable']);
+  } else {
+    scriptId = String((claspJson.value || {}).scriptId || '').trim();
+    if (!scriptId) {
+      problems.push('CLASP_JSON has no "scriptId" — copy the .clasp.json of the existing project.');
+      status.push(['CLASP_JSON', '❌ no scriptId']);
+    } else {
+      status.push(['CLASP_JSON', '✅ script ' + mask(scriptId)]);
+    }
+  }
 
   if (!deploymentId) {
-    fail('APPS_SCRIPT_DEPLOYMENT_ID is not set.',
-      'It must be the id of the deployment already serving production, so its URL is preserved.');
+    problems.push('APPS_SCRIPT_DEPLOYMENT_ID is not set — it must be the id of the deployment ' +
+      'already serving production, so its URL is preserved.');
+    status.push(['APPS_SCRIPT_DEPLOYMENT_ID', '❌ missing']);
+  } else {
+    status.push(['APPS_SCRIPT_DEPLOYMENT_ID', '✅ ' + mask(deploymentId)]);
   }
-  const scriptId = String(claspJson.scriptId || '').trim();
-  if (!scriptId) fail('CLASP_JSON has no "scriptId".', 'Copy the .clasp.json of the existing project.');
-
-  const hasTokens = !!(clasprc && (clasprc.tokens || clasprc.token || clasprc.access_token));
-  if (!hasTokens) {
-    fail('CLASPRC_JSON does not look like a clasp credentials file.',
-      'Run `clasp login` locally and copy ~/.clasprc.json verbatim.');
-  }
-
-  const authPath = path.join(os.homedir(), '.clasprc.json');
-  fs.writeFileSync(authPath, JSON.stringify(clasprc), { mode: 0o600 });
-
-  writeProjectConfig(PULL_DIR, scriptId, claspJson.projectId);
 
   console.log('Deployment preflight');
-  console.log('  credentials      present (written to ~/.clasprc.json, mode 600)');
-  console.log('  script id        ' + mask(scriptId));
-  console.log('  deployment id    ' + mask(deploymentId));
-  console.log('  modules to ship  ' + moduleFiles().length + ' files under apps-script/');
+  status.forEach(([name, state]) => console.log('  ' + name.padEnd(26) + state));
+  writeStepSummary(['### Deployment preflight', '', '| Setting | State |', '|---|---|']
+    .concat(status.map(([name, state]) => '| `' + name + '` | ' + state + ' |'))
+    .concat(['']));
+
+  if (problems.length) {
+    console.error('');
+    problems.forEach(problem => console.error('✗ ' + problem));
+    console.error('  All three are repository secrets: Settings → Secrets and variables → ' +
+      'Actions → Secrets. See docs/DEPLOYMENT.md.');
+    process.exit(1);
+  }
+
+  fs.writeFileSync(path.join(os.homedir(), '.clasprc.json'),
+    JSON.stringify(clasprc.value), { mode: 0o600 });
+  writeProjectConfig(PULL_DIR, scriptId, claspJson.value.projectId);
+
+  console.log('  credentials written to ~/.clasprc.json (mode 600)');
+  console.log('  ' + moduleFiles().length + ' modules under apps-script/ will be uploaded');
 }
 
 // ---------------------------------------------------------------------- stage
@@ -281,12 +341,6 @@ function parseClaspJson(output, command) {
   }
 }
 
-function summarise(lines) {
-  lines.forEach(line => console.log(line));
-  const summaryPath = process.env.GITHUB_STEP_SUMMARY;
-  if (summaryPath) fs.appendFileSync(summaryPath, lines.join('\n') + '\n');
-}
-
 /**
  * Freezes this commit as an immutable Apps Script version and moves the
  * existing deployment on to it.
@@ -322,7 +376,9 @@ function release() {
       'Expected ' + mask(deploymentId) + ', got ' + mask(deployed.deploymentId) + '.');
   }
 
-  summarise([
+  console.log('Deployed commit ' + shortSha + ' as version ' + versionNumber +
+    ' on deployment ' + mask(deploymentId) + ' (unchanged — same URL).');
+  writeStepSummary([
     '### Apps Script deployed',
     '',
     '| | |',
@@ -331,7 +387,8 @@ function release() {
     '| Version | `' + versionNumber + '` |',
     '| Deployment | `' + mask(deploymentId) + '` (unchanged — same URL) |',
     '',
-    'Script Properties, the Telegram webhook and the web-app URL were not touched.'
+    'Script Properties, the Telegram webhook and the web-app URL were not touched.',
+    ''
   ]);
 }
 

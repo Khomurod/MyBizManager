@@ -40,16 +40,24 @@ The deploy job is `.github/workflows/ci.yml → deploy`, and the orchestration i
   same project leaves them exactly where they are.
 - **Never re-registers the webhook**, recreates the spreadsheet, or deletes the
   `processPendingTelegramJobs` trigger.
-- **Never runs from a pull request or a feature branch.** The job is
-  conditioned on `github.event_name == 'push'` and
-  `github.ref == 'refs/heads/main'`, and `tests/static-analysis.test.js` fails
-  the build if those conditions are ever weakened.
+- **Never runs from a pull request or a feature branch.** The job accepts only
+  a push or a manual dispatch, and only on `github.ref == 'refs/heads/main'`.
+  `tests/static-analysis.test.js` fails the build if those conditions are ever
+  weakened.
+
+### Deploying on demand
+
+The workflow accepts **Run workflow** (Actions → CI → Run workflow) on `main`.
+Use it to deploy a commit that is already merged, or to retry after correcting
+a secret, instead of pushing an empty commit. Dispatching from any other branch
+runs the tests but not the deploy.
 
 ---
 
 ## One-time operator setup
 
-Three **secrets** (Settings → Secrets and variables → Actions → *Secrets*):
+Three **secrets**, and nothing else
+(Settings → Secrets and variables → Actions → the *Secrets* tab):
 
 | Secret | What to put in it |
 |---|---|
@@ -57,11 +65,26 @@ Three **secrets** (Settings → Secrets and variables → Actions → *Secrets*)
 | `CLASP_JSON` | `{"scriptId":"<the existing project's script id>"}` — the `.clasp.json` of the live project. |
 | `APPS_SCRIPT_DEPLOYMENT_ID` | The id of the deployment already serving production (the one ending `…DtCA2W`). |
 
-One **variable** (same page → *Variables*):
+There is **no enable switch**. With the secrets in place a push to `main`
+deploys; without them the job fails and names what is missing.
 
-| Variable | Value |
-|---|---|
-| `APPS_SCRIPT_DEPLOY_ENABLED` | `true` — the master switch. Until it is set, the deploy job is skipped and CI behaves exactly as before. |
+> ### Secrets and variables are different tabs, and the difference bites
+>
+> The workflow reads these three through `${{ secrets.* }}`, so they must be on
+> the **Secrets** tab. It reads `APPS_SCRIPT_ALLOW_REMOTE_DRIFT` (optional,
+> below) through `${{ vars.* }}`, so that one must be on the **Variables** tab.
+> A value on the wrong tab is not an error — it is simply invisible, and the
+> workflow behaves as though you never set it.
+>
+> Variables must also be at **repository** scope. GitHub resolves a job's
+> `environment:` only after the job starts, so an environment-scoped variable
+> cannot be read by anything evaluated before that. Secrets are fine at either
+> scope, because they are read inside the running job.
+>
+> An earlier version of this workflow gated the whole deploy job on a
+> `vars.APPS_SCRIPT_DEPLOY_ENABLED` variable. It was set as a *secret*, so the
+> job skipped — green, silent, and for ever. The gate is gone; if you still
+> have that secret, delete it, nothing reads it.
 
 ### Minting `CLASPRC_JSON`
 
@@ -183,12 +206,18 @@ reintroduce it.
 
 | Symptom | Cause |
 |---|---|
-| Job skipped entirely | `APPS_SCRIPT_DEPLOY_ENABLED` is not `true`. |
-| `✗ CLASPRC_JSON is not set` | The secret is missing or empty. |
+| Job skipped entirely | The run is not on `main`, or one of `static` / `unit` / `browser` did not pass. Nothing else can skip it — there is no enable switch. |
+| Job stuck on *waiting* | The `production` environment has a required reviewer. Approve it on the run page, or remove the rule. |
+| `✗ CLASPRC_JSON is not set` | The secret is missing, empty, or on the *Variables* tab instead of *Secrets*. |
 | `✗ … is not valid JSON` | The secret was pasted partially, or wrapped in quotes. |
 | `clasp pull` fails to authorise | The refresh token was revoked, or the Apps Script API is off for that account. Re-run `clasp login` and update the secret. |
 | Drift or unsupported-file error | Somebody edited the live project by hand; see above. |
 | Two merges at once | The second queues behind the first — the `apps-script-production` concurrency group serialises them, and neither is cancelled. |
+
+The first step of the job prints a present/absent table for all three secrets —
+to the log and to the run's summary page — and reports **every** problem at
+once rather than one per run, so a misconfiguration takes one round trip to
+diagnose rather than three.
 
 Credentials are never printed. Ids appear masked (`1afG6M…9fgsWcpG`), and the
 preflight reports that credentials are *present* rather than showing them.

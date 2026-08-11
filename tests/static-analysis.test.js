@@ -111,9 +111,20 @@ test('production deployment stays gated behind green CI on main', () => {
   assert.match(deploy, /needs:\s*\[static,\s*unit,\s*browser\]/,
     'deploy must wait for the static, unit and browser jobs');
 
-  // A pull request or a feature branch must never reach production.
-  assert.match(deploy, /github\.event_name == 'push'/, 'deploy only on a push');
+  // A pull request or a feature branch must never reach production. Only a
+  // push and an explicit manual dispatch qualify, and both are pinned to main.
+  assert.match(deploy, /github\.event_name == 'push'/, 'deploy only on a push…');
+  assert.match(deploy, /github\.event_name == 'workflow_dispatch'/, '…or a manual dispatch');
   assert.match(deploy, /github\.ref == 'refs\/heads\/main'/, 'deploy only from main');
+  assert.ok(!/pull_request/.test(deploy.split('steps:')[0]),
+    'no pull_request event may satisfy the deploy condition');
+
+  // No enable switch. A `vars.`-gated deploy is how this job once skipped
+  // silently for ever: the value had been added under Secrets, which the vars
+  // context cannot read, and a skipped job looks identical to a healthy one.
+  // Missing configuration must fail the job, not hide it.
+  assert.ok(!/vars\./.test(deploy.split('steps:')[0].split('env:')[0]),
+    'the deploy condition must not depend on a repository variable');
 
   // Two merges landing together must queue, not race or cancel each other.
   assert.match(deploy, /concurrency:/, 'deploy declares a concurrency group');
