@@ -2,3 +2,14 @@ node_modules/
 package-lock.json
 .DS_Store
 *.log
+
+# clasp deployment. Everything here is either a credential or is built from the
+# live project at deploy time; none of it belongs in the repository.
+#   .clasprc.json    OAuth refresh token
+#   .clasp.json      script id and project config (held in the CLASP_JSON secret)
+#   appsscript.json  the manifest, pulled from the live project on every deploy
+#   .clasp-work/     the staging directories the workflow builds
+.clasprc.json
+.clasp.json
+appsscript.json
+.clasp-work/

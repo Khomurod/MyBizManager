@@ -24,8 +24,15 @@ const { loadScript, postEvent, readJsonOutput } = require('./gas-harness');
 const VALID_TOKEN = '123456789:AAFakeTokenForTestsOnly_0123456789abcd';
 const TASKS_GROUP = '-1009998887777';
 const ADMIN_KEY = 'test-admin-key';
-const FIXED_NOW = Date.UTC(2026, 7, 10, 4, 0, 0); // 2026-08-10 09:00 Asia/Tashkent
 const DAY_MS = 86400000;
+// 09:00 on the *real* Tashkent day, not a literal date. The web actions these
+// tests drive (complete_occurrence, cancel_task) run a scheduler pass inline at
+// Date.now(), so a fixture pinned to a past date lets that real-clock pass mark
+// today's reminder slots handled-but-stale before the test's own dated pass can
+// fire them. Anchoring both to the same day is what keeps this deterministic.
+const TASHKENT_OFFSET_MS = 5 * 3600000; // UTC+5, year round
+const FIXED_NOW = Date.parse(
+  new Date(Date.now() + TASHKENT_OFFSET_MS).toISOString().slice(0, 10) + 'T09:00:00+05:00');
 
 function incrementingFetch() {
   let nextMessageId = 1000;

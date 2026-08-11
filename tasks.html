@@ -376,7 +376,7 @@
                 <div id="grpOnce" class="f-block">
                     <div class="field">
                         <label class="f-label" for="fDeadlineDate">Muddat sanasi</label>
-                        <input type="date" id="fDeadlineDate" class="f-input">
+                        <input type="date" id="fDeadlineDate" class="f-input" oninput="onRemindDailyContextChange()">
                     </div>
                     <div class="field">
                         <label class="f-label" for="fDeadlineTime">Muddat vaqti</label>
@@ -441,8 +441,15 @@
                         <button type="button" onclick="addReminderRow()" class="rep__add">＋ Eslatma qo'shish</button>
                     </div>
                     <label id="grpRemindDaily" class="f-check hidden" for="fRemindDaily">
-                        <input type="checkbox" id="fRemindDaily"> Muddatsiz bo'lsa ham har kuni eslatilsin
+                        <input type="checkbox" id="fRemindDaily"> Har kuni, vazifa bajarilguncha eslatilsin
                     </label>
+                    <p id="remindDailyNote" class="f-hint hidden">
+                        Belgilanmasa, eslatmalar faqat muddat kunida yuboriladi.
+                    </p>
+                    <p id="remindDailyLockNote" class="f-hint hidden">
+                        Muddatsiz vazifada eslatma osiladigan kun yo'q, shuning uchun u
+                        bajarilgunicha har kuni takrorlanadi.
+                    </p>
                     <p id="goalRemindNote" class="f-hint hidden">
                         Maqsad qadamlari uchun eslatmalar qadam bajarilgunicha har kuni takrorlanadi.
                     </p>

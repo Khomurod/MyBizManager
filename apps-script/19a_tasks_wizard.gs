@@ -100,7 +100,11 @@ function newWizardDraft_(type) {
     endKey: "",
     dueTime: "",
     steps: [],
-    reminderTimes: []
+    reminderTimes: [],
+    // Only ever set from the vz_remdaily answer, and only asked when a
+    // one-time task has both a deadline and reminder times. Everything else
+    // derives it at save time rather than pretending the user chose.
+    remindDaily: false
   };
 }
 
@@ -195,9 +199,23 @@ function wizardNextStep_(state, from) {
     // goal
     case "vz_steps": return "vz_reminders";
 
-    case "vz_reminders": return "vz_confirm";
+    case "vz_reminders": return wizardAsksRemindDaily_(draft) ? "vz_remdaily" : "vz_confirm";
+    case "vz_remdaily": return "vz_confirm";
   }
   return "vz_confirm";
+}
+
+/**
+ * Whether the draft needs the "how should these repeat?" question.
+ *
+ * Only a dated one-time task has two honest answers: every day until it is
+ * done, or once on the deadline day. A deadline-less one has no deadline day
+ * to attach a reminder to, a routine's reminders belong to the day they were
+ * scheduled for, and a goal's repeat daily by definition — asking there would
+ * offer a choice that does not exist.
+ */
+function wizardAsksRemindDaily_(draft) {
+  return draft.type === "once" && !!draft.deadlineKey && draft.reminderTimes.length > 0;
 }
 
 /** Per-step setup that has to happen as the step is entered, not rendered. */
@@ -413,6 +431,16 @@ function wizardStepView_(state) {
     return { text: "🔔 Eslatma vaqtlari:", keyboard: { inline_keyboard: rows } };
   }
 
+  if (step === "vz_remdaily") {
+    return {
+      text: "🔔 Eslatmalar qanday takrorlansin?",
+      keyboard: { inline_keyboard: [
+        [wizardButton_("🔁 Har kuni, bajarilguncha", "bot_vz_rd:daily")],
+        [wizardButton_("📅 Faqat muddat kunida", "bot_vz_rd:deadline")]
+      ] }
+    };
+  }
+
   if (step === "vz_confirm") {
     return {
       text: buildWizardSummary_(draft),
@@ -454,8 +482,29 @@ function buildWizardSummary_(draft) {
     for (var i = 0; i < draft.steps.length; i++) lines.push("  " + (i + 1) + ". " + draft.steps[i]);
   }
 
-  if (draft.reminderTimes.length) lines.push("🔔 " + draft.reminderTimes.join(", "));
+  if (draft.reminderTimes.length) {
+    // The repeat rule is as much a decision as the times are, so the review
+    // card states it rather than leaving the user to assume one. A routine has
+    // no rule to state: each day's occurrence carries its own reminders.
+    var repeat = draft.type === "routine" ? ""
+      : (wizardRemindDaily_(draft) ? " · har kuni" : " · muddat kunida");
+    lines.push("🔔 " + draft.reminderTimes.join(", ") + repeat);
+  }
   return lines.join("\n");
+}
+
+/**
+ * What `remindDaily` will be saved as.
+ *
+ * A dated one-time task carries the answer the user gave at vz_remdaily. Every
+ * other shape has only one reading that does anything: reminders on something
+ * with no deadline day can only mean "every day until it is done", which is the
+ * same rule goalRemindDaily_ applies to a goal's steps.
+ */
+function wizardRemindDaily_(draft) {
+  if (draft.type === "routine") return false;
+  if (wizardAsksRemindDaily_(draft)) return !!draft.remindDaily;
+  return draft.reminderTimes.length > 0;
 }
 
 // ------------------------------------------------------------- step movement
@@ -711,6 +760,16 @@ function handleTaskWizardCallback_(callback, chatId, key, cache, data, doc, from
     return advanceWizard_(state, "vz_reminders", chatId, key, cache, msgId, doc);
   }
 
+  if (data.indexOf("bot_vz_rd:") === 0) {
+    if (state.step !== "vz_remdaily") return repromptWizard_(state, chatId, key, cache, WIZARD_STALE_BUTTON_MESSAGE);
+    var repeatMode = data.slice("bot_vz_rd:".length);
+    if (repeatMode !== "daily" && repeatMode !== "deadline") {
+      return repromptWizard_(state, chatId, key, cache, WIZARD_STALE_BUTTON_MESSAGE);
+    }
+    draft.remindDaily = repeatMode === "daily";
+    return advanceWizard_(state, "vz_remdaily", chatId, key, cache, msgId, doc);
+  }
+
   if (data === "bot_vz_save") {
     if (state.step !== "vz_confirm") return repromptWizard_(state, chatId, key, cache, WIZARD_STALE_BUTTON_MESSAGE);
     return handleWizardSave_(state, chatId, key, cache, doc, fromId);
@@ -880,10 +939,10 @@ function wizardTaskPayload_(draft, fromId, requestId) {
   if (draft.type === "once") {
     payload.deadlineKey = draft.deadlineKey;
     payload.deadlineTime = draft.deadlineTime;
-    // A deadline-less task has no single moment to remind about, so reminder
-    // times can only mean "every day until it is done" — the same reading
-    // goalRemindDaily_ applies to a goal's steps.
-    payload.remindDaily = !draft.deadlineKey && draft.reminderTimes.length > 0;
+    // A dated task carries the answer given at vz_remdaily; a deadline-less one
+    // has no deadline day to attach a reminder to, so its times can only mean
+    // "every day until it is done". Never inferred for a dated task.
+    payload.remindDaily = wizardRemindDaily_(draft);
   } else if (draft.type === "routine") {
     payload.recurrence = draft.recurrence;
     payload.startKey = draft.startKey;

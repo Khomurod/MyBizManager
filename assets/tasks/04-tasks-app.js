@@ -125,16 +125,49 @@ function onTypeChange() {
     document.getElementById('grpOnce').classList.toggle('hidden', type !== 'once');
     document.getElementById('grpRoutine').classList.toggle('hidden', type !== 'routine');
     document.getElementById('grpGoal').classList.toggle('hidden', type !== 'goal');
-    // Rolling daily reminders only make sense for a deadline-less one-time task.
+    // Only a one-time task gets to choose: a routine's reminders belong to the
+    // day they were scheduled for, and a goal's repeat daily automatically.
     document.getElementById('grpRemindDaily').classList.toggle('hidden', type !== 'once');
     // A goal step has no deadline to hang a single reminder on, so the server
     // repeats them daily; there is nothing to choose, only something to say.
     document.getElementById('goalRemindNote').classList.toggle('hidden', type !== 'goal');
+    onRemindDailyContextChange();
     if (type === 'routine') onFreqChange();
     // A goal needs at least one step, so offer a row rather than an empty list.
     if (type === 'goal' && document.getElementById('stepList').children.length === 0) {
         addStepRow('');
     }
+}
+
+/**
+ * Keeps the daily-reminder control honest about what the backend will do.
+ *
+ * With a deadline the choice is real: daily until the task is done, or only on
+ * the deadline day. Without one there is no deadline day to fall back on, so
+ * leaving the box clear would mean the reminder times the admin just entered
+ * fire never. The box is therefore checked and locked rather than silently
+ * meaning nothing, and the hint says why.
+ *
+ * The admin's own answer is parked in `dataset.chosen` while the box is locked
+ * and handed back when a deadline is typed. Without that, picking "once",
+ * seeing the box tick itself and then adding a deadline would leave daily
+ * reminders switched on that nobody asked for.
+ */
+function onRemindDailyContextChange() {
+    const isOnce = document.getElementById('fType').value === 'once';
+    const box = document.getElementById('fRemindDaily');
+    const locked = isOnce && !document.getElementById('fDeadlineDate').value;
+
+    if (locked) {
+        if (!box.disabled) box.dataset.chosen = box.checked ? '1' : '0';
+        box.checked = true;
+    } else if (box.disabled) {
+        box.checked = box.dataset.chosen === '1';
+    }
+    box.disabled = locked;
+
+    document.getElementById('remindDailyLockNote').classList.toggle('hidden', !locked);
+    document.getElementById('remindDailyNote').classList.toggle('hidden', !isOnce || locked);
 }
 
 function onFreqChange() {
@@ -160,7 +193,12 @@ function resetTaskForm() {
     document.getElementById('fFreq').value = 'daily';
     document.getElementById('fInterval').value = '1';
     document.getElementById('fPhoto').checked = false;
-    document.getElementById('fRemindDaily').checked = false;
+    // Cleared outright, lock included: a form left locked by the previous task
+    // would otherwise restore that task's parked answer over this one's.
+    const remindDaily = document.getElementById('fRemindDaily');
+    remindDaily.checked = false;
+    remindDaily.disabled = false;
+    remindDaily.dataset.chosen = '0';
     document.querySelectorAll('.wd-box').forEach(b => { b.checked = false; });
     clearRepeater('reminderList', 'reminderEmpty');
     clearRepeater('stepList', 'stepEmpty');

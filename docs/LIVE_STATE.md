@@ -3,7 +3,7 @@
 What is actually running, as opposed to what the design documents describe.
 Update this file whenever the live system changes.
 
-**Last verified: 2026-08-05.**
+**Last verified: 2026-08-11.**
 
 ---
 
@@ -28,7 +28,7 @@ sheet. Do not run `cutover_omad_migration` without a separate, approved plan.
 |---|---|
 | Frontend | <https://omad-d.netlify.app> — Netlify, auto-deploys `main` |
 | Apps Script project | **LIVE** (renamed from "Untitled project") |
-| Script ID | `1afG6M-B6sFgPdfNIfwMFCIx3HAHDqliV-4Zhbiu6YhNNoMHb9fgsWcpG` |
+| Script ID | `1afG6M-…9fgsWcpG` — full value only in the `CLASP_JSON` secret |
 | Google Sheet | `1Q9_v2PrusZimoAjqbOUmHkW_NzDiV0z_8Wtr-v963CA` ("Budgeting app") |
 | Active deployment | id begins `AKfycbzhKyEOG…`, ends `…DtCA2W` |
 | Executes as | the owner; access: Anyone |
@@ -39,17 +39,34 @@ The backend URL is hardcoded in **three** places, which must always agree:
 - `cafe_admin.html`
 - `cafe_pos.html`
 
-### Deploying Apps Script — the trap
+> The Script ID is masked here because clasp guidance keeps `.clasp.json` out of
+> version control and the deployment reads it from an encrypted secret instead.
+> It was committed in full before this change, so it is still recoverable from
+> git history — treat it as known, not as rotated.
 
-The project has around twenty deployments. Only one is the live one.
+### Deploying Apps Script
 
-**To ship a backend change:** Deploy → **Manage deployments** → select the
-deployment whose id ends `…DtCA2W` → pencil → Version → **New version** →
-Deploy.
+**Merging to `main` deploys the backend.** CI builds, lints, scans for secrets
+and runs both test suites; if all of that is green, the `deploy` job pushes
+`apps-script/*.gs` into this same project, cuts an immutable version tagged
+with the commit SHA, and moves the `…DtCA2W` deployment on to it. Nothing is
+pasted by hand. Full procedure and the one-time secrets:
+[DEPLOYMENT.md](DEPLOYMENT.md).
 
-**Never use "New deployment".** It mints a *new URL that nothing calls*, so the
-code looks deployed while the app keeps running the old version. This happened
-repeatedly and is why production ran stale code for weeks.
+The deployment id never changes, so the `/exec` URL, the Telegram webhook and
+every Script Property stay attached exactly as they are.
+
+#### The trap this replaced
+
+The project has around twenty deployments and only one is live. The manual
+procedure was: Deploy → **Manage deployments** → the deployment ending
+`…DtCA2W` → pencil → Version → **New version** → Deploy.
+
+**Never "New deployment".** It mints a *new URL that nothing calls*, so the code
+looks deployed while the app keeps running the old version. This happened
+repeatedly and is why production ran stale code for weeks. The pipeline uses
+`clasp update-deployment` against the existing id precisely so this cannot
+happen again; the manual path remains only as an Actions-outage fallback.
 
 An **archived** deployment cannot be given a new version — the version selector
 is not offered and there is no restore action — but it *keeps serving traffic*.
@@ -67,8 +84,13 @@ column.
 | | |
 |---|---|
 | Webhook | points at the active deployment, with a verification secret in the URL |
-| Retry trigger | `processPendingTelegramJobs`, time-driven, every 5 minutes |
+| Trigger | `processPendingTelegramJobs`, time-driven, every 5 minutes — **the only one needed** |
 | Bot token | in Script Properties — never in the repo |
+
+That single trigger now performs the whole cycle: it scans the task schedules,
+enqueues anything due, then drains the queue. There is no second
+`processTaskSchedules` trigger to maintain, and running both entry points
+cannot duplicate a message.
 
 Credentials live in Script Properties (`TELEGRAM_BOT_TOKEN`,
 `TELEGRAM_WEBHOOK_SECRET`, `TELEGRAM_AUTHORIZED_USER_ID`,
@@ -81,21 +103,29 @@ keeps delivering to the old deployment.
 ### Tasks (not yet deployed as of this change)
 
 The task-management feature (`/tasks`, see [TASKS.md](TASKS.md)) is delivered
-and tested but requires three manual operator steps before it is live:
+and tested. The backend ships itself on the next merge to `main`; two operator
+steps remain, both about configuration rather than code:
 
-1. deploy the regenerated `script.gs` to the `…DtCA2W` deployment (new version);
-2. set **Vazifalar Guruhi ID** in Sozlamalar → Telegram (Script Property
+1. set **Vazifalar Guruhi ID** in Sozlamalar → Telegram (Script Property
    `TELEGRAM_TASKS_GROUP_CHAT_ID`) and add the bot to that group. It must be the
    group's **numeric** chat id — an `@username` is refused, because incoming
    callbacks and photos only ever carry `chat.id`;
-3. add a second time-driven trigger for **`processTaskSchedules`** (every 5
-   minutes), separate from the existing `processPendingTelegramJobs` trigger;
-4. make sure **`OMAD_ADMIN_KEY`** is set in Script Properties — the /tasks page
+2. make sure **`OMAD_ADMIN_KEY`** is set in Script Properties — the /tasks page
    now requires it to *read* the board, not only to change it. Without it the
    page shows a key prompt and no data.
 
-Until step 2, task messages are simply not sent; the accounting flows are
+**No second trigger is needed.** The existing `processPendingTelegramJobs`
+trigger runs the task scheduler before draining the queue.
+
+Until step 1, task messages are simply not sent; the accounting flows are
 unaffected either way.
+
+**Reminders.** A one-time task set to remind daily now does exactly that: every
+Tashkent day it stays open, whether its deadline is still ahead, is today, or
+went past — stopping the moment it is completed, cancelled or skipped. It
+previously fired only on the deadline date, because the occurrence's own date
+took priority over the daily flag. Tasks left on the deadline-only setting are
+unchanged, and no saved data needed migrating.
 
 **Creating tasks from the bot** (the `📋 Vazifa` button on `/yangi`) ships in
 the same deployment and needs **no** extra configuration — no new Script
@@ -180,8 +210,18 @@ so the entry can be retried without duplicating.
 
 ## Source of truth
 
-- `apps-script/*.gs` is the source. Edit there.
+- **GitHub `main` is the source of truth for the backend.** What is merged there
+  is what production runs, because CI deploys it — see
+  [DEPLOYMENT.md](DEPLOYMENT.md). Editing the live project in the Apps Script
+  IDE is not a way to ship: the next merge overwrites it, and the deploy's
+  drift guard fails the build rather than deleting the change silently.
+- `apps-script/*.gs` is the source. Edit there. These are the files clasp
+  uploads.
 - `script.gs` is **generated** by `npm run build`. Never edit it by hand;
-  `npm run build:check` fails the build if it is stale.
+  `npm run build:check` fails the build if it is stale. It is kept as a
+  review aid and a manual-deployment fallback, not the production path.
+- The Apps Script manifest is deliberately **not** in the repository. The deploy
+  pulls the live project's own `appsscript.json` and copies it back unchanged,
+  so a stale local copy can never overwrite the running web-app settings.
 - On Windows, `build:check` can report the bundle stale purely because of CRLF
   line endings in the checkout. It is LF-clean in git and passes in CI.

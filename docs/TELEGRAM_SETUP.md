@@ -1,11 +1,17 @@
 # Telegram sozlash va tokenni almashtirish
 
-> **Live status (2026-08-05).** The webhook points at the active deployment
+> **Live status (2026-08-11).** The webhook points at the active deployment
 > (id ending `…DtCA2W`) and the `processPendingTelegramJobs` trigger runs every
-> 5 minutes. Debug logging no longer records request bodies, so the webhook
-> secret can no longer reach `Telegram_Debug_Log` — but rows written *before*
-> that change may still contain the old secret, and rotating it is still
-> outstanding. See [LIVE_STATE.md](LIVE_STATE.md).
+> 5 minutes — now performing the task scan as well as the queue drain, so it is
+> the only trigger needed. Debug logging no longer records request bodies, so
+> the webhook secret can no longer reach `Telegram_Debug_Log` — but rows written
+> *before* that change may still contain the old secret, and rotating it is
+> still outstanding. See [LIVE_STATE.md](LIVE_STATE.md).
+>
+> **Backend deployments no longer change any of this.** CI pushes code into the
+> same Apps Script project and redeploys the same deployment id, so the webhook
+> URL, the verification secret and every Script Property below stay exactly as
+> they are and never need re-entering. See [DEPLOYMENT.md](DEPLOYMENT.md).
 
 > **⚠️ MUHIM — eski token buzilgan deb hisoblanadi.**
 > `7752185432` bot ID'siga tegishli **ikkita** token ochiq holda GitHub'ga
@@ -165,7 +171,10 @@ Last_Error, Created_At, Completed_At`.
 - Yakunlanmagan vazifalarni muntazam yuborish uchun **vaqt bo'yicha trigger**
   qo'shing: Apps Script → **Triggers** → **Add Trigger** →
   funksiya `processPendingTelegramJobs`, manba *Time-driven*, *Minutes timer*,
-  *Every 5 minutes*.
+  *Every 5 minutes*. **Bu — kerak bo'lgan yagona trigger.** Shu funksiya har
+  ishga tushganda avval vazifa jadvalini tekshiradi (kerakli eslatmalarni
+  navbatga qo'yadi), keyin navbatni yuboradi. `processTaskSchedules` uchun
+  alohida ikkinchi trigger kerak emas.
 - Holatni ko'rish: `get_job_queue_status` amali (kalit talab qilinmaydi,
   faqat sanoq qaytaradi). Qo'lda qayta ishga tushirish: `process_jobs`
   (admin kaliti talab qilinadi).
