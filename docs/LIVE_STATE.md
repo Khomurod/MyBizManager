@@ -56,6 +56,11 @@ pasted by hand. Full procedure and the one-time secrets:
 The deployment id never changes, so the `/exec` URL, the Telegram webhook and
 every Script Property stay attached exactly as they are.
 
+To ship a commit that is already on `main` — or to retry after fixing a secret
+— use **Actions → CI → Run workflow** on `main` rather than pushing an empty
+commit. If the three deployment secrets are missing the job **fails and names
+them**; it never skips quietly.
+
 #### The trap this replaced
 
 The project has around twenty deployments and only one is live. The manual

@@ -4,6 +4,10 @@ on:
   push:
     branches: ["**"]
   pull_request:
+  # Lets an already-merged commit be deployed without pushing an empty one, and
+  # is the normal way to retry after correcting a secret. The deploy job still
+  # refuses any ref but main.
+  workflow_dispatch:
 
 jobs:
   static:
@@ -65,16 +69,23 @@ jobs:
   # webhook and every Script Property stay exactly as they are. It never
   # creates a project or a deployment.
   #
-  # Reached only by a push to main whose build, static analysis, secret scans,
-  # unit tests and browser tests have all passed. A pull request or a feature
-  # branch cannot get here.
+  # Reached only from main, and only once the build, static analysis, secret
+  # scans, unit tests and browser tests have all passed. A pull request or a
+  # feature branch cannot get here: workflow_dispatch runs against a chosen ref
+  # and the refs/heads/main test rejects every other one.
+  #
+  # There is deliberately no enable switch. Missing or invalid credentials make
+  # this job FAIL, in the first step and with a message naming what is absent.
+  # An earlier version gated on `vars.APPS_SCRIPT_DEPLOY_ENABLED`, which turned
+  # a mis-scoped value — a secret of that name, or an environment-level
+  # variable, neither of which the `vars` context can see from a job-level
+  # `if:` — into a job that skipped silently and for ever.
   deploy:
     name: Deploy to Apps Script
     needs: [static, unit, browser]
     if: >-
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/main' &&
-      vars.APPS_SCRIPT_DEPLOY_ENABLED == 'true'
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
     permissions:
