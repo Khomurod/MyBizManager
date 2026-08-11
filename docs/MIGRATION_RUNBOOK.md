@@ -181,3 +181,7 @@ reports go out even when nobody is using the app:
 
 **Apps Script → Triggers → Add Trigger** → function `processPendingTelegramJobs`,
 event source *Time-driven*, *Minutes timer*, *Every 5 minutes*.
+
+This is the only trigger the project needs. The same function also scans the
+task schedules and enqueues any due notifications and reminders before draining
+the queue, so there is no separate `processTaskSchedules` trigger to add.

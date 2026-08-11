@@ -2698,9 +2698,29 @@ function drainJobQueueQuietly_(doc, options) {
   }
 }
 
-/** Entry point for a time-driven trigger (see docs/TELEGRAM_SETUP.md). */
+/**
+ * The one time-driven trigger this project needs (see docs/TELEGRAM_SETUP.md).
+ *
+ * A tick is the whole cycle: scan the task schedules, enqueue whatever has come
+ * due, then drain the queue. Scanning first means a reminder due right now goes
+ * out in this tick rather than waiting five minutes for the next one, and it
+ * removes the need to maintain a second `processTaskSchedules` trigger
+ * alongside this one.
+ *
+ * The scan is wrapped because this queue also carries the accounting reports: a
+ * fault on the task side must never stop a financial report from being sent.
+ * Running it here as well as from `processTaskSchedules` is safe — the pass
+ * takes the script lock and marks each reminder slot at enqueue time, so no
+ * combination of entry points can produce a duplicate.
+ */
 function processPendingTelegramJobs() {
-  return processPendingJobs_(SpreadsheetApp.getActiveSpreadsheet(), JOB_QUEUE_MANUAL_BATCH);
+  var doc = SpreadsheetApp.getActiveSpreadsheet();
+  try {
+    runTaskScheduler_(doc, Date.now());
+  } catch (error) {
+    debugLog_(doc, "task_scheduler_trigger_failed", String(error));
+  }
+  return processPendingJobs_(doc, JOB_QUEUE_MANUAL_BATCH);
 }
 
 function buildJobQueueStatus_(doc) {
@@ -5681,10 +5701,19 @@ function trySendTaskGroupMessage_(doc, text) {
 //     script lock), so a second scheduler pass — or one that overlaps — cannot
 //     enqueue it again, and a completed occurrence never re-fires;
 //   * the queue itself refuses a second identical pending job.
+//
+// That layering is what lets the production trigger do the whole cycle in one
+// tick (processPendingTelegramJobs: scan, enqueue, drain) while the manual
+// processTaskSchedules entry point stays available: running both, in any order
+// and any number of times, cannot produce a second reminder.
 // ============================================================
 
 var TASK_REMINDER_MAX_LATE_MS = 3 * 60 * 60 * 1000; // don't blast reminders missed by >3h
 var TASK_PROOF_PROMPT_TIMEOUT_MS = 30 * 60 * 1000;  // a claim whose prompt never went out
+// How many days of "already reminded" markers a rolling-daily occurrence keeps.
+// Long enough that nothing the scheduler still consults can be dropped, short
+// enough that Reminders_Sent_JSON stays far inside one spreadsheet cell.
+var TASK_REMINDER_HISTORY_DAYS = 14;
 
 function enqueueTaskJob_(doc, type, relatedId, payload) {
   return enqueueJob_(doc, type, relatedId, payload || {});
@@ -5841,11 +5870,60 @@ function hasAnyReminderSent_(occ) {
   return false;
 }
 
-/** Which reminder dates apply to an occurrence right now. */
+/**
+ * Whether an occurrence's reminder times roll forward day by day rather than
+ * belonging to one fixed calendar day.
+ *
+ * Two things roll: a one-time task the admin asked to be reminded about daily
+ * ("har kuni, vazifa bajarilguncha"), and anything with no date at all — a
+ * goal step, or a deadline-less one-time task. A routine does not: each of its
+ * days is a separate occurrence that owns its own reminders, so rolling them
+ * would mean reminding about Monday's work on Tuesday.
+ */
+function taskRemindsDaily_(occ) {
+  return !!occ.remindDaily && (occ.taskType === "once" || !occ.dateKey);
+}
+
+/**
+ * Which reminder dates apply to an occurrence right now.
+ *
+ * A rolling occurrence is always reminded about *today* — whether its deadline
+ * is still days away, is today, or went past weeks ago — and stops the moment
+ * the occurrence leaves Open. On the deadline day today's key *is* the
+ * occurrence's dateKey, so it resolves to the same slot either way and the
+ * sent-marker still deduplicates it.
+ *
+ * Everything else keeps a single fixed day: the routine's day, or the one-time
+ * task's deadline when daily reminders were not asked for.
+ */
 function taskReminderDatesFor_(occ, todayKey) {
+  if (taskRemindsDaily_(occ)) return [todayKey];
   if (occ.dateKey) return [occ.dateKey];       // routine day / one-time deadline day
-  if (occ.remindDaily) return [todayKey];       // rolling daily for no-deadline tasks
   return [];
+}
+
+/**
+ * Drops sent-markers for days the scheduler will never look at again.
+ *
+ * A rolling occurrence writes one marker per reminder time per day for as long
+ * as it stays open, and `Reminders_Sent_JSON` is a single spreadsheet cell. Only
+ * days older than the retention window are dropped, and never the occurrence's
+ * own dateKey, so no marker that is still consulted can be removed and no
+ * reminder can be revived by pruning.
+ */
+function pruneReminderMarkers_(occ, todayKey) {
+  var cutoff = taskDateKeyAddDays_(todayKey, -TASK_REMINDER_HISTORY_DAYS);
+  if (!cutoff) return false;
+  var sent = occ.remindersSent || {};
+  var dropped = false;
+  for (var slotKey in sent) {
+    if (!Object.prototype.hasOwnProperty.call(sent, slotKey)) continue;
+    var dateKey = slotKey.split(" ")[0];
+    if (dateKey === occ.dateKey || dateKey >= cutoff) continue;
+    delete sent[slotKey];
+    dropped = true;
+  }
+  return dropped;
 }
 
 /**
@@ -5918,7 +5996,9 @@ function runTaskScheduler_(doc, nowMs) {
       // Remind.
       if (occ.status === TASK_STATUS_OPEN && occ.reminderTimes.length) {
         var dates = taskReminderDatesFor_(occ, todayKey);
-        var changed = false;
+        // A rolling occurrence accumulates a marker a day; trim the ones no
+        // date list will ever name again before adding today's.
+        var changed = taskRemindsDaily_(occ) ? pruneReminderMarkers_(occ, todayKey) : false;
         for (var d = 0; d < dates.length; d++) {
           for (var r = 0; r < occ.reminderTimes.length; r++) {
             var slotKey = dates[d] + " " + occ.reminderTimes[r];
@@ -5945,7 +6025,14 @@ function runTaskScheduler_(doc, nowMs) {
   return { notified: notified, reminders: reminders, generated: generated };
 }
 
-/** Time-driven trigger entry point (see docs). Scans, then drains the queue. */
+/**
+ * Manual entry point: scan, then drain the queue.
+ *
+ * Kept for the operator who wants to force a cycle from the editor, and for
+ * any trigger created before `processPendingTelegramJobs` absorbed the scan.
+ * It is no longer required as a second production trigger, and running it
+ * alongside one cannot duplicate anything.
+ */
 function processTaskSchedules() {
   var doc = SpreadsheetApp.getActiveSpreadsheet();
   runTaskScheduler_(doc, Date.now());
@@ -6513,7 +6600,11 @@ function newWizardDraft_(type) {
     endKey: "",
     dueTime: "",
     steps: [],
-    reminderTimes: []
+    reminderTimes: [],
+    // Only ever set from the vz_remdaily answer, and only asked when a
+    // one-time task has both a deadline and reminder times. Everything else
+    // derives it at save time rather than pretending the user chose.
+    remindDaily: false
   };
 }
 
@@ -6608,9 +6699,23 @@ function wizardNextStep_(state, from) {
     // goal
     case "vz_steps": return "vz_reminders";
 
-    case "vz_reminders": return "vz_confirm";
+    case "vz_reminders": return wizardAsksRemindDaily_(draft) ? "vz_remdaily" : "vz_confirm";
+    case "vz_remdaily": return "vz_confirm";
   }
   return "vz_confirm";
+}
+
+/**
+ * Whether the draft needs the "how should these repeat?" question.
+ *
+ * Only a dated one-time task has two honest answers: every day until it is
+ * done, or once on the deadline day. A deadline-less one has no deadline day
+ * to attach a reminder to, a routine's reminders belong to the day they were
+ * scheduled for, and a goal's repeat daily by definition — asking there would
+ * offer a choice that does not exist.
+ */
+function wizardAsksRemindDaily_(draft) {
+  return draft.type === "once" && !!draft.deadlineKey && draft.reminderTimes.length > 0;
 }
 
 /** Per-step setup that has to happen as the step is entered, not rendered. */
@@ -6826,6 +6931,16 @@ function wizardStepView_(state) {
     return { text: "🔔 Eslatma vaqtlari:", keyboard: { inline_keyboard: rows } };
   }
 
+  if (step === "vz_remdaily") {
+    return {
+      text: "🔔 Eslatmalar qanday takrorlansin?",
+      keyboard: { inline_keyboard: [
+        [wizardButton_("🔁 Har kuni, bajarilguncha", "bot_vz_rd:daily")],
+        [wizardButton_("📅 Faqat muddat kunida", "bot_vz_rd:deadline")]
+      ] }
+    };
+  }
+
   if (step === "vz_confirm") {
     return {
       text: buildWizardSummary_(draft),
@@ -6867,8 +6982,29 @@ function buildWizardSummary_(draft) {
     for (var i = 0; i < draft.steps.length; i++) lines.push("  " + (i + 1) + ". " + draft.steps[i]);
   }
 
-  if (draft.reminderTimes.length) lines.push("🔔 " + draft.reminderTimes.join(", "));
+  if (draft.reminderTimes.length) {
+    // The repeat rule is as much a decision as the times are, so the review
+    // card states it rather than leaving the user to assume one. A routine has
+    // no rule to state: each day's occurrence carries its own reminders.
+    var repeat = draft.type === "routine" ? ""
+      : (wizardRemindDaily_(draft) ? " · har kuni" : " · muddat kunida");
+    lines.push("🔔 " + draft.reminderTimes.join(", ") + repeat);
+  }
   return lines.join("\n");
+}
+
+/**
+ * What `remindDaily` will be saved as.
+ *
+ * A dated one-time task carries the answer the user gave at vz_remdaily. Every
+ * other shape has only one reading that does anything: reminders on something
+ * with no deadline day can only mean "every day until it is done", which is the
+ * same rule goalRemindDaily_ applies to a goal's steps.
+ */
+function wizardRemindDaily_(draft) {
+  if (draft.type === "routine") return false;
+  if (wizardAsksRemindDaily_(draft)) return !!draft.remindDaily;
+  return draft.reminderTimes.length > 0;
 }
 
 // ------------------------------------------------------------- step movement
@@ -7124,6 +7260,16 @@ function handleTaskWizardCallback_(callback, chatId, key, cache, data, doc, from
     return advanceWizard_(state, "vz_reminders", chatId, key, cache, msgId, doc);
   }
 
+  if (data.indexOf("bot_vz_rd:") === 0) {
+    if (state.step !== "vz_remdaily") return repromptWizard_(state, chatId, key, cache, WIZARD_STALE_BUTTON_MESSAGE);
+    var repeatMode = data.slice("bot_vz_rd:".length);
+    if (repeatMode !== "daily" && repeatMode !== "deadline") {
+      return repromptWizard_(state, chatId, key, cache, WIZARD_STALE_BUTTON_MESSAGE);
+    }
+    draft.remindDaily = repeatMode === "daily";
+    return advanceWizard_(state, "vz_remdaily", chatId, key, cache, msgId, doc);
+  }
+
   if (data === "bot_vz_save") {
     if (state.step !== "vz_confirm") return repromptWizard_(state, chatId, key, cache, WIZARD_STALE_BUTTON_MESSAGE);
     return handleWizardSave_(state, chatId, key, cache, doc, fromId);
@@ -7293,10 +7439,10 @@ function wizardTaskPayload_(draft, fromId, requestId) {
   if (draft.type === "once") {
     payload.deadlineKey = draft.deadlineKey;
     payload.deadlineTime = draft.deadlineTime;
-    // A deadline-less task has no single moment to remind about, so reminder
-    // times can only mean "every day until it is done" — the same reading
-    // goalRemindDaily_ applies to a goal's steps.
-    payload.remindDaily = !draft.deadlineKey && draft.reminderTimes.length > 0;
+    // A dated task carries the answer given at vz_remdaily; a deadline-less one
+    // has no deadline day to attach a reminder to, so its times can only mean
+    // "every day until it is done". Never inferred for a dated task.
+    payload.remindDaily = wizardRemindDaily_(draft);
   } else if (draft.type === "routine") {
     payload.recurrence = draft.recurrence;
     payload.startKey = draft.startKey;

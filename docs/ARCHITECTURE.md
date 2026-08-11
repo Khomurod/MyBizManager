@@ -20,8 +20,8 @@ Documented as of the Telegram credential-hardening change. This is the
 | `assets/omad/*.js` | The Omad admin application, split by responsibility |
 | `cafe_admin.html` | Café inventory, recipes, categories, settings |
 | `cafe_pos.html` | Café point of sale, close-day |
-| `apps-script/*.gs` | Apps Script backend **source of truth**, split by responsibility |
-| `script.gs` | **Generated** single-file bundle of `apps-script/*.gs` — what you paste into Apps Script |
+| `apps-script/*.gs` | Apps Script backend **source of truth** — what CI uploads to the live project |
+| `script.gs` | **Generated** single-file bundle of `apps-script/*.gs`; a review aid and manual-deployment fallback, no longer the production path |
 
 The frontend is static HTML served from GitHub Pages; it talks to a single
 Apps Script `/exec` web app over `fetch`.
@@ -31,6 +31,11 @@ Apps Script `/exec` web app over `fetch`.
 Apps Script files share one global scope, so the modules are concatenated in
 filename order. `npm run build` regenerates `script.gs`; `npm run build:check`
 (run in CI) fails if the bundle is stale.
+
+The modules are also what gets **deployed**: on a green merge to `main`, CI
+uploads `apps-script/*.gs` into the live project with clasp and moves the
+existing deployment on to a new version, so the editor mirrors this directory
+file for file. See [DEPLOYMENT.md](DEPLOYMENT.md).
 
 | Module | Contents |
 |---|---|
@@ -195,8 +200,15 @@ message from data it already stored:
 Every one of those becomes a **job on `Omad_Job_Queue`**, so a Telegram outage
 degrades to "the report is late", never "the money is wrong". Jobs are claimed
 under the script lock (status `Processing`), retried with exponential backoff
-starting at ~30s, and give up after 5 attempts. `processPendingTelegramJobs`
-is the entry point for a time-driven trigger.
+starting at ~30s, and give up after 5 attempts.
+
+`processPendingTelegramJobs` is the entry point for the single time-driven
+trigger, and it does the whole cycle: it runs the task scheduler first — so a
+reminder coming due now is enqueued and sent in the same tick — and then drains
+the queue. The scan is wrapped in a `try`, because this queue also carries the
+accounting reports and a fault on the task side must never stop a financial
+report going out. `processTaskSchedules` remains as a manual entry point;
+running both is safe by construction (see [TASKS.md](TASKS.md)).
 
 Job types: `omad_transaction_report`, `omad_transaction_delete_report`,
 `cafe_close_day_report`, and the task module's `task_notify`, `task_reminder`,
@@ -575,6 +587,10 @@ npm run test:e2e         # Chromium browser flows
 npm run scan:secrets     # working tree
 npm run scan:secrets:history  # every committed blob
 ```
+
+CI runs all of these on every branch and pull request. On `main`, and only
+there, a green run is followed by an automatic deployment to the live Apps
+Script project — see `docs/DEPLOYMENT.md`.
 
 See `docs/MIGRATION_RUNBOOK.md` for the live migration procedure.
 

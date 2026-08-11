@@ -58,3 +58,70 @@ jobs:
 
       - name: End-to-end browser tests
         run: npm run test:e2e
+
+  # ---------------------------------------------------------------- production
+  # Updates the code inside the EXISTING Apps Script project and moves the
+  # EXISTING deployment on to a new version, so the web-app URL, the Telegram
+  # webhook and every Script Property stay exactly as they are. It never
+  # creates a project or a deployment.
+  #
+  # Reached only by a push to main whose build, static analysis, secret scans,
+  # unit tests and browser tests have all passed. A pull request or a feature
+  # branch cannot get here.
+  deploy:
+    name: Deploy to Apps Script
+    needs: [static, unit, browser]
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      vars.APPS_SCRIPT_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    # Two merges landing seconds apart must not interleave a push with another
+    # push's version. Queued rather than cancelled: abandoning a run between
+    # `clasp push` and `update-deployment` would leave new code unreleased.
+    concurrency:
+      group: apps-script-production
+      cancel-in-progress: false
+    env:
+      CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+      CLASP_JSON: ${{ secrets.CLASP_JSON }}
+      APPS_SCRIPT_DEPLOYMENT_ID: ${{ secrets.APPS_SCRIPT_DEPLOYMENT_ID }}
+      APPS_SCRIPT_ALLOW_REMOTE_DRIFT: ${{ vars.APPS_SCRIPT_ALLOW_REMOTE_DRIFT }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install clasp
+        run: npm install --no-save @google/clasp@3.3.0
+
+      # Fails closed: no credentials, no deployment.
+      - name: Validate deployment configuration
+        run: node scripts/clasp-deploy.js preflight
+
+      # The live project's own manifest is the only manifest. Pulling is also
+      # the first real authentication check.
+      - name: Fetch the live project
+        run: "$GITHUB_WORKSPACE/node_modules/.bin/clasp pull"
+        working-directory: .clasp-work/pull
+
+      - name: Combine the live manifest with the modular sources
+        run: node scripts/clasp-deploy.js stage
+
+      - name: Preflight — files that will be uploaded
+        run: "$GITHUB_WORKSPACE/node_modules/.bin/clasp show-file-status"
+        working-directory: .clasp-work/push
+
+      - name: Push apps-script/ to the existing project
+        run: "$GITHUB_WORKSPACE/node_modules/.bin/clasp push -f"
+        working-directory: .clasp-work/push
+
+      - name: Version this commit and move the existing deployment
+        env:
+          COMMIT_SUBJECT: ${{ github.event.head_commit.message }}
+        run: node scripts/clasp-deploy.js release

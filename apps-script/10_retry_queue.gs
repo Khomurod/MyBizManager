@@ -220,9 +220,29 @@ function drainJobQueueQuietly_(doc, options) {
   }
 }
 
-/** Entry point for a time-driven trigger (see docs/TELEGRAM_SETUP.md). */
+/**
+ * The one time-driven trigger this project needs (see docs/TELEGRAM_SETUP.md).
+ *
+ * A tick is the whole cycle: scan the task schedules, enqueue whatever has come
+ * due, then drain the queue. Scanning first means a reminder due right now goes
+ * out in this tick rather than waiting five minutes for the next one, and it
+ * removes the need to maintain a second `processTaskSchedules` trigger
+ * alongside this one.
+ *
+ * The scan is wrapped because this queue also carries the accounting reports: a
+ * fault on the task side must never stop a financial report from being sent.
+ * Running it here as well as from `processTaskSchedules` is safe — the pass
+ * takes the script lock and marks each reminder slot at enqueue time, so no
+ * combination of entry points can produce a duplicate.
+ */
 function processPendingTelegramJobs() {
-  return processPendingJobs_(SpreadsheetApp.getActiveSpreadsheet(), JOB_QUEUE_MANUAL_BATCH);
+  var doc = SpreadsheetApp.getActiveSpreadsheet();
+  try {
+    runTaskScheduler_(doc, Date.now());
+  } catch (error) {
+    debugLog_(doc, "task_scheduler_trigger_failed", String(error));
+  }
+  return processPendingJobs_(doc, JOB_QUEUE_MANUAL_BATCH);
 }
 
 function buildJobQueueStatus_(doc) {

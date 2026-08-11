@@ -483,6 +483,79 @@ describe('Tasks UI (browser)', () => {
     await context.close();
   });
 
+  // ------------------------------------------------- the daily-reminder rule
+
+  test('the daily option says it repeats until the task is done', async () => {
+    const { page, context } = await open({ viewport: { width: 375, height: 780 } });
+    await page.click('.fab');
+    await page.waitForSelector('#taskModal:not(.hidden)');
+    await page.selectOption('#fType', 'once');
+    await page.fill('#fDeadlineDate', '2026-08-20');
+
+    // The old label ("Muddatsiz bo'lsa ham...") read as if daily reminders were
+    // a deadline-less-only feature, which is exactly the bug this replaces.
+    const label = (await page.textContent('#grpRemindDaily')).trim();
+    assert.match(label, /Har kuni, vazifa bajarilguncha eslatilsin/);
+    assert.ok(!/Muddatsiz bo'lsa ham/.test(label), 'the misleading wording is gone');
+
+    // With a deadline the choice is real, so the alternative is spelled out.
+    assert.ok(!(await page.locator('#remindDailyNote').isHidden()),
+      'the deadline-only alternative is explained');
+    assert.ok(await page.locator('#fRemindDaily').isEnabled(), 'and it is the user\'s to make');
+
+    await context.close();
+  });
+
+  test('a deadline-less one-time task locks daily on, because nothing else would fire', async () => {
+    const { page, context, backendRequests } = await open({ viewport: { width: 375, height: 780 } });
+    await page.click('.fab');
+    await page.waitForSelector('#taskModal:not(.hidden)');
+    await page.fill('#fTitle', 'Muddatsiz ish');
+    await page.selectOption('#fType', 'once');
+
+    const box = page.locator('#fRemindDaily');
+    assert.strictEqual(await box.isChecked(), true, 'checked with no deadline');
+    assert.strictEqual(await box.isDisabled(), true, 'and not unsettable');
+    assert.ok(!(await page.locator('#remindDailyLockNote').isHidden()), 'the reason is shown');
+
+    // Typing a deadline hands the choice back.
+    await page.fill('#fDeadlineDate', '2026-08-20');
+    assert.strictEqual(await box.isDisabled(), false, 'a deadline restores the choice');
+    assert.ok(await page.locator('#remindDailyLockNote').isHidden());
+    await page.uncheck('#fRemindDaily');
+
+    // Clearing it again locks it back on rather than silently sending nothing.
+    await page.fill('#fDeadlineDate', '');
+    assert.strictEqual(await box.isChecked(), true);
+
+    await page.click('#reminderList ~ .rep__add');
+    await page.locator('#reminderList input').nth(0).fill('09:00');
+    await page.click('#taskSaveBtn');
+    await page.waitForTimeout(300);
+
+    const sent = backendRequests.filter(r => r.action === 'save_task')[0];
+    assert.strictEqual(sent.remindDaily, true, 'the locked value is what is saved');
+    assert.strictEqual(sent.deadlineKey, '');
+    await context.close();
+  });
+
+  test('routines and goals are not offered the daily choice', async () => {
+    const { page, context } = await open({ viewport: { width: 375, height: 780 } });
+    await page.click('.fab');
+    await page.waitForSelector('#taskModal:not(.hidden)');
+
+    for (const type of ['routine', 'goal']) {
+      await page.selectOption('#fType', type);
+      assert.ok(await page.locator('#grpRemindDaily').isHidden(), type + ' hides the checkbox');
+      assert.ok(await page.locator('#remindDailyNote').isHidden(), type + ' hides the hint');
+      assert.ok(await page.locator('#remindDailyLockNote').isHidden(), type + ' hides the lock note');
+    }
+    // The goal keeps its own explanation, which is a statement not a choice.
+    assert.ok(!(await page.locator('#goalRemindNote').isHidden()));
+
+    await context.close();
+  });
+
   test('goal steps are sent as the same array of titles', async () => {
     const { page, context, backendRequests } = await open({ viewport: { width: 375, height: 780 } });
     await page.click('.fab');

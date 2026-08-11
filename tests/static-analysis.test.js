@@ -93,6 +93,59 @@ test('the task wizard never reaches into accounting data', () => {
     `19a_tasks_wizard.gs must not touch accounting data: ${offenders.join(', ')}`);
 });
 
+// --------------------------------------------------------- the deployment gate
+
+/**
+ * The deploy job writes straight to production Apps Script, so the conditions
+ * that hold it back are load-bearing. They are asserted here rather than left
+ * to review, because weakening any one of them is a one-line edit that looks
+ * harmless in a diff.
+ */
+test('production deployment stays gated behind green CI on main', () => {
+  const workflow = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
+  const deploy = workflow.slice(workflow.indexOf('\n  deploy:'));
+  assert.ok(deploy, 'the deploy job exists');
+
+  // Every check must pass first. Dropping one from this list is the failure
+  // mode this guards: it would ship code no test had run against.
+  assert.match(deploy, /needs:\s*\[static,\s*unit,\s*browser\]/,
+    'deploy must wait for the static, unit and browser jobs');
+
+  // A pull request or a feature branch must never reach production.
+  assert.match(deploy, /github\.event_name == 'push'/, 'deploy only on a push');
+  assert.match(deploy, /github\.ref == 'refs\/heads\/main'/, 'deploy only from main');
+
+  // Two merges landing together must queue, not race or cancel each other.
+  assert.match(deploy, /concurrency:/, 'deploy declares a concurrency group');
+  assert.match(deploy, /cancel-in-progress:\s*false/,
+    'an in-flight deployment is never cancelled halfway');
+
+  // Credentials arrive as encrypted secrets, never as literals.
+  for (const secret of ['CLASPRC_JSON', 'CLASP_JSON', 'APPS_SCRIPT_DEPLOYMENT_ID']) {
+    assert.match(deploy, new RegExp(secret + ':\\s*\\$\\{\\{ secrets\\.' + secret + ' \\}\\}'),
+      secret + ' comes from an encrypted secret');
+  }
+});
+
+test('the repository commits no Apps Script manifest or clasp config', () => {
+  // The manifest is pulled from the live project on every deploy. A committed
+  // one could silently overwrite the running web-app access, executeAs,
+  // timezone or scopes; a committed .clasp.json would publish the script id
+  // and a .clasprc.json an OAuth refresh token.
+  //
+  // Tracked files only: the deploy job builds exactly these names under the
+  // gitignored .clasp-work/, and those are the point rather than a violation.
+  const forbidden = new Set(['appsscript.json', '.clasp.json', '.clasprc.json']);
+  const tracked = spawnSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8' });
+  assert.strictEqual(tracked.status, 0, tracked.stderr);
+
+  const offenders = tracked.stdout.split('\n')
+    .filter(Boolean)
+    .filter(file => forbidden.has(path.basename(file)));
+  assert.deepStrictEqual(offenders, [],
+    `clasp config must stay out of the repository: ${offenders.join(', ')}`);
+});
+
 // ------------------------------------------------------------ secret scanning
 
 test('no Telegram bot token is committed anywhere in the working tree', () => {

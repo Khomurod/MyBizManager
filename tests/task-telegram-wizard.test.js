@@ -348,8 +348,166 @@ test('reminder times toggle on and off and are stored sorted', () => {
 
   const task = tasks(gas)[0];
   assert.deepStrictEqual(Array.from(task.reminderTimes), ['09:00', '18:00']);
-  // No deadline to hang a single reminder on, so they can only mean "daily".
+  // No deadline to hang a single reminder on, so they can only mean "daily",
+  // and there is nothing to ask: the wizard goes straight to the review card.
   assert.strictEqual(task.remindDaily, true);
+  assert.match(lastCard(gas).text, /Vazifa yaratildi/);
+});
+
+// ======================================================= the repeat question
+
+/**
+ * A dated one-time task with reminder times has two honest readings - every
+ * day until it is done, or once on the deadline day - so the wizard asks
+ * instead of guessing. It used to infer `remindDaily` from whether a deadline
+ * existed, which silently gave a dated task the wrong one.
+ */
+
+/** Head + a deadline + one reminder time, stopping on the repeat question. */
+function walkToRepeatQuestion(gas, title) {
+  walkHead(gas, 'once', title || 'Muddatli eslatma');
+  tap(gas, 'bot_vz_date:other');
+  say(gas, '2026-09-15');
+  tap(gas, 'bot_vz_time:other');
+  say(gas, '09:00');
+  tap(gas, 'bot_vz_rem:09:00');
+  tap(gas, 'bot_vz_rem_done');
+}
+
+test('a dated one-time task with reminders is asked how they should repeat', () => {
+  const gas = boot();
+  walkToRepeatQuestion(gas);
+
+  const asked = lastCard(gas);
+  assert.match(asked.text, /qanday takrorlansin/, 'the question is put to the user');
+  assert.deepStrictEqual(buttonData(asked), ['bot_vz_rd:daily', 'bot_vz_rd:deadline'],
+    'both readings are offered, in the bot_vz namespace');
+  assert.strictEqual(tasks(gas).length, 0, 'nothing is written before Saqlash');
+});
+
+test('choosing "har kuni" stores remindDaily on a dated task', () => {
+  const gas = boot();
+  walkToRepeatQuestion(gas);
+  tap(gas, 'bot_vz_rd:daily');
+
+  assert.match(lastCard(gas).text, /har kuni/, 'the review card states the choice');
+  tap(gas, 'bot_vz_save');
+
+  const task = tasks(gas)[0];
+  assert.strictEqual(task.deadlineKey, '2026-09-15');
+  assert.strictEqual(task.remindDaily, true);
+  assert.deepStrictEqual(Array.from(task.reminderTimes), ['09:00']);
+  assert.strictEqual(occurrences(gas)[0].remindDaily, true, 'and reaches the occurrence');
+});
+
+test('choosing "faqat muddat kunida" stores the deadline-only reading', () => {
+  const gas = boot();
+  walkToRepeatQuestion(gas);
+  tap(gas, 'bot_vz_rd:deadline');
+
+  assert.match(lastCard(gas).text, /muddat kunida/);
+  tap(gas, 'bot_vz_save');
+
+  const task = tasks(gas)[0];
+  assert.strictEqual(task.deadlineKey, '2026-09-15');
+  assert.strictEqual(task.remindDaily, false, 'never inferred back to daily');
+  assert.strictEqual(occurrences(gas)[0].remindDaily, false);
+});
+
+test('a dated task with no reminder times is never asked', () => {
+  const gas = boot();
+  walkHead(gas, 'once', 'Eslatmasiz');
+  tap(gas, 'bot_vz_date:other');
+  say(gas, '2026-09-15');
+  tap(gas, 'bot_vz_skip:time');
+  tap(gas, 'bot_vz_skip:reminders');
+
+  assert.ok(!/qanday takrorlansin/.test(lastCard(gas).text),
+    'there is no repeat rule to choose with no reminders');
+  tap(gas, 'bot_vz_save');
+  assert.strictEqual(tasks(gas)[0].remindDaily, false);
+});
+
+test('routines and goals are never asked - their repeat rule is not a choice', () => {
+  for (const type of ['routine', 'goal']) {
+    const gas = boot();
+    walkHead(gas, type, 'Takrorlanuvchi');
+    if (type === 'routine') {
+      tap(gas, 'bot_vz_freq:daily');
+      tap(gas, 'bot_vz_start:today');
+      tap(gas, 'bot_vz_skip:end');
+      tap(gas, 'bot_vz_skip:duetime');
+    } else {
+      say(gas, 'Birinchi qadam');
+      tap(gas, 'bot_vz_step_done');
+    }
+    tap(gas, 'bot_vz_rem:09:00');
+    tap(gas, 'bot_vz_rem_done');
+
+    assert.ok(!/qanday takrorlansin/.test(lastCard(gas).text), type + ' is not asked');
+    tap(gas, 'bot_vz_save');
+
+    // Neither type carries a task-level daily flag, and neither ever did: a
+    // routine's reminders belong to the day they were scheduled for, and a
+    // goal's are derived per step by goalRemindDaily_ instead.
+    assert.strictEqual(tasks(gas)[0].remindDaily, false, type + ' stores no daily flag');
+    assert.strictEqual(occurrences(gas)[0].remindDaily, type === 'goal',
+      type + ' occurrences keep their own rule');
+  }
+});
+
+test('the repeat buttons are inert outside their own step', () => {
+  const gas = boot();
+  walkHead(gas, 'once', 'Erta bosilgan');
+
+  // Pressed while the wizard is still asking for the deadline.
+  tap(gas, 'bot_vz_rd:daily');
+  assert.match(lastCard(gas).text, /eskirgan/, 'a stale press is refused');
+
+  // And the draft is untouched: the deadline step is still where we are.
+  tap(gas, 'bot_vz_date:other');
+  say(gas, '2026-09-15');
+  tap(gas, 'bot_vz_skip:time');
+  tap(gas, 'bot_vz_rem:09:00');
+  tap(gas, 'bot_vz_rem_done');
+  tap(gas, 'bot_vz_rd:deadline');
+  tap(gas, 'bot_vz_save');
+  assert.strictEqual(tasks(gas)[0].remindDaily, false);
+});
+
+test('an unrecognised repeat value is refused rather than guessed', () => {
+  const gas = boot();
+  walkToRepeatQuestion(gas);
+  tap(gas, 'bot_vz_rd:sometimes');
+
+  assert.match(lastCard(gas).text, /eskirgan/);
+  assert.strictEqual(tasks(gas).length, 0, 'and no task is created');
+});
+
+test('an unauthorized user cannot answer the repeat question', () => {
+  const gas = boot();
+  walkToRepeatQuestion(gas);
+
+  const before = tasks(gas).length;
+  tap(gas, 'bot_vz_rd:daily', INTRUDER_ID);
+  assert.ok(gas.__sentMessages.some(m => m.text.includes("huquqi yo'q")), 'refused');
+  assert.strictEqual(tasks(gas).length, before, 'nothing written');
+
+  // The owner's session survives the intruder's press untouched.
+  tap(gas, 'bot_vz_rd:daily');
+  tap(gas, 'bot_vz_save');
+  assert.strictEqual(tasks(gas)[0].remindDaily, true);
+});
+
+test('a redelivered save after the repeat question still creates one task', () => {
+  const gas = boot();
+  walkToRepeatQuestion(gas);
+  tap(gas, 'bot_vz_rd:daily');
+
+  tap(gas, 'bot_vz_save');
+  tap(gas, 'bot_vz_save'); // Telegram redelivery
+
+  assert.strictEqual(tasks(gas).length, 1, 'the tgRequestId guard still holds');
 });
 
 // ============================================================ authorization

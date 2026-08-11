@@ -11,10 +11,19 @@
 //     script lock), so a second scheduler pass — or one that overlaps — cannot
 //     enqueue it again, and a completed occurrence never re-fires;
 //   * the queue itself refuses a second identical pending job.
+//
+// That layering is what lets the production trigger do the whole cycle in one
+// tick (processPendingTelegramJobs: scan, enqueue, drain) while the manual
+// processTaskSchedules entry point stays available: running both, in any order
+// and any number of times, cannot produce a second reminder.
 // ============================================================
 
 var TASK_REMINDER_MAX_LATE_MS = 3 * 60 * 60 * 1000; // don't blast reminders missed by >3h
 var TASK_PROOF_PROMPT_TIMEOUT_MS = 30 * 60 * 1000;  // a claim whose prompt never went out
+// How many days of "already reminded" markers a rolling-daily occurrence keeps.
+// Long enough that nothing the scheduler still consults can be dropped, short
+// enough that Reminders_Sent_JSON stays far inside one spreadsheet cell.
+var TASK_REMINDER_HISTORY_DAYS = 14;
 
 function enqueueTaskJob_(doc, type, relatedId, payload) {
   return enqueueJob_(doc, type, relatedId, payload || {});
@@ -171,11 +180,60 @@ function hasAnyReminderSent_(occ) {
   return false;
 }
 
-/** Which reminder dates apply to an occurrence right now. */
+/**
+ * Whether an occurrence's reminder times roll forward day by day rather than
+ * belonging to one fixed calendar day.
+ *
+ * Two things roll: a one-time task the admin asked to be reminded about daily
+ * ("har kuni, vazifa bajarilguncha"), and anything with no date at all — a
+ * goal step, or a deadline-less one-time task. A routine does not: each of its
+ * days is a separate occurrence that owns its own reminders, so rolling them
+ * would mean reminding about Monday's work on Tuesday.
+ */
+function taskRemindsDaily_(occ) {
+  return !!occ.remindDaily && (occ.taskType === "once" || !occ.dateKey);
+}
+
+/**
+ * Which reminder dates apply to an occurrence right now.
+ *
+ * A rolling occurrence is always reminded about *today* — whether its deadline
+ * is still days away, is today, or went past weeks ago — and stops the moment
+ * the occurrence leaves Open. On the deadline day today's key *is* the
+ * occurrence's dateKey, so it resolves to the same slot either way and the
+ * sent-marker still deduplicates it.
+ *
+ * Everything else keeps a single fixed day: the routine's day, or the one-time
+ * task's deadline when daily reminders were not asked for.
+ */
 function taskReminderDatesFor_(occ, todayKey) {
+  if (taskRemindsDaily_(occ)) return [todayKey];
   if (occ.dateKey) return [occ.dateKey];       // routine day / one-time deadline day
-  if (occ.remindDaily) return [todayKey];       // rolling daily for no-deadline tasks
   return [];
+}
+
+/**
+ * Drops sent-markers for days the scheduler will never look at again.
+ *
+ * A rolling occurrence writes one marker per reminder time per day for as long
+ * as it stays open, and `Reminders_Sent_JSON` is a single spreadsheet cell. Only
+ * days older than the retention window are dropped, and never the occurrence's
+ * own dateKey, so no marker that is still consulted can be removed and no
+ * reminder can be revived by pruning.
+ */
+function pruneReminderMarkers_(occ, todayKey) {
+  var cutoff = taskDateKeyAddDays_(todayKey, -TASK_REMINDER_HISTORY_DAYS);
+  if (!cutoff) return false;
+  var sent = occ.remindersSent || {};
+  var dropped = false;
+  for (var slotKey in sent) {
+    if (!Object.prototype.hasOwnProperty.call(sent, slotKey)) continue;
+    var dateKey = slotKey.split(" ")[0];
+    if (dateKey === occ.dateKey || dateKey >= cutoff) continue;
+    delete sent[slotKey];
+    dropped = true;
+  }
+  return dropped;
 }
 
 /**
@@ -248,7 +306,9 @@ function runTaskScheduler_(doc, nowMs) {
       // Remind.
       if (occ.status === TASK_STATUS_OPEN && occ.reminderTimes.length) {
         var dates = taskReminderDatesFor_(occ, todayKey);
-        var changed = false;
+        // A rolling occurrence accumulates a marker a day; trim the ones no
+        // date list will ever name again before adding today's.
+        var changed = taskRemindsDaily_(occ) ? pruneReminderMarkers_(occ, todayKey) : false;
         for (var d = 0; d < dates.length; d++) {
           for (var r = 0; r < occ.reminderTimes.length; r++) {
             var slotKey = dates[d] + " " + occ.reminderTimes[r];
@@ -275,7 +335,14 @@ function runTaskScheduler_(doc, nowMs) {
   return { notified: notified, reminders: reminders, generated: generated };
 }
 
-/** Time-driven trigger entry point (see docs). Scans, then drains the queue. */
+/**
+ * Manual entry point: scan, then drain the queue.
+ *
+ * Kept for the operator who wants to force a cycle from the editor, and for
+ * any trigger created before `processPendingTelegramJobs` absorbed the scan.
+ * It is no longer required as a second production trigger, and running it
+ * alongside one cannot duplicate anything.
+ */
 function processTaskSchedules() {
   var doc = SpreadsheetApp.getActiveSpreadsheet();
   runTaskScheduler_(doc, Date.now());

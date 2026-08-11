@@ -29,6 +29,7 @@ the `netlify.toml` rewrite).
 | Goals with step-tasks and automatic progress | `goal` task type |
 | Responsible person, priority, description, photo-proof-required flag | task/occurrence fields |
 | Admin-controlled reminder schedule, multiple reminder times per day | `Reminder_Times_JSON` + scheduler |
+| Reminders that repeat every day until a task is done | `Remind_Daily` + scheduler (see *Reminders*) |
 | Statuses: Open, Waiting for Proof, Completed, Overdue, Cancelled (+ Skipped) | `Status` column; **Overdue is derived**, never stored |
 | Routines create separate occurrences/history, never "permanently complete" | `Task_Occurrences`, one row per due date |
 | Pause routines, skip individual occurrences, edit/cancel, edit future schedule | web API actions |
@@ -75,7 +76,11 @@ Proof_Awaiting_User_Id, Created_At, Updated_At, Meta_JSON`
   so lateness is always judged against the same deadline.
 - `Due_At` is an epoch-ms instant (or empty for deadline-less items).
 - `Reminders_Sent_JSON` maps a `"YYYY-MM-DD HH:mm"` slot to the time it was
-  enqueued — the deduplication key that stops a reminder firing twice.
+  enqueued — the deduplication key that stops a reminder firing twice. A daily
+  occurrence adds a slot a day, so markers older than
+  `TASK_REMINDER_HISTORY_DAYS` (14) are pruned as they are written; the
+  scheduler only ever consults today's key and the occurrence's own date, so
+  nothing that is still read can be dropped.
 - `Steps_JSON` is `[{id, title, photoRequired?}]`. The `id` is stable across
   edits, which is what lets an occurrence keep belonging to the same step when
   the list is renamed or reordered. `photoRequired` is present **only** when a
@@ -113,12 +118,31 @@ Vazifa turini tanlang  →  sarlavha  →  tavsif  →  mas'ul  →  muhimlik  �
    once     →  muddat sanasi → muddat vaqti
    routine  →  takrorlanish → (kunlar | oy kuni | interval) → boshlanish → tugash → vaqt
    goal     →  bosqichlar, birma-bir
-                                    →  eslatma vaqtlari  →  tasdiqlash  →  ✅ Saqlash
+                       →  eslatma vaqtlari  →  [takrorlanish]  →  tasdiqlash  →  ✅ Saqlash
 ```
 
 Every optional step has a skip. `❌ Bekor` and `/bekor` abandon the draft;
 `/yangi` restarts it. A tap on a superseded card re-renders the step the user is
 actually on rather than mutating the draft.
+
+### The repeat question (`vz_remdaily`)
+
+Shown only when a **one-time** task has *both* a deadline and reminder times —
+the one shape with two honest answers:
+
+| | |
+|---|---|
+| 🔁 Har kuni, bajarilguncha | `bot_vz_rd:daily` → `remindDaily = true` |
+| 📅 Faqat muddat kunida | `bot_vz_rd:deadline` → `remindDaily = false` |
+
+Every other shape is decided rather than asked, because there is no second
+option: a deadline-less one-time task has no deadline day to attach a time to,
+so its reminder times can only mean daily; a routine's belong to the day they
+were scheduled for; a goal's are derived per step by `goalRemindDaily_`. The
+review card states the resulting rule, so the answer is visible before saving.
+
+Previously `wizardTaskPayload_` inferred `remindDaily` from whether a deadline
+existed, which silently gave every dated task the deadline-only reading.
 
 ### Why `bot_vz` and not `t_`
 
@@ -321,6 +345,46 @@ are excluded.
 > the goal is saved again. Tasks are not deployed yet, so no such data exists in
 > production, and no guessing migration is applied.
 
+## Reminders
+
+`Reminder_Times_JSON` says *when* in the day to remind. `Remind_Daily` says
+*which days* those times apply to, and it means one thing:
+
+> **Har kuni, vazifa bajarilguncha** — every Tashkent day the occurrence stays
+> open, and not one day more.
+
+| Task | `Remind_Daily` | Days it reminds |
+|---|---|---|
+| One-time, no deadline | on | every day until it is done |
+| One-time, deadline still ahead | on | every day from creation, through the deadline, and on past it while it stays open |
+| One-time, with a deadline | off | the deadline day only |
+| One-time, no deadline | off | never — there is no day to attach a time to |
+| Routine | either | the occurrence's own day; each day is its own occurrence |
+| Goal step | derived | every day while the step is open, whenever the goal has reminder times |
+
+Reminders stop the instant the occurrence becomes `Completed`, `Cancelled` or
+`Skipped`: `runTaskScheduler_` only considers `Open` rows, and
+`runTaskReminderJob_` re-checks the status at send time, so one already in the
+queue is dropped rather than delivered.
+
+On the deadline day the daily reading and the deadline reading name the same
+slot key, so the two paths cannot produce two messages.
+
+> **This used to be wrong.** `taskReminderDatesFor_` checked the occurrence's
+> `Date_Key` first and returned early, so `Remind_Daily` did nothing at all for
+> a one-time task that had a deadline — a task due on the 14th reminded once,
+> on the 14th, however the flag was set. The daily reading is now decided
+> before the date, for one-time and dateless occurrences only, so routines are
+> untouched. No data migration was needed: the stored flag never changed
+> meaning, only its effect.
+
+Both surfaces make the choice explicit rather than inferring it. `/tasks` shows
+"Har kuni, vazifa bajarilguncha eslatilsin" for a one-time task, and for a
+deadline-less one it checks and locks the box — unchecked there would mean the
+reminder times fire never. The Telegram wizard asks
+*"Eslatmalar qanday takrorlansin?"* whenever a one-time task has both a
+deadline and reminder times.
+
 ## Scheduling & the retry queue
 
 Every Telegram send is a job on the existing `Omad_Job_Queue`, inheriting its
@@ -339,6 +403,25 @@ claim-under-lock, exponential backoff and dedup. Job types: `task_notify`,
    marking the slot sent **at enqueue time** so a second pass — or one that
    overlaps — cannot enqueue it again. Reminders missed by more than 3 hours
    are suppressed (marked handled, logged) rather than blasted after downtime.
+
+### One trigger, the whole cycle
+
+`processPendingTelegramJobs` — the trigger the project already had for the
+accounting queue — now runs the scheduler before draining:
+
+```
+5-minute tick → runTaskScheduler_ → enqueue due notifies/reminders → processPendingJobs_
+```
+
+so there is **no second `processTaskSchedules` trigger to maintain**. The scan
+is wrapped in a `try`: this queue also carries financial reports, and a fault on
+the task side must not stop one going out. `processTaskSchedules` is kept as a
+manual entry point.
+
+Running both, in any order and any number of times, cannot duplicate anything.
+The pass takes the script lock, marks each reminder slot before the job is
+queued, and `hasPendingJob_` refuses an identical pending job; the web mutation
+path calls the same scheduler inline for the same reason and is equally safe.
 
 Nothing is announced or reminded for a task whose definition is not `active`,
 which is what makes a pause immediate even for days already on the sheet.
@@ -381,20 +464,21 @@ upcoming and completed-today.
 
 ## Manual steps to deploy (operator)
 
-1. **Ship the backend** — paste the regenerated `script.gs` into the live Apps
-   Script deployment (see [LIVE_STATE.md](LIVE_STATE.md) — use *Manage
-   deployments → the …DtCA2W deployment → New version*, never *New deployment*).
-2. **Configure the Tasks group** — add the bot to the tasks group, then set its
+The backend ships itself: merging to `main` deploys it once CI is green (see
+[DEPLOYMENT.md](DEPLOYMENT.md)). What remains is configuration.
+
+1. **Configure the Tasks group** — add the bot to the tasks group, then set its
    **numeric** chat id in **Sozlamalar → Telegram → Vazifalar Guruhi ID** and
    Save. `@username` is not accepted here (see
    [TELEGRAM_SETUP.md](TELEGRAM_SETUP.md#vazifalar-guruhi-uchun-raqamli-id)).
    It can be the same group as the reporting group or a different one.
-3. **Add a time-driven trigger** — Apps Script → Triggers → Add Trigger →
-   function **`processTaskSchedules`**, *Time-driven*, *Minutes timer*, every
-   5 minutes (or every minute for tighter reminder timing). This is separate
-   from the existing `processPendingTelegramJobs` trigger.
-4. **`OMAD_ADMIN_KEY` must be set** in Script Properties — the /tasks page now
+2. **`OMAD_ADMIN_KEY` must be set** in Script Properties — the /tasks page now
    needs it to read the board, not only to change it.
+
+**No trigger to add.** The existing `processPendingTelegramJobs` trigger runs
+the task scheduler before draining the queue. Add a `processTaskSchedules`
+trigger only if you want the scan more often than the queue drain; it is safe
+but redundant.
 
 No new spreadsheet setup is needed; the `Tasks` and `Task_Occurrences` sheets
 are created on first use.
@@ -406,6 +490,10 @@ tests/task-recurrence.test.js    recurrence engine + Tashkent time math
 tests/task-occurrences.test.js   materialisation, views, streak/rate, goals
 tests/task-telegram.test.js      done callback, photo proof, in-place update
 tests/task-reminders.test.js     reminder dedup, catch-up, stop-on-complete
+tests/task-once-reminders.test.js  "har kuni" semantics: before/on/after a
+                                 deadline, overdue, stop-on-finish, Tashkent
+tests/task-trigger-cycle.test.js one trigger scans + drains; both entry points
+                                 together stay idempotent; scan faults isolated
 tests/task-isolation.test.js     /yangi + ledger untouched by tasks
 tests/task-api.test.js           web API gating + Tasks-group settings
 tests/task-date-keys.test.js     date/time keys survive the spreadsheet
