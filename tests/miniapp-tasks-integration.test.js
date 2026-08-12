@@ -353,6 +353,89 @@ test('a goal reports progress where the Mini App renders it', () => {
   assert.strictEqual(after.progress.percent, 50);
 });
 
+// ------------------------------------------------------- forged identities
+
+/**
+ * A signature says who is calling. Nothing else in the request may.
+ *
+ * The Mini App handler used to read `payload.completedById || auth.userId` and
+ * friends, so a caller who sent those fields decided them. That is a signed
+ * request writing an unsigned name into the permanent record of who did the
+ * work — the audit trail would show the wrong person, with no trace that it
+ * had been supplied rather than derived. Every field the task engine reads for
+ * attribution is now stripped from the payload before the engine sees it.
+ */
+
+const IMPOSTOR_ID = '99999999';
+
+test('a forged completer id is ignored; the signature decides who completed it', () => {
+  const gas = boot();
+  const created = taskAction(gas, 'save_task', { type: 'once', title: 'Kim bajardi?' });
+  const occ = occurrences(gas).find(o => o.Task_ID === created.taskId);
+
+  const done = taskAction(gas, 'complete_occurrence', {
+    occurrenceId: occ.ID,
+    completedById: IMPOSTOR_ID,
+    completedBy: 'Boshqa odam',
+    completedByName: 'Boshqa odam',
+    completedSource: 'web'
+  });
+  assert.strictEqual(done.status, 'success', done.message);
+
+  const after = occurrences(gas).find(o => o.ID === occ.ID);
+  assert.strictEqual(String(after.Completed_By_Id), AUTHORIZED_ID,
+    'the id comes from the verified initData, not from the body');
+  assert.notStrictEqual(String(after.Completed_By_Id), IMPOSTOR_ID);
+  assert.strictEqual(after.Completed_By_Name, 'Xurshid',
+    'and so does the name shown in the history');
+});
+
+test('a forged proof-awaiting id cannot hand the photo slot to another account', () => {
+  const gas = boot();
+  const created = taskAction(gas, 'save_task', {
+    type: 'once', title: 'Rasm kerak', photoRequired: true
+  });
+  const occ = occurrences(gas).find(o => o.Task_ID === created.taskId);
+
+  taskAction(gas, 'complete_occurrence', {
+    occurrenceId: occ.ID,
+    proofAwaitingUserId: IMPOSTOR_ID,
+    completedById: IMPOSTOR_ID
+  });
+
+  // Whoever holds this slot is the account whose next photo closes the task.
+  const after = occurrences(gas).find(o => o.ID === occ.ID);
+  assert.strictEqual(String(after.Proof_Awaiting_User_Id), AUTHORIZED_ID);
+});
+
+test('a forged author is ignored when a task is created', () => {
+  const gas = boot();
+  const created = taskAction(gas, 'save_task', {
+    type: 'once', title: 'Kim yaratdi?', createdBy: 'tg:' + IMPOSTOR_ID
+  });
+
+  assert.strictEqual(storedTask(gas, created.taskId).Created_By, 'tg:' + AUTHORIZED_ID);
+});
+
+test('the rest of the payload still reaches the engine untouched', () => {
+  const gas = boot();
+  // Stripping is by name, so it must not swallow the fields that carry the
+  // actual work: only the attribution fields go.
+  const created = taskAction(gas, 'save_task', {
+    type: 'routine', title: 'Ish qoladi', description: 'Tafsilot',
+    responsible: 'Diyor', priority: 'high',
+    recurrence: { freq: 'weekly', interval: 1, weekdays: [1] },
+    completedById: IMPOSTOR_ID
+  });
+
+  const stored = storedTask(gas, created.taskId);
+  assert.strictEqual(stored.Title, 'Ish qoladi');
+  assert.strictEqual(stored.Description, 'Tafsilot');
+  assert.strictEqual(stored.Responsible, 'Diyor');
+  assert.strictEqual(stored.Priority, 'high');
+  assert.strictEqual(JSON.parse(stored.Recurrence_JSON).freq, 'weekly');
+});
+
 // --------------------------------------------------------------- the gate
 
 test('none of this is reachable without a genuine signature', () => {

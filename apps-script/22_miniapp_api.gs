@@ -20,6 +20,25 @@ var MINI_APP_RECENT_TRANSACTIONS = 15;
 var MINI_APP_RECENT_SALES = 10;
 var MINI_APP_RECENT_CLOSINGS = 5;
 
+/**
+ * Fields the caller may never contribute to — the answer to "who did this".
+ *
+ * The task engine reads all of these straight off the payload. A Mini App
+ * request carries a signature that proves which Telegram account is calling,
+ * so that account is the only possible author; any value arriving under these
+ * names is somebody else's name being typed into an audit trail. They are
+ * deleted from the payload before it reaches the engine, and the verified
+ * values are written back afterwards.
+ */
+var MINI_IDENTITY_FIELDS = {
+  completedById: true,
+  completedBy: true,
+  completedByName: true,
+  completedSource: true,
+  createdBy: true,
+  proofAwaitingUserId: true
+};
+
 function isMiniAppAction_(action) {
   return String(action || "").indexOf("mini_") === 0;
 }
@@ -444,28 +463,40 @@ function miniTaskAction_(doc, payload, auth) {
   var displayName = String(auth.user.firstName || "").trim() ||
     String(auth.user.username || "").trim() || String(auth.userId);
 
-  var forwarded = Object.assign({}, payload, {
-    action: taskAction,
-    // The task engine identifies a *task* by `id` and an *occurrence* by
-    // `occurrenceId`. The Mini App speaks in `taskId` because that is what its
-    // own view calls the field, so it is translated here rather than in four
-    // separate places on the client. Without this, save/cancel/pause/resume
-    // all reported "Vazifa topilmadi" and an edit silently created a second
-    // task instead of changing the one on screen.
-    id: payload.id || payload.taskId || "",
-    // The Mini App has a verified identity, so a completion is attributed to
-    // the person rather than to "Admin (panel)".
-    completedById: payload.completedById || auth.userId,
-    completedBy: payload.completedBy || payload.completedByName || displayName,
-    completedSource: "miniapp",
-    createdBy: payload.createdBy || ("tg:" + auth.userId)
+  // Who did this is decided here and nowhere else.
+  //
+  // These fields used to be read as `payload.completedById || auth.userId` --
+  // the browser's value winning whenever it sent one. A request is just JSON,
+  // so anyone who could reach this endpoint with a valid signature could file
+  // a completion under somebody else's name and id, and the audit trail would
+  // record it as fact. The signature proves who is calling; nothing else may
+  // contribute to that answer.
+  //
+  // Stripped rather than overwritten, so a field added to the engine later
+  // cannot quietly become spoofable by being forwarded before this runs.
+  var forwarded = {};
+  Object.keys(payload || {}).forEach(function (key) {
+    if (MINI_IDENTITY_FIELDS[key]) return;
+    forwarded[key] = payload[key];
   });
 
-  // `save_task` treats an absent field as "leave it alone", so an edit sheet
-  // that does not offer a cadence must not send one at all.
-  if (taskAction === "save_task" && !forwarded.id) {
-    forwarded.createdBy = "tg:" + auth.userId;
-  }
+  forwarded.action = taskAction;
+  // The task engine identifies a *task* by `id` and an *occurrence* by
+  // `occurrenceId`. The Mini App speaks in `taskId` because that is what its
+  // own view calls the field, so it is translated here rather than in four
+  // separate places on the client. Without this, save/cancel/pause/resume
+  // all reported "Vazifa topilmadi" and an edit silently created a second
+  // task instead of changing the one on screen.
+  forwarded.id = payload.id || payload.taskId || "";
+  forwarded.completedById = auth.userId;
+  forwarded.completedBy = displayName;
+  forwarded.completedByName = displayName;
+  forwarded.completedSource = "miniapp";
+  // `save_task` keeps the original author when editing, so this only lands on
+  // newly created tasks. `proofAwaitingUserId` is deliberately not set: the
+  // engine derives it from the verified completer, and the only thing the
+  // client could do with it is hand a photo-proof slot to another account.
+  forwarded.createdBy = "tg:" + auth.userId;
 
   return runTaskAction_(taskAction, forwarded, doc);
 }
