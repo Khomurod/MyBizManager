@@ -69,6 +69,7 @@ function occurrenceRows(list) {
     if (!list.length) return emptyRow("Bu ro'yxat bo'sh");
     return list.map(o => {
         const done = o.status === 'Completed';
+        const clock = dueClock(o.dueLabel);
         const actions = done
             ? `<button class="btn-sm" onclick="taskAction('reopen_occurrence','${escapeHtml(o.id)}')">Qaytarish</button>`
             : `<button class="btn-sm btn-primary" onclick="taskAction('complete_occurrence','${escapeHtml(o.id)}')">Bajarildi</button>
@@ -79,7 +80,7 @@ function occurrenceRows(list) {
                 <div class="grow">
                     <p class="title">${escapeHtml(o.title)}</p>
                     <p class="tiny muted ellipsis">
-                        ${o.dateKey ? shortDate(o.dateKey) : 'Sanasiz'}${o.dueTime ? ' · ' + escapeHtml(o.dueTime) : ''}${o.responsible ? ' · ' + escapeHtml(o.responsible) : ''}
+                        ${o.dateKey ? shortDate(o.dateKey) : 'Sanasiz'}${clock ? ' · ' + escapeHtml(clock) : ''}${o.responsible ? ' · ' + escapeHtml(o.responsible) : ''}
                     </p>
                 </div>
                 ${priorityPill(o.priority)}

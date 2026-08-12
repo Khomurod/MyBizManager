@@ -353,6 +353,70 @@ test('a goal reports progress where the Mini App renders it', () => {
   assert.strictEqual(after.progress.percent, 50);
 });
 
+// ------------------------------------------------------------ when it is due
+
+/**
+ * One description of a deadline, shared with the /tasks board.
+ *
+ * An occurrence carries `dueLabel`. It does not carry `dueTime` -- that lives
+ * on a routine's *definition* -- and the Mini App was reading `o.dueTime` off
+ * an occurrence, so it was always undefined and no deadline time has ever
+ * appeared on a phone. Asserted on the server side here and on the rendered
+ * row in tests/miniapp-ui.e2e.js.
+ */
+
+test('a deadline with a time reaches the phone as a labelled instant', () => {
+  const gas = boot();
+  const created = taskAction(gas, 'save_task', {
+    type: 'once', title: 'Soat 14:30 da',
+    deadlineKey: '2026-08-20', deadlineTime: '14:30'
+  });
+
+  const occ = (mini(gas, 'mini_tasks').view.today.upcoming || [])
+    .concat(mini(gas, 'mini_tasks').view.today.needsAttention || [])
+    .find(o => o.taskId === created.taskId);
+
+  assert.ok(occ, 'the occurrence is in the view');
+  assert.strictEqual(occ.dueLabel, '20.08.2026 14:30');
+  assert.strictEqual(occ.dueTime, undefined,
+    'occurrences describe a deadline once, as a label');
+});
+
+test('a deadline without a time still labels its day', () => {
+  const gas = boot();
+  const created = taskAction(gas, 'save_task', {
+    type: 'once', title: 'Kun oxirigacha', deadlineKey: '2026-08-20'
+  });
+
+  const occ = (mini(gas, 'mini_tasks').view.tasks || []).find(t => t.id === created.taskId);
+  assert.ok(occ, 'the task is listed');
+
+  const view = mini(gas, 'mini_tasks').view;
+  const lists = [].concat(view.today.upcoming || [], view.today.needsAttention || [],
+    view.today.overdue || []);
+  const occurrence = lists.find(o => o.taskId === created.taskId);
+  assert.ok(occurrence);
+  // The engine treats an undated deadline as the end of that day, and says so
+  // in the label, exactly as the /tasks board shows it.
+  assert.strictEqual(occurrence.dueLabel, '20.08.2026 23:59');
+});
+
+test('a goal step has no deadline to show', () => {
+  const gas = boot();
+  const created = taskAction(gas, 'save_task', {
+    type: 'goal', title: 'Maqsad', steps: [{ title: 'Birinchi qadam' }]
+  });
+
+  const step = occurrences(gas).find(o => o.Task_ID === created.taskId);
+  assert.strictEqual(String(step.Due_At), '', 'a step belongs to no moment');
+
+  const view = mini(gas, 'mini_tasks').view;
+  const lists = [].concat(view.today.upcoming || [], view.today.needsAttention || [],
+    view.today.overdue || []);
+  const shown = lists.find(o => o.id === step.ID);
+  if (shown) assert.strictEqual(shown.dueLabel, '', 'so the row shows no time');
+});
+
 // ------------------------------------------------------- forged identities
 
 /**

@@ -64,6 +64,24 @@ function shortDate(value) {
     return text.slice(0, 10);
 }
 
+/**
+ * The clock time out of a server-formatted due label.
+ *
+ * An occurrence carries `dueLabel`: "dd.MM.yyyy HH:mm" when the work is due at
+ * a moment, "dd.MM.yyyy" when it belongs to a day, and empty when it has no
+ * deadline at all. That label is the same field the /tasks board reads, so
+ * there is one description of when something is due and both screens show the
+ * same answer.
+ *
+ * This row prints its own compact date, so only the time half is taken. It
+ * used to read `o.dueTime`, which no occurrence carries — only a routine's
+ * definition does — so a deadline time never appeared on a phone at all.
+ */
+function dueClock(dueLabel) {
+    const match = /(\d{2}:\d{2})$/.exec(String(dueLabel || ""));
+    return match ? match[1] : "";
+}
+
 // ------------------------------------------------------------------ toasts
 
 let toastTimer = null;
