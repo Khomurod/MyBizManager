@@ -260,6 +260,85 @@ test('every tenant is still answered with the figure the single-tenant path give
   });
 });
 
+// ------------------------------------------------------------- café summary
+
+const CAFE_SALES_HEADER = ['Sana', 'Sotuvchi', 'Jami_Tushum', 'Sof_Foyda', 'Chek_Tafsilotlari', 'ID'];
+
+/** Two hundred sales, each with a receipt of five lines, as the real sheet is. */
+function bootManySales() {
+  const receipt = JSON.stringify([1, 2, 3, 4, 5].map(n => ({
+    kind: 'product', inventoryId: `i${n}`, name: `Mahsulot ${n}`,
+    qty: n, unitPrice: 8000, unitCost: 6000, lineTotal: 8000 * n, lineProfit: 2000 * n
+  })));
+  const rows = [];
+  for (let i = 0; i < 200; i++) {
+    rows.push([
+      `2026-08-${String((i % 12) + 1).padStart(2, '0')}T09:00:00.000Z`,
+      'kassir', 40000, 10000, receipt, `sale_${i}`
+    ]);
+  }
+  return loadScript({
+    properties: {
+      OMAD_ADMIN_KEY: ADMIN_KEY,
+      TELEGRAM_BOT_TOKEN: BOT_TOKEN,
+      TELEGRAM_AUTHORIZED_USER_ID: AUTHORIZED_ID,
+      TELEGRAM_GROUP_CHAT_ID: '-1001234567890'
+    },
+    sheets: {
+      System_Config: [
+        ['Cafe_Inventory', JSON.stringify([
+          { id: 'i1', name: 'Kola', type: 'product', qty: 50, unit: 'dona', sellPrice: 8000, unitCost: 6000, totalCost: 300000 }
+        ])],
+        ['Cafe_Recipes', '[]'],
+        ['Cafe_Settings', JSON.stringify({ dailyTarget: 500000 })]
+      ],
+      Cafe_Sales: [CAFE_SALES_HEADER].concat(rows)
+    }
+  });
+}
+
+/** Counts JSON parses while `run` executes, by wrapping the shared helper. */
+function countJsonParses(gas, run) {
+  let calls = 0;
+  const original = gas.safeParseJSON_;
+  gas.safeParseJSON_ = function () { calls++; return original.apply(null, arguments); };
+  try { run(); } finally { gas.safeParseJSON_ = original; }
+  return calls;
+}
+
+test('the café tab does not parse every receipt ever written', () => {
+  const gas = bootManySales();
+
+  let body;
+  const parses = countJsonParses(gas, () => {
+    body = readJsonOutput(gas.doPost(postEvent({
+      action: 'mini_cafe', initData: signedInitData()
+    })));
+  });
+
+  assert.strictEqual(body.status, 'success');
+  assert.strictEqual(body.cafe.recentSales.length, 10);
+  assert.strictEqual(body.cafe.recentSales[0].items, 5, 'the shown rows still list their lines');
+
+  // Ten shown receipts plus a handful of config values. It used to be one
+  // parse per sale in the sheet, however old, to produce a line count for ten.
+  assert.ok(parses < 30,
+    `${parses} JSON parses for 200 sales; only the ten shown rows need one`);
+});
+
+test('the café summary still totals the whole history', () => {
+  const gas = bootManySales();
+  const body = readJsonOutput(gas.doPost(postEvent({
+    action: 'mini_cafe', initData: signedInitData()
+  })));
+
+  // 200 sales at 40 000, all inside 2026-08.
+  assert.strictEqual(body.cafe.month.sales, 200);
+  assert.strictEqual(body.cafe.month.revenue, 200 * 40000);
+  assert.strictEqual(body.cafe.month.profit, 200 * 10000);
+  assert.strictEqual(body.cafe.target.daily, 500000);
+});
+
 // -------------------------------------------------------------- report jobs
 
 test('composing a transaction report reads the legacy sheet twice at most', () => {

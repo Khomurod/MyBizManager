@@ -4186,6 +4186,47 @@ function closeCafeDay_(doc, configSheet, payload) {
   }
 }
 
+/**
+ * Sales as figures, with each receipt left as the text it is stored as.
+ *
+ * `readCafeState_` parses the receipt JSON of every sale ever made, because
+ * the admin screen edits receipts. Nothing that only wants totals needs that:
+ * the Mini App summary adds up revenue and profit over the whole history and
+ * shows a line count for the last ten sales, so parsing seven hundred receipts
+ * to answer it was the bulk of the work in that request. Callers that need a
+ * receipt parse `itemsRaw` for the few rows they actually show.
+ */
+function readCafeSalesLean_(doc) {
+  var sheet = doc.getSheetByName("Cafe_Sales");
+  var rows = [];
+  if (!sheet || sheet.getLastRow() < 2) return rows;
+
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    rows.push({
+      date: data[i][0], seller: data[i][1], total: data[i][2],
+      profit: data[i][3], itemsRaw: data[i][4], id: data[i][5]
+    });
+  }
+  return rows;
+}
+
+/** Close-day records without their per-item summary, for the same reason. */
+function readCafeClosingsLean_(doc) {
+  var sheet = doc.getSheetByName("Cafe_Kun_Yakuni");
+  var rows = [];
+  if (!sheet || sheet.getLastRow() < 2) return rows;
+
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    rows.push({
+      date: data[i][0], seller: data[i][1],
+      totalRevenue: data[i][2], totalProfit: data[i][3]
+    });
+  }
+  return rows;
+}
+
 /** Everything cafe_admin.html and cafe_pos.html need on load. */
 function readCafeState_(doc, configSheet) {
   var salesSheet = doc.getSheetByName("Cafe_Sales");
@@ -10566,9 +10607,21 @@ function buildMiniRecentEntries_(ctx) {
   return entries.slice(0, MINI_APP_RECENT_TRANSACTIONS);
 }
 
-/** Today and this month, from the café sheets. Monitoring only. */
+/**
+ * Today and this month, from the café sheets. Monitoring only.
+ *
+ * This is a read of totals, so it reads totals. It used to go through
+ * `readCafeState_`, which parses the receipt JSON of every sale ever made
+ * because the admin screen edits receipts — several hundred JSON.parse calls
+ * to produce a line count for the ten most recent, plus the recipe list and
+ * the category list, which nothing on this screen shows.
+ */
 function buildMiniCafeSummary_(doc, configSheet) {
-  var state = readCafeState_(doc, configSheet);
+  var sales = readCafeSalesLean_(doc);
+  var closeReports = readCafeClosingsLean_(doc);
+  var inventory = safeParseJSON_(getConfigOnce_(configSheet, "Cafe_Inventory"), []);
+  var settings = safeParseJSON_(getConfigOnce_(configSheet, "Cafe_Settings"), { dailyTarget: 0 });
+
   var todayKey = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
   var monthKey = todayKey.slice(0, 7);
 
@@ -10576,8 +10629,8 @@ function buildMiniCafeSummary_(doc, configSheet) {
   var month = { revenue: 0, profit: 0, count: 0 };
   var recentSales = [];
 
-  for (var i = 0; i < state.sales.length; i++) {
-    var sale = state.sales[i];
+  for (var i = 0; i < sales.length; i++) {
+    var sale = sales[i];
     var key = cafeDateKey_(sale.date);
     var revenue = Number(sale.total) || 0;
     var profit = Number(sale.profit) || 0;
@@ -10586,22 +10639,25 @@ function buildMiniCafeSummary_(doc, configSheet) {
     if (key === todayKey) { today.revenue += revenue; today.profit += profit; today.count++; }
   }
 
-  for (var s = Math.max(0, state.sales.length - MINI_APP_RECENT_SALES); s < state.sales.length; s++) {
-    var recent = state.sales[s];
+  // Only the rows that are actually shown have their receipt parsed, and only
+  // to count its lines.
+  for (var s = Math.max(0, sales.length - MINI_APP_RECENT_SALES); s < sales.length; s++) {
+    var recent = sales[s];
+    var items = safeParseJSON_(recent.itemsRaw, []);
     recentSales.push({
       id: String(recent.id || ""),
       date: cafeDateKey_(recent.date),
       seller: String(recent.seller || ""),
       total: Number(recent.total) || 0,
       profit: Number(recent.profit) || 0,
-      items: Array.isArray(recent.items) ? recent.items.length : 0
+      items: Array.isArray(items) ? items.length : 0
     });
   }
   recentSales.reverse();
 
   var closings = [];
-  for (var c = Math.max(0, state.closeReports.length - MINI_APP_RECENT_CLOSINGS); c < state.closeReports.length; c++) {
-    var close = state.closeReports[c];
+  for (var c = Math.max(0, closeReports.length - MINI_APP_RECENT_CLOSINGS); c < closeReports.length; c++) {
+    var close = closeReports[c];
     closings.push({
       date: cafeDateKey_(close.date),
       seller: String(close.seller || ""),
@@ -10613,8 +10669,8 @@ function buildMiniCafeSummary_(doc, configSheet) {
 
   var inventoryValue = 0;
   var lowStock = [];
-  for (var v = 0; v < state.inventory.length; v++) {
-    var item = state.inventory[v];
+  for (var v = 0; v < inventory.length; v++) {
+    var item = inventory[v];
     var qty = Number(item.qty) || 0;
     var value = Number(item.totalCost);
     inventoryValue += isFinite(value) && value > 0 ? value : qty * (Number(item.unitCost) || 0);
@@ -10623,7 +10679,7 @@ function buildMiniCafeSummary_(doc, configSheet) {
     }
   }
 
-  var target = Number((state.settings || {}).dailyTarget) || 0;
+  var target = Number((settings || {}).dailyTarget) || 0;
   return {
     today: { revenue: Math.round(today.revenue), profit: Math.round(today.profit), sales: today.count },
     month: { revenue: Math.round(month.revenue), profit: Math.round(month.profit), sales: month.count, label: monthKey },
@@ -10633,7 +10689,7 @@ function buildMiniCafeSummary_(doc, configSheet) {
     },
     inventory: {
       value: Math.round(inventoryValue),
-      items: state.inventory.length,
+      items: inventory.length,
       lowStock: lowStock.slice(0, 8)
     },
     recentSales: recentSales,
