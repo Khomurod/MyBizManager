@@ -212,43 +212,151 @@ function redactStoredLogValue_(value) {
   return redactHighEntropyValues_(redactSecrets_(value));
 }
 
+/** True for a sheet this cleanup created on some earlier run. */
+function isDebugLogBackupSheetName_(name) {
+  return String(name || "").indexOf(DEBUG_LOG_SHEET + "_Backup_") === 0;
+}
+
 /**
- * Copies Telegram_Debug_Log, then rewrites every Details cell through the
- * redactor. Reports how many rows changed; never returns a cell's contents.
+ * Redacts one sheet's Details column in place. Returns how many rows changed.
  *
- * Safe to run twice: a row already redacted comes back identical and is left
- * alone. The backup is made once per run and named for the minute it was taken.
+ * Reads and writes the whole column in two operations rather than one call per
+ * row: the live log is thousands of rows, and a per-row setValue is both slow
+ * enough to time out and non-atomic enough to leave a half-cleaned sheet
+ * behind if it does.
  */
-function purgeTelegramDebugSecrets_(doc) {
-  var sheet = doc.getSheetByName(DEBUG_LOG_SHEET);
-  if (!sheet || sheet.getLastRow() < 2) {
-    return { status: "success", rows: 0, redacted: 0, backupSheet: "" };
-  }
+function redactDebugSheetInPlace_(sheet) {
+  if (!sheet || sheet.getLastRow() < 2) return { rows: 0, redacted: 0 };
 
-  var lastRow = sheet.getLastRow();
-  var values = sheet.getRange(2, 1, lastRow - 1, 3).getValues();
-
-  var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyyMMdd_HHmmss");
-  var backupName = (DEBUG_LOG_SHEET + "_Backup_" + stamp).slice(0, 95);
-  var backup = doc.getSheetByName(backupName) || doc.insertSheet(backupName);
-  if (backup.getLastRow() === 0) backup.appendRow(["Timestamp", "Event", "Details"]);
-  backup.getRange(backup.getLastRow() + 1, 1, values.length, 3).setValues(values);
-
+  var rowCount = sheet.getLastRow() - 1;
+  var range = sheet.getRange(2, 3, rowCount, 1);
+  var details = range.getValues();
   var redacted = 0;
-  for (var i = 0; i < values.length; i++) {
-    var before = values[i][2];
+
+  for (var i = 0; i < details.length; i++) {
+    var before = String(details[i][0] === null || details[i][0] === undefined ? "" : details[i][0]);
     var after = redactStoredLogValue_(before);
-    if (after === String(before === null || before === undefined ? "" : before)) continue;
-    sheet.getRange(i + 2, 3).setValue(after);
+    if (after === before) continue;
+    details[i][0] = after;
     redacted++;
   }
 
+  if (redacted > 0) range.setValues(details);
+  return { rows: rowCount, redacted: redacted };
+}
+
+/**
+ * Removes historical credentials from Telegram_Debug_Log and from every backup
+ * an earlier run of this cleanup left behind.
+ *
+ * The order matters, and getting it wrong is why this was rewritten: copying
+ * the sheet first and redacting the original afterwards moves the leaked
+ * secret into a second tab rather than removing it. Nothing is copied until it
+ * has been through the redactor, so the backup is born clean and the raw value
+ * exists in exactly one place — the live sheet — right up to the moment it is
+ * overwritten.
+ *
+ * Backups from before this change are swept too, in place. A secret already
+ * duplicated into one of them is the same leak; leaving it there because this
+ * run did not create it would be pointless.
+ *
+ * Safe to run twice: a row already redacted comes back identical, is left
+ * alone, and produces no further backup. Reports counts only, never contents.
+ */
+function purgeTelegramDebugSecrets_(doc) {
+  var priorBackups = sweepDebugLogBackups_(doc);
+  var sheet = doc.getSheetByName(DEBUG_LOG_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) {
+    return {
+      status: "success", rows: 0, redacted: 0, backupSheet: "",
+      backupsSwept: priorBackups.sheets, backupRowsRedacted: priorBackups.redacted
+    };
+  }
+
+  var rowCount = sheet.getLastRow() - 1;
+  var values = sheet.getRange(2, 1, rowCount, 3).getValues();
+
+  // Redact first, in memory. `values` holds no secret from here on, so it is
+  // safe to write anywhere.
+  var redacted = 0;
+  for (var i = 0; i < values.length; i++) {
+    var before = String(values[i][2] === null || values[i][2] === undefined ? "" : values[i][2]);
+    var after = redactStoredLogValue_(before);
+    if (after === before) continue;
+    values[i][2] = after;
+    redacted++;
+  }
+
+  // A run that found nothing to redact has nothing worth backing up either,
+  // and a backup per no-op run is just more sheets to audit later.
+  var backupName = "";
+  if (redacted > 0) {
+    var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyyMMdd_HHmmss");
+    backupName = (DEBUG_LOG_SHEET + "_Backup_" + stamp).slice(0, 95);
+    var backup = doc.getSheetByName(backupName) || doc.insertSheet(backupName);
+    if (backup.getLastRow() === 0) backup.appendRow(["Timestamp", "Event", "Details"]);
+    backup.getRange(backup.getLastRow() + 1, 1, values.length, 3).setValues(values);
+
+    sheet.getRange(2, 1, rowCount, 3).setValues(values);
+  }
+
   appendAuditRow_(doc, "telegram_debug_log_redacted", JSON.stringify({
-    rows: values.length, redacted: redacted, backupSheet: backupName
+    rows: rowCount, redacted: redacted, backupSheet: backupName,
+    backupsSwept: priorBackups.sheets, backupRowsRedacted: priorBackups.redacted
   }));
   recordLastOperation_(doc, "purge_telegram_debug_secrets");
 
-  return { status: "success", rows: values.length, redacted: redacted, backupSheet: backupName };
+  return {
+    status: "success", rows: rowCount, redacted: redacted, backupSheet: backupName,
+    backupsSwept: priorBackups.sheets, backupRowsRedacted: priorBackups.redacted
+  };
+}
+
+/** Redacts every backup sheet an earlier cleanup created. */
+function sweepDebugLogBackups_(doc) {
+  var sheets = doc.getSheets();
+  var swept = [];
+  var redacted = 0;
+
+  for (var i = 0; i < sheets.length; i++) {
+    var name = sheets[i].getName();
+    if (!isDebugLogBackupSheetName_(name)) continue;
+    var result = redactDebugSheetInPlace_(sheets[i]);
+    swept.push(name);
+    redacted += result.redacted;
+  }
+
+  return { sheets: swept, redacted: redacted };
+}
+
+/**
+ * What a reader of the sheet could still find, as counts and sheet names.
+ *
+ * Deliberately reports only how many rows still look like they carry a
+ * credential — printing the offending row would defeat the point of the
+ * cleanup that produced this number.
+ */
+function auditTelegramSecretExposure_(doc) {
+  var sheets = doc.getSheets();
+  var findings = [];
+  var total = 0;
+
+  for (var i = 0; i < sheets.length; i++) {
+    var name = sheets[i].getName();
+    if (name !== DEBUG_LOG_SHEET && !isDebugLogBackupSheetName_(name)) continue;
+    if (sheets[i].getLastRow() < 2) continue;
+
+    var details = sheets[i].getRange(2, 3, sheets[i].getLastRow() - 1, 1).getValues();
+    var dirty = 0;
+    for (var r = 0; r < details.length; r++) {
+      var before = String(details[r][0] === null || details[r][0] === undefined ? "" : details[r][0]);
+      if (redactStoredLogValue_(before) !== before) dirty++;
+    }
+    if (dirty > 0) findings.push({ sheet: name, rows: dirty });
+    total += dirty;
+  }
+
+  return { status: "success", clean: total === 0, exposedRows: total, sheets: findings };
 }
 
 // ------------------------------------------------------ webhook secret rotation

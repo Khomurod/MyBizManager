@@ -196,7 +196,7 @@ test('the queue status needs the access key, and reports the backlog with it', (
 
   // The backlog describes how much business is waiting to be reported, so a
   // caller with the wrong key is told nothing. A caller with *no* key is the
-  // pre-key frontend, which is served until Netlify catches up - see
+  // pre-key frontend, which is served until the static host catches up - see
   // rollout-grace.test.js.
   const wrongKey = readJsonOutput(gas.doPost(postEvent({ action: 'get_job_queue_status', adminKey: 'nope' })));
   assert.strictEqual(wrongKey.status, 'error');

@@ -317,7 +317,7 @@ where a key must never be. Both are compared **after** a rate limit, so the
 endpoint cannot be used to guess the key.
 
 `get_omad` / `get_cafe` still answer anonymously, deliberately, for exactly one
-release: Netlify and Apps Script deploy separately, so removing them in the same
+release: the static host and Apps Script deploy separately, so removing them in the same
 change could leave the live frontend calling a route that no longer exists. The
 UI already calls the authenticated routes; the anonymous ones are removed once
 that is confirmed live.

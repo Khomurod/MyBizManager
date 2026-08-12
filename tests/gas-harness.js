@@ -64,6 +64,7 @@ function createSheet(name, rows, coerce) {
     name,
     data,
     formats,
+    getName: () => name,
     getLastRow: () => data.length,
     appendRow(row) {
       const target = data.length + 1;
@@ -127,6 +128,8 @@ function createSpreadsheet(initialSheets, coerce) {
   return {
     sheets,
     getSheetByName: name => sheets[name] || null,
+    // Insertion order, as the real Spreadsheet returns tabs left to right.
+    getSheets: () => Object.keys(sheets).map(name => sheets[name]),
     insertSheet(name) {
       sheets[name] = createSheet(name, [], coerce);
       return sheets[name];

@@ -12,7 +12,16 @@
 var TELEGRAM_PROP_MINI_APP_URL = "TELEGRAM_MINI_APP_URL";
 var TELEGRAM_PROP_MINI_APP_STATUS = "TELEGRAM_MINI_APP_STATUS";
 
-var DEFAULT_MINI_APP_URL = "https://omad-d.netlify.app/mini";
+/**
+ * There is deliberately no default Mini App URL.
+ *
+ * There used to be one, pointing at the Netlify host. A default is worse than
+ * nothing here: the frontend host changes, the constant does not, and the menu
+ * button then silently installs a URL that 404s — which looks configured and
+ * is not. The operator supplies the production `/mini` URL once, it is stored,
+ * and every later run reuses the stored value.
+ */
+var DEFAULT_MINI_APP_URL = "";
 var MINI_APP_MENU_BUTTON_TEXT = "📊 Omad";
 
 var HEALTH_OK = "ok";
@@ -53,6 +62,12 @@ function configureMiniApp_(payload) {
   var url = String((payload && payload.miniAppUrl) || "").trim() ||
             getTelegramSetting_(TELEGRAM_PROP_MINI_APP_URL) ||
             DEFAULT_MINI_APP_URL;
+  if (!url) {
+    return {
+      status: "error",
+      message: "Mini App manzili kiritilmagan. Frontend manzilini /mini bilan kiriting."
+    };
+  }
   if (!/^https:\/\/[^\s]+$/.test(url)) {
     return { status: "error", message: "Mini App manzili https:// bilan boshlanishi kerak." };
   }
@@ -184,7 +199,7 @@ function rolloutGraceCheck_() {
     return check_("grace", "Kalit himoyasi", HEALTH_OK, "To'liq yoqilgan");
   }
   return check_("grace", "Kalit himoyasi", HEALTH_WARN,
-    "Eski frontend uchun vaqtincha ochiq. Netlify yangilangach " +
+    "Eski frontend uchun vaqtincha ochiq. Yangi frontend ishga tushgach " +
     "LEGACY_CLIENT_GRACE = false qiling");
 }
 

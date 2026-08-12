@@ -206,10 +206,10 @@ function buildTelegramSettingsView_() {
 /**
  * Whether a client that predates the access key is still being served.
  *
- * The frontend and the backend deploy separately — Netlify from `main`, Apps
- * Script from CI — so there is a window where the browser has not learned to
- * send a key and the server has already started demanding one. In that window
- * every save fails: no rent recorded, no café sale rung up.
+ * The frontend and the backend deploy separately — the static host from `main`,
+ * Apps Script from CI — so there is a window where the browser has not learned
+ * to send a key and the server has already started demanding one. In that
+ * window every save fails: no rent recorded, no café sale rung up.
  *
  * While this is true, the actions the *old* frontend calls accept a request
  * that carries no key at all, exactly as they did before. A request carrying a
@@ -218,8 +218,10 @@ function buildTelegramSettingsView_() {
  * actions — stays strict.
  *
  * This is a deliberate, temporary hole. Turn it off by setting this to false
- * once <https://omad-d.netlify.app/assets/omad/06-api.js> contains
- * `omad_access_key`; the health check reports a warning until then.
+ * once the production frontend actually serves the current build — that is,
+ * once `<production-host>/assets/omad/06-api.js` contains `omad_access_key`.
+ * Verify the live host rather than assuming a merge reached it; the health
+ * check reports a warning until this is false.
  */
 var LEGACY_CLIENT_GRACE = true;
 

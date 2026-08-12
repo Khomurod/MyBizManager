@@ -52,8 +52,9 @@ function doPost(e) {
     // The financial ledger, the tenant list and the whole café state are the
     // business's private data. get_omad / get_cafe still answer an anonymous
     // GET for one release so the deployed frontend cannot break between the
-    // Netlify and Apps Script rollouts; these are what the UI now calls, and
-    // the anonymous routes are removed once this is confirmed live.
+    // static-host and Apps Script rollouts; these are what the UI now calls,
+    // and the anonymous routes are removed once the live host serves the
+    // current build.
     if (action === 'verify_access' || action === 'get_omad_data' || action === 'get_cafe_data') {
       return authenticatedReadAction_(action, payload, doc, configSheet);
     }
@@ -186,8 +187,8 @@ function doGet(e) {
   if (!configSheet) return jsonOutput_({ status: "empty" });
 
   // Deprecated, and reachable by anyone who knows the URL. Kept for exactly one
-  // release so the deployed frontend keeps working while Netlify and Apps
-  // Script roll out separately; get_omad_data / get_cafe_data are the
+  // release so the deployed frontend keeps working while the static host and
+  // Apps Script roll out separately; get_omad_data / get_cafe_data are the
   // authenticated replacements and the UI already calls them.
   if (action === 'get_omad') {
     return jsonOutput_(readOmadPayload_(doc, configSheet));
@@ -327,6 +328,7 @@ function isMaintenanceAction_(action) {
          action === 'fix_transaction_dates' ||
          action === 'backfill_entry_group_ids' ||
          action === 'purge_telegram_debug_secrets' ||
+         action === 'audit_telegram_secret_exposure' ||
          action === 'rotate_telegram_webhook_secret';
 }
 
@@ -352,6 +354,9 @@ function maintenanceAction_(action, payload, doc) {
   }
   if (action === 'purge_telegram_debug_secrets') {
     return jsonOutput_(purgeTelegramDebugSecrets_(doc));
+  }
+  if (action === 'audit_telegram_secret_exposure') {
+    return jsonOutput_(auditTelegramSecretExposure_(doc));
   }
   return jsonOutput_(rotateTelegramWebhookSecret_(payload));
 }

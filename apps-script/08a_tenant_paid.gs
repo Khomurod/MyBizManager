@@ -27,13 +27,62 @@ function tenantPaidExpenseSource_(method) {
   return method === "Bank" ? "Umumiy Bankdan" : "Umumiy Naqd Puldan";
 }
 
+/** The tenant list as configured, through the same reader the app uses. */
+function configuredTenants_(doc) {
+  var configSheet = doc.getSheetByName("System_Config");
+  if (!configSheet) return [];
+  return normalizeTenantList_(safeParseJSON_(getConfig(configSheet, "Omad_Tenants"), []));
+}
+
 /** The two source names that are expense buckets rather than tenants. */
 function isExpenseSourceName_(name) {
   var text = String(name || "").trim();
   return text === "Umumiy Naqd Puldan" || text === "Umumiy Bankdan";
 }
 
-function validateTenantPaidInput_(input) {
+/**
+ * The configured tenant of that name, or null.
+ *
+ * Matched on the trimmed name, which is the identity the whole app already
+ * uses: the ledger stores the name, `Omad_Tenants` is keyed by it, and the
+ * balance is computed by grouping rows on it. Anything that does not match one
+ * of those names has no balance to credit, whatever it is.
+ */
+function findConfiguredTenant_(tenants, name) {
+  var wanted = String(name || "").trim();
+  var list = Array.isArray(tenants) ? tenants : [];
+  for (var i = 0; i < list.length; i++) {
+    if (String(list[i].name || "").trim() === wanted) return list[i];
+  }
+  return null;
+}
+
+/**
+ * Whether the tenant's agreement covers this period.
+ *
+ * Deliberately *not* `isTenantInScheduleForPeriod_`: that also refuses a
+ * tenant whose record is marked inactive, which is right for "what should this
+ * tenant be billed now" and wrong here. A tenant who moved out in March still
+ * legitimately paid a February bill on our behalf, and recording it late — or
+ * correcting it a year later — has to stay possible. The agreement window is
+ * the honest boundary; the active flag is about today, not about history.
+ *
+ * A tenant with no window configured is covered for every period, which is how
+ * every existing tenant record behaves.
+ */
+function tenantAgreementCoversPeriod_(tenant, period) {
+  var t = tenant || {};
+  if (!isCanonicalPeriod_(period)) return false;
+  if (t.startPeriod && comparePeriods_(period, t.startPeriod) < 0) return false;
+  if (t.endPeriod && comparePeriods_(period, t.endPeriod) > 0) return false;
+  return true;
+}
+
+/**
+ * @param {object} input     the request
+ * @param {Array}  tenants   the configured tenant list, normalized
+ */
+function validateTenantPaidInput_(input, tenants) {
   var payload = input || {};
 
   if (!isCanonicalPeriod_(payload.period)) return "Davr noto'g'ri (masalan 2026-01).";
@@ -45,6 +94,17 @@ function validateTenantPaidInput_(input) {
   // no balance to credit, and choosing one would silently produce an entry
   // that cancels itself out and means nothing.
   if (isExpenseSourceName_(tenant)) return "Ijarachi tanlang — umumiy kassa bo'lmaydi.";
+
+  // A non-empty string is not a tenant. Until now any text at all was accepted
+  // and credited, which invents a balance nobody owes and quietly corrupts the
+  // debt figure the whole app is for.
+  var configured = findConfiguredTenant_(tenants, tenant);
+  if (!configured) return "Bunday ijarachi ro'yxatda yo'q: " + tenant;
+
+  // Backdating is legitimate; backdating outside the agreement is not.
+  if (!tenantAgreementCoversPeriod_(configured, payload.period)) {
+    return "Bu davr ijarachining shartnomasiga kirmaydi: " + tenant + " (" + payload.period + ").";
+  }
 
   var amount = Number(payload.amount);
   if (!isFinite(amount) || amount <= 0) return "Summa musbat raqam bo'lishi kerak.";
@@ -85,7 +145,7 @@ function tenantPaidComment_(half, tenant, purpose) {
  * the `duplicate` flag.
  */
 function createTenantPaidExpense_(doc, input) {
-  var validationError = validateTenantPaidInput_(input);
+  var validationError = validateTenantPaidInput_(input, configuredTenants_(doc));
   if (validationError) return { status: "error", message: validationError };
 
   var lock = LockService.getScriptLock();

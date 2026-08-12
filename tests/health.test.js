@@ -17,7 +17,7 @@ const ADMIN_KEY = 'health-admin-key';
 const BOT_TOKEN = '123456789:AAFakeTokenForTestsOnly_0123456789abcd';
 const WEBHOOK_SECRET = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90';
 const LIVE_URL = 'https://script.google.com/macros/s/AKfycDEPLOY/exec';
-const MINI_URL = 'https://omad-d.netlify.app/mini';
+const MINI_URL = 'https://example-frontend.pages.dev/mini';
 
 /** A Telegram that answers everything the way a healthy setup would. */
 function healthyTelegram(overrides = {}) {
@@ -284,7 +284,7 @@ test('a non-https Mini App URL is refused before anything is called', () => {
     fetch: (url) => { calls.push(url); return healthyTelegram()(url); }
   });
   const result = readJsonOutput(gas.doPost(postEvent({
-    action: 'configure_mini_app', adminKey: ADMIN_KEY, miniAppUrl: 'http://omad-d.netlify.app/mini'
+    action: 'configure_mini_app', adminKey: ADMIN_KEY, miniAppUrl: 'http://example-frontend.pages.dev/mini'
   })));
 
   assert.equal(result.status, 'error');
@@ -317,4 +317,22 @@ test('the Mini App URL is reported in settings, and no secret is', () => {
   const dump = JSON.stringify(view);
   assert.ok(!dump.includes(BOT_TOKEN));
   assert.ok(!dump.includes(WEBHOOK_SECRET));
+});
+
+test('configuring with no URL at all is refused rather than defaulted', () => {
+  // There used to be a hardcoded Netlify default here. A default that outlives
+  // the host it names installs a menu button pointing at a 404, which reads as
+  // "configured" in every status view. Nothing is called and nothing is stored.
+  const calls = [];
+  const gas = boot({
+    properties: { TELEGRAM_MINI_APP_URL: '' },
+    fetch: (url) => { calls.push(url); return healthyTelegram()(url); }
+  });
+
+  const result = readJsonOutput(gas.doPost(postEvent({
+    action: 'configure_mini_app', adminKey: ADMIN_KEY
+  })));
+
+  assert.equal(result.status, 'error');
+  assert.equal(calls.length, 0, 'Telegram is not called with a guessed URL');
 });
