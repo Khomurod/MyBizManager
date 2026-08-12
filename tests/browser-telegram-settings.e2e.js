@@ -72,6 +72,7 @@ describe('Telegram settings panel (browser)', () => {
     await context.addInitScript(() => {
       localStorage.setItem('omad_role', 'omad_admin');
       localStorage.setItem('omad_token', 'omad_admin_active');
+      localStorage.setItem('omad_access_key', 'e2e-access-key');
       localStorage.setItem('omad_user', 'tester');
     });
 
@@ -218,7 +219,7 @@ describe('Telegram settings panel (browser)', () => {
     await context.close();
   });
 
-  test('save is blocked client-side when the admin key is empty', async () => {
+  test('an empty key field falls back to the key this browser signed in with', async () => {
     const state = { ...savedState };
     const { page, context, backendRequests } = await openAdmin(backend(state));
 
@@ -230,10 +231,42 @@ describe('Telegram settings panel (browser)', () => {
     await page.fill('#tgGroupChatId', '-1001234567890');
     await page.click('#tgSaveBtn');
 
-    await page.waitForFunction(() =>
-      document.getElementById('tgMessage').textContent.includes('Admin kalitini'));
+    const settled = Date.now() + 10000;
+    while (!backendRequests.some(r => r.action === 'save_telegram_settings') && Date.now() < settled) {
+      await page.waitForTimeout(100);
+    }
 
-    assert.strictEqual(backendRequests.filter(r => r.action === 'save_telegram_settings').length, 0);
+    // The field exists so a *different* key can be tried without signing out.
+    // Leaving it empty is not a refusal to authenticate - the signed-in key is
+    // the same key, so the save goes through carrying it.
+    const saves = backendRequests.filter(r => r.action === 'save_telegram_settings');
+    assert.strictEqual(saves.length, 1);
+    assert.strictEqual(saves[0].adminKey, 'e2e-access-key');
+    await context.close();
+  });
+
+  test('a typed key wins over the signed-in one', async () => {
+    const state = { ...savedState };
+    const { page, context, backendRequests } = await openAdmin(backend(state));
+
+    await page.click('#nav-settings');
+    await page.evaluate(() => showSettingsSection('telegram'));
+    await page.fill('#tgAdminKey', 'a-different-key');
+    await page.fill('#tgBotToken', FIXTURE_TOKEN);
+    await page.fill('#tgAuthorizedUserId', '111222333');
+    await page.fill('#tgGroupChatId', '-1001234567890');
+    await page.click('#tgSaveBtn');
+
+    // Waiting on the request itself, not on a message: the message is written
+    // both before and after the call, so it is not a signal that one happened.
+    const deadline = Date.now() + 10000;
+    while (!backendRequests.some(r => r.action === 'save_telegram_settings') && Date.now() < deadline) {
+      await page.waitForTimeout(100);
+    }
+
+    const saves = backendRequests.filter(r => r.action === 'save_telegram_settings');
+    assert.strictEqual(saves.length, 1);
+    assert.strictEqual(saves[0].adminKey, 'a-different-key');
     await context.close();
   });
 
@@ -262,6 +295,7 @@ describe('Telegram settings panel (browser)', () => {
     await context.addInitScript(() => {
       localStorage.setItem('omad_role', 'cafe_seller');
       localStorage.setItem('omad_token', 'cafe_seller_active');
+      localStorage.setItem('omad_access_key', 'e2e-access-key');
       localStorage.setItem('omad_user', 'kassir');
     });
     await context.route('**://api.telegram.org/**', route => {

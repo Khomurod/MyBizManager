@@ -9,11 +9,30 @@
 var CAFE_SALES_HEADER = ["Sana", "Sotuvchi", "Jami_Tushum", "Sof_Foyda", "Chek_Tafsilotlari", "ID"];
 var CAFE_CLOSE_DAY_HEADER = ["Sana", "Sotuvchi", "Jami_Tushum", "Sof_Foyda", "Tafsilotlar_JSON"];
 
+var CAFE_MUTATIONS = {
+  save_inventory: true, save_recipe: true, save_categories: true,
+  save_cafe_settings: true, save_sale: true, void_sale: true, close_day: true
+};
+
+function isCafeAction_(action) {
+  return CAFE_MUTATIONS[String(action || "")] === true;
+}
+
 /**
  * Handles every café action. Returns a ContentService output, or null when the
  * action does not belong to the café, so the router can carry on.
+ *
+ * Every one of these writes: inventory, recipes, prices, sales, voids and the
+ * close-day record. They were reachable by anyone who knew the /exec URL, which
+ * meant anyone could rewrite the stock or file a sale. They now take the same
+ * key the rest of the business actions take.
  */
 function handleCafeAction_(action, payload, doc, configSheet) {
+  if (!isCafeAction_(action)) return null;
+
+  var accessError = checkAdminKey_(payload);
+  if (accessError) return jsonOutput_({ status: "error", message: accessError });
+
   if (action === 'save_inventory') {
     setConfig(configSheet, "Cafe_Inventory", JSON.stringify(payload.inventory));
     return jsonOutput_({ status: "success" });

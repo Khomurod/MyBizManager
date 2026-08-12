@@ -201,12 +201,16 @@ test('an unknown job type fails the job instead of the request', () => {
 
 // ------------------------------------------------------------- visibility
 
-test('queue status is reportable without the admin key', () => {
+test('queue status needs the access key, and reports the backlog with it', () => {
   const gas = loadScript({ properties: props(), fetch: alwaysFails() });
   enqueueCloseDay(gas);
   gas.processPendingJobs_(gas.__spreadsheet, 10);
 
-  const body = readJsonOutput(gas.doPost(postEvent({ action: 'get_job_queue_status' })));
+  assert.strictEqual(
+    readJsonOutput(gas.doPost(postEvent({ action: 'get_job_queue_status' }))).status, 'error',
+    'an anonymous caller is not told what is waiting to be sent');
+
+  const body = readJsonOutput(gas.doPost(postEvent({ action: 'get_job_queue_status', adminKey: ADMIN_KEY })));
   assert.strictEqual(body.status, 'success');
   assert.strictEqual(body.queue.counts.pending, 1);
   assert.strictEqual(body.queue.counts.completed, 0);
@@ -247,7 +251,7 @@ test('close_day stores the record and queues its report', () => {
   const gas = loadScript({ properties: props(), sheets: { System_Config: [] } });
 
   const body = readJsonOutput(gas.doPost(postEvent({
-    action: 'close_day',
+    action: 'close_day', adminKey: ADMIN_KEY,
     date: '2026-02-01T09:00:00.000Z',
     seller: 'Kassir',
     inventory: [],
@@ -268,7 +272,7 @@ test('close_day still succeeds when Telegram is unavailable', () => {
   const gas = loadScript({ properties: props(), sheets: { System_Config: [] }, fetch: alwaysFails() });
 
   const body = readJsonOutput(gas.doPost(postEvent({
-    action: 'close_day',
+    action: 'close_day', adminKey: ADMIN_KEY,
     date: '2026-02-01T09:00:00.000Z',
     seller: 'Kassir',
     inventory: [],

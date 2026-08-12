@@ -62,9 +62,48 @@
 <body class="pb-32 text-slate-800">
   <script>
     const GOOGLE_APP_URL = "https://script.google.com/macros/s/AKfycbzhKyEOGZbVdtpSd7fa6aTDZf1QsqWQeOpWRxrb7bYpzWWDQxUXZID8JNzGMfDtCA2W/exec";
+
+    // ------------------------------------------------------------------
+    // Access key
+    // ------------------------------------------------------------------
+    // The café's inventory, prices, sales and margins are private business
+    // data, and every mutation here rewrites stock or files a sale. Both were
+    // reachable by anyone who knew the /exec URL. The key is verified once at
+    // login and rides on every request from here on.
+    const ACCESS_KEY_STORAGE = "omad_access_key";
+
+    function accessKey() {
+      try { return localStorage.getItem(ACCESS_KEY_STORAGE) || ""; } catch (e) { return ""; }
+    }
+
+    function requireAccess() {
+      try { localStorage.removeItem(ACCESS_KEY_STORAGE); } catch (e) {}
+      window.location.href = "login.html";
+    }
+
+    /** One authenticated POST, returning the parsed body. */
+    async function callCafeApi(payload) {
+      const res = await fetch(GOOGLE_APP_URL, {
+        method: "POST",
+        body: JSON.stringify(Object.assign({ adminKey: accessKey() }, payload))
+      });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const text = await res.text();
+      try { return JSON.parse(text); } catch (e) { throw new Error("Server javobi tushunarsiz"); }
+    }
+
+    /** The café state, over an authenticated POST rather than a public GET. */
+    async function loadCafeState() {
+      const data = await callCafeApi({ action: "get_cafe_data" });
+      if (data && data.status === "error") { requireAccess(); throw new Error(data.message || "Ruxsat yo'q"); }
+      return data;
+    }
+
     // Telegram credentials are held server-side in Apps Script Script
     // Properties. The POS never sees a bot token.
-    if (localStorage.getItem("omad_role") !== "cafe_seller" || localStorage.getItem("omad_token") !== "cafe_seller_active") {
+    if (localStorage.getItem("omad_role") !== "cafe_seller" ||
+        localStorage.getItem("omad_token") !== "cafe_seller_active" ||
+        !localStorage.getItem("omad_access_key")) {
       window.location.href = "login.html";
     }
   </script>
@@ -393,9 +432,7 @@
       itemsEl.innerHTML = `<div class="col-span-2 glass rounded-2xl p-4 text-center text-xs font-bold text-slate-500">Menyu yuklanmoqda...</div>`;
 
       try {
-        const res = await fetch(`${GOOGLE_APP_URL}?action=get_cafe`);
-        if (!res.ok) throw new Error("Menyu kelmadi");
-        const data = await res.json();
+        const data = await loadCafeState();
         console.log("[POS] get_cafe javobi:", data);
         const payload = data.data || data.payload || data;
         state.inventory = Array.isArray(payload.inventory) ? payload.inventory : [];
@@ -539,7 +576,7 @@
       };
 
       try {
-        await fetch(GOOGLE_APP_URL, { method: "POST", body: JSON.stringify(payload) });
+        await callCafeApi(payload);
 
         state.sales.unshift(payload);
         state.sessionSales.unshift(payload);
@@ -604,13 +641,10 @@
       }
 
       try {
-        await fetch(GOOGLE_APP_URL, {
-          method: "POST",
-          body: JSON.stringify({
-            action: "void_sale",
-            id: saleId,
-            inventory: state.inventory
-          })
+        await callCafeApi({
+          action: "void_sale",
+          id: saleId,
+          inventory: state.inventory
         });
         alert("Chek bekor qilindi va tovarlar omborga qaytarildi.");
       } catch (e) {
@@ -761,18 +795,15 @@
         // The server stores the close-day record and queues its own Telegram
         // report as a retryable job, so a Telegram outage cannot fail or
         // duplicate the close-day.
-        await fetch(GOOGLE_APP_URL, {
-          method: "POST",
-          body: JSON.stringify({
-            action: "close_day",
-            date: closeDateIso,
-            seller: cashierName,
-            inventory: updatedInventory,
-            summary,
-            soldItems,
-            totalRevenue: state.todayRevenue,
-            totalProfit: state.todayProfit
-          })
+        await callCafeApi({
+          action: "close_day",
+          date: closeDateIso,
+          seller: cashierName,
+          inventory: updatedInventory,
+          summary,
+          soldItems,
+          totalRevenue: state.todayRevenue,
+          totalProfit: state.todayProfit
         });
 
         state.inventory = updatedInventory;
@@ -832,6 +863,7 @@
     function logout() {
       localStorage.removeItem("omad_role");
       localStorage.removeItem("omad_token");
+      localStorage.removeItem("omad_access_key");
       localStorage.removeItem("omad_user");
       window.location.href = "login.html";
     }

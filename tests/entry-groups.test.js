@@ -161,7 +161,7 @@ test('a report job resolves its rows by group id, falling back to the id prefix 
 test('a whole-list save stores the group id the client sent', () => {
   const gas = bootLegacy();
   const response = readJsonOutput(gas.doPost(postEvent({
-    action: 'save_omad',
+    action: 'save_omad', adminKey: ADMIN_KEY,
     transactions: [
       { id: '1800000000000_0', tenant: 'Apteka', month: '2026-02', type: 'Income', amount: 1000000, currency: 'UZS', method: 'Naqd', groupId: 'grp_web_abc' },
       { id: '1800000000000_1', tenant: 'Apteka', month: '2026-02', type: 'Income', amount: 200, currency: 'USD', method: 'Bank', groupId: 'grp_web_abc' }

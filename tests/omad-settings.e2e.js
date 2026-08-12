@@ -26,6 +26,20 @@ try {
 
 const describe = chromium ? test.describe : test.describe.skip;
 
+/**
+ * The Omad read, whichever route it arrives on.
+ *
+ * The app now fetches over an authenticated POST (`get_omad_data`) rather than
+ * the anonymous GET, because a GET puts its parameters in the URL and that is
+ * where an access key must never be.
+ */
+function isOmadRead(request) {
+  if (request.method() === 'GET') return true;
+  try { return JSON.parse(request.postData() || '{}').action === 'get_omad_data'; }
+  catch (error) { return false; }
+}
+
+
 function startStaticServer() {
   const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
   const server = http.createServer((req, res) => {
@@ -95,11 +109,12 @@ describe('Sozlamalar (browser)', () => {
     await context.addInitScript(() => {
       localStorage.setItem('omad_role', 'omad_admin');
       localStorage.setItem('omad_token', 'omad_admin_active');
+      localStorage.setItem('omad_access_key', 'e2e-access-key');
     });
 
     await context.route('**script.google.com/**', async route => {
       const request = route.request();
-      if (request.method() === 'GET') {
+      if (isOmadRead(request)) {
         await route.fulfill({
           status: 200, contentType: 'application/json',
           body: JSON.stringify({
@@ -211,7 +226,7 @@ describe('Sozlamalar (browser)', () => {
     await context.close();
   });
 
-  test('admin-key actions are blocked until a key is entered', async () => {
+  test('admin actions carry the signed-in key even with the field empty', async () => {
     const { page, context, requests } = await openSettings();
     await page.evaluate(() => showSettingsSection('system'));
     await page.waitForFunction(() => systemStatus !== null);
@@ -220,10 +235,31 @@ describe('Sozlamalar (browser)', () => {
       await createBackup();
       await processPendingJobs();
       await retryFailedJobs();
-      await applyMigration();
     });
 
-    for (const action of ['create_backup', 'process_jobs', 'retry_failed_jobs', 'apply_omad_migration']) {
+    // The Telegram field is for trying a *different* key. Empty means "use the
+    // one I signed in with", not "send nothing" - the server is the thing that
+    // decides, and it needs a key to decide with.
+    for (const action of ['create_backup', 'process_jobs', 'retry_failed_jobs']) {
+      const sent = requests.filter(r => r.action === action);
+      assert.strictEqual(sent.length, 1, action);
+      assert.strictEqual(sent[0].adminKey, 'e2e-access-key', action);
+    }
+    await context.close();
+  });
+
+  test('with no key anywhere, nothing is sent at all', async () => {
+    const { page, context, requests } = await openSettings();
+    await page.evaluate(() => showSettingsSection('system'));
+    await page.waitForFunction(() => systemStatus !== null);
+
+    await page.evaluate(async () => {
+      localStorage.removeItem('omad_access_key');
+      await createBackup();
+      await retryFailedJobs();
+    });
+
+    for (const action of ['create_backup', 'retry_failed_jobs']) {
       assert.deepStrictEqual(requests.filter(r => r.action === action), [], action);
     }
     await context.close();

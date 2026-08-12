@@ -5,6 +5,7 @@
  * backend can be unit-tested outside of Apps Script.
  */
 
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
@@ -231,7 +232,24 @@ function loadScript(options = {}) {
       getUuid: () => {
         uuidCounter += 1;
         return `00000000-0000-4000-8000-${String(uuidCounter).padStart(12, '0')}`;
-      }
+      },
+
+      // Apps Script accepts (String, String) or (Byte[], Byte[]) and returns a
+      // signed byte array. Node's Buffer is unsigned, so the values are
+      // converted the way the runtime hands them over - which is what
+      // bytesToHex_ masks back off.
+      computeHmacSha256Signature: (value, key) => {
+        const toBuffer = input => (Array.isArray(input)
+          ? Buffer.from(input.map(b => b & 0xff))
+          : Buffer.from(String(input), 'utf8'));
+        const mac = crypto.createHmac('sha256', toBuffer(key)).update(toBuffer(value)).digest();
+        return Array.from(mac).map(b => (b > 127 ? b - 256 : b));
+      },
+
+      newBlob: value => ({
+        getBytes: () => Array.from(Buffer.from(String(value), 'utf8')).map(b => (b > 127 ? b - 256 : b)),
+        getDataAsString: () => String(value)
+      })
     },
 
     Session: {

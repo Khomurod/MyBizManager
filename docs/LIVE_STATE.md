@@ -22,6 +22,31 @@ sheet. Do not run `cutover_omad_migration` without a separate, approved plan.
 
 ---
 
+## Signing in now needs the access key
+
+**This changes the daily workflow once.** `login.html` asks for a third field,
+**Kirish kaliti**, which is the value of `OMAD_ADMIN_KEY` — the same key already
+typed into Sozlamalar → Telegram. It is verified against the server before it is
+stored, kept in `localStorage`, and sent with every request from then on.
+
+Why: the `/exec` URL is hardcoded in three pages served from a public site, so
+anyone who has seen the frontend knows it. Until this change that was enough to
+read the whole financial ledger, the tenant list and every café sale with its
+margin — and to write all of it.
+
+Practical consequences on the day this deploys:
+
+- every open browser session is signed out once and needs the key entered again
+  (`omad_admin`, `cafe_admin` and `cafe_pos` alike);
+- if `OMAD_ADMIN_KEY` is not set in Script Properties, **nobody can sign in**.
+  It is already set — `get_telegram_settings` reported `adminKeyConfigured:
+  true` on 2026-08-12 — but that is the one thing to check first if login fails;
+- the username/password on that page are unchanged. They choose which app opens
+  and are visible in the page source; they never were a security boundary.
+
+The Telegram bot is unaffected: it is authorized by the webhook secret and
+`TELEGRAM_AUTHORIZED_USER_ID`, not by this key.
+
 ## Where everything lives
 
 | Piece | Value |

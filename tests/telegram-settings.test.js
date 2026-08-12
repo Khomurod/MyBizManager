@@ -71,7 +71,7 @@ test('settings view never contains the token', () => {
 
 test('get_telegram_settings response never contains the token', () => {
   const gas = loadScript({ properties: configured() });
-  const body = readJsonOutput(gas.doPost(postEvent({ action: 'get_telegram_settings' })));
+  const body = readJsonOutput(gas.doPost(postEvent({ action: 'get_telegram_settings' , adminKey: ADMIN_KEY,})));
   assert.strictEqual(body.status, 'success');
   assert.ok(!JSON.stringify(body).includes(VALID_TOKEN));
 });

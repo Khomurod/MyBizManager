@@ -58,7 +58,7 @@ test('an unauthenticated caller cannot smuggle text through a save_omad report',
   });
 
   const body = readJsonOutput(gas.doPost(postEvent({
-    action: 'save_omad',
+    action: 'save_omad', adminKey: ADMIN_KEY,
     transactions: [],
     tenants: [],
     rates: {},
@@ -86,7 +86,7 @@ test('an invalid telegramReport is rejected before anything is written', () => {
   });
 
   const body = readJsonOutput(gas.doPost(postEvent({
-    action: 'save_omad',
+    action: 'save_omad', adminKey: ADMIN_KEY,
     transactions: [],
     telegramReport: { operation: 'send_anything', text: 'hi' }
   })));
@@ -103,7 +103,7 @@ test('a reported transaction group is described from stored data, not from the r
   });
 
   readJsonOutput(gas.doPost(postEvent({
-    action: 'save_omad',
+    action: 'save_omad', adminKey: ADMIN_KEY,
     transactions: [{
       id: '1700000000000_0',
       tenant: 'Tehnopark',
@@ -175,7 +175,7 @@ test('a webhook update carrying the configured secret is processed', () => {
 
 test('the webhook secret is never exposed to the browser', () => {
   const gas = loadScript({ properties: configured({ TELEGRAM_WEBHOOK_SECRET: 'super-secret-value' }) });
-  const body = readJsonOutput(gas.doPost(postEvent({ action: 'get_telegram_settings' })));
+  const body = readJsonOutput(gas.doPost(postEvent({ action: 'get_telegram_settings' , adminKey: ADMIN_KEY,})));
   const serialized = JSON.stringify(body);
 
   assert.strictEqual(body.settings.webhookSecretConfigured, true);

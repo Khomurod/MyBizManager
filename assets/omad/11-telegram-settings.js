@@ -89,7 +89,9 @@ function tgAdminKey() {
 }
 
 async function tgAdminAction(payload, successText) {
-    const adminKey = tgAdminKey();
+    // Falls back to the key this browser signed in with, so the field only has
+    // to be filled in when a *different* key is being tried.
+    const adminKey = tgAdminKey() || accessKey();
     if (!adminKey) {
         tgShowMessage("Admin kalitini kiriting.", true);
         return null;

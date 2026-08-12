@@ -9,6 +9,13 @@ const test = require('node:test');
 const assert = require('node:assert');
 const { loadScript, readJsonOutput, postEvent } = require('./gas-harness');
 
+const ADMIN_KEY = 'correct-admin-key';
+
+/** Business writes now take the access key, so every boot configures one. */
+function omadProperties() {
+  return { OMAD_ADMIN_KEY: ADMIN_KEY };
+}
+
 function omadSheets() {
   return { System_Config: [['Omad_Tenants', '[]']] };
 }
@@ -28,9 +35,9 @@ const SAMPLE_TX = {
 // ------------------------------------------------------------------ Omad
 
 test('save_omad stores transactions, tenants, rates and template expenses', () => {
-  const gas = loadScript({ sheets: omadSheets() });
+  const gas = loadScript({ properties: omadProperties(), sheets: omadSheets() });
   const saved = readJsonOutput(gas.doPost(postEvent({
-    action: 'save_omad',
+    action: 'save_omad', adminKey: ADMIN_KEY,
     transactions: [SAMPLE_TX],
     tenants: [{ name: 'Tehnopark', rent: 500, currency: 'USD', disabledMonths: [] }],
     rates: { Fevral: { buy: 12000, sell: 12500 } },
@@ -48,18 +55,18 @@ test('save_omad stores transactions, tenants, rates and template expenses', () =
 });
 
 test('save_omad takes a backup snapshot before writing', () => {
-  const gas = loadScript({ sheets: omadSheets() });
-  gas.doPost(postEvent({ action: 'save_omad', transactions: [SAMPLE_TX], tenants: [], rates: {}, templateExpenses: [] }));
+  const gas = loadScript({ properties: omadProperties(), sheets: omadSheets() });
+  gas.doPost(postEvent({ action: 'save_omad', adminKey: ADMIN_KEY, transactions: [SAMPLE_TX], tenants: [], rates: {}, templateExpenses: [] }));
   const backups = gas.__spreadsheet.getSheetByName('Omad_Backups');
   assert.ok(backups && backups.getLastRow() >= 2, 'a backup row must exist');
 });
 
 test('save_omad refuses to wipe existing transactions with an empty payload', () => {
-  const gas = loadScript({ sheets: omadSheets() });
-  gas.doPost(postEvent({ action: 'save_omad', transactions: [SAMPLE_TX], tenants: [], rates: {}, templateExpenses: [] }));
+  const gas = loadScript({ properties: omadProperties(), sheets: omadSheets() });
+  gas.doPost(postEvent({ action: 'save_omad', adminKey: ADMIN_KEY, transactions: [SAMPLE_TX], tenants: [], rates: {}, templateExpenses: [] }));
 
   const wiped = readJsonOutput(gas.doPost(postEvent({
-    action: 'save_omad', transactions: [], tenants: [], rates: {}, templateExpenses: []
+    action: 'save_omad', adminKey: ADMIN_KEY, transactions: [], tenants: [], rates: {}, templateExpenses: []
   })));
   assert.strictEqual(wiped.status, 'error');
 
@@ -68,10 +75,10 @@ test('save_omad refuses to wipe existing transactions with an empty payload', ()
 });
 
 test('changed transactions are archived before being overwritten', () => {
-  const gas = loadScript({ sheets: omadSheets() });
-  gas.doPost(postEvent({ action: 'save_omad', transactions: [SAMPLE_TX], tenants: [], rates: {}, templateExpenses: [] }));
+  const gas = loadScript({ properties: omadProperties(), sheets: omadSheets() });
+  gas.doPost(postEvent({ action: 'save_omad', adminKey: ADMIN_KEY, transactions: [SAMPLE_TX], tenants: [], rates: {}, templateExpenses: [] }));
   gas.doPost(postEvent({
-    action: 'save_omad',
+    action: 'save_omad', adminKey: ADMIN_KEY,
     transactions: [Object.assign({}, SAMPLE_TX, { amount: 7000000 })],
     tenants: [], rates: {}, templateExpenses: []
   }));
@@ -123,14 +130,14 @@ test('balances use the sell rate and net income against expenses', () => {
 // ------------------------------------------------------------------ café
 
 test('café sale, close day and void still work end to end', () => {
-  const gas = loadScript();
+  const gas = loadScript({ properties: omadProperties() });
 
   assert.strictEqual(readJsonOutput(gas.doPost(postEvent({
-    action: 'save_sale', date: '2026-01-01', seller: 'kassir', total: 45000, profit: 12000, items: [{ id: 'a', qty: 2 }], id: 'sale-1'
+    action: 'save_sale', adminKey: ADMIN_KEY, date: '2026-01-01', seller: 'kassir', total: 45000, profit: 12000, items: [{ id: 'a', qty: 2 }], id: 'sale-1'
   }))).status, 'success');
 
   assert.strictEqual(readJsonOutput(gas.doPost(postEvent({
-    action: 'close_day', date: '2026-01-01', seller: 'kassir', inventory: [{ id: 'i1', qty: 5 }], summary: [], totalRevenue: 45000, totalProfit: 12000
+    action: 'close_day', adminKey: ADMIN_KEY, date: '2026-01-01', seller: 'kassir', inventory: [{ id: 'i1', qty: 5 }], summary: [], totalRevenue: 45000, totalProfit: 12000
   }))).status, 'success');
 
   let cafe = readJsonOutput(gas.doGet({ parameter: { action: 'get_cafe' } }));
@@ -141,7 +148,7 @@ test('café sale, close day and void still work end to end', () => {
   assert.strictEqual(cafe.inventory[0].qty, 5);
 
   assert.strictEqual(readJsonOutput(gas.doPost(postEvent({
-    action: 'void_sale', id: 'sale-1', inventory: [{ id: 'i1', qty: 7 }]
+    action: 'void_sale', adminKey: ADMIN_KEY, id: 'sale-1', inventory: [{ id: 'i1', qty: 7 }]
   }))).status, 'success');
 
   cafe = readJsonOutput(gas.doGet({ parameter: { action: 'get_cafe' } }));
@@ -150,11 +157,11 @@ test('café sale, close day and void still work end to end', () => {
 });
 
 test('café admin saves round-trip through System_Config', () => {
-  const gas = loadScript();
-  gas.doPost(postEvent({ action: 'save_inventory', inventory: [{ id: 'i1', name: 'Kofe', qty: 10 }] }));
-  gas.doPost(postEvent({ action: 'save_recipe', recipes: [{ id: 'r1', name: 'Latte' }] }));
-  gas.doPost(postEvent({ action: 'save_categories', categories: ['Ichimliklar'] }));
-  gas.doPost(postEvent({ action: 'save_cafe_settings', settings: { dailyTarget: 500000 } }));
+  const gas = loadScript({ properties: omadProperties() });
+  gas.doPost(postEvent({ action: 'save_inventory', adminKey: ADMIN_KEY, inventory: [{ id: 'i1', name: 'Kofe', qty: 10 }] }));
+  gas.doPost(postEvent({ action: 'save_recipe', adminKey: ADMIN_KEY, recipes: [{ id: 'r1', name: 'Latte' }] }));
+  gas.doPost(postEvent({ action: 'save_categories', adminKey: ADMIN_KEY, categories: ['Ichimliklar'] }));
+  gas.doPost(postEvent({ action: 'save_cafe_settings', adminKey: ADMIN_KEY, settings: { dailyTarget: 500000 } }));
 
   const cafe = readJsonOutput(gas.doGet({ parameter: { action: 'get_cafe' } }));
   assert.strictEqual(cafe.inventory[0].name, 'Kofe');
