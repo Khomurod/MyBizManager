@@ -173,6 +173,15 @@ amount used to write a full copy of the ledger and then refuse the entry.
   mention it" from "asked for it to be empty", so those fields could be written
   and never deleted.
 
+  The other editable fields were checked for the same mistake and are correct
+  as they stand: the schedule fields already distinguish absent from empty,
+  the flags and lists test `!== undefined` so an explicit `false` or `[]`
+  applies, and a title cannot be blank at all. `startKey` is left alone on
+  purpose — a routine has to begin somewhere, so "cleared" has no meaning for
+  it, and resetting a running routine's start date to today would change which
+  days it covers. Keeping the stored value is the safe reading of a blank
+  field there.
+
 ## The V2 cutover
 
 Done on 2026-08-12, in the order preview → apply → verify → cutover, with the
@@ -241,8 +250,16 @@ passes is the response time. What was measured and fixed:
 | Café sale | 2 passes over the 700-row sales sheet | **1** |
 | Café void | 2 | **1** |
 | Migration verification | 2 ledger reads | **1** |
-| Mini App first screen, 16 tenants | 70 `System_Config` passes | **4** |
-| Mini App café tab | one `JSON.parse` per sale ever made | the 10 rows shown |
+| Mini App first screen | 60 `System_Config` passes | **4** |
+| Mini App café tab | 758 `JSON.parse` calls | **13** |
+| Mini App tenant-paid | 12 config + 3 ledger passes, 1 snapshot row, 1 Telegram call | **4** config, **1** ledger, **0**, **0** |
+
+The last three were measured on production's own shape — the 14 tenants and 226
+ledger rows pulled from the live sheet, and a café history of 713 sales and 40
+closings — by running one request against the previous commit and against this
+one and counting. Same responses both times; the Omad figures were checked
+tenant by tenant across all 7 periods on the live ledger, 98 pairs, no
+differences.
 
 `tests/read-efficiency.test.js` counts the passes directly rather than timing
 anything, so a regression fails the build instead of just feeling slow.
