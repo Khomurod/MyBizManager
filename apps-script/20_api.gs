@@ -6,6 +6,13 @@
 // ============================================================
 
 function doPost(e) {
+  // Anything memoised for the life of a request starts empty. Apps Script
+  // gives each execution a fresh global scope so this is already true in
+  // production, but saying it here means the guarantee is in the code rather
+  // than in an assumption about the runtime -- and it is what makes the memos
+  // safe under a test harness that serves many requests from one load.
+  resetRequestMemos_();
+
   var doc = SpreadsheetApp.getActiveSpreadsheet();
   var isTelegramWebhook = false;
 
@@ -179,6 +186,11 @@ function doPost(e) {
  * check and the curious with the same sentence.
  */
 function doGet(e) {
+  // Nothing here reads System_Config today. It is reset anyway so that "every
+  // entry point starts with empty memos" stays true of the code rather than of
+  // one reading of it.
+  resetRequestMemos_();
+
   var action = (e && e.parameter && e.parameter.action) || "";
 
   if (action === 'get_tasks') {

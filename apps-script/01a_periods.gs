@@ -277,7 +277,7 @@ function disagreementYear_(parsedDate, namedMonth) {
 /** The configured fallback year, or 0 when the operator has not chosen one. */
 function getFallbackYear_(configSheet) {
   if (!configSheet) return 0;
-  var stored = Number(getConfig(configSheet, OMAD_FALLBACK_YEAR_KEY));
+  var stored = Number(getConfigOnce_(configSheet, OMAD_FALLBACK_YEAR_KEY));
   return isFinite(stored) && stored >= 1970 && stored <= 2999 ? stored : 0;
 }
 

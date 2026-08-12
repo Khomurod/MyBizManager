@@ -143,6 +143,202 @@ test('the Mini App first screen does not build the café or task views', () => {
   assert.ok(!body.tasks, 'tasks load when their tab is opened');
 });
 
+/**
+ * Sixteen tenants, which is the order of the real list.
+ *
+ * The per-tenant work is where the cost hid: the rent table was fetched from
+ * System_Config inside the loop, so the count grew with the tenant list even
+ * though the answer never changed inside one request.
+ */
+function bootManyTenants() {
+  const tenants = [];
+  for (let i = 0; i < 16; i++) {
+    tenants.push({ name: `Ijarachi_${i}`, defaultRent: 1000000 + i, currency: 'UZS', active: true });
+  }
+  const rows = [];
+  for (let i = 0; i < 16; i++) {
+    rows.push([
+      `18000000000${String(i).padStart(2, '0')}_0`, `Ijarachi_${i}`, '2026-08', 'Income',
+      500000, 'UZS', 'Naqd', '12/08/2026', 'ijara', '', `req_t${i}`, `grp_t${i}`, ''
+    ]);
+  }
+  return loadScript({
+    properties: {
+      OMAD_ADMIN_KEY: ADMIN_KEY,
+      TELEGRAM_BOT_TOKEN: BOT_TOKEN,
+      TELEGRAM_AUTHORIZED_USER_ID: AUTHORIZED_ID,
+      TELEGRAM_GROUP_CHAT_ID: '-1001234567890'
+    },
+    sheets: {
+      System_Config: [
+        ['Omad_Rates', JSON.stringify({ '2026-08': { buy: 12000, sell: 12500 } })],
+        ['Omad_Tenants', JSON.stringify(tenants)]
+      ],
+      Omad_Transactions: [LEGACY_HEADER].concat(rows)
+    }
+  });
+}
+
+test('the tenant list does not multiply the config reads', () => {
+  const gas = bootManyTenants();
+
+  const counts = countSheetReads(gas, () => {
+    const body = readJsonOutput(gas.doPost(postEvent({
+      action: 'mini_home', initData: signedInitData(), period: '2026-08'
+    })));
+    assert.strictEqual(body.status, 'success');
+    assert.strictEqual(body.tenants.length, 16, 'all sixteen are answered');
+  });
+
+  // Measured on the code before this change: 70 full passes over
+  // System_Config to answer one request, because the rate table was fetched
+  // again for every tenant's rent and again for every tenant's payments.
+  assert.ok(counts.System_Config <= 4,
+    `System_Config read ${counts.System_Config} times; the rate table is fetched once per request`);
+  assert.strictEqual(counts.Omad_Transactions, 1);
+});
+
+test('a saved rate is the rate the next request calculates with', () => {
+  const gas = boot();
+  // On the ledger, as production is, so `save_omad` takes the settings-only
+  // path the settings screen actually uses.
+  post(gas, { action: 'apply_omad_migration', fallbackYear: 2026 });
+  assert.strictEqual(post(gas, { action: 'cutover_omad_migration' }).status, 'success');
+
+  // The memo is what makes the counts above possible, so the thing that would
+  // make it dangerous is asserted directly: a stale rate would silently move
+  // every USD figure on the screen.
+  const before = readJsonOutput(gas.doPost(postEvent({
+    action: 'mini_home', initData: signedInitData(), period: '2026-08'
+  })));
+  assert.strictEqual(before.omad.rate.sell, 12500);
+
+  const saved = post(gas, {
+    action: 'save_omad',
+    rates: { '2026-08': { buy: 13000, sell: 13400 } }
+  });
+  assert.strictEqual(saved.status, 'success', saved.message);
+
+  const after = readJsonOutput(gas.doPost(postEvent({
+    action: 'mini_home', initData: signedInitData(), period: '2026-08'
+  })));
+  assert.strictEqual(after.omad.rate.sell, 13400, 'the new rate, not the memoised one');
+});
+
+test('a config value written mid-request is not read back from the memo', () => {
+  const gas = boot();
+  const configSheet = gas.__spreadsheet.getSheetByName('System_Config');
+
+  // The dangerous case is inside one execution: a handler that changes a
+  // setting and then calculates with it. `cutoverOmadMigration_` does exactly
+  // this with the active-sheet key. Asserted on the mechanism itself, because
+  // request boundaries would clear the memo anyway and prove nothing.
+  assert.strictEqual(gas.getConfigOnce_(configSheet, 'Omad_Rates'),
+    JSON.stringify({ '2026-08': { buy: 12000, sell: 12500 } }));
+
+  gas.setConfig(configSheet, 'Omad_Rates', JSON.stringify({ '2026-08': { buy: 1, sell: 2 } }));
+
+  assert.strictEqual(gas.getConfigOnce_(configSheet, 'Omad_Rates'),
+    JSON.stringify({ '2026-08': { buy: 1, sell: 2 } }),
+    'setConfig drops the entry it overwrites');
+});
+
+test('every tenant is still answered with the figure the single-tenant path gives', () => {
+  const gas = bootManyTenants();
+  const body = readJsonOutput(gas.doPost(postEvent({
+    action: 'mini_home', initData: signedInitData(), period: '2026-08'
+  })));
+
+  // The pre-aggregated pass is only worth having if it is the same arithmetic.
+  const transactions = gas.readOmadTransactions_(gas.__spreadsheet);
+  body.tenants.forEach(row => {
+    assert.strictEqual(
+      row.paid,
+      gas.calculateTenantPaid_(transactions, row.name, '2026-08'),
+      `${row.name} disagrees with the per-tenant calculation`
+    );
+  });
+});
+
+// ------------------------------------------------------------- café summary
+
+const CAFE_SALES_HEADER = ['Sana', 'Sotuvchi', 'Jami_Tushum', 'Sof_Foyda', 'Chek_Tafsilotlari', 'ID'];
+
+/** Two hundred sales, each with a receipt of five lines, as the real sheet is. */
+function bootManySales() {
+  const receipt = JSON.stringify([1, 2, 3, 4, 5].map(n => ({
+    kind: 'product', inventoryId: `i${n}`, name: `Mahsulot ${n}`,
+    qty: n, unitPrice: 8000, unitCost: 6000, lineTotal: 8000 * n, lineProfit: 2000 * n
+  })));
+  const rows = [];
+  for (let i = 0; i < 200; i++) {
+    rows.push([
+      `2026-08-${String((i % 12) + 1).padStart(2, '0')}T09:00:00.000Z`,
+      'kassir', 40000, 10000, receipt, `sale_${i}`
+    ]);
+  }
+  return loadScript({
+    properties: {
+      OMAD_ADMIN_KEY: ADMIN_KEY,
+      TELEGRAM_BOT_TOKEN: BOT_TOKEN,
+      TELEGRAM_AUTHORIZED_USER_ID: AUTHORIZED_ID,
+      TELEGRAM_GROUP_CHAT_ID: '-1001234567890'
+    },
+    sheets: {
+      System_Config: [
+        ['Cafe_Inventory', JSON.stringify([
+          { id: 'i1', name: 'Kola', type: 'product', qty: 50, unit: 'dona', sellPrice: 8000, unitCost: 6000, totalCost: 300000 }
+        ])],
+        ['Cafe_Recipes', '[]'],
+        ['Cafe_Settings', JSON.stringify({ dailyTarget: 500000 })]
+      ],
+      Cafe_Sales: [CAFE_SALES_HEADER].concat(rows)
+    }
+  });
+}
+
+/** Counts JSON parses while `run` executes, by wrapping the shared helper. */
+function countJsonParses(gas, run) {
+  let calls = 0;
+  const original = gas.safeParseJSON_;
+  gas.safeParseJSON_ = function () { calls++; return original.apply(null, arguments); };
+  try { run(); } finally { gas.safeParseJSON_ = original; }
+  return calls;
+}
+
+test('the café tab does not parse every receipt ever written', () => {
+  const gas = bootManySales();
+
+  let body;
+  const parses = countJsonParses(gas, () => {
+    body = readJsonOutput(gas.doPost(postEvent({
+      action: 'mini_cafe', initData: signedInitData()
+    })));
+  });
+
+  assert.strictEqual(body.status, 'success');
+  assert.strictEqual(body.cafe.recentSales.length, 10);
+  assert.strictEqual(body.cafe.recentSales[0].items, 5, 'the shown rows still list their lines');
+
+  // Ten shown receipts plus a handful of config values. It used to be one
+  // parse per sale in the sheet, however old, to produce a line count for ten.
+  assert.ok(parses < 30,
+    `${parses} JSON parses for 200 sales; only the ten shown rows need one`);
+});
+
+test('the café summary still totals the whole history', () => {
+  const gas = bootManySales();
+  const body = readJsonOutput(gas.doPost(postEvent({
+    action: 'mini_cafe', initData: signedInitData()
+  })));
+
+  // 200 sales at 40 000, all inside 2026-08.
+  assert.strictEqual(body.cafe.month.sales, 200);
+  assert.strictEqual(body.cafe.month.revenue, 200 * 40000);
+  assert.strictEqual(body.cafe.month.profit, 200 * 10000);
+  assert.strictEqual(body.cafe.target.daily, 500000);
+});
+
 // -------------------------------------------------------------- report jobs
 
 test('composing a transaction report reads the legacy sheet twice at most', () => {

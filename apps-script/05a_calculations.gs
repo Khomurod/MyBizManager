@@ -101,6 +101,35 @@ function calculateTenantPaid_(transactions, tenantName, period) {
 }
 
 /**
+ * What every tenant paid in a period, from one pass over the ledger.
+ *
+ * `calculateTenantPaid_` walks the whole ledger to answer for one tenant, so
+ * asking about sixteen tenants walked it sixteen times. The filter is per
+ * tenant but the pass is not, so the pass is done once and the results are
+ * bucketed by name. Same rules, same rounding, same answer -- see the test
+ * that asserts the two agree tenant by tenant.
+ *
+ * Keys are the trimmed tenant name, exactly as `calculateTenantPaid_` matches.
+ */
+function tenantPaidTotals_(transactions, period) {
+  var rates = getOmadRates_();
+  var totals = {};
+  var list = Array.isArray(transactions) ? transactions : [];
+
+  for (var i = 0; i < list.length; i++) {
+    var t = list[i];
+    if (!isCountableTransaction_(t)) continue;
+    if (t.type !== "Income") continue;
+    if (period && period !== ALL_PERIODS_LABEL && transactionPeriod_(t) !== period) continue;
+    var key = String(t.tenant || "").trim();
+    totals[key] = (totals[key] || 0) + transactionUZS_(t, rates);
+  }
+
+  Object.keys(totals).forEach(function (key) { totals[key] = Math.round(totals[key]); });
+  return totals;
+}
+
+/**
  * The rent expected from a tenant in a period, at the sell rate.
  * The amount comes from the tenant's effective-dated schedule, so a month with
  * an exception, a no-rent month, or a month outside the agreement all resolve
@@ -116,10 +145,18 @@ function tenantExpectedRentUZS_(tenant, period) {
 /**
  * A tenant's position for a period.
  * Negative `difference` is debt; positive is an overpayment.
+ *
+ * `paidTotals` is optional: pass the map from `tenantPaidTotals_` when asking
+ * about several tenants over the same rows, and the ledger is walked once for
+ * all of them instead of once each. Omit it and the single-tenant path runs,
+ * which is what every existing caller does.
  */
-function calculateTenantBalance_(transactions, tenant, period) {
+function calculateTenantBalance_(transactions, tenant, period, paidTotals) {
   var expected = tenantExpectedRentUZS_(tenant, period);
-  var paid = calculateTenantPaid_(transactions, tenant && tenant.name, period);
+  var name = String((tenant && tenant.name) || "").trim();
+  var paid = paidTotals
+    ? (paidTotals[name] || 0)
+    : calculateTenantPaid_(transactions, tenant && tenant.name, period);
   return { expected: expected, paid: paid, difference: paid - expected };
 }
 

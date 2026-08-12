@@ -353,6 +353,206 @@ test('a goal reports progress where the Mini App renders it', () => {
   assert.strictEqual(after.progress.percent, 50);
 });
 
+// --------------------------------------------------------- clearing a field
+
+/**
+ * Emptying a field has to mean emptying it.
+ *
+ * `payload.description || existing.description` cannot tell "did not mention
+ * it" from "asked for it to be empty" and resolved both to the stored text, so
+ * a description or a responsible could be written and never deleted: the field
+ * was cleared on the form, the save reported success, and the old value came
+ * back on the next render. Both clients always send these two fields, so both
+ * were affected.
+ */
+
+test('clearing the description on an edit actually clears it', () => {
+  const gas = boot();
+  const created = taskAction(gas, 'save_task', {
+    type: 'once', title: 'Tavsifli', description: 'Eski tafsilot'
+  });
+  assert.strictEqual(storedTask(gas, created.taskId).Description, 'Eski tafsilot');
+
+  const cleared = taskAction(gas, 'save_task', { taskId: created.taskId, description: '' });
+
+  assert.strictEqual(cleared.status, 'success', cleared.message);
+  assert.strictEqual(storedTask(gas, created.taskId).Description, '');
+});
+
+test('clearing the responsible on an edit actually clears it', () => {
+  const gas = boot();
+  const created = taskAction(gas, 'save_task', {
+    type: 'once', title: "Mas'ulli", responsible: 'Diyor'
+  });
+
+  taskAction(gas, 'save_task', { taskId: created.taskId, responsible: '' });
+
+  assert.strictEqual(storedTask(gas, created.taskId).Responsible, '');
+});
+
+test('an edit that never mentions the text still keeps it', () => {
+  const gas = boot();
+  const created = taskAction(gas, 'save_task', {
+    type: 'once', title: 'Saqlansin', description: 'Qoladi', responsible: 'Diyor'
+  });
+
+  // The distinction the whole fix rests on: a client that does not show a
+  // field does not send it, and must not wipe it.
+  const edited = taskAction(gas, 'save_task', { taskId: created.taskId, title: 'Yangi nom' });
+
+  assert.strictEqual(edited.status, 'success');
+  const stored = storedTask(gas, created.taskId);
+  assert.strictEqual(stored.Description, 'Qoladi');
+  assert.strictEqual(stored.Responsible, 'Diyor');
+});
+
+// ------------------------------------------------------------ when it is due
+
+/**
+ * One description of a deadline, shared with the /tasks board.
+ *
+ * An occurrence carries `dueLabel`. It does not carry `dueTime` -- that lives
+ * on a routine's *definition* -- and the Mini App was reading `o.dueTime` off
+ * an occurrence, so it was always undefined and no deadline time has ever
+ * appeared on a phone. Asserted on the server side here and on the rendered
+ * row in tests/miniapp-ui.e2e.js.
+ */
+
+test('a deadline with a time reaches the phone as a labelled instant', () => {
+  const gas = boot();
+  const created = taskAction(gas, 'save_task', {
+    type: 'once', title: 'Soat 14:30 da',
+    deadlineKey: '2026-08-20', deadlineTime: '14:30'
+  });
+
+  const occ = (mini(gas, 'mini_tasks').view.today.upcoming || [])
+    .concat(mini(gas, 'mini_tasks').view.today.needsAttention || [])
+    .find(o => o.taskId === created.taskId);
+
+  assert.ok(occ, 'the occurrence is in the view');
+  assert.strictEqual(occ.dueLabel, '20.08.2026 14:30');
+  assert.strictEqual(occ.dueTime, undefined,
+    'occurrences describe a deadline once, as a label');
+});
+
+test('a deadline without a time still labels its day', () => {
+  const gas = boot();
+  const created = taskAction(gas, 'save_task', {
+    type: 'once', title: 'Kun oxirigacha', deadlineKey: '2026-08-20'
+  });
+
+  const occ = (mini(gas, 'mini_tasks').view.tasks || []).find(t => t.id === created.taskId);
+  assert.ok(occ, 'the task is listed');
+
+  const view = mini(gas, 'mini_tasks').view;
+  const lists = [].concat(view.today.upcoming || [], view.today.needsAttention || [],
+    view.today.overdue || []);
+  const occurrence = lists.find(o => o.taskId === created.taskId);
+  assert.ok(occurrence);
+  // The engine treats an undated deadline as the end of that day, and says so
+  // in the label, exactly as the /tasks board shows it.
+  assert.strictEqual(occurrence.dueLabel, '20.08.2026 23:59');
+});
+
+test('a goal step has no deadline to show', () => {
+  const gas = boot();
+  const created = taskAction(gas, 'save_task', {
+    type: 'goal', title: 'Maqsad', steps: [{ title: 'Birinchi qadam' }]
+  });
+
+  const step = occurrences(gas).find(o => o.Task_ID === created.taskId);
+  assert.strictEqual(String(step.Due_At), '', 'a step belongs to no moment');
+
+  const view = mini(gas, 'mini_tasks').view;
+  const lists = [].concat(view.today.upcoming || [], view.today.needsAttention || [],
+    view.today.overdue || []);
+  const shown = lists.find(o => o.id === step.ID);
+  if (shown) assert.strictEqual(shown.dueLabel, '', 'so the row shows no time');
+});
+
+// ------------------------------------------------------- forged identities
+
+/**
+ * A signature says who is calling. Nothing else in the request may.
+ *
+ * The Mini App handler used to read `payload.completedById || auth.userId` and
+ * friends, so a caller who sent those fields decided them. That is a signed
+ * request writing an unsigned name into the permanent record of who did the
+ * work — the audit trail would show the wrong person, with no trace that it
+ * had been supplied rather than derived. Every field the task engine reads for
+ * attribution is now stripped from the payload before the engine sees it.
+ */
+
+const IMPOSTOR_ID = '99999999';
+
+test('a forged completer id is ignored; the signature decides who completed it', () => {
+  const gas = boot();
+  const created = taskAction(gas, 'save_task', { type: 'once', title: 'Kim bajardi?' });
+  const occ = occurrences(gas).find(o => o.Task_ID === created.taskId);
+
+  const done = taskAction(gas, 'complete_occurrence', {
+    occurrenceId: occ.ID,
+    completedById: IMPOSTOR_ID,
+    completedBy: 'Boshqa odam',
+    completedByName: 'Boshqa odam',
+    completedSource: 'web'
+  });
+  assert.strictEqual(done.status, 'success', done.message);
+
+  const after = occurrences(gas).find(o => o.ID === occ.ID);
+  assert.strictEqual(String(after.Completed_By_Id), AUTHORIZED_ID,
+    'the id comes from the verified initData, not from the body');
+  assert.notStrictEqual(String(after.Completed_By_Id), IMPOSTOR_ID);
+  assert.strictEqual(after.Completed_By_Name, 'Xurshid',
+    'and so does the name shown in the history');
+});
+
+test('a forged proof-awaiting id cannot hand the photo slot to another account', () => {
+  const gas = boot();
+  const created = taskAction(gas, 'save_task', {
+    type: 'once', title: 'Rasm kerak', photoRequired: true
+  });
+  const occ = occurrences(gas).find(o => o.Task_ID === created.taskId);
+
+  taskAction(gas, 'complete_occurrence', {
+    occurrenceId: occ.ID,
+    proofAwaitingUserId: IMPOSTOR_ID,
+    completedById: IMPOSTOR_ID
+  });
+
+  // Whoever holds this slot is the account whose next photo closes the task.
+  const after = occurrences(gas).find(o => o.ID === occ.ID);
+  assert.strictEqual(String(after.Proof_Awaiting_User_Id), AUTHORIZED_ID);
+});
+
+test('a forged author is ignored when a task is created', () => {
+  const gas = boot();
+  const created = taskAction(gas, 'save_task', {
+    type: 'once', title: 'Kim yaratdi?', createdBy: 'tg:' + IMPOSTOR_ID
+  });
+
+  assert.strictEqual(storedTask(gas, created.taskId).Created_By, 'tg:' + AUTHORIZED_ID);
+});
+
+test('the rest of the payload still reaches the engine untouched', () => {
+  const gas = boot();
+  // Stripping is by name, so it must not swallow the fields that carry the
+  // actual work: only the attribution fields go.
+  const created = taskAction(gas, 'save_task', {
+    type: 'routine', title: 'Ish qoladi', description: 'Tafsilot',
+    responsible: 'Diyor', priority: 'high',
+    recurrence: { freq: 'weekly', interval: 1, weekdays: [1] },
+    completedById: IMPOSTOR_ID
+  });
+
+  const stored = storedTask(gas, created.taskId);
+  assert.strictEqual(stored.Title, 'Ish qoladi');
+  assert.strictEqual(stored.Description, 'Tafsilot');
+  assert.strictEqual(stored.Responsible, 'Diyor');
+  assert.strictEqual(stored.Priority, 'high');
+  assert.strictEqual(JSON.parse(stored.Recurrence_JSON).freq, 'weekly');
+});
+
 // --------------------------------------------------------------- the gate
 
 test('none of this is reachable without a genuine signature', () => {

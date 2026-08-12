@@ -117,6 +117,62 @@ Two things to know:
 Opened in an ordinary browser it shows one sentence and asks the server for
 nothing.
 
+### Who did a task is decided by the signature
+
+A task mutation from the Mini App used to read its own attribution off the
+request: `payload.completedById || auth.userId`, and the same for the name, the
+source and the author. A request is just JSON, so anyone reaching that endpoint
+with a valid signature could file a completion under somebody else's name and
+the occurrence row would record it as fact, with nothing to show the value had
+been supplied rather than derived. The photo-proof slot was the same — a forged
+`proofAwaitingUserId` pointed "the next photo closes this task" at another
+account.
+
+Those fields are now stripped from the payload before it reaches the task
+engine and rewritten from the verified `initData`. Stripped rather than
+overwritten, so an attribution field added to the engine later cannot become
+spoofable just by being forwarded.
+
+The /tasks board is deliberately unchanged: it is admin-key gated and picks a
+completer from a list on purpose.
+
+### A write returns before the Telegram card is sent
+
+Storing the record and telling Telegram about it are two different jobs, and
+only the first one is what the person tapping *Saqlash* is waiting for. The
+write returns as soon as the row is stored; the group card is queued, and the
+client calls `mini_flush_reports` afterwards **without awaiting it**, so the
+card still appears in seconds instead of at the next five-minute trigger tick.
+
+Losing that flush costs a delay and never a report — the job stays queued and
+the trigger sends it, which `tests/miniapp-write-path.test.js` asserts.
+
+The whole-ledger snapshot that used to precede every Mini App tenant-paid entry
+is gone under V2. It exists to undo a rewrite, and the ledger is append-only —
+a correction is another append with its own audit row — so it bought nothing
+and grew with the ledger. The legacy sheet, which really is rewritten in place,
+still takes one, and now only after the input has been validated: a mistyped
+amount used to write a full copy of the ledger and then refuse the entry.
+
+### Mobile behaviour
+
+- Form controls are **16px**. iOS zooms the page in when a focused control's
+  text is smaller than that and leaves it zoomed, walking the layout sideways
+  in the middle of typing an amount.
+- The page no longer carries `maximum-scale=1` or `user-scalable=no`. They were
+  there to stop that zoom, but they do it by forbidding zoom outright, which
+  takes pinch-to-zoom away from the people who most need it. Fixing the font
+  size fixes the cause; both restrictions are gone and the browser tests refuse
+  to let them come back.
+- A deadline time appears on a task row. It used to read `o.dueTime`, which no
+  occurrence carries — only a routine's *definition* does — so it was always
+  undefined and a task due at 14:30 looked identical to one due at day's end.
+  The row now reads `dueLabel`, the same field the /tasks board reads.
+- Clearing a description or a responsible works. The engine resolved
+  `payload.description || existing.description`, which cannot tell "did not
+  mention it" from "asked for it to be empty", so those fields could be written
+  and never deleted.
+
 ## The V2 cutover
 
 Done on 2026-08-12, in the order preview → apply → verify → cutover, with the
@@ -185,16 +241,37 @@ passes is the response time. What was measured and fixed:
 | Café sale | 2 passes over the 700-row sales sheet | **1** |
 | Café void | 2 | **1** |
 | Migration verification | 2 ledger reads | **1** |
+| Mini App first screen, 16 tenants | 70 `System_Config` passes | **4** |
+| Mini App café tab | one `JSON.parse` per sale ever made | the 10 rows shown |
 
 `tests/read-efficiency.test.js` counts the passes directly rather than timing
 anything, so a regression fails the build instead of just feeling slow.
 
-**No cross-request cache was added.** The obvious candidates are all financial
+**Config reads are memoised for one request.** Every `System_Config` lookup is
+a full pass over the sheet to pull out one cell, and the hot ones were asked
+for over and over while answering a single request: the rate table once per
+tenant for the rent and again once per tenant for the payments, the
+active-sheet key on every ledger read, the fallback year on every period
+resolution.
+
+`getConfigOnce_` memoises the **read**, never the decision made from it, so
+callers still re-derive whatever they derive. The memo lasts one request: Apps
+Script gives each execution a fresh global scope, every entry point clears it
+anyway so the guarantee does not rest on that, and `setConfig` — the only thing
+in the codebase that writes `System_Config` — drops the entry it overwrites, so
+a handler that changes a value and reads it back within the same request sees
+the new one. That last case is the dangerous one and is asserted directly.
+
+Tenant payments are aggregated in one pass over the ledger rather than one pass
+per tenant, and a test asserts the aggregate equals the per-tenant figure for
+every tenant.
+
+**Still no cross-request cache.** The obvious candidates are all financial
 summaries, and every one of them would need invalidating from six different
 write paths — the web save, the ledger create/correct/cancel, the tenant-paid
 pair, the Mini App and the Telegram bot. A missed hook there is a wrong balance
-shown to the owner, which is a worse failure than a slow one. The read
-reductions above are exact and carry no such risk.
+shown to the owner, which is a worse failure than a slow one. Everything above
+is exact and carries no such risk.
 
 ## System health
 

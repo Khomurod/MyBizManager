@@ -170,6 +170,7 @@ async function submitEntry(type) {
         clearPendingId('entryGroup');
         closeSheet();
         toast('Saqlandi');
+        flushReports();
         await loadOmad();
     } catch (error) {
         if (error.unauthorized) return failAuth(error);
@@ -222,6 +223,7 @@ async function submitTenantPaid() {
         clearPendingId('pairGroup');
         closeSheet();
         toast('Saqlandi');
+        flushReports();
         await loadOmad();
     } catch (error) {
         if (error.unauthorized) return failAuth(error);

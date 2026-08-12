@@ -82,6 +82,12 @@ function yesterdayKey() {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+function tomorrowKey() {
+  const d = new Date(Date.now() + 86400000);
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 const LEGACY_HEADER = [
   'ID', 'Tenant', 'Month', 'Type', 'Amount', 'Currency', 'Method', 'Date', 'Comment',
   'Telegram_Msg_ID', 'Request_ID', 'Entry_Group_ID', 'Entry_Kind'
@@ -164,6 +170,13 @@ callBackend({
   action: 'mini_task_action', taskAction: 'save_task',
   type: 'goal', title: 'Yangi filial',
   steps: [{ title: 'Bir' }, { title: 'Ikki' }, { title: 'Uch' }, { title: "To'rt" }]
+});
+// A deadline with a clock time on it, tomorrow so it is always "upcoming"
+// whatever hour the suite runs at.
+callBackend({
+  action: 'mini_task_action', taskAction: 'save_task',
+  type: 'once', title: 'Soatli muddat',
+  deadlineKey: tomorrowKey(), deadlineTime: '14:30'
 });
 
 const HOME = callBackend({ action: 'mini_home', period: '2026-08' });
@@ -439,6 +452,29 @@ describe('The Telegram Mini App', () => {
     await context.close();
   });
 
+  test('a deadline time is on the row', async () => {
+    // The row read `o.dueTime`, which an occurrence does not carry -- only a
+    // routine's definition does -- so it was always undefined and no deadline
+    // time has ever been shown on a phone. The date came out alone and a task
+    // due at 14:30 looked the same as one due at the end of the day.
+    // A once-task is work in front of you until it is done, so the engine puts
+    // it on the due-today list whatever date its deadline carries.
+    const dated = (TASKS.view.today.needsAttention || []).find(o => o.title === 'Soatli muddat');
+    assert.ok(dated, 'the fixture task is on the due-today list');
+    assert.ok(/14:30$/.test(dated.dueLabel), 'and the server labelled its time');
+
+    const { page, context } = await openMini('auth_date=1&hash=x', defaultHandlers);
+    await page.waitForSelector('#nav:not(.hidden)');
+    await page.locator('#nav-tasks').click();
+    await page.waitForFunction(
+      () => document.getElementById('tab-tasks').innerText.includes('Soatli muddat'));
+
+    const shown = await page.locator('#tab-tasks').innerText();
+    assert.ok(shown.includes('14:30'), 'the row shows when it is due');
+
+    await context.close();
+  });
+
   test('the overdue filter shows what the server put in the overdue list', async () => {
     const overdue = TASKS.view.today.overdue || [];
     const { page, context } = await openMini('auth_date=1&hash=x', defaultHandlers);
@@ -480,16 +516,59 @@ describe('The Telegram Mini App', () => {
     await context.close();
   });
 
-  test('every tappable control is at least 36px tall', async () => {
+  test('every tappable control is at least 36px in both directions', async () => {
+    const { page, context } = await openMini('auth_date=1&hash=x', defaultHandlers);
+    await page.waitForFunction(() => document.getElementById('miniTenantList'));
+    await page.locator('#nav-tasks').click();
+    await page.waitForFunction(() => document.getElementById('tab-tasks').innerText.includes('Bugungi ish'));
+
+    // Height alone is not a target. The edit button on a task row carries one
+    // glyph, so it was tall and about as wide as a pencil.
+    const small = await page.evaluate(() => [...document.querySelectorAll('button')]
+      .filter(b => b.offsetParent !== null)
+      .map(b => {
+        const box = b.getBoundingClientRect();
+        return {
+          text: (b.innerText || b.getAttribute('aria-label') || '').slice(0, 20),
+          height: Math.round(box.height), width: Math.round(box.width)
+        };
+      })
+      .filter(b => b.height < 36 || b.width < 36));
+
+    assert.deepEqual(small, []);
+    await context.close();
+  });
+
+  test('a form field is 16px, so focusing it cannot zoom the page', async () => {
+    // iOS zooms in on a focused control whose text is under 16px and stays
+    // zoomed, which walks the layout sideways in the middle of typing an
+    // amount. The page used to prevent that by forbidding zoom entirely.
     const { page, context } = await openMini('auth_date=1&hash=x', defaultHandlers);
     await page.waitForFunction(() => document.getElementById('miniTenantList'));
 
-    const small = await page.evaluate(() => [...document.querySelectorAll('button')]
-      .filter(b => b.offsetParent !== null)
-      .map(b => ({ text: b.innerText.slice(0, 20), height: Math.round(b.getBoundingClientRect().height) }))
-      .filter(b => b.height < 36));
+    await page.locator('button:has-text("Kirim")').first().click();
+    await page.waitForSelector('#mAmount');
 
-    assert.deepEqual(small, []);
+    const sizes = await page.evaluate(() =>
+      [...document.querySelectorAll('.sheet input, .sheet select, .sheet textarea')]
+        .map(el => ({ id: el.id, size: parseFloat(getComputedStyle(el).fontSize) })));
+
+    assert.ok(sizes.length, 'the sheet has fields to check');
+    assert.deepEqual(sizes.filter(f => f.size < 16), []);
+
+    await context.close();
+  });
+
+  test('the page can still be zoomed', async () => {
+    // Removing user-scalable=no is the point of the change above; a later
+    // "quick fix" for a layout jump must not put it back.
+    const { page, context } = await openMini('auth_date=1&hash=x', defaultHandlers);
+    const viewport = await page.evaluate(() =>
+      (document.querySelector('meta[name="viewport"]') || {}).content || '');
+
+    assert.ok(!/user-scalable\s*=\s*no/.test(viewport), viewport);
+    assert.ok(!/maximum-scale/.test(viewport), viewport);
+
     await context.close();
   });
 

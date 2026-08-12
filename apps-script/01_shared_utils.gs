@@ -21,7 +21,56 @@ function okHtmlOutput_() {
   return HtmlService.createHtmlOutput("OK");
 }
 
+// ------------------------------------------------------------ config reads
+//
+// Every System_Config lookup is a full pass over the sheet to pull one cell
+// out, and the hot ones are asked for repeatedly while answering a single
+// request: which sheet the ledger lives in, the fallback year, the rate table.
+// One Mini App request with sixteen tenants was making thirty-odd of those
+// passes, all returning the same bytes.
+//
+// So the *read* is memoised, never the decision made from it -- callers still
+// re-derive whatever they derive. The memo lasts one request: Apps Script
+// gives each execution a fresh global scope, `doPost`/`doGet` clear it anyway
+// so the guarantee does not depend on that, and `setConfig` drops the entry it
+// overwrites so a handler that changes a value and then reads it back sees the
+// new one. Nothing writes System_Config except `setConfig`, which is what makes
+// that last part sufficient.
+
+var CONFIG_MEMO_ = {};
+
+/**
+ * Drops every request-scoped memo. Called at the top of each entry point.
+ *
+ * Nothing is cached across requests, so no screen can ever show a figure
+ * derived from a value someone else has since changed.
+ */
+function resetRequestMemos_() {
+  CONFIG_MEMO_ = {};
+}
+
+function invalidateConfigMemo_(key) {
+  delete CONFIG_MEMO_[key];
+}
+
+/**
+ * `getConfig`, read at most once per key per request.
+ *
+ * Only for keys whose value cannot change between two reads within a request
+ * except through `setConfig`. Anything else should call `getConfig` directly.
+ */
+function getConfigOnce_(sheet, key) {
+  if (Object.prototype.hasOwnProperty.call(CONFIG_MEMO_, key)) return CONFIG_MEMO_[key];
+  var value = getConfig(sheet, key);
+  CONFIG_MEMO_[key] = value;
+  return value;
+}
+
 function setConfig(sheet, key, value) {
+  // Hooking the single writer means a memo cannot be added elsewhere and then
+  // forgotten here.
+  invalidateConfigMemo_(key);
+
   var data = sheet.getDataRange().getValues();
   for (var i = 0; i < data.length; i++) {
     if (data[i][0] === key) {

@@ -221,16 +221,24 @@ function loadScript(options = {}) {
     },
 
     Utilities: {
+      // Apps Script substitutes the pattern tokens; this used to recognise one
+      // literal pattern and return dd/MM/yyyy for everything else, so code
+      // asking for "yyyy-MM-dd" was tested against a string it can never
+      // receive in production -- and a café month key sliced out of it was
+      // "12/08/2".
       formatDate: (date, tz, format) => {
         const value = date instanceof Date ? date : new Date(date);
         const pad = n => String(n).padStart(2, '0');
-        const day = pad(value.getDate());
-        const month = pad(value.getMonth() + 1);
-        const year = value.getFullYear();
-        if (format === 'dd.MM.yyyy HH:mm') {
-          return `${day}.${month}.${year} ${pad(value.getHours())}:${pad(value.getMinutes())}`;
-        }
-        return `${day}/${month}/${year}`;
+        const tokens = {
+          yyyy: String(value.getFullYear()),
+          MM: pad(value.getMonth() + 1),
+          dd: pad(value.getDate()),
+          HH: pad(value.getHours()),
+          mm: pad(value.getMinutes()),
+          ss: pad(value.getSeconds())
+        };
+        return String(format || 'dd/MM/yyyy')
+          .replace(/yyyy|MM|dd|HH|mm|ss/g, match => tokens[match]);
       },
       getUuid: () => {
         uuidCounter += 1;
