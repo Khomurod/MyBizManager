@@ -1,0 +1,252 @@
+'use strict';
+
+// ==========================================================
+// ✅ Vazifalar
+// ----------------------------------------------------------
+// The same task engine the /tasks board and the Telegram cards use. Nothing
+// here schedules a reminder, materialises an occurrence or decides whether a
+// completion was on time - every action goes to runTaskAction_ and the server
+// returns the rebuilt view, so the two surfaces cannot disagree.
+// ==========================================================
+
+const TASK_FILTERS = [
+    { key: 'dueToday', label: 'Bugun' },
+    { key: 'overdue', label: 'Muddati o’tgan' },
+    { key: 'upcoming', label: 'Keyingi' },
+    { key: 'waitingProof', label: 'Rasm kutilmoqda' },
+    { key: 'completedToday', label: 'Bajarilgan' }
+];
+
+let taskFilter = 'dueToday';
+
+function renderTasks() {
+    const host = document.getElementById('tab-tasks');
+    if (!state.tasks) { host.innerHTML = skeleton(4); return; }
+
+    const view = state.tasks;
+    const counts = key => (view[key] || []).length;
+
+    host.innerHTML = `
+        <div class="between" style="margin-bottom:12px">
+            <h1>Vazifalar</h1>
+            <button class="btn-primary btn-sm" onclick="openTaskSheet()">+ Yangi</button>
+        </div>
+
+        <div class="seg" role="tablist">
+            ${TASK_FILTERS.map(f => `
+                <button role="tab" aria-selected="${taskFilter === f.key}"
+                        onclick="setTaskFilter('${f.key}')">${escapeHtml(f.label)} ${counts(f.key)}</button>`).join('')}
+        </div>
+
+        <div class="card list" style="margin-top:10px">${occurrenceRows(view[taskFilter] || [])}</div>
+
+        ${routineSection(view)}
+        ${goalSection(view)}
+    `;
+}
+
+function setTaskFilter(key) {
+    taskFilter = key;
+    haptic();
+    renderTasks();
+}
+
+function priorityPill(priority) {
+    if (priority === 'urgent') return '<span class="pill debt">Shoshilinch</span>';
+    if (priority === 'high') return '<span class="pill warn">Muhim</span>';
+    return '';
+}
+
+function occurrenceRows(list) {
+    if (!list.length) return emptyRow("Bu ro'yxat bo'sh");
+    return list.map(o => {
+        const done = o.status === 'Completed';
+        const actions = done
+            ? `<button class="btn-sm" onclick="taskAction('reopen_occurrence','${escapeHtml(o.id)}')">Qaytarish</button>`
+            : `<button class="btn-sm btn-primary" onclick="taskAction('complete_occurrence','${escapeHtml(o.id)}')">Bajarildi</button>
+               <button class="btn-sm" onclick="taskAction('skip_occurrence','${escapeHtml(o.id)}')">O'tkazish</button>`;
+        return `
+        <div class="item" style="flex-direction:column;align-items:stretch;gap:8px">
+            <div class="row" style="align-items:flex-start">
+                <div class="grow">
+                    <p class="title">${escapeHtml(o.title)}</p>
+                    <p class="tiny muted ellipsis">
+                        ${o.dateKey ? shortDate(o.dateKey) : 'Sanasiz'}${o.dueTime ? ' · ' + escapeHtml(o.dueTime) : ''}${o.responsible ? ' · ' + escapeHtml(o.responsible) : ''}
+                    </p>
+                </div>
+                ${priorityPill(o.priority)}
+                ${o.displayStatus === 'Overdue' ? '<span class="pill debt">Kechikdi</span>' : ''}
+                ${o.photoRequired ? '<span class="pill info">📷</span>' : ''}
+            </div>
+            <div class="row">${actions}
+                <button class="btn-sm" onclick="openTaskSheet('${escapeHtml(o.taskId)}')" aria-label="Tahrirlash">✎</button>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+function routineSection(view) {
+    const routines = (view.tasks || []).filter(t => t.type === 'routine');
+    if (!routines.length) return '';
+    return `
+        <h2>Odatlar</h2>
+        <div class="card list">
+            ${routines.map(t => `
+                <div class="item">
+                    <div class="grow">
+                        <p class="title ellipsis">${escapeHtml(t.title)}</p>
+                        <p class="tiny muted">${t.status === 'paused' ? "To'xtatilgan" : 'Faol'}${t.streak ? ' · ' + t.streak + ' kun' : ''}</p>
+                    </div>
+                    <button class="btn-sm" onclick="taskAction('${t.status === 'paused' ? 'resume_routine' : 'pause_routine'}','','${escapeHtml(t.id)}')">
+                        ${t.status === 'paused' ? 'Davom' : "To'xtatish"}
+                    </button>
+                </div>`).join('')}
+        </div>`;
+}
+
+function goalSection(view) {
+    const goals = (view.tasks || []).filter(t => t.type === 'goal');
+    if (!goals.length) return '';
+    return `
+        <h2>Maqsadlar</h2>
+        <div class="card list">
+            ${goals.map(t => {
+                const total = Number(t.stepCount) || 0;
+                const done = Number(t.stepsCompleted) || 0;
+                const percent = total > 0 ? Math.round((done / total) * 100) : 0;
+                return `
+                <div class="item" style="flex-direction:column;align-items:stretch">
+                    <div class="between">
+                        <p class="title ellipsis">${escapeHtml(t.title)}</p>
+                        <span class="pill info">${done}/${total}</span>
+                    </div>
+                    <div class="bar"><span style="width:${Math.max(2, percent)}%"></span></div>
+                </div>`;
+            }).join('')}
+        </div>`;
+}
+
+// ------------------------------------------------------------------- actions
+
+async function taskAction(action, occurrenceId, taskId) {
+    haptic();
+    try {
+        const body = await api('mini_task_action', {
+            taskAction: action,
+            occurrenceId: occurrenceId || '',
+            taskId: taskId || ''
+        });
+        if (body.view) state.tasks = body.view;
+        renderTasks();
+        toast('Bajarildi');
+        // The counts on the Omad tab come from the same view.
+        state.taskCounts = null;
+    } catch (error) {
+        if (error.unauthorized) return failAuth(error);
+        toast(error.message, true);
+    }
+}
+
+/** Create, or edit when a task id is supplied. */
+function openTaskSheet(taskId) {
+    const existing = taskId
+        ? ((state.tasks && state.tasks.tasks) || []).find(t => t.id === taskId)
+        : null;
+
+    openSheet(existing ? 'Vazifani tahrirlash' : 'Yangi vazifa', `
+        ${existing ? '' : `
+        <label for="tType">Turi</label>
+        <select id="tType">
+            <option value="once">Bir martalik</option>
+            <option value="routine">Takrorlanuvchi</option>
+        </select>`}
+
+        <label for="tTitle">Sarlavha</label>
+        <input id="tTitle" autocomplete="off" value="${escapeHtml(existing ? existing.title : '')}">
+
+        <label for="tDescription">Tavsif</label>
+        <textarea id="tDescription">${escapeHtml(existing ? existing.description || '' : '')}</textarea>
+
+        <div class="grid2">
+            <div>
+                <label for="tDeadline">Muddat</label>
+                <input id="tDeadline" type="date" value="${escapeHtml(existing ? existing.deadlineKey || '' : '')}">
+            </div>
+            <div>
+                <label for="tPriority">Muhimlik</label>
+                <select id="tPriority">
+                    ${['low', 'normal', 'high', 'urgent'].map(p =>
+                        `<option value="${p}" ${existing && existing.priority === p ? 'selected' : ''}>${p}</option>`).join('')}
+                </select>
+            </div>
+        </div>
+
+        <label for="tResponsible">Mas'ul</label>
+        <input id="tResponsible" autocomplete="off" value="${escapeHtml(existing ? existing.responsible || '' : '')}">
+
+        <button class="btn-primary btn-full" style="margin-top:14px" id="tSubmit"
+                onclick="submitTask('${escapeHtml(taskId || '')}')">Saqlash</button>
+        ${existing ? `<button class="btn-danger btn-full" style="margin-top:8px"
+                onclick="cancelTask('${escapeHtml(taskId)}')">Bekor qilish</button>` : ''}
+    `);
+}
+
+async function submitTask(taskId) {
+    const button = document.getElementById('tSubmit');
+    const title = document.getElementById('tTitle').value.trim();
+    if (!title) return toast('Sarlavha kiriting', true);
+
+    const typeField = document.getElementById('tType');
+    button.disabled = true;
+    button.textContent = 'Saqlanmoqda...';
+    try {
+        const body = await api('mini_task_action', {
+            taskAction: 'save_task',
+            taskId: taskId || '',
+            type: typeField ? typeField.value : undefined,
+            title,
+            description: document.getElementById('tDescription').value.trim(),
+            deadlineKey: document.getElementById('tDeadline').value || '',
+            priority: document.getElementById('tPriority').value,
+            responsible: document.getElementById('tResponsible').value.trim(),
+            // A routine needs a recurrence; daily is the only one worth
+            // offering on a phone, and the web app edits the rest.
+            recurrence: typeField && typeField.value === 'routine' ? { type: 'daily' } : undefined
+        });
+        if (body.view) state.tasks = body.view;
+        closeSheet();
+        renderTasks();
+        toast('Saqlandi');
+    } catch (error) {
+        if (error.unauthorized) return failAuth(error);
+        toast(error.message, true);
+    } finally {
+        button.disabled = false;
+        button.textContent = 'Saqlash';
+    }
+}
+
+async function cancelTask(taskId) {
+    if (!await askConfirm('Vazifa bekor qilinsinmi?')) return;
+    try {
+        const body = await api('mini_task_action', { taskAction: 'cancel_task', taskId });
+        if (body.view) state.tasks = body.view;
+        closeSheet();
+        renderTasks();
+        toast('Bekor qilindi');
+    } catch (error) {
+        if (error.unauthorized) return failAuth(error);
+        toast(error.message, true);
+    }
+}
+
+async function loadTasks() {
+    try {
+        const body = await api('mini_tasks');
+        state.tasks = body.view;
+        renderTasks();
+    } catch (error) {
+        if (error.unauthorized) return failAuth(error);
+        toast(error.message, true);
+    }
+}

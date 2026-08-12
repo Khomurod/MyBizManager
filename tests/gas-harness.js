@@ -256,6 +256,15 @@ function loadScript(options = {}) {
       getScriptTimeZone: () => 'Asia/Tashkent'
     },
 
+    ScriptApp: {
+      // The deployment the request is being served by, which is what the
+      // health check compares the configured webhook URL against.
+      getService: () => ({ getUrl: () => options.webAppUrl || '' }),
+      getProjectTriggers: () => (options.triggers || []).map(name => ({
+        getHandlerFunction: () => name
+      }))
+    },
+
     ContentService: {
       MimeType: { JSON: 'application/json' },
       createTextOutput: text => ({

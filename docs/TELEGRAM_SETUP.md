@@ -269,8 +269,20 @@ ekrani sozlamalarni ochadigan kalit uchun to'g'ri joy emas.
 
 ### Sozlash
 
-Mini App manzilini BotFather'da qo'lda saqlash shart emas — **Sozlamalar →
-Telegram** bo'limidagi tugma buni Bot API orqali bajaradi va tekshiradi.
+Mini App manzilini BotFather'da qo'lda saqlash **shart emas**.
+
+**Sozlamalar → Tizim → Mini Appni Sozlash** tugmasi:
+
+1. `getMe` bilan bot ulanishini tekshiradi;
+2. `setChatMenuButton` orqali menyu tugmasini Mini App'ga ulaydi;
+3. `getChatMenuButton` bilan **qayta o'qib tasdiqlaydi** — `setChatMenuButton`
+   Telegram keyinroq ochishdan bosh tortadigan manzil uchun ham `ok: true`
+   qaytaradi, shuning uchun yozib qo'yishning o'zi yetarli emas;
+4. ruxsat etilgan foydalanuvchi o'rnatilganini tekshiradi;
+5. webhook holatini tekshiradi;
+6. Mini App tayyor yoki yo'qligini aytadi.
+
+Manzil odatda `https://omad-d.netlify.app/mini`.
 
 ---
 

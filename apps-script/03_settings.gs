@@ -196,7 +196,10 @@ function buildTelegramSettingsView_() {
     adminKeyConfigured: !!getTelegramSetting_(OMAD_PROP_ADMIN_KEY),
     // Whether a webhook verification secret exists - never the secret itself.
     webhookSecretConfigured: !!getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_SECRET),
-    webhookSecretRotatedAt: getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_ROTATED_AT)
+    webhookSecretRotatedAt: getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_ROTATED_AT),
+    // Not a secret: the Mini App URL is in the bot's menu for anyone to see.
+    miniAppUrl: getTelegramSetting_(TELEGRAM_PROP_MINI_APP_URL),
+    miniAppStatus: safeParseJSON_(getTelegramSetting_(TELEGRAM_PROP_MINI_APP_STATUS), null)
   };
 }
 

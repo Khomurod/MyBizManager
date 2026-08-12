@@ -439,3 +439,77 @@ async function rotateWebhookSecret() {
     if (typeof loadTelegramSettings === 'function') await loadTelegramSettings();
     await loadSystemStatus();
 }
+
+// ==========================================================
+// System health & Mini App configuration
+// ----------------------------------------------------------
+// Green / warning / error with one sentence each. The report carries counts
+// and status only - never a secret, a chat id or a deployment URL.
+// ==========================================================
+
+const HEALTH_TONES = {
+    ok: { dot: 'bg-green-500', text: 'text-slate-600' },
+    warning: { dot: 'bg-amber-500', text: 'text-amber-700' },
+    error: { dot: 'bg-red-500', text: 'text-red-600' }
+};
+
+function healthRow(check) {
+    const tone = HEALTH_TONES[check.status] || HEALTH_TONES.warning;
+    return `<div class="flex items-start gap-2 py-1">
+                <span class="w-2 h-2 rounded-full ${tone.dot} mt-1.5 shrink-0"></span>
+                <span class="font-bold text-slate-600 shrink-0">${check.label}</span>
+                <span class="${tone.text} text-right ml-auto break-words">${check.message}</span>
+            </div>`;
+}
+
+function renderHealthReport(health) {
+    const box = document.getElementById('healthReport');
+    if (!box) return;
+    if (!health) {
+        box.innerHTML = `<p class="text-slate-400">Ma'lumot yo'q.</p>`;
+        return;
+    }
+    const summary = health.status === 'ok'
+        ? `<p class="font-bold text-green-600 mb-2">✅ Hammasi joyida</p>`
+        : health.status === 'warning'
+            ? `<p class="font-bold text-amber-600 mb-2">⚠️ E'tibor talab qiladi</p>`
+            : `<p class="font-bold text-red-600 mb-2">⛔️ Muammo bor</p>`;
+    box.innerHTML = summary + (health.checks || []).map(healthRow).join('');
+}
+
+async function runHealthCheck() {
+    const data = await maintenanceCall({ action: 'get_health' });
+    if (!data) return;
+    if (data.status !== 'success') return alert(data.message || "Xatolik yuz berdi.");
+    renderHealthReport(data.health);
+}
+
+function renderMiniAppStatus(settings) {
+    const box = document.getElementById('miniAppStatus');
+    if (!box) return;
+    const input = document.getElementById('miniAppUrl');
+    if (input && settings && settings.miniAppUrl && !input.value) input.value = settings.miniAppUrl;
+
+    const status = settings && settings.miniAppStatus;
+    if (!status) {
+        box.innerHTML = `<span class="text-slate-400">Hali sozlanmagan.</span>`;
+        return;
+    }
+    box.innerHTML = status.ready
+        ? `<span class="text-green-600 font-bold">✅ Tayyor</span> <span class="text-slate-400">· ${formatStamp(status.checkedAt)}</span>`
+        : `<span class="text-amber-600 font-bold">⚠️ To'liq sozlanmagan</span> <span class="text-slate-400">· ${formatStamp(status.checkedAt)}</span>`;
+}
+
+async function configureMiniApp() {
+    const input = document.getElementById('miniAppUrl');
+    const data = await maintenanceCall({
+        action: 'configure_mini_app',
+        miniAppUrl: input ? input.value.trim() : ""
+    });
+    if (!data) return;
+    if (data.status !== 'success') return alert(data.message || "Xatolik yuz berdi.");
+
+    renderMiniAppStatus(data.settings);
+    const steps = (data.steps || []).map(s => `${s.status === 'ok' ? '✅' : '⛔️'} ${s.label}: ${s.message}`).join('\n');
+    alert((data.ready ? "Mini App tayyor.\n\n" : "Mini App to'liq sozlanmadi.\n\n") + steps);
+}

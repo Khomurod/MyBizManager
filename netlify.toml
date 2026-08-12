@@ -8,6 +8,18 @@
   to = "/tasks.html"
   status = 200
 
+# The Telegram Mini App. Served at a clean /mini because the URL is registered
+# with Telegram through setChatMenuButton and shows in the bot's menu.
+[[redirects]]
+  from = "/mini"
+  to = "/mini.html"
+  status = 200
+
+[[redirects]]
+  from = "/mini/"
+  to = "/mini.html"
+  status = 200
+
 [[redirects]]
   from = "/tasks/"
   to = "/tasks.html"

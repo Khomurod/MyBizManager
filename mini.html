@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
+  <meta name="color-scheme" content="light dark">
+  <title>Omad Mini</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    /*
+      Telegram supplies the palette as CSS variables and changes them when the
+      user switches theme, so every colour here is one of those with a fallback
+      for the case where the page is open outside Telegram. Nothing is
+      hardcoded to light or dark.
+    */
+    :root {
+      --bg: var(--tg-theme-bg-color, #ffffff);
+      --card: var(--tg-theme-secondary-bg-color, #f1f5f9);
+      --text: var(--tg-theme-text-color, #0f172a);
+      --muted: var(--tg-theme-hint-color, #64748b);
+      --accent: var(--tg-theme-button-color, #2563eb);
+      --accent-text: var(--tg-theme-button-text-color, #ffffff);
+      --link: var(--tg-theme-link-color, #2563eb);
+      --danger: #ef4444;
+      --success: #16a34a;
+      --warning: #d97706;
+      --line: color-mix(in srgb, var(--muted) 22%, transparent);
+      --nav-height: 62px;
+    }
+
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+    html, body {
+      margin: 0; padding: 0;
+      background: var(--bg); color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 15px; line-height: 1.4;
+      overscroll-behavior-y: none;
+    }
+
+    /* Room for the tab bar plus the phone's own home indicator. */
+    #app {
+      padding: 12px 12px calc(var(--nav-height) + env(safe-area-inset-bottom) + 16px);
+      max-width: 640px; margin: 0 auto;
+    }
+
+    .hidden { display: none !important; }
+
+    /* ---------------------------------------------------------- typography */
+    h1 { font-size: 19px; margin: 0; font-weight: 700; }
+    h2 { font-size: 15px; margin: 20px 0 8px; font-weight: 700; }
+    .muted { color: var(--muted); }
+    .tiny { font-size: 12px; }
+    .num { font-variant-numeric: tabular-nums; font-weight: 700; }
+
+    /* -------------------------------------------------------------- layout */
+    .row { display: flex; align-items: center; gap: 10px; }
+    .between { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .stack > * + * { margin-top: 8px; }
+
+    .card {
+      background: var(--card); border-radius: 16px; padding: 14px;
+    }
+    .card + .card { margin-top: 10px; }
+
+    .hero { padding: 18px 16px; }
+    .hero .value { font-size: 30px; font-weight: 800; letter-spacing: -0.5px; }
+
+    .tile .label { font-size: 12px; color: var(--muted); }
+    .tile .value { font-size: 18px; font-weight: 800; margin-top: 2px; }
+
+    .list > * + * { border-top: 1px solid var(--line); }
+    .item { padding: 11px 0; display: flex; gap: 10px; align-items: flex-start; }
+    .item .grow { flex: 1; min-width: 0; }
+    .item .title { font-weight: 600; }
+    .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    .pill {
+      display: inline-block; padding: 2px 8px; border-radius: 999px;
+      font-size: 11px; font-weight: 700;
+    }
+    .pill.debt { background: color-mix(in srgb, var(--danger) 18%, transparent); color: var(--danger); }
+    .pill.ok { background: color-mix(in srgb, var(--success) 18%, transparent); color: var(--success); }
+    .pill.warn { background: color-mix(in srgb, var(--warning) 20%, transparent); color: var(--warning); }
+    .pill.info { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+
+    .bar { height: 8px; border-radius: 999px; background: var(--line); overflow: hidden; margin-top: 8px; }
+    .bar > span { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+
+    /* -------------------------------------------------------------- controls
+       44px minimum on everything tappable. */
+    button, .btn {
+      font: inherit; font-weight: 700; border: 0; border-radius: 12px;
+      min-height: 44px; padding: 0 14px; cursor: pointer;
+      background: var(--card); color: var(--text);
+    }
+    button:active { transform: scale(0.98); }
+    button[disabled] { opacity: 0.5; }
+    .btn-primary { background: var(--accent); color: var(--accent-text); }
+    .btn-danger { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
+    .btn-full { width: 100%; }
+    .btn-sm { min-height: 36px; font-size: 13px; padding: 0 10px; border-radius: 10px; }
+
+    .seg { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; }
+    .seg::-webkit-scrollbar { display: none; }
+    .seg button { flex: 0 0 auto; min-height: 38px; font-size: 13px; border-radius: 999px; }
+    .seg button[aria-selected="true"] { background: var(--accent); color: var(--accent-text); }
+
+    input, select, textarea {
+      font: inherit; width: 100%; min-height: 46px; padding: 10px 12px;
+      border-radius: 12px; border: 1px solid var(--line);
+      background: var(--bg); color: var(--text);
+    }
+    textarea { min-height: 76px; resize: vertical; }
+    label { display: block; font-size: 12px; font-weight: 700; color: var(--muted); margin: 10px 0 4px; }
+
+    /* ------------------------------------------------------------ tab bar */
+    nav {
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+      display: grid; grid-template-columns: repeat(3, 1fr);
+      background: var(--bg); border-top: 1px solid var(--line);
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+    nav button {
+      background: none; border-radius: 0; min-height: var(--nav-height);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 3px; font-size: 11px; font-weight: 700; color: var(--muted);
+    }
+    nav button[aria-selected="true"] { color: var(--accent); }
+    nav button .ic { font-size: 20px; line-height: 1; }
+
+    /* -------------------------------------------------------- bottom sheet */
+    .sheet-backdrop {
+      position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,0.45);
+      display: flex; align-items: flex-end; justify-content: center;
+    }
+    .sheet {
+      background: var(--bg); width: 100%; max-width: 640px;
+      border-radius: 20px 20px 0 0; padding: 16px;
+      padding-bottom: calc(16px + env(safe-area-inset-bottom));
+      max-height: 92vh; overflow-y: auto;
+    }
+    .sheet .grabber {
+      width: 40px; height: 4px; border-radius: 999px; background: var(--line);
+      margin: 0 auto 12px;
+    }
+
+    /* ---------------------------------------------------------- states */
+    .screen-message {
+      min-height: 70vh; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; text-align: center; gap: 10px;
+      padding: 24px;
+    }
+    .screen-message .ic { font-size: 46px; }
+
+    .skeleton {
+      background: var(--line); border-radius: 12px; height: 64px;
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+    @keyframes pulse { 0%,100% { opacity: 0.55; } 50% { opacity: 0.25; } }
+
+    .toast {
+      position: fixed; left: 12px; right: 12px; z-index: 60;
+      bottom: calc(var(--nav-height) + env(safe-area-inset-bottom) + 14px);
+      margin: 0 auto; max-width: 616px;
+      background: var(--text); color: var(--bg);
+      padding: 12px 14px; border-radius: 12px; font-weight: 600; font-size: 14px;
+    }
+    .toast.bad { background: var(--danger); color: #fff; }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <!-- Shown until the backend has confirmed who this is. Nothing below is
+       rendered, and no data is requested, before that. -->
+  <div id="gate" class="screen-message">
+    <div class="ic">⏳</div>
+    <p class="muted" id="gateText">Tekshirilmoqda...</p>
+    <button id="gateRetry" class="btn-primary hidden" onclick="bootstrap()">Qayta urinish</button>
+  </div>
+
+  <main id="app" class="hidden">
+    <section id="tab-omad"></section>
+    <section id="tab-cafe" class="hidden"></section>
+    <section id="tab-tasks" class="hidden"></section>
+  </main>
+
+  <nav id="nav" class="hidden">
+    <button onclick="switchTab('omad')" id="nav-omad" aria-selected="true"><span class="ic">💰</span>Omad</button>
+    <button onclick="switchTab('cafe')" id="nav-cafe" aria-selected="false"><span class="ic">☕</span>Kafe</button>
+    <button onclick="switchTab('tasks')" id="nav-tasks" aria-selected="false"><span class="ic">✅</span>Vazifalar</button>
+  </nav>
+
+  <div id="sheetHost"></div>
+  <div id="toastHost"></div>
+
+  <script src="assets/mini/00-config.js"></script>
+  <script src="assets/mini/01-api.js"></script>
+  <script src="assets/mini/02-format.js"></script>
+  <script src="assets/mini/03-omad.js"></script>
+  <script src="assets/mini/04-cafe.js"></script>
+  <script src="assets/mini/05-tasks.js"></script>
+  <script src="assets/mini/06-app.js"></script>
+</body>
+</html>
