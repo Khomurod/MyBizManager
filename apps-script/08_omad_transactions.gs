@@ -47,6 +47,11 @@ function normalizeEntryKind_(value) {
 
 function ensureOmadTransactionHeader_(sheet) {
   var header = OMAD_TRANSACTION_HEADER;
+  // Never stamp the thirteen-column legacy header onto the twenty-four column
+  // ledger. The check below compares the first and last legacy columns, and on
+  // a ledger sheet the last one is Rate_Sell -- so it would "repair" the
+  // header by destroying it.
+  if (sheet && sheet.getName && sheet.getName() === OMAD_TRANSACTIONS_V2_SHEET) return;
   if (sheet.getLastRow() === 0) {
     sheet.appendRow(header);
     return;
@@ -298,6 +303,14 @@ function appendOmadTransactionGroup_(doc, transactions) {
   var rows = Array.isArray(transactions) ? transactions : [];
   if (rows.length === 0) return [];
 
+  // The ledger has its own writer for a group -- writeTenantPaidToLedger_ --
+  // because a ledger row carries a frozen rate this function has no way to
+  // produce. Every caller already branches on isLedgerActive_; refusing is
+  // how the next one finds out rather than discovering it in the sheet.
+  if (isLedgerActive_(doc)) {
+    throw new Error("appendOmadTransactionGroup_ legacy varaq uchun. Ledger uchun writeTenantPaidToLedger_ ishlating.");
+  }
+
   var sheetName = activeTransactionSheetName_(doc);
   var txSheet = doc.getSheetByName(sheetName) || doc.insertSheet(sheetName);
   ensureOmadTransactionHeader_(txSheet);
@@ -369,7 +382,58 @@ function safeRewriteOmadTransactions_(doc, incomingTransactions) {
   }
 }
 
+/**
+ * Appends one transaction to whichever schema is live.
+ *
+ * The legacy row is thirteen columns and the ledger row is twenty-four, so
+ * writing the legacy shape into the ledger does not merely misfile a value --
+ * `ensureOmadTransactionHeader_` would first overwrite the ledger's header
+ * with the legacy one, and the row would then land with Tenant in Request_ID
+ * and Month in Created_At. One Telegram entry after a cutover was enough to
+ * corrupt the sheet structurally.
+ *
+ * Callers that already branch on `isLedgerActive_` never reach the legacy path
+ * below. This exists for the ones that do not: the /yangi conversation is the
+ * live example, and any future caller inherits the same protection rather than
+ * having to remember.
+ */
 function appendOmadTransaction_(doc, transaction) {
+  if (isLedgerActive_(doc)) {
+    var normalized = normalizeTransaction_(transaction);
+    var snapshot = buildRateSnapshot_(
+      transactionPeriod_(normalized), normalized.currency, transaction.rateType);
+    var now = new Date().toISOString();
+
+    appendLedgerRows_(ledgerSheet_(doc), [transactionToLedgerRow_({
+      id: normalized.id,
+      requestId: normalized.requestId,
+      createdAt: now,
+      updatedAt: "",
+      createdBy: String(transaction.createdBy || "").slice(0, 120),
+      source: TX_SOURCES[transaction.source] ? transaction.source : TX_SOURCE_TELEGRAM,
+      period: transactionPeriod_(normalized),
+      tenant: normalized.tenant,
+      type: normalized.type,
+      amount: normalized.amount,
+      currency: normalized.currency,
+      rateBuy: snapshot.rateBuy,
+      rateSell: snapshot.rateSell,
+      rateUsed: snapshot.rateUsed,
+      rateType: snapshot.rateType,
+      amountUZS: Math.round(normalized.currency === "USD"
+        ? normalized.amount * snapshot.rateUsed : normalized.amount),
+      method: normalized.method,
+      comment: normalized.comment,
+      status: TX_STATUS_ACTIVE,
+      relatedId: "",
+      msgId: normalized.msgId,
+      schemaVersion: LEDGER_SCHEMA_VERSION,
+      groupId: normalized.groupId,
+      entryKind: normalized.entryKind
+    })]);
+    return;
+  }
+
   var sheetName = activeTransactionSheetName_(doc);
   var txSheet = doc.getSheetByName(sheetName) || doc.insertSheet(sheetName);
   ensureOmadTransactionHeader_(txSheet);
