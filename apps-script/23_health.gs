@@ -146,6 +146,7 @@ function buildHealthReport_(doc) {
   var checks = [];
 
   checks.push(check_("backend", "Backend", HEALTH_OK, "Javob bermoqda"));
+  checks.push(rolloutGraceCheck_());
   checks.push(deploymentCheck_());
   checks.push(botCheck_());
   checks.push(miniAppCheck_());
@@ -168,6 +169,23 @@ function buildHealthReport_(doc) {
   }
 
   return { status: worst, checkedAt: new Date().toISOString(), checks: checks };
+}
+
+/**
+ * Whether the pre-key compatibility window is still open.
+ *
+ * It exists because the frontend and the backend deploy separately and the
+ * browser was left unable to save. It is a real hole for as long as it is
+ * open, so it says so every time anyone looks — and names both the command
+ * that proves it is safe to close and the line that closes it.
+ */
+function rolloutGraceCheck_() {
+  if (!LEGACY_CLIENT_GRACE) {
+    return check_("grace", "Kalit himoyasi", HEALTH_OK, "To'liq yoqilgan");
+  }
+  return check_("grace", "Kalit himoyasi", HEALTH_WARN,
+    "Eski frontend uchun vaqtincha ochiq. Netlify yangilangach " +
+    "LEGACY_CLIENT_GRACE = false qiling");
 }
 
 /**

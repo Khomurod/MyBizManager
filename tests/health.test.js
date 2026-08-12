@@ -72,8 +72,22 @@ function find(report, id) {
   return report.checks.find(c => c.id === id);
 }
 
+test('the rollout grace is reported as a warning for as long as it is open', () => {
+  const gas = boot();
+  const open = find(health(gas), 'grace');
+  assert.equal(open.status, 'warning');
+  assert.ok(open.message.includes('LEGACY_CLIENT_GRACE'), 'it names the line that closes it');
+
+  gas.LEGACY_CLIENT_GRACE = false;
+  assert.equal(find(health(gas), 'grace').status, 'ok');
+});
+
 test('a healthy system reports green across the board', () => {
-  const report = health(boot());
+  const gas = boot();
+  // The grace is the one thing still open in an otherwise healthy setup, so
+  // the overall status is a warning until it is closed.
+  gas.LEGACY_CLIENT_GRACE = false;
+  const report = health(gas);
   assert.equal(report.status, 'ok');
   assert.equal(find(report, 'bot').status, 'ok');
   assert.equal(find(report, 'miniapp').status, 'ok');
