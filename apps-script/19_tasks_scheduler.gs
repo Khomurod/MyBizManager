@@ -450,12 +450,29 @@ function normalizeTaskInput_(payload, existing) {
   if (title.length > 200) return { error: "Sarlavha juda uzun." };
 
   var nowIso = new Date().toISOString();
+
+  /**
+   * Text that can be cleared.
+   *
+   * `payload.description || existing.description` cannot tell "did not mention
+   * it" from "asked for it to be empty", and resolves both to the stored text.
+   * So a description or a responsible could be written but never deleted: the
+   * field was cleared on the form, the save reported success, and the old
+   * value came back on the next render. The schedule fields below already draw
+   * this distinction; text was the one place that did not.
+   */
+  var keptText = function (field, fallback, limit) {
+    var value = taskFieldSupplied_(payload, field) ? payload[field] : fallback;
+    if (value === null || value === undefined) return "";
+    return String(value).slice(0, limit);
+  };
+
   var task = {
     id: existing ? existing.id : ("task_" + Utilities.getUuid().split("-").join("")),
     type: type,
     title: title,
-    description: String(payload.description || (existing ? existing.description : "")).slice(0, 2000),
-    responsible: String(payload.responsible || (existing ? existing.responsible : "")).slice(0, 200),
+    description: keptText("description", existing ? existing.description : "", 2000),
+    responsible: keptText("responsible", existing ? existing.responsible : "", 200),
     priority: normalizeTaskPriority_(payload.priority !== undefined ? payload.priority : (existing ? existing.priority : "normal")),
     photoRequired: payload.photoRequired !== undefined ? !!payload.photoRequired : (existing ? existing.photoRequired : false),
     reminderTimes: normalizeTaskTimes_(payload.reminderTimes !== undefined ? payload.reminderTimes : (existing ? existing.reminderTimes : [])),

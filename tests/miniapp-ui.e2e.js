@@ -516,16 +516,59 @@ describe('The Telegram Mini App', () => {
     await context.close();
   });
 
-  test('every tappable control is at least 36px tall', async () => {
+  test('every tappable control is at least 36px in both directions', async () => {
+    const { page, context } = await openMini('auth_date=1&hash=x', defaultHandlers);
+    await page.waitForFunction(() => document.getElementById('miniTenantList'));
+    await page.locator('#nav-tasks').click();
+    await page.waitForFunction(() => document.getElementById('tab-tasks').innerText.includes('Bugungi ish'));
+
+    // Height alone is not a target. The edit button on a task row carries one
+    // glyph, so it was tall and about as wide as a pencil.
+    const small = await page.evaluate(() => [...document.querySelectorAll('button')]
+      .filter(b => b.offsetParent !== null)
+      .map(b => {
+        const box = b.getBoundingClientRect();
+        return {
+          text: (b.innerText || b.getAttribute('aria-label') || '').slice(0, 20),
+          height: Math.round(box.height), width: Math.round(box.width)
+        };
+      })
+      .filter(b => b.height < 36 || b.width < 36));
+
+    assert.deepEqual(small, []);
+    await context.close();
+  });
+
+  test('a form field is 16px, so focusing it cannot zoom the page', async () => {
+    // iOS zooms in on a focused control whose text is under 16px and stays
+    // zoomed, which walks the layout sideways in the middle of typing an
+    // amount. The page used to prevent that by forbidding zoom entirely.
     const { page, context } = await openMini('auth_date=1&hash=x', defaultHandlers);
     await page.waitForFunction(() => document.getElementById('miniTenantList'));
 
-    const small = await page.evaluate(() => [...document.querySelectorAll('button')]
-      .filter(b => b.offsetParent !== null)
-      .map(b => ({ text: b.innerText.slice(0, 20), height: Math.round(b.getBoundingClientRect().height) }))
-      .filter(b => b.height < 36));
+    await page.locator('button:has-text("Kirim")').first().click();
+    await page.waitForSelector('#mAmount');
 
-    assert.deepEqual(small, []);
+    const sizes = await page.evaluate(() =>
+      [...document.querySelectorAll('.sheet input, .sheet select, .sheet textarea')]
+        .map(el => ({ id: el.id, size: parseFloat(getComputedStyle(el).fontSize) })));
+
+    assert.ok(sizes.length, 'the sheet has fields to check');
+    assert.deepEqual(sizes.filter(f => f.size < 16), []);
+
+    await context.close();
+  });
+
+  test('the page can still be zoomed', async () => {
+    // Removing user-scalable=no is the point of the change above; a later
+    // "quick fix" for a layout jump must not put it back.
+    const { page, context } = await openMini('auth_date=1&hash=x', defaultHandlers);
+    const viewport = await page.evaluate(() =>
+      (document.querySelector('meta[name="viewport"]') || {}).content || '');
+
+    assert.ok(!/user-scalable\s*=\s*no/.test(viewport), viewport);
+    assert.ok(!/maximum-scale/.test(viewport), viewport);
+
     await context.close();
   });
 

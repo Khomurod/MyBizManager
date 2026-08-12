@@ -2,7 +2,16 @@
 <html lang="uz">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
+  <!--
+    No maximum-scale and no user-scalable=no.
+
+    They were there to stop iOS zooming the page when a field takes focus, but
+    they do it by forbidding zoom outright, which takes pinch-to-zoom away from
+    everyone including the people who need it most. The auto-zoom has a proper
+    cause -- Safari zooms when a focused control's text is under 16px -- and it
+    is fixed where it belongs, in the control's font size below.
+  -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
   <title>Omad Mini</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
@@ -101,15 +110,26 @@
     .btn-primary { background: var(--accent); color: var(--accent-text); }
     .btn-danger { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
     .btn-full { width: 100%; }
-    .btn-sm { min-height: 36px; font-size: 13px; padding: 0 10px; border-radius: 10px; }
+    /* min-width too: an icon-only button like ✎ is one glyph wide otherwise,
+       which is a sliver to hit with a thumb however tall the button is. */
+    .btn-sm { min-height: 36px; min-width: 36px; font-size: 13px; padding: 0 10px; border-radius: 10px; }
 
     .seg { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; }
     .seg::-webkit-scrollbar { display: none; }
     .seg button { flex: 0 0 auto; min-height: 38px; font-size: 13px; border-radius: 999px; }
     .seg button[aria-selected="true"] { background: var(--accent); color: var(--accent-text); }
 
+    /*
+      16px, not the body's 15px.
+
+      iOS zooms the page in when a focused control's text is smaller than 16px,
+      and then leaves it zoomed -- the layout jumps sideways mid-entry and the
+      tab bar walks off the screen. The page used to forbid zooming altogether
+      to stop it, which also took pinch-to-zoom away from anyone who needs it.
+      One pixel here fixes the jump and gives the zoom back.
+    */
     input, select, textarea {
-      font: inherit; width: 100%; min-height: 46px; padding: 10px 12px;
+      font: inherit; font-size: 16px; width: 100%; min-height: 46px; padding: 10px 12px;
       border-radius: 12px; border: 1px solid var(--line);
       background: var(--bg); color: var(--text);
     }
@@ -190,14 +210,17 @@
     <section id="tab-tasks" class="hidden"></section>
   </main>
 
-  <nav id="nav" class="hidden">
-    <button onclick="switchTab('omad')" id="nav-omad" aria-selected="true"><span class="ic">💰</span>Omad</button>
-    <button onclick="switchTab('cafe')" id="nav-cafe" aria-selected="false"><span class="ic">☕</span>Kafe</button>
-    <button onclick="switchTab('tasks')" id="nav-tasks" aria-selected="false"><span class="ic">✅</span>Vazifalar</button>
+  <!-- aria-selected only means anything on a tab, so the roles are stated. -->
+  <nav id="nav" class="hidden" role="tablist" aria-label="Bo'limlar">
+    <button role="tab" onclick="switchTab('omad')" id="nav-omad" aria-selected="true"><span class="ic" aria-hidden="true">💰</span>Omad</button>
+    <button role="tab" onclick="switchTab('cafe')" id="nav-cafe" aria-selected="false"><span class="ic" aria-hidden="true">☕</span>Kafe</button>
+    <button role="tab" onclick="switchTab('tasks')" id="nav-tasks" aria-selected="false"><span class="ic" aria-hidden="true">✅</span>Vazifalar</button>
   </nav>
 
   <div id="sheetHost"></div>
-  <div id="toastHost"></div>
+  <!-- A live region that exists before the message does, so a screen reader is
+       already watching it when a toast is written in. -->
+  <div id="toastHost" aria-live="polite" aria-atomic="true"></div>
 
   <script src="assets/mini/00-config.js"></script>
   <script src="assets/mini/01-api.js"></script>

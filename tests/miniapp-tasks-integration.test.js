@@ -353,6 +353,59 @@ test('a goal reports progress where the Mini App renders it', () => {
   assert.strictEqual(after.progress.percent, 50);
 });
 
+// --------------------------------------------------------- clearing a field
+
+/**
+ * Emptying a field has to mean emptying it.
+ *
+ * `payload.description || existing.description` cannot tell "did not mention
+ * it" from "asked for it to be empty" and resolved both to the stored text, so
+ * a description or a responsible could be written and never deleted: the field
+ * was cleared on the form, the save reported success, and the old value came
+ * back on the next render. Both clients always send these two fields, so both
+ * were affected.
+ */
+
+test('clearing the description on an edit actually clears it', () => {
+  const gas = boot();
+  const created = taskAction(gas, 'save_task', {
+    type: 'once', title: 'Tavsifli', description: 'Eski tafsilot'
+  });
+  assert.strictEqual(storedTask(gas, created.taskId).Description, 'Eski tafsilot');
+
+  const cleared = taskAction(gas, 'save_task', { taskId: created.taskId, description: '' });
+
+  assert.strictEqual(cleared.status, 'success', cleared.message);
+  assert.strictEqual(storedTask(gas, created.taskId).Description, '');
+});
+
+test('clearing the responsible on an edit actually clears it', () => {
+  const gas = boot();
+  const created = taskAction(gas, 'save_task', {
+    type: 'once', title: "Mas'ulli", responsible: 'Diyor'
+  });
+
+  taskAction(gas, 'save_task', { taskId: created.taskId, responsible: '' });
+
+  assert.strictEqual(storedTask(gas, created.taskId).Responsible, '');
+});
+
+test('an edit that never mentions the text still keeps it', () => {
+  const gas = boot();
+  const created = taskAction(gas, 'save_task', {
+    type: 'once', title: 'Saqlansin', description: 'Qoladi', responsible: 'Diyor'
+  });
+
+  // The distinction the whole fix rests on: a client that does not show a
+  // field does not send it, and must not wipe it.
+  const edited = taskAction(gas, 'save_task', { taskId: created.taskId, title: 'Yangi nom' });
+
+  assert.strictEqual(edited.status, 'success');
+  const stored = storedTask(gas, created.taskId);
+  assert.strictEqual(stored.Description, 'Qoladi');
+  assert.strictEqual(stored.Responsible, 'Diyor');
+});
+
 // ------------------------------------------------------------ when it is due
 
 /**
