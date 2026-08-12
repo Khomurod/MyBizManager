@@ -53,10 +53,23 @@ function makeDueTask(gas, doc, reminderTime) {
   return result.task;
 }
 
-/** A reminder time that is already past in Tashkent, inside the catch-up window. */
+/**
+ * A reminder time that is already past *today* in Tashkent.
+ *
+ * Subtracting half an hour from "now" is only the same day for most of the
+ * day: run this between 00:00 and 00:30 Tashkent and it lands on yesterday's
+ * date, the occurrence is created for today, and nothing is due — so the whole
+ * file failed for the first half hour of every day.
+ *
+ * Clamping to the start of the day keeps the reminder in the past and on the
+ * day the trigger will compute, whatever time the suite runs.
+ */
 function recentlyDueTime(gas) {
-  const parts = gas.taskTzParts_(Date.now() - 30 * 60000);
-  return parts.timeKey;
+  const now = gas.taskTzParts_(Date.now());
+  const [hours, minutes] = String(now.timeKey).split(':').map(Number);
+  const dueMinutes = Math.max(0, (hours * 60 + minutes) - 30);
+  const pad = n => String(n).padStart(2, '0');
+  return `${pad(Math.floor(dueMinutes / 60))}:${pad(dueMinutes % 60)}`;
 }
 
 function reminderSends(gas) {
