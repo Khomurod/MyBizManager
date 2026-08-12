@@ -242,12 +242,11 @@ function functionNames(code) {
  * can be deleted at any later tidy-up.
  */
 const RETIRED_FUNCTIONS = {
-  // Removed when the Mini App stopped building a task summary for its home
-  // screen. It read view.overdue / view.dueToday, which buildTaskViews_ nests
-  // under view.today and view.counts, so every figure it produced was zero --
-  // and no screen rendered them. Deleting it also removes a full task-view
-  // build from every Mini App launch.
-  'buildMiniTaskSummary_': 'dead Mini App home counts, never rendered'
+  // Replaced by resolveReportGroupFrom_, which picks the group out of rows the
+  // caller has already read. The old one fetched the whole ledger for itself
+  // and the caller then fetched it again for the balances -- two full passes
+  // per report, and a report is queued for every accounting entry.
+  'resolveReportGroup_': 'replaced by resolveReportGroupFrom_'
 };
 
 /**
