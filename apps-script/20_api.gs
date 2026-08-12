@@ -131,6 +131,14 @@ function doPost(e) {
       return maintenanceAction_(action, payload, doc);
     }
 
+    // ---- Health & Mini App configuration ----------------------------------
+    if (action === 'get_health' || action === 'configure_mini_app') {
+      var healthAdminError = checkAdminKey_(payload);
+      if (healthAdminError) return jsonOutput_({ status: "error", message: healthAdminError });
+      if (action === 'configure_mini_app') return jsonOutput_(configureMiniApp_(payload));
+      return jsonOutput_({ status: "success", health: buildHealthReport_(doc) });
+    }
+
     // ---- Migration --------------------------------------------------------
     if (action === 'get_migration_status') {
       var migrationReadError = checkAdminKey_(payload);

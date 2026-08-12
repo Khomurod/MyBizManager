@@ -20,6 +20,7 @@ Documented as of the Telegram credential-hardening change. This is the
 | `assets/omad/*.js` | The Omad admin application, split by responsibility |
 | `cafe_admin.html` | Café inventory, recipes, categories, settings |
 | `cafe_pos.html` | Café point of sale, close-day |
+| `mini.html` + `assets/mini/*.js` | The Telegram Mini App, served at `/mini` |
 | `apps-script/*.gs` | Apps Script backend **source of truth** — what CI uploads to the live project |
 | `script.gs` | **Generated** single-file bundle of `apps-script/*.gs`; a review aid and manual-deployment fallback, no longer the production path |
 
@@ -65,6 +66,7 @@ file for file. See [DEPLOYMENT.md](DEPLOYMENT.md).
 | `19a_tasks_wizard.gs` | Task module: the `📋 Vazifa` branch of `/yangi` — state machine, keyboards, task creation |
 | `21_miniapp_auth.gs` | Telegram Mini App: `initData` signature verification and the authorization gate |
 | `22_miniapp_api.gs` | Telegram Mini App: server-computed summaries and the write actions |
+| `23_health.gs` | Mini App configuration through the Bot API, and the system health check |
 | `20_api.gs` | `doPost` / `doGet` routing only |
 
 The task-management feature (`/tasks`) is documented separately in
@@ -362,6 +364,76 @@ logic rather than reimplementing it — figures from `05a_calculations.gs`, tena
 debt from `06_tenants.gs`, tasks through `runTaskAction_` (the same code the
 `/tasks` board runs, split out from behind the admin-key check), and the
 tenant-paid pair from `08a_tenant_paid.gs`.
+
+## The Telegram Mini App
+
+A separate, phone-first frontend at **`/mini`** — not the admin pages shrunk.
+Three tabs and nothing else:
+
+| Tab | What it is |
+|---|---|
+| 💰 Omad | the month's figures, balances, tenant debt, recent activity, and three entries: income, expense, tenant-paid |
+| ☕ Kafe | monitoring only — today, the month, the daily target, stock value, recent sales and closings |
+| ✅ Vazifalar | the existing task engine: today / overdue / upcoming / waiting / done, complete, skip, reopen, pause, create, edit |
+
+The full web app remains the administration interface. Rates, tenant
+schedules, planned expenses, migration and the maintenance actions are
+deliberately not here.
+
+### It computes nothing
+
+Every figure arrives already calculated. `mini_home` returns the Omad summary,
+the café summary and the task counts in **one** round trip, so the first screen
+paints on one request; each tab's detail is fetched when that tab is first
+opened. The café state alone is a third of a megabyte — sending it to a phone
+to be totalled there would be slow *and* a second implementation of arithmetic
+that already exists in `05a_calculations.gs`.
+
+Writes go through the same functions the web app and the bot use, so a Mini App
+entry is indistinguishable from any other: same row shape, same
+`Entry_Group_ID`, same idempotency, same queued group report.
+
+### Design
+
+Telegram supplies the palette as CSS variables and changes them when the user
+switches theme, so every colour is one of those with a fallback for the page
+being opened outside Telegram; nothing is hardcoded light or dark. The tab bar
+sits above `env(safe-area-inset-bottom)`, controls are at least 44px, amounts
+group as they are typed, and forms are bottom sheets that Telegram's own back
+button closes. No framework: seven small classic scripts, which is what makes
+it start instantly on a phone connection.
+
+### Configuration
+
+**Sozlamalar → Tizim → Mini Appni Sozlash** does the whole BotFather setup
+through the Bot API: `setChatMenuButton` installs the Mini App on the bot's
+menu, `getChatMenuButton` reads it back — because `setChatMenuButton` answers
+`ok: true` for a URL Telegram will later refuse to open — and the authorized
+user and the webhook are checked in the same pass. There is no manual step.
+
+## System health
+
+**Sozlamalar → Tizim → Tizim Salomatligi** (`get_health`, admin key) is one
+pass over everything that can stop working quietly. Green / warning / error
+with a sentence each, and never a secret, a chat id or a deployment URL.
+
+| Check | Notices |
+|---|---|
+| Deployment | **the webhook pointing at a different deployment than the one answering** — the failure this project has actually had, repeatedly |
+| Telegram bot | the token is missing or the bot will not answer |
+| Mini App | the menu button is unset, or points somewhere else |
+| Authorized user | unset, or not numeric |
+| Webhook | disconnected, erroring, or badly backed up |
+| Tasks group | unset, or an `@username` that will silently match nothing |
+| Trigger | `processPendingTelegramJobs` is missing — no reminder or report would ever be sent |
+| Queue | failed jobs, or a growing backlog |
+| Sheets | one of the five required sheets is absent |
+| Ledger | which transaction sheet is live, and whether V2 is on |
+| Log protection | anything in the recent debug log that still looks like a credential |
+| Omad / Café / Tasks | each is reachable, with its row count |
+
+A failing bot does not take the report down with it: each check catches its own
+errors, so one broken thing still leaves the other fourteen answers readable.
 
 ## Telegram reporting
 

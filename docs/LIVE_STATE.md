@@ -47,6 +47,32 @@ Practical consequences on the day this deploys:
 The Telegram bot is unaffected: it is authorized by the webhook secret and
 `TELEGRAM_AUTHORIZED_USER_ID`, not by this key.
 
+## The Telegram Mini App
+
+A phone-first app at <https://omad-d.netlify.app/mini>, opened from the bot's
+menu button. It is reachable **only** by the Telegram user in
+`TELEGRAM_AUTHORIZED_USER_ID` — the same setting that already decides who may
+run `/yangi`. There is no second user list.
+
+Two things to know:
+
+1. **Setting it up is one button.** Sozlamalar → Tizim → *Mini Appni Sozlash*
+   installs the menu button through the Bot API and verifies it. Nothing has to
+   be typed into BotFather.
+2. **It has not been configured against the live bot yet** — that button needs
+   the admin key.
+
+Opened in an ordinary browser it shows one sentence and asks the server for
+nothing.
+
+## System health
+
+Sozlamalar → Tizim → *Tizim Salomatligi* checks fifteen things in one pass and
+reports green / warning / error. The one worth knowing about: it compares the
+deployment answering the request with the deployment the webhook points at, so
+the "New deployment mints a URL nothing calls" trap described below is now
+detected rather than discovered weeks later.
+
 ## Where everything lives
 
 | Piece | Value |
