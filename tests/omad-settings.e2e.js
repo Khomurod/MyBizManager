@@ -226,7 +226,7 @@ describe('Sozlamalar (browser)', () => {
     await context.close();
   });
 
-  test('admin-key actions are blocked until a key is entered', async () => {
+  test('admin actions carry the signed-in key even with the field empty', async () => {
     const { page, context, requests } = await openSettings();
     await page.evaluate(() => showSettingsSection('system'));
     await page.waitForFunction(() => systemStatus !== null);
@@ -235,10 +235,31 @@ describe('Sozlamalar (browser)', () => {
       await createBackup();
       await processPendingJobs();
       await retryFailedJobs();
-      await applyMigration();
     });
 
-    for (const action of ['create_backup', 'process_jobs', 'retry_failed_jobs', 'apply_omad_migration']) {
+    // The Telegram field is for trying a *different* key. Empty means "use the
+    // one I signed in with", not "send nothing" - the server is the thing that
+    // decides, and it needs a key to decide with.
+    for (const action of ['create_backup', 'process_jobs', 'retry_failed_jobs']) {
+      const sent = requests.filter(r => r.action === action);
+      assert.strictEqual(sent.length, 1, action);
+      assert.strictEqual(sent[0].adminKey, 'e2e-access-key', action);
+    }
+    await context.close();
+  });
+
+  test('with no key anywhere, nothing is sent at all', async () => {
+    const { page, context, requests } = await openSettings();
+    await page.evaluate(() => showSettingsSection('system'));
+    await page.waitForFunction(() => systemStatus !== null);
+
+    await page.evaluate(async () => {
+      localStorage.removeItem('omad_access_key');
+      await createBackup();
+      await retryFailedJobs();
+    });
+
+    for (const action of ['create_backup', 'retry_failed_jobs']) {
       assert.deepStrictEqual(requests.filter(r => r.action === action), [], action);
     }
     await context.close();
