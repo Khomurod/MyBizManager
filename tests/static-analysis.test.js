@@ -309,3 +309,27 @@ test('no HTML page defines the same function twice across all its scripts', () =
     );
   }
 });
+
+test('the deploy guard only excuses functions the repository really has dropped', () => {
+  // RETIRED_FUNCTIONS lets a deliberate removal through a guard whose whole
+  // job is to stop clasp deleting live code. An entry naming a function that
+  // still exists would silently disarm the guard for it, so the list is held
+  // to being exactly what it claims: names that are gone.
+  const deploy = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'clasp-deploy.js'), 'utf8');
+  const block = /const RETIRED_FUNCTIONS = \{([\s\S]*?)\n\};/.exec(deploy);
+  assert.ok(block, 'the retired-function list is where the guard reads it from');
+
+  const names = Array.from(block[1].matchAll(/'([A-Za-z_$][\w$]*)'\s*:/g)).map(m => m[1]);
+  assert.ok(names.length > 0, 'the list parses');
+
+  const sources = fs.readdirSync(path.join(__dirname, '..', 'apps-script'))
+    .filter(f => f.endsWith('.gs'))
+    .map(f => fs.readFileSync(path.join(__dirname, '..', 'apps-script', f), 'utf8'))
+    .join('\n');
+
+  names.forEach(name => {
+    const declared = new RegExp(`function\\s+${name.replace(/\$/g, '\\$')}\\s*\\(`).test(sources);
+    assert.ok(!declared,
+      `${name} is listed as retired but is still declared in apps-script/ — the guard would ignore it being deleted`);
+  });
+});
