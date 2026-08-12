@@ -80,6 +80,44 @@ moves stock and writes the sale atomically under a lock, keyed by a request id.
 Void restores from the stored receipt. Close-day totals from recorded sales and
 accepts only a counted stock level.
 
+**Stage 5 — Mini App hardening** (this session)
+
+Six things, each on its own commit.
+
+1. **A Mini App task completion could be filed under someone else's name.** The
+   handler read `payload.completedById || auth.userId` and the same for the
+   name, the source and the author, so whenever the request carried those
+   fields the browser's values won. Attribution is now stripped from the
+   payload and rewritten from the verified `initData`. Stripped rather than
+   overwritten, so a field added to the engine later cannot become spoofable by
+   being forwarded. The /tasks board is untouched — it is admin-key gated and
+   picks a completer from a list on purpose.
+2. **70 `System_Config` passes to answer one Mini App request** with sixteen
+   tenants, all returning the same bytes. Config reads are memoised for the
+   duration of one request, and tenant payments are aggregated in one pass over
+   the ledger instead of one pass per tenant. Now 4.
+3. **The café tab parsed the receipt JSON of every sale ever made** to produce a
+   line count for the ten it shows. Lean readers leave each receipt as text;
+   only the shown rows are parsed.
+4. **A write waited for Telegram.** The group card is queued and delivered by
+   `mini_flush_reports`, which the client calls without awaiting. The
+   whole-ledger snapshot before each tenant-paid entry is gone under V2 (the
+   ledger is append-only, so there is nothing to undo) and now runs after
+   validation on the legacy sheet.
+5. **A deadline time never appeared on a phone.** The row read `o.dueTime`,
+   which no occurrence carries — only a routine's definition does. It reads
+   `dueLabel` now, the same field the /tasks board reads.
+6. **A description or a responsible could be written but never deleted**, and
+   the page forbade pinch-zoom to work around an iOS auto-zoom that 16px form
+   controls prevent properly.
+
+Also fixed in the test harness: `Utilities.formatDate` recognised one literal
+pattern and returned `dd/MM/yyyy` for everything else, so code asking for
+`yyyy-MM-dd` was tested against a string Apps Script cannot return — the café
+month key came out as `12/08/2` and every month total was silently a day total.
+Production was always correct; the test was not, which is why nothing had
+caught it.
+
 ---
 
 ## 3. Immediate state to check first
@@ -119,10 +157,16 @@ This stopped three deploys during this work, every time correctly.
 ### Not verified live, and why
 
 - **The Mini App has never been exercised on a phone.** The bot token lives in
-  Script Properties and was not available to these sessions, so signed
-  `initData` could not be produced. Everything is covered by integration tests
-  that drive the real backend and the real task engine, but somebody with the
-  phone should open it and try Omad, Café and Tasks once.
+  Script Properties and has not been available to any of these sessions, so
+  signed `initData` cannot be produced and no request can get past the gate.
+  Everything is covered by integration tests that drive the real backend and
+  the real task engine, and by browser tests that render the real page against
+  real server responses — but somebody with the phone should open it and try
+  Omad, Café and Tasks once. Worth watching for specifically after this
+  session's changes: that the Telegram group card still appears a few seconds
+  after saving an entry (it is now sent by a follow-up request rather than
+  inline), that a task row shows its deadline time, and that clearing a
+  description on an edit sticks.
 
 ### Known gaps
 
