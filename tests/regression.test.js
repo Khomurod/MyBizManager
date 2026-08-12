@@ -45,7 +45,7 @@ test('save_omad stores transactions, tenants, rates and template expenses', () =
   })));
   assert.strictEqual(saved.status, 'success');
 
-  const loaded = readJsonOutput(gas.doGet({ parameter: { action: 'get_omad' } }));
+  const loaded = readJsonOutput(gas.doPost(postEvent({ action: 'get_omad_data', adminKey: ADMIN_KEY })));
   assert.strictEqual(loaded.transactions.length, 1);
   assert.strictEqual(loaded.transactions[0].tenant, 'Tehnopark');
   assert.strictEqual(loaded.transactions[0].amount, 6000000);
@@ -70,7 +70,7 @@ test('save_omad refuses to wipe existing transactions with an empty payload', ()
   })));
   assert.strictEqual(wiped.status, 'error');
 
-  const loaded = readJsonOutput(gas.doGet({ parameter: { action: 'get_omad' } }));
+  const loaded = readJsonOutput(gas.doPost(postEvent({ action: 'get_omad_data', adminKey: ADMIN_KEY })));
   assert.strictEqual(loaded.transactions.length, 1, 'existing transactions must survive');
 });
 
@@ -140,7 +140,7 @@ test('café sale, close day and void still work end to end', () => {
     action: 'close_day', adminKey: ADMIN_KEY, date: '2026-01-01', seller: 'kassir', inventory: [{ id: 'i1', qty: 5 }], summary: [], totalRevenue: 45000, totalProfit: 12000
   }))).status, 'success');
 
-  let cafe = readJsonOutput(gas.doGet({ parameter: { action: 'get_cafe' } }));
+  let cafe = readJsonOutput(gas.doPost(postEvent({ action: 'get_cafe_data', adminKey: ADMIN_KEY })));
   assert.strictEqual(cafe.sales.length, 1);
   assert.strictEqual(cafe.sales[0].total, 45000);
   assert.strictEqual(cafe.closeReports.length, 1);
@@ -151,7 +151,7 @@ test('café sale, close day and void still work end to end', () => {
     action: 'void_sale', adminKey: ADMIN_KEY, id: 'sale-1', inventory: [{ id: 'i1', qty: 7 }]
   }))).status, 'success');
 
-  cafe = readJsonOutput(gas.doGet({ parameter: { action: 'get_cafe' } }));
+  cafe = readJsonOutput(gas.doPost(postEvent({ action: 'get_cafe_data', adminKey: ADMIN_KEY })));
   assert.strictEqual(cafe.sales.length, 0, 'voided sale must be removed');
   assert.strictEqual(cafe.inventory[0].qty, 7, 'inventory must be restored');
 });
@@ -163,7 +163,7 @@ test('café admin saves round-trip through System_Config', () => {
   gas.doPost(postEvent({ action: 'save_categories', adminKey: ADMIN_KEY, categories: ['Ichimliklar'] }));
   gas.doPost(postEvent({ action: 'save_cafe_settings', adminKey: ADMIN_KEY, settings: { dailyTarget: 500000 } }));
 
-  const cafe = readJsonOutput(gas.doGet({ parameter: { action: 'get_cafe' } }));
+  const cafe = readJsonOutput(gas.doPost(postEvent({ action: 'get_cafe_data', adminKey: ADMIN_KEY })));
   assert.strictEqual(cafe.inventory[0].name, 'Kofe');
   assert.strictEqual(cafe.recipes[0].name, 'Latte');
   assert.deepStrictEqual(cafe.categories, ['Ichimliklar']);
@@ -177,9 +177,30 @@ test('unknown actions are rejected without side effects', () => {
   assert.strictEqual(readJsonOutput(gas.doPost(postEvent({ action: 'definitely_not_real' }))).status, 'error');
 });
 
-test('doGet without System_Config reports empty rather than throwing', () => {
+test('doGet serves the banner and nothing else, whatever it is asked for', () => {
   const gas = loadScript();
-  assert.strictEqual(readJsonOutput(gas.doGet({ parameter: { action: 'get_omad' } })).status, 'empty');
+  // The GET surface is inert: no action reads anything, so a missing
+  // System_Config cannot throw and a guessed action name reveals nothing.
+  ['get_omad', 'get_cafe', 'get_omad_data', '', 'anything_at_all'].forEach(action => {
+    assert.strictEqual(gas.doGet({ parameter: { action } }).getContent(),
+      'System Database is Active.', `${action || '(none)'} answered with more than the banner`);
+  });
+  assert.doesNotThrow(() => gas.doGet({}));
+});
+
+test('the authenticated read answers empty collections rather than throwing on a bare sheet', () => {
+  const gas = loadScript({ properties: omadProperties() });
+  const loaded = readJsonOutput(gas.doPost(postEvent({ action: 'get_omad_data', adminKey: ADMIN_KEY })));
+
+  assert.strictEqual(loaded.status, 'success');
+  assert.deepStrictEqual(Array.from(loaded.transactions), []);
+  assert.deepStrictEqual(Array.from(loaded.tenants), []);
+});
+
+test('without an admin key configured nobody can read at all', () => {
+  const gas = loadScript();
+  const loaded = readJsonOutput(gas.doPost(postEvent({ action: 'get_omad_data', adminKey: ADMIN_KEY })));
+  assert.strictEqual(loaded.status, 'error');
 });
 
 test('malformed POST bodies do not throw', () => {

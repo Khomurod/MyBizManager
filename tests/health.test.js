@@ -72,21 +72,25 @@ function find(report, id) {
   return report.checks.find(c => c.id === id);
 }
 
-test('the rollout grace is reported as a warning for as long as it is open', () => {
+test('the access check asks the router rather than reading a flag', () => {
   const gas = boot();
-  const open = find(health(gas), 'grace');
-  assert.equal(open.status, 'warning');
-  assert.ok(open.message.includes('LEGACY_CLIENT_GRACE'), 'it names the line that closes it');
-
-  gas.LEGACY_CLIENT_GRACE = false;
   assert.equal(find(health(gas), 'grace').status, 'ok');
+
+  // Re-open the hole the way a careless edit would, and the check must notice.
+  // It probes doGet exactly as an outsider with the /exec URL would, so it
+  // reports what the deployed router does rather than what the source intends.
+  const inert = gas.doGet;
+  gas.doGet = (e) => (e && e.parameter && e.parameter.action === 'get_omad'
+    ? gas.jsonOutput_({ status: 'success', transactions: [], tenants: [] })
+    : inert(e));
+
+  const reopened = find(health(gas), 'grace');
+  assert.equal(reopened.status, 'error');
+  assert.ok(reopened.message.includes('get_omad'), 'it names the route that answered');
 });
 
 test('a healthy system reports green across the board', () => {
   const gas = boot();
-  // The grace is the one thing still open in an otherwise healthy setup, so
-  // the overall status is a warning until it is closed.
-  gas.LEGACY_CLIENT_GRACE = false;
   const report = health(gas);
   assert.equal(report.status, 'ok');
   assert.equal(find(report, 'bot').status, 'ok');

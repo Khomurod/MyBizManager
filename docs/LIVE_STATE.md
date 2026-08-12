@@ -46,30 +46,26 @@ within a minute of a merge; the static host evidently does not. When the backend
 started requiring an access key and the browser had not learned to send one,
 **every save failed** — no rent recorded, no café sale rung up.
 
-### What is holding the app up right now
+### The compatibility layer is gone from the code, not yet from production
 
-`LEGACY_CLIENT_GRACE` in `apps-script/03_settings.gs` is **on**. While it is,
-the actions the pre-key frontend calls accept a request that carries no key at
-all, exactly as before:
+`LEGACY_CLIENT_GRACE` and the anonymous `get_omad` / `get_cafe` routes have been
+removed on the branch. **Merging that is gated on a current frontend being
+live**, because the only host still answering serves a build that calls exactly
+those routes: merging first would take the app down for a business using it
+daily, reads and writes alike.
 
-`save_omad`, `migrate_omad`, the seven café mutations, `get_system_status`,
-`get_telegram_settings`, `get_migration_status`, `get_job_queue_status`.
-
-A request carrying a **wrong** key is still refused, and everything the old
-frontend never called stays strict — the Mini App, the new authenticated
-reads, and every maintenance, migration and Telegram-settings action.
-
-**This is a deliberate temporary hole and it should be closed.** The health
-check reports a warning until it is.
+Until it merges, production still has the hole. Verified directly on
+2026-08-12: `GET /exec?action=get_omad` returned the full ledger and
+`?action=get_cafe` the whole café state, both with no credential of any kind,
+and an unauthenticated `get_telegram_settings` POST returned the authorized user
+id and both group chat ids.
 
 ### To close it
 
-The order is not negotiable: closing the grace before a current frontend is
-live takes the whole application down — reads *and* writes — for a business
-that is using it daily.
+The order is not negotiable.
 
-1. Get some host publishing `main`. Netlify's free build credits are spent, so
-   the intended replacement is a Cloudflare Pages project connected to
+1. Get a host publishing `main`. Netlify's free build credits are spent, so the
+   intended replacement is a Cloudflare Pages project connected to
    `Khomurod/MyBizManager` with production branch `main`. Pages serves
    `mini.html` and `tasks.html` at `/mini` and `/tasks` without any config, so
    `netlify.toml` does not need reproducing.
@@ -78,8 +74,9 @@ that is using it daily.
    `curl -s https://<production-host>/assets/omad/06-api.js | grep -c omad_access_key`
    must print `1`, and `https://<production-host>/mini` must not 404.
 3. Sign in on that host, load Omad and Café, save one entry, and reverse it.
-4. Only then set `LEGACY_CLIENT_GRACE = false`, delete the anonymous
-   `get_omad` / `get_cafe` routes, and merge.
+4. Only then merge the branch that removes the compatibility layer. Everything
+   requires the key from that moment, and every open browser session signs in
+   once more.
 
 ## Signing in now needs the access key
 

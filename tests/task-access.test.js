@@ -148,9 +148,9 @@ test('a task read does not leak into other actions', () => {
     sheets: { System_Config: [['Key', 'Value'], ['Omad_Tenants', '[]']] }
   });
 
-  const omad = readJsonOutput(gas.doGet({ parameter: { action: 'get_omad' } }));
-  assert.ok(omad.tenants, 'get_omad still answers without a key');
+  const omad = readJsonOutput(gas.doPost(postEvent({ action: 'get_omad_data', adminKey: ADMIN_KEY })));
+  assert.ok(omad.tenants, 'the Omad read still answers for a key holder');
 
-  const cafe = readJsonOutput(gas.doGet({ parameter: { action: 'get_cafe' } }));
-  assert.ok(cafe, 'get_cafe still answers without a key');
+  const cafe = readJsonOutput(gas.doPost(postEvent({ action: 'get_cafe_data', adminKey: ADMIN_KEY })));
+  assert.ok(cafe, 'the café read still answers for a key holder');
 });
