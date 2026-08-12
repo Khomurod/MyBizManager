@@ -94,7 +94,10 @@ function readRawTransactionRows_(sheet) {
       amount: data[i][4], currency: data[i][5], method: data[i][6],
       date: data[i][7], comment: data[i][8], msgId: data[i][9],
       requestId: data[i].length > 10 ? data[i][10] : "",
-      groupId: data[i].length > 11 ? data[i][11] : ""
+      groupId: data[i].length > 11 ? data[i][11] : "",
+      // Column 13. Absent on rows written before the tenant-paid feature, and
+      // the migration cannot carry across what it never read.
+      entryKind: data[i].length > 12 ? data[i][12] : ""
     });
   }
   return rows;
@@ -303,7 +306,11 @@ function verifyMigratedRows_(sourceResolved, ledgerRows) {
       id: source.id, tenant: source.tenant, month: period, type: source.type,
       amount: source.amount, currency: source.currency, method: source.method,
       date: source.date, comment: source.comment, msgId: source.msgId,
-      requestId: source.requestId
+      requestId: source.requestId,
+      // Compared, so they have to be supplied. Normalizing without them
+      // derived a fallback group id and an empty kind, which would have
+      // agreed with a migration that dropped both.
+      groupId: source.groupId, entryKind: source.entryKind
     });
 
     var fields = [
@@ -316,7 +323,13 @@ function verifyMigratedRows_(sourceResolved, ledgerRows) {
       ["Request_ID", String(normalized.requestId || ""), String(target.requestId || "")],
       ["Telegram_Msg_ID", String(normalized.msgId || ""), String(target.msgId || "")],
       ["Status", TX_STATUS_ACTIVE, String(target.status || "")],
-      ["Related_ID", "", String(target.relatedId || "")]
+      ["Related_ID", "", String(target.relatedId || "")],
+      // The three the old check did not look at. A migration that silently
+      // dropped the group id or the entry kind passed every aggregate and
+      // every field comparison above it.
+      ["Entry_Group_ID", String(normalized.groupId || ""), String(target.groupId || "")],
+      ["Entry_Kind", String(normalized.entryKind || ""), String(target.entryKind || "")],
+      ["Comment", String(normalized.comment || ""), String(target.comment || "")]
     ];
 
     for (var k = 0; k < fields.length; k++) {
@@ -333,6 +346,94 @@ function verifyMigratedRows_(sourceResolved, ledgerRows) {
     var extraId = String(ledgerRows[m].id);
     if (!matched[extraId]) failures.push("Manbada yo'q yozuv: " + extraId);
   }
+
+  return failures.concat(verifyMigratedGroups_(sourceResolved, ledgerRows));
+}
+
+/**
+ * The business meaning of the rows, not just their contents.
+ *
+ * Every field can match while the ledger still says something different from
+ * the source: a group is a claim that several rows are one action, and a
+ * tenant-paid pair is a claim that the pair nets to zero against our cash.
+ * Neither survives being checked one row at a time, so both are checked here.
+ */
+function verifyMigratedGroups_(sourceResolved, ledgerRows) {
+  var failures = [];
+
+  var group = function (rows, idOf, groupOf) {
+    var map = {};
+    for (var i = 0; i < rows.length; i++) {
+      var key = String(groupOf(rows[i]) || "");
+      if (!map[key]) map[key] = [];
+      map[key].push(String(idOf(rows[i])));
+    }
+    Object.keys(map).forEach(function (k) { map[k].sort(); });
+    return map;
+  };
+
+  var sourceRows = sourceResolved.map(function (entry) {
+    return normalizeTransaction_(Object.assign({}, entry.row, { month: entry.period }));
+  });
+
+  var sourceGroups = group(sourceRows,
+    function (r) { return r.id; }, function (r) { return r.groupId; });
+  var targetGroups = group(ledgerRows,
+    function (r) { return r.id; }, function (r) { return r.groupId; });
+
+  Object.keys(sourceGroups).forEach(function (key) {
+    var before = sourceGroups[key];
+    var after = targetGroups[key];
+    if (!after) {
+      failures.push("Guruh yo'qoldi (" + key + "): " + before.length + " ta yozuv");
+      return;
+    }
+    if (before.join("|") !== after.join("|")) {
+      failures.push("Guruh tarkibi o'zgardi (" + key + "): " +
+                    before.length + " -> " + after.length + " ta yozuv");
+    }
+  });
+  Object.keys(targetGroups).forEach(function (key) {
+    if (!Object.prototype.hasOwnProperty.call(sourceGroups, key)) {
+      failures.push("Manbada yo'q guruh: " + key);
+    }
+  });
+
+  // A tenant-paid pair has to arrive as a tenant-paid pair. If the kind is
+  // lost the two halves become unrelated rows that can be edited apart, and
+  // the "our cash did not move" property stops being visible anywhere.
+  var byGroup = {};
+  for (var t = 0; t < ledgerRows.length; t++) {
+    var g = String(ledgerRows[t].groupId || "");
+    if (!byGroup[g]) byGroup[g] = [];
+    byGroup[g].push(ledgerRows[t]);
+  }
+  var sourceByGroup = {};
+  for (var s = 0; s < sourceRows.length; s++) {
+    var sg = String(sourceRows[s].groupId || "");
+    if (!sourceByGroup[sg]) sourceByGroup[sg] = [];
+    sourceByGroup[sg].push(sourceRows[s]);
+  }
+
+  Object.keys(sourceByGroup).forEach(function (key) {
+    if (!isTenantPaidGroup_(sourceByGroup[key])) return;
+    var after = byGroup[key] || [];
+    if (!isTenantPaidGroup_(after)) {
+      failures.push("Ijarachi to'lovi guruhi buzildi (" + key + ")");
+      return;
+    }
+    var income = 0;
+    var expense = 0;
+    for (var r = 0; r < after.length; r++) {
+      var value = Number(after[r].amountUZS);
+      if (!isFinite(value)) value = 0;
+      if (after[r].type === "Income") income += value; else expense += value;
+    }
+    if (Math.abs(income - expense) > 1) {
+      failures.push("Ijarachi to'lovi kassaga ta'sir qilmasligi kerak (" + key + "): " +
+                    income + " != " + expense);
+    }
+  });
 
   return failures;
 }
@@ -507,7 +608,12 @@ function migratedRowToLedger_(row, period, migratedAt) {
     // Carried across verbatim when the legacy row has one, and derived
     // deterministically when it does not, so a business action that spanned
     // several rows before the migration still spans them after it.
-    groupId: row.groupId
+    groupId: row.groupId,
+    // What kind of business action that was. Dropping this would turn every
+    // tenant-paid pair into two unrelated rows: isTenantPaidGroup_ reads it,
+    // so the pair would stop reporting as one entry and either half could be
+    // edited on its own -- exactly the state the feature exists to prevent.
+    entryKind: row.entryKind
   });
   var snapshot = buildRateSnapshot_(period, normalized.currency, "sell");
 
@@ -537,7 +643,8 @@ function migratedRowToLedger_(row, period, migratedAt) {
     relatedId: "",
     msgId: normalized.msgId,
     schemaVersion: LEDGER_SCHEMA_VERSION,
-    groupId: normalized.groupId
+    groupId: normalized.groupId,
+    entryKind: normalized.entryKind
   };
 }
 

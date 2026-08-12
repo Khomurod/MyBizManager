@@ -16,7 +16,6 @@ const state = {
     entries: [],
     cafe: null,
     tasks: null,
-    taskCounts: null,
     tab: 'omad'
 };
 
@@ -65,7 +64,16 @@ async function api(action, payload = {}) {
         throw error;
     }
     if (!body || body.status !== 'success') {
-        throw new Error((body && body.message) || "Amal bajarilmadi.");
+        const error = new Error((body && body.message) || "Amal bajarilmadi.");
+        // Some refusals are questions rather than failures -- skipping a future
+        // day asks for confirmation and expects the same call again. The flags
+        // travel with the error so the caller can answer instead of only
+        // showing the text.
+        if (body && body.needsFutureConfirm) {
+            error.needsFutureConfirm = true;
+            error.dateKey = body.dateKey || "";
+        }
+        throw error;
     }
     return body;
 }

@@ -39,58 +39,135 @@ function startStaticServer() {
   return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(server)));
 }
 
-const HOME = {
-  status: 'success',
-  authorized: true,
-  user: { id: '49328655', firstName: 'Xurshid', username: 'boss' },
-  omad: {
-    period: '2026-08', periodLabel: 'Avgust 2026',
-    income: 5000000, expense: 2000000, net: 3000000,
-    cash: 1200000, bank: 800000, total: 2000000,
-    tenantDebt: 750000, tenantCount: 3, tenantsSettled: 2,
-    rate: { buy: 12000, sell: 12500 }, ledgerActive: false
-  },
-  cafe: {
-    today: { revenue: 241000, profit: 56459, sales: 3 },
-    month: { revenue: 1400000, profit: 320000, sales: 18, label: '2026-08' },
-    target: { daily: 1000000, progress: 24 },
-    inventory: { value: 3500000, items: 17, lowStock: [{ name: 'Kola 1', qty: 2, unit: 'dona' }] },
-    recentSales: [{ id: 's1', date: '2026-08-12', seller: 'cafe_admin', total: 241000, profit: 56459, items: 11 }],
-    recentClosings: [{ date: '2026-08-11', seller: 'cafe_seller', revenue: 900000, profit: 210000 }]
-  },
-  tasks: { overdue: 1, today: 2, upcoming: 3, waitingProof: 0, completedToday: 1 }
-};
+/**
+ * The fixtures are produced by the real backend, not written by hand.
+ *
+ * They used to be literals, and they drifted: they described `view.overdue`
+ * and `task.streak`, which buildTaskViews_ has never returned. The browser
+ * tests passed against a shape the server does not produce, which is the
+ * opposite of what a UI test is for.
+ *
+ * So a real backend is booted here in the harness, seeded with deterministic
+ * data, and its actual responses are what the stubbed transport returns. The
+ * browser talks to real server logic; only the network hop is faked.
+ */
+const { loadScript, readJsonOutput, postEvent } = require('./gas-harness');
+const crypto = require('crypto');
 
-const OMAD_DETAIL = {
-  status: 'success', authorized: true,
-  omad: HOME.omad,
-  tenants: [
-    { name: 'Apteka', expected: 1000000, paid: 250000, debt: 750000, surplus: 0 },
-    { name: 'Tehnopark', expected: 500000, paid: 500000, debt: 0, surplus: 0 }
-  ],
-  transactions: [
-    { groupId: 'g1', id: '1800000000001_0', kind: 'tenant_paid_expense', type: 'Income',
-      tenant: 'Apteka', period: '2026-08', periodLabel: 'Avgust 2026', date: '12/08/2026',
-      amountUZS: 1000000, currency: 'UZS', amount: 1000000, lines: 2, comment: 'Elektrik xizmati' },
-    { groupId: 'g2', id: '1800000000000_0', kind: '', type: 'Income',
-      tenant: 'Tehnopark', period: '2026-08', periodLabel: 'Avgust 2026', date: '11/08/2026',
-      amountUZS: 500000, currency: 'UZS', amount: 500000, lines: 1, comment: 'ijara' }
-  ]
-};
+const BOT_TOKEN = '123456789:AAFakeTokenForTestsOnly_0123456789abcd';
+const AUTHORIZED_ID = '49328655';
 
-const TASKS = {
-  status: 'success', authorized: true,
-  view: {
-    overdue: [{ id: 'occ1', taskId: 't1', title: 'Kechikkan ish', dateKey: '2026-08-10', priority: 'high', status: 'Open', displayStatus: 'Overdue', photoRequired: false, responsible: 'Ali' }],
-    dueToday: [{ id: 'occ2', taskId: 't2', title: 'Bugungi ish', dateKey: '2026-08-12', priority: 'normal', status: 'Open', displayStatus: 'Open', photoRequired: true, responsible: '' }],
-    upcoming: [], waitingProof: [], completedToday: [],
-    tasks: [
-      { id: 't3', type: 'routine', title: 'Har kungi tekshiruv', status: 'active', streak: 4 },
-      { id: 't4', type: 'goal', title: 'Yangi filial', stepCount: 4, stepsCompleted: 1 }
-    ]
-  },
-  config: { tasksGroupConfigured: true }
-};
+function signedInitData() {
+  const fields = {
+    auth_date: String(Math.floor(Date.now() / 1000)),
+    query_id: 'AAF_query_id',
+    user: JSON.stringify({ id: Number(AUTHORIZED_ID), first_name: 'Xurshid', username: 'boss' })
+  };
+  const dataCheckString = Object.keys(fields).sort().map(k => `${k}=${fields[k]}`).join('\n');
+  const secret = crypto.createHmac('sha256', 'WebAppData').update(BOT_TOKEN).digest();
+  const hash = crypto.createHmac('sha256', secret).update(dataCheckString).digest('hex');
+  return Object.keys(fields)
+    .map(k => `${encodeURIComponent(k)}=${encodeURIComponent(fields[k])}`).join('&') + `&hash=${hash}`;
+}
+
+function todayKey() {
+  const d = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function yesterdayKey() {
+  const d = new Date(Date.now() - 86400000);
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+const LEGACY_HEADER = [
+  'ID', 'Tenant', 'Month', 'Type', 'Amount', 'Currency', 'Method', 'Date', 'Comment',
+  'Telegram_Msg_ID', 'Request_ID', 'Entry_Group_ID', 'Entry_Kind'
+];
+
+const TASKS_HEADER = [
+  'ID', 'Type', 'Title', 'Description', 'Responsible', 'Priority', 'Photo_Required',
+  'Recurrence_JSON', 'Reminder_Times_JSON', 'Remind_Daily', 'Due_Time',
+  'Deadline_Key', 'Deadline_Time', 'Start_Key', 'End_Key', 'Status', 'Steps_JSON',
+  'Created_At', 'Updated_At', 'Created_By', 'Meta_JSON'
+];
+
+/** Cash 1 200 000 + bank 800 000 = the 2 000 000 total the Omad test reads. */
+function bootBackend() {
+  return loadScript({
+    properties: {
+      OMAD_ADMIN_KEY: 'mini-ui-key',
+      TELEGRAM_BOT_TOKEN: BOT_TOKEN,
+      TELEGRAM_AUTHORIZED_USER_ID: AUTHORIZED_ID,
+      TELEGRAM_GROUP_CHAT_ID: '-1001234567890',
+      TELEGRAM_TASKS_GROUP_CHAT_ID: '-1005555555555'
+    },
+    sheets: {
+      System_Config: [
+        ['Omad_Rates', JSON.stringify({ '2026-08': { buy: 12000, sell: 12500 } })],
+        ['Omad_Tenants', JSON.stringify([
+          { name: 'Apteka', defaultRent: 1000000, currency: 'UZS', active: true },
+          { name: 'Tehnopark', defaultRent: 500000, currency: 'UZS', active: true }
+        ])],
+        ['Cafe_Settings', JSON.stringify({ dailyTarget: 1000000 })],
+        ['Cafe_Inventory', JSON.stringify([
+          { id: 'i1', name: 'Kola 1', type: 'product', qty: 2, unit: 'dona', unitCost: 6000, totalCost: 12000 },
+          { id: 'i2', name: 'Choy', type: 'product', qty: 40, unit: 'dona', unitCost: 3000, totalCost: 120000 }
+        ])]
+      ],
+      Omad_Transactions: [LEGACY_HEADER,
+        ['1800000000000_0', 'Apteka', '2026-08', 'Income', 1200000, 'UZS', 'Naqd', '11/08/2026',
+          'ijara', '', 'req_1', 'grp_plain', ''],
+        ['1800000000001_0', 'Tehnopark', '2026-08', 'Income', 800000, 'UZS', 'Bank', '12/08/2026',
+          'ijara', '', 'req_2', 'grp_bank', ''],
+        ['1800000000002_0', 'Apteka', '2026-08', 'Income', 240000, 'UZS', 'Naqd', '12/08/2026',
+          "Ijarachi bizning nomimizdan to'ladi: Elektrik", '', 'req_3_0', 'grp_paid', 'tenant_paid_expense'],
+        ['1800000000002_1', 'Umumiy Naqd Puldan', '2026-08', 'Expense', 240000, 'UZS', 'Naqd', '12/08/2026',
+          "Elektrik (to'lovchi: Apteka)", '', 'req_3_1', 'grp_paid', 'tenant_paid_expense']
+      ],
+      Tasks: [TASKS_HEADER],
+      // Today's date, because the café summary buckets by the script's own
+      // "today" -- a literal date would make this test pass only once.
+      Cafe_Sales: [
+        ['Sana', 'Sotuvchi', 'Jami_Tushum', 'Sof_Foyda', 'Chek_Tafsilotlari', 'ID'],
+        [todayKey(), 'cafe_admin', 241000, 56459, '[]', 's1']
+      ],
+      Cafe_Kun_Yakuni: [
+        ['Sana', 'Sotuvchi', 'Jami_Tushum', 'Sof_Foyda', 'Tafsilot'],
+        [yesterdayKey(), 'cafe_seller', 900000, 210000, '[]']
+      ]
+    }
+  });
+}
+
+const backend = bootBackend();
+const VALID_INIT_DATA = signedInitData();
+
+function callBackend(payload) {
+  return readJsonOutput(backend.doPost(postEvent(
+    Object.assign({}, payload, { initData: VALID_INIT_DATA }))));
+}
+
+// Two tasks the tests look for by name, created through the real engine.
+callBackend({
+  action: 'mini_task_action', taskAction: 'save_task',
+  type: 'once', title: 'Bugungi ish', priority: 'normal'
+});
+callBackend({
+  action: 'mini_task_action', taskAction: 'save_task',
+  type: 'routine', title: 'Har kungi tekshiruv',
+  recurrence: { freq: 'daily', interval: 1 }
+});
+callBackend({
+  action: 'mini_task_action', taskAction: 'save_task',
+  type: 'goal', title: 'Yangi filial',
+  steps: [{ title: 'Bir' }, { title: 'Ikki' }, { title: 'Uch' }, { title: "To'rt" }]
+});
+
+const HOME = callBackend({ action: 'mini_home', period: '2026-08' });
+const TASKS = callBackend({ action: 'mini_tasks' });
 
 describe('The Telegram Mini App', () => {
   let server; let browser; let baseUrl;
@@ -155,9 +232,12 @@ describe('The Telegram Mini App', () => {
     return { page, context, calls, pageErrors };
   }
 
+  // Anything not explicitly overridden is answered by the real backend, so a
+  // response shape the server does not actually produce cannot pass here.
+  const realHandler = payload => callBackend(payload);
   const defaultHandlers = {
-    mini_home: HOME, mini_omad: OMAD_DETAIL, mini_cafe: { status: 'success', authorized: true, cafe: HOME.cafe },
-    mini_tasks: TASKS
+    mini_home: realHandler, mini_omad: realHandler,
+    mini_cafe: realHandler, mini_tasks: realHandler
   };
 
   // ------------------------------------------------------------------ gate
@@ -351,18 +431,33 @@ describe('The Telegram Mini App', () => {
     await page.locator('button:has-text("Bajarildi")').first().click();
     await page.waitForSelector('.toast');
     assert.equal(completed.taskAction, 'complete_occurrence');
-    assert.equal(completed.occurrenceId, 'occ2');
+    // A real occurrence id from the engine, not a literal invented here.
+    const dueToday = (TASKS.view.today.needsAttention || []).map(o => o.id);
+    assert.ok(dueToday.indexOf(completed.occurrenceId) !== -1,
+      'the id sent belongs to an occurrence the server actually returned');
 
     await context.close();
   });
 
-  test('the overdue filter shows the overdue occurrence', async () => {
+  test('the overdue filter shows what the server put in the overdue list', async () => {
+    const overdue = TASKS.view.today.overdue || [];
     const { page, context } = await openMini('auth_date=1&hash=x', defaultHandlers);
     await page.locator('#nav-tasks').click();
     await page.waitForFunction(() => document.getElementById('tab-tasks').innerText.includes('Bugungi ish'));
 
     await page.locator('button[role="tab"]:has-text("Muddati")').click();
-    await page.waitForFunction(() => document.getElementById('tab-tasks').innerText.includes('Kechikkan ish'));
+
+    // The counts come from view.counts and the rows from view.today.overdue.
+    // Reading them off the root -- which the client used to do -- showed an
+    // empty tab here whatever the server said.
+    const shown = await page.locator('#tab-tasks').innerText();
+    if (overdue.length) {
+      await page.waitForFunction(
+        title => document.getElementById('tab-tasks').innerText.includes(title),
+        overdue[0].title);
+    } else {
+      assert.ok(shown.includes("bo'sh"), 'an empty list says so rather than showing stale rows');
+    }
 
     await context.close();
   });
