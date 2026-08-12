@@ -145,16 +145,21 @@ test('a report job resolves its rows by group id, falling back to the id prefix 
     [...legacyRow('1999999999999_0', { type: 'Expense' }), 'grp_pair']
   ]);
 
-  const byGroup = gas.resolveReportGroup_(gas.__spreadsheet, { groupId: 'grp_pair' });
+  // The rows are read once by the caller and the group picked out of them,
+  // rather than the resolver fetching the whole ledger for itself and the
+  // caller fetching it again for the balances.
+  const all = gas.readOmadTransactions_(gas.__spreadsheet);
+
+  const byGroup = gas.resolveReportGroupFrom_(all, { groupId: 'grp_pair' });
   assert.equal(byGroup.length, 2);
 
   // A job enqueued before the column existed carries only a baseId.
-  const byBase = gas.resolveReportGroup_(gas.__spreadsheet, { baseId: '1770280404091' });
+  const byBase = gas.resolveReportGroupFrom_(all, { baseId: '1770280404091' });
   assert.equal(byBase.length, 1);
   assert.equal(byBase[0].id, '1770280404091_0');
 
   // An unknown group falls back rather than reporting on nothing.
-  const fallback = gas.resolveReportGroup_(gas.__spreadsheet, { groupId: 'grp_missing', baseId: '1770280404091' });
+  const fallback = gas.resolveReportGroupFrom_(all, { groupId: 'grp_missing', baseId: '1770280404091' });
   assert.equal(fallback.length, 1);
 });
 

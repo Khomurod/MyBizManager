@@ -443,7 +443,9 @@ function verifyOmadMigration_(doc) {
   var targetSheet = doc.getSheetByName(OMAD_TRANSACTIONS_V2_SHEET);
   // The target carries the append-only schema, so it is read as a ledger and
   // then shaped like the source for a like-for-like comparison.
-  var targetRows = readLedgerRows_(doc).map(function (t) {
+  // Read once: the row-by-row check below needs the same rows.
+  var ledgerRows = readLedgerRows_(doc);
+  var targetRows = ledgerRows.map(function (t) {
     return {
       id: t.id, tenant: t.tenant, month: t.period, type: t.type, amount: t.amount,
       currency: t.currency, method: t.method, date: t.createdAt, comment: t.comment,
@@ -501,7 +503,7 @@ function verifyOmadMigration_(doc) {
   // Row by row, including each frozen value against its own recorded rate.
   // Aggregates alone cannot see a tampered Amount_UZS that leaves a period
   // sum looking correct.
-  failures = failures.concat(verifyMigratedRows_(sourceResolved, readLedgerRows_(doc)));
+  failures = failures.concat(verifyMigratedRows_(sourceResolved, ledgerRows));
 
   var expectedBalances = balanceTotals_(sourceResolved.map(function (entry) {
     return Object.assign({}, entry.row, { period: entry.period });
