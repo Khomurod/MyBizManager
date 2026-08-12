@@ -356,7 +356,15 @@ that decides money or stock is computed here, from what is stored:
 
 `resolveCafeSaleLines_` refuses an item the catalogue does not contain rather
 than selling it at whatever the caller suggested, and `cafeStockShortfall_`
-refuses a sale the stock cannot cover. Reading the stock, deciding it is
+refuses a sale the stock cannot cover.
+
+Inventory is written in exactly one place, `writeCafeInventory_`, which bumps
+`Cafe_Inventory_Rev`. The admin screen quotes the revision it was showing on
+every save, and a mismatch is refused: the till depletes stock on the server
+now, so an admin page opened in the morning and saved in the evening would
+otherwise put the whole day's sales back. A counted stock level at close-day is
+deliberately *not* version-checked, because a physical count is a measurement
+rather than an edit of a stale copy. Reading the stock, deciding it is
 sufficient and writing it back is a read-modify-write, so the whole of
 `saveCafeSale_` runs under the script lock — two tills selling the last item at
 the same moment would otherwise both succeed.

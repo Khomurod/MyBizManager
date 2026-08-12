@@ -3425,7 +3425,9 @@ function runOmadTransactionReportJob_(doc, job) {
   var chatId = getOmadGroupChatId_();
   if (!chatId) throw new Error("Telegram guruh ID o'rnatilmagan.");
 
-  var group = resolveReportGroup_(doc, job.payload);
+  // One pass over the ledger for both the group and the balances.
+  var all = readOmadTransactions_(doc);
+  var group = resolveReportGroupFrom_(all, job.payload);
   if (group.length === 0) {
     // The group was deleted before the report went out. Nothing to report.
     return;
@@ -3434,8 +3436,7 @@ function runOmadTransactionReportJob_(doc, job) {
   // The resolved period, not the raw Month cell: balances are compared against
   // resolved periods, so passing "Avgust" (or a date cell) matched nothing and
   // every report quoted a month balance of 0.
-  var balances = calculateBalancesFromTransactions_(
-    readOmadTransactions_(doc), transactionPeriod_(group[0]));
+  var balances = calculateBalancesFromTransactions_(all, transactionPeriod_(group[0]));
   // The linked pair is one business action and gets one message that says so.
   // The kind is read off the stored rows rather than the job payload, so a
   // report re-sent after an edit always describes what the data now is.
@@ -3462,18 +3463,74 @@ function runOmadTransactionReportJob_(doc, job) {
  * asserts. The id-prefix fallback is only for jobs enqueued before the column
  * existed, which can still be sitting on the queue when this deploys.
  */
-function resolveReportGroup_(doc, payload) {
+/**
+ * The rows a report is about, picked out of a list already in memory.
+ *
+ * This used to fetch them itself, and the caller then read the whole ledger
+ * again to compute the balances -- two full passes over every transaction ever
+ * recorded, for every report, and a report is queued for every entry.
+ */
+function resolveReportGroupFrom_(all, payload) {
   var groupId = String((payload && payload.groupId) || "");
+  var group = [];
+  var i;
+
   if (groupId) {
-    var byGroup = findTransactionsByGroupId_(doc, groupId);
-    if (byGroup.length > 0) return byGroup;
+    for (i = 0; i < all.length; i++) {
+      if (String(all[i].groupId || "") === groupId) group.push(all[i]);
+    }
+    if (group.length > 0) return group;
   }
+
   var baseId = String((payload && payload.baseId) || "");
-  return baseId ? findTransactionGroup_(doc, baseId) : [];
+  if (!baseId) return [];
+  var prefix = baseId + "_";
+  for (i = 0; i < all.length; i++) {
+    var id = String(all[i].id || "");
+    if (id === baseId || id.indexOf(prefix) === 0) group.push(all[i]);
+  }
+  return group;
 }
 
+/**
+ * Stamps the group's Telegram message id onto every row of the group.
+ *
+ * One pass over the sheet for the whole group, not one per row.
+ * `updateOmadTransactionMsgId_` reads the entire sheet to find its row, so
+ * calling it in a loop cost a full read per line -- two for a tenant-paid
+ * pair, on every report, on top of the read that composed it.
+ */
 function applyMsgIdToGroup_(doc, group, messageId) {
-  for (var i = 0; i < group.length; i++) updateOmadTransactionMsgId_(doc, group[i].id, messageId);
+  if (!messageId || !group || group.length === 0) return;
+
+  var sheetName = activeTransactionSheetName_(doc);
+  var txSheet = doc.getSheetByName(sheetName);
+  if (!txSheet || txSheet.getLastRow() < 2) return;
+
+  var column = sheetName === OMAD_TRANSACTIONS_V2_SHEET ? 21 : 10;
+  var g;
+
+  // The ledger reader already carries each row's position, so the rows this
+  // report was composed from can be written to directly -- no second pass over
+  // the sheet at all.
+  var known = 0;
+  for (g = 0; g < group.length; g++) if (group[g].rowNumber) known++;
+  if (known === group.length) {
+    for (g = 0; g < group.length; g++) {
+      txSheet.getRange(group[g].rowNumber, column).setValue(messageId);
+    }
+    return;
+  }
+
+  // The legacy reader does not, so those rows are found in one pass for the
+  // whole group rather than one pass per row.
+  var wanted = {};
+  for (g = 0; g < group.length; g++) wanted[String(group[g].id)] = true;
+
+  var data = txSheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (wanted[String(data[i][0])]) txSheet.getRange(i + 1, column).setValue(messageId);
+  }
 }
 
 /**
@@ -3525,6 +3582,29 @@ function runCafeCloseDayReportJob_(job) {
 var CAFE_SALES_HEADER = ["Sana", "Sotuvchi", "Jami_Tushum", "Sof_Foyda", "Chek_Tafsilotlari", "ID"];
 var CAFE_CLOSE_DAY_HEADER = ["Sana", "Sotuvchi", "Jami_Tushum", "Sof_Foyda", "Tafsilotlar_JSON"];
 
+/**
+ * A counter bumped on every inventory write, whoever makes it.
+ *
+ * The admin screen edits stock and prices as a whole object, and the till now
+ * depletes stock on the server. Without a version to check against, an admin
+ * page opened this morning and saved this evening would put back everything
+ * the day had sold -- silently, and in a way that only shows up as a stock
+ * count that no longer matches the shelf.
+ */
+var CAFE_INVENTORY_REV_KEY = "Cafe_Inventory_Rev";
+
+function cafeInventoryRev_(configSheet) {
+  return Number(getConfig(configSheet, CAFE_INVENTORY_REV_KEY)) || 0;
+}
+
+/** The one place inventory is written, so the revision cannot be forgotten. */
+function writeCafeInventory_(configSheet, inventory) {
+  setConfig(configSheet, "Cafe_Inventory", JSON.stringify(inventory || []));
+  var next = cafeInventoryRev_(configSheet) + 1;
+  setConfig(configSheet, CAFE_INVENTORY_REV_KEY, String(next));
+  return next;
+}
+
 var CAFE_MUTATIONS = {
   save_inventory: true, save_recipe: true, save_categories: true,
   save_cafe_settings: true, save_sale: true, void_sale: true, close_day: true
@@ -3550,8 +3630,20 @@ function handleCafeAction_(action, payload, doc, configSheet) {
   if (accessError) return jsonOutput_({ status: "error", message: accessError });
 
   if (action === 'save_inventory') {
-    setConfig(configSheet, "Cafe_Inventory", JSON.stringify(payload.inventory));
-    return jsonOutput_({ status: "success" });
+    // Optimistic concurrency. The screen says which version it was looking at;
+    // anything else means stock moved underneath it and its copy is a
+    // rollback waiting to happen.
+    var currentRev = cafeInventoryRev_(configSheet);
+    if (currentRev > 0 && Number(payload.expectedRev) !== currentRev) {
+      return jsonOutput_({
+        status: "error", stale: true, inventoryRev: currentRev,
+        message: "Ombor boshqa joyda o'zgardi. Sahifani yangilab, qaytadan kiriting."
+      });
+    }
+    return jsonOutput_({
+      status: "success",
+      inventoryRev: writeCafeInventory_(configSheet, payload.inventory)
+    });
   }
   if (action === 'save_recipe') {
     setConfig(configSheet, "Cafe_Recipes", JSON.stringify(payload.recipes));
@@ -3583,6 +3675,22 @@ function handleCafeAction_(action, payload, doc, configSheet) {
 // client says which items and how many; the server decides the rest.
 
 var CAFE_STOCK_EPSILON = 0.0001;
+
+/**
+ * Just the catalogue: what can be sold and what it costs.
+ *
+ * `readCafeState_` also reads the whole Cafe_Sales sheet and the whole
+ * close-day sheet. Pricing a sale needs neither, and a sale already scans the
+ * sales sheet once for its request id -- reading it a second time to find the
+ * price of a bottle of cola is hundreds of rows of work per transaction, and
+ * grows with every sale ever made.
+ */
+function cafeCatalogue_(configSheet) {
+  return {
+    inventory: safeParseJSON_(getConfig(configSheet, "Cafe_Inventory"), []),
+    recipes: safeParseJSON_(getConfig(configSheet, "Cafe_Recipes"), [])
+  };
+}
 
 /** Rounds a quantity the way the POS does, so stock stays comparable. */
 function cafeRoundQty_(value) {
@@ -3806,7 +3914,7 @@ function saveCafeSale_(doc, configSheet, payload) {
     // first attempt created rather than ringing it up twice.
     var existing = findCafeSaleByRequestId_(salesSheet, requestId);
     if (existing) {
-      var state = readCafeState_(doc, configSheet);
+      var state = cafeCatalogue_(configSheet);
       return jsonOutput_(Object.assign(
         cafeSaleResponse_(String(existing.row[5]), existing.row[0], existing.row[1], {
           total: Number(existing.row[2]) || 0,
@@ -3817,7 +3925,7 @@ function saveCafeSale_(doc, configSheet, payload) {
         { duplicate: true }));
     }
 
-    var current = readCafeState_(doc, configSheet);
+    var current = cafeCatalogue_(configSheet);
     var resolved = resolveCafeSaleLines_(current, payload.items);
     if (resolved.error) return jsonOutput_({ status: "error", message: resolved.error });
 
@@ -3827,7 +3935,7 @@ function saveCafeSale_(doc, configSheet, payload) {
     }
 
     var inventory = applyCafeStockMovement_(current, resolved.consumption, -1);
-    setConfig(configSheet, "Cafe_Inventory", JSON.stringify(inventory));
+    writeCafeInventory_(configSheet, inventory);
 
     var saleId = String(payload.id || new Date().getTime());
     var saleDate = payload.date || new Date().toISOString();
@@ -3881,11 +3989,11 @@ function voidCafeSale_(doc, configSheet, payload) {
       // Idempotent, including when that receipt was the only one on the sheet.
       // A repeated void of something already gone is not an error, and must
       // never be an excuse to put its stock back a second time.
-      var already = readCafeState_(doc, configSheet);
+      var already = cafeCatalogue_(configSheet);
       return jsonOutput_({ status: "success", duplicate: true, inventory: already.inventory });
     }
 
-    var current = readCafeState_(doc, configSheet);
+    var current = cafeCatalogue_(configSheet);
     var items = detail && Array.isArray(detail.items) ? detail.items
       : (Array.isArray(detail) ? detail : []);
     var restored = resolveCafeSaleLines_(current, items);
@@ -3893,7 +4001,7 @@ function voidCafeSale_(doc, configSheet, payload) {
     var inventory = current.inventory;
     if (!restored.error) {
       inventory = applyCafeStockMovement_(current, restored.consumption, 1);
-      setConfig(configSheet, "Cafe_Inventory", JSON.stringify(inventory));
+      writeCafeInventory_(configSheet, inventory);
     } else {
       // The receipt names something the catalogue no longer has. The sale is
       // still voided -- the money is what matters -- but the stock cannot be
@@ -3940,8 +4048,10 @@ function closeCafeDay_(doc, configSheet, payload) {
     }
 
     // A physical count is the one thing only a person can supply.
+    // A physical count is a measurement, not an edit of a stale copy, so it
+    // is not version-checked -- what is on the shelf is what is on the shelf.
     if (Array.isArray(payload.countedInventory)) {
-      setConfig(configSheet, "Cafe_Inventory", JSON.stringify(payload.countedInventory));
+      writeCafeInventory_(configSheet, payload.countedInventory);
       state.inventory = payload.countedInventory;
     }
 
@@ -4010,6 +4120,7 @@ function readCafeState_(doc, configSheet) {
 
   return {
     inventory: safeParseJSON_(getConfig(configSheet, "Cafe_Inventory"), []),
+    inventoryRev: cafeInventoryRev_(configSheet),
     recipes: safeParseJSON_(getConfig(configSheet, "Cafe_Recipes"), []),
     categories: safeParseJSON_(getConfig(configSheet, "Cafe_Categories"), ["Ichimliklar", "Fast-Food", "Muzqaymoq"]),
     settings: safeParseJSON_(getConfig(configSheet, "Cafe_Settings"), { dailyTarget: 0 }),
@@ -4465,7 +4576,9 @@ function verifyOmadMigration_(doc) {
   var targetSheet = doc.getSheetByName(OMAD_TRANSACTIONS_V2_SHEET);
   // The target carries the append-only schema, so it is read as a ledger and
   // then shaped like the source for a like-for-like comparison.
-  var targetRows = readLedgerRows_(doc).map(function (t) {
+  // Read once: the row-by-row check below needs the same rows.
+  var ledgerRows = readLedgerRows_(doc);
+  var targetRows = ledgerRows.map(function (t) {
     return {
       id: t.id, tenant: t.tenant, month: t.period, type: t.type, amount: t.amount,
       currency: t.currency, method: t.method, date: t.createdAt, comment: t.comment,
@@ -4523,7 +4636,7 @@ function verifyOmadMigration_(doc) {
   // Row by row, including each frozen value against its own recorded rate.
   // Aggregates alone cannot see a tampered Amount_UZS that leaves a period
   // sum looking correct.
-  failures = failures.concat(verifyMigratedRows_(sourceResolved, readLedgerRows_(doc)));
+  failures = failures.concat(verifyMigratedRows_(sourceResolved, ledgerRows));
 
   var expectedBalances = balanceTotals_(sourceResolved.map(function (entry) {
     return Object.assign({}, entry.row, { period: entry.period });
@@ -4948,6 +5061,11 @@ function backfillLedgerEntryGroupIds_(doc) {
 function ledgerToLegacyShape_(t) {
   return {
     id: t.id,
+    // Where the row physically lives. Carried so a caller that has already
+    // read the ledger can write back to it -- stamping a report's message id
+    // otherwise costs a second full pass over the sheet. It is a position, not
+    // business data, and is only meaningful to the read it came from.
+    rowNumber: t.rowNumber,
     groupId: t.groupId,
     entryKind: t.entryKind,
     tenant: t.tenant,

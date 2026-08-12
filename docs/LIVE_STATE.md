@@ -160,6 +160,42 @@ the browser supplies. Close-day totals revenue and profit from the sales
 actually recorded and accepts only the counted stock level, which is the one
 figure a person has to supply.
 
+Verified live on 2026-08-12 against the deployed backend: a sale carrying a
+`price` of 999 999 was written at the catalogue's 8 000; the same request id
+twice produced one sale; 500 units of something with 8 in stock was refused by
+name; an unknown product was refused; a void carrying a forged inventory of
+99 999 restored the receipt's two units and ignored the payload; a second void
+was a no-op. The café was byte-identical afterwards — 713 sales, 40 closings,
+every quantity unchanged.
+
+Because the till no longer owns stock, the admin screen can no longer overwrite
+it blindly: `Cafe_Inventory_Rev` is bumped by every inventory write and quoted
+back on every admin save, so a screen that loaded before a sale is refused and
+told to reload.
+
+## Reads per request
+
+Every figure here is derived from a full pass over a sheet, so the number of
+passes is the response time. What was measured and fixed:
+
+| Path | Before | After |
+|---|---|---|
+| Mini App first screen | 4 ledger reads over 2 round trips, plus a café read and a full task-view build | **1** ledger read, 1 round trip |
+| Transaction report job | 2 ledger reads, plus one more *per row* to stamp the message id | **1** on the ledger (rows write back by position) |
+| Café sale | 2 passes over the 700-row sales sheet | **1** |
+| Café void | 2 | **1** |
+| Migration verification | 2 ledger reads | **1** |
+
+`tests/read-efficiency.test.js` counts the passes directly rather than timing
+anything, so a regression fails the build instead of just feeling slow.
+
+**No cross-request cache was added.** The obvious candidates are all financial
+summaries, and every one of them would need invalidating from six different
+write paths — the web save, the ledger create/correct/cancel, the tenant-paid
+pair, the Mini App and the Telegram bot. A missed hook there is a wrong balance
+shown to the owner, which is a worse failure than a slow one. The read
+reductions above are exact and carry no such risk.
+
 ## System health
 
 Sozlamalar → Tizim → *Tizim Salomatligi* checks fifteen things in one pass and

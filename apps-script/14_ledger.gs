@@ -253,6 +253,11 @@ function backfillLedgerEntryGroupIds_(doc) {
 function ledgerToLegacyShape_(t) {
   return {
     id: t.id,
+    // Where the row physically lives. Carried so a caller that has already
+    // read the ledger can write back to it -- stamping a report's message id
+    // otherwise costs a second full pass over the sheet. It is a position, not
+    // business data, and is only meaningful to the read it came from.
+    rowNumber: t.rowNumber,
     groupId: t.groupId,
     entryKind: t.entryKind,
     tenant: t.tenant,

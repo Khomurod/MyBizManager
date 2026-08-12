@@ -384,7 +384,7 @@
 
       renderInventory();
       hydrateIngredientSelect();
-      sendToApi("save_inventory", { inventory: state.inventory });
+      saveInventoryToApi();
     }
 
     function renderInventory() {
@@ -498,7 +498,7 @@
       closeAddStockModal();
       renderInventory();
       hydrateIngredientSelect();
-      sendToApi("save_inventory", { inventory: state.inventory });
+      saveInventoryToApi();
     }
 
     function toggleEditForm() {
@@ -536,7 +536,7 @@
       closeEditModal();
       renderInventory();
       hydrateIngredientSelect();
-      sendToApi("save_inventory", { inventory: state.inventory });
+      saveInventoryToApi();
     }
 
     function deleteInventory(id) {
@@ -546,7 +546,7 @@
       state.inventory = state.inventory.filter(i => i.id !== id);
       renderInventory();
       hydrateIngredientSelect();
-      sendToApi("save_inventory", { inventory: state.inventory });
+      saveInventoryToApi();
     }
 
     function addIngredient() {
@@ -788,6 +788,11 @@
           type: i.type || (i.sellPrice ? "product" : "ingredient"),
           ...i
         }));
+        // The version of the stock this screen is looking at. Every save
+        // quotes it back so the server can refuse a copy that has gone stale
+        // -- the till depletes stock on the server now, and an admin page
+        // opened this morning would otherwise put the whole day back.
+        state.inventoryRev = Number(payload.inventoryRev) || 0;
         state.recipes = Array.isArray(payload.recipes) ? payload.recipes : [];
         state.sales = Array.isArray(payload.sales) ? payload.sales : [];
         state.closeReports = Array.isArray(payload.closeReports) ? payload.closeReports : [];
@@ -823,11 +828,36 @@
     }
 
     async function sendToApi(action, payload) {
+      let answer = null;
       try {
-        await callCafeApi({ action, ...payload });
+        answer = await callCafeApi({ action, ...payload });
       } catch (e) {
         console.error("API xatolik:", e);
+        return null;
       }
+
+      // callCafeApi returns the body rather than throwing on a refusal, so a
+      // stale save arrives here as data. It must not pass quietly: the screen
+      // is holding stock levels that are already wrong, and saving again would
+      // put back whatever the till has sold since it loaded.
+      if (answer && answer.stale) {
+        if (answer.inventoryRev !== undefined) state.inventoryRev = Number(answer.inventoryRev) || 0;
+        alert(answer.message || "Ombor boshqa joyda o'zgardi. Sahifa yangilanadi.");
+        await syncData();
+        return answer;
+      }
+      if (answer && answer.inventoryRev !== undefined) {
+        state.inventoryRev = Number(answer.inventoryRev) || 0;
+      }
+      return answer;
+    }
+
+    /** Inventory saves carry the version the screen was showing. */
+    function saveInventoryToApi() {
+      return sendToApi("save_inventory", {
+        inventory: state.inventory,
+        expectedRev: state.inventoryRev
+      });
     }
 
     function logout() {

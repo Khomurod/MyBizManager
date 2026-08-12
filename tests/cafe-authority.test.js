@@ -320,3 +320,75 @@ test('the sale response carries the authoritative stock back to the till', () =>
   assert.strictEqual(returned.qty, 6,
     'so the screen shows what the sheet holds rather than its own guess');
 });
+
+// -------------------------------------------------- the admin screen and stock
+
+test('an admin save quoting the current revision is accepted', () => {
+  const gas = boot();
+  const rev = post(gas, { action: 'get_cafe_data' }).inventoryRev;
+
+  const saved = post(gas, {
+    action: 'save_inventory', expectedRev: rev,
+    inventory: INVENTORY.map(i => (i.id === 'i1' ? Object.assign({}, i, { qty: 20 }) : i))
+  });
+
+  assert.strictEqual(saved.status, 'success');
+  assert.strictEqual(saved.inventoryRev, rev + 1, 'the revision moves on');
+  assert.strictEqual(stock(gas, 'i1'), 20);
+});
+
+test('an admin screen that loaded before a sale cannot put the stock back', () => {
+  const gas = boot();
+
+  // The admin opens the screen and reads the stock...
+  const openedAt = post(gas, { action: 'get_cafe_data' });
+  assert.strictEqual(openedAt.inventory.find(i => i.id === 'i1').qty, 10);
+
+  // ...the till sells three while that screen sits open...
+  sell(gas, [{ kind: 'product', inventoryId: 'i1', qty: 3 }]);
+  assert.strictEqual(stock(gas, 'i1'), 7);
+
+  // ...and the admin saves an unrelated edit, carrying its stale copy.
+  const stale = post(gas, {
+    action: 'save_inventory', expectedRev: openedAt.inventoryRev,
+    inventory: openedAt.inventory.map(i => (i.id === 'i2' ? Object.assign({}, i, { name: 'Sut 2' }) : i))
+  });
+
+  assert.strictEqual(stale.status, 'error');
+  assert.strictEqual(stale.stale, true);
+  assert.match(stale.message, /yangilab/);
+  assert.strictEqual(stock(gas, 'i1'), 7,
+    'the three that were sold stayed sold');
+});
+
+test('a sale moves the revision on, so the next stale save is caught too', () => {
+  const gas = boot();
+  const first = post(gas, { action: 'get_cafe_data' }).inventoryRev;
+
+  sell(gas, [{ kind: 'product', inventoryId: 'i1', qty: 1 }]);
+  const afterSale = post(gas, { action: 'get_cafe_data' }).inventoryRev;
+
+  assert.ok(afterSale > first, 'the till bumped it');
+  assert.strictEqual(
+    post(gas, { action: 'save_inventory', expectedRev: first, inventory: INVENTORY }).stale, true);
+  assert.strictEqual(
+    post(gas, { action: 'save_inventory', expectedRev: afterSale, inventory: INVENTORY }).status,
+    'success', 'a screen that reloaded can save again');
+});
+
+test('a void and a close-day both move the revision on', () => {
+  const gas = boot();
+  const sale = sell(gas, [{ kind: 'product', inventoryId: 'i1', qty: 2 }]);
+  const afterSale = post(gas, { action: 'get_cafe_data' }).inventoryRev;
+
+  post(gas, { action: 'void_sale', id: sale.sale.id });
+  const afterVoid = post(gas, { action: 'get_cafe_data' }).inventoryRev;
+  assert.ok(afterVoid > afterSale, 'the void bumped it');
+
+  post(gas, {
+    action: 'close_day', date: '2026-08-12T20:00:00.000Z', seller: 'k', summary: [],
+    countedInventory: INVENTORY
+  });
+  assert.ok(post(gas, { action: 'get_cafe_data' }).inventoryRev > afterVoid,
+    'the counted stock bumped it');
+});
