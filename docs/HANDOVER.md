@@ -1,7 +1,7 @@
 # Handover — 2026-08-12
 
-Written at the point work was stopped, for whoever picks this up next.
-Everything below was verified against the live systems unless it says otherwise.
+The state of the system after the Mini App, V2 and café work. Everything below
+was verified against the live systems unless it says otherwise.
 
 ---
 
@@ -71,7 +71,7 @@ Live result: `Omad_Transactions_V2` is active, 226 rows, identical ids, identica
 tenant balances, identical per-period and cash/bank totals. Legacy
 `Omad_Transactions` is intact for rollback.
 
-**Stage 3 — Café** (PR #31, **open, not merged**)
+**Stage 3 — Café** (merged, PR #31, #32, #33)
 
 The till used to compute total, cost and profit and send them to be written
 down, and depleted stock only in its own memory. The POS now sends *what was
@@ -86,76 +86,72 @@ accepts only a counted stock level.
 
 ```bash
 git log --oneline -3 origin/main
-gh pr view 31            # or the GitHub UI
 ```
 
-- **PR #31 is open.** Its last CI run failed on `Browser flows` because the café
-  browser tests still asserted the old browser-computed contract. Those tests
-  have since been updated (`tests/cafe-regression.e2e.js`,
-  `tests/browser-telegram-settings.e2e.js`) and pass locally. **Confirm the
-  latest-head CI is green before merging.**
-- After merging, **verify the Apps Script deploy job actually succeeded** — do
-  not assume. Twice this session it failed on the drift guard.
+Everything below was merged and deployed. `main`, Cloudflare and the Apps
+Script deployment are all on the same commit; the last deploy job succeeded.
 
 ### The drift guard
 
 `scripts/clasp-deploy.js` refuses to deploy when the live Apps Script project
 defines a function the repository does not, because `clasp push` replaces rather
-than merges. When you delete a function on purpose, add it to
-`RETIRED_FUNCTIONS` with a reason. A static-analysis test fails if an entry names
-a function that still exists. Do **not** reach for the blanket
-`APPS_SCRIPT_ALLOW_REMOTE_DRIFT` variable — it disarms the guard for everything.
+than merges. When you delete or rename a function on purpose, add it to
+`RETIRED_FUNCTIONS` with a reason, and drop entries once their push has run. A
+static-analysis test fails if an entry names a function that still exists. Do
+**not** reach for the blanket `APPS_SCRIPT_ALLOW_REMOTE_DRIFT` variable — it
+disarms the guard for everything.
+
+This stopped three deploys during this work, every time correctly.
 
 ---
 
 ## 4. What still needs doing
 
-### Stage 3 remainder
+### Verified live
 
-- [ ] Merge PR #31 once CI is green, and confirm the deploy job succeeded.
-- [ ] **Live café verification has not been done.** Everything is covered by
-      tests (19 unit + browser), but no real sale has been rung up through the
-      deployed POS since the change. Do a labelled test sale, check the stock
-      moved on the sheet, void it, confirm the stock came back.
-- [ ] `cafe_admin.html` was not reviewed. It still writes inventory, recipes and
-      prices wholesale via `save_inventory` / `save_recipe`. That is the admin
-      screen so it is *meant* to be authoritative, but it has no optimistic-
-      concurrency check — two admins editing at once, last write wins.
+- Omad on V2: 226 rows, append / correct / cancel, whole-list save inert.
+- Café: server pricing (a `price` of 999 999 was written at the catalogue's
+  8 000), idempotency, stock refusal, unknown-item refusal, void restoring from
+  the stored receipt while ignoring a forged inventory, double-void no-op, and
+  the stale-admin-save guard. The café was byte-identical after every test.
+- Tasks, Telegram bot, System Health, and that anonymous access is still shut.
 
-### Stage 4 — not started
+### Not verified live, and why
 
-- [ ] Re-audit Mini App performance end to end (the one-read change is in, but
-      no timing has been measured against production).
-- [ ] Reduce remaining Sheets/config reads on hot paths. `readCafeState_` is
-      called more than once in some café flows.
-- [ ] Add short-lived caching **only** where it clearly pays, and make financial
-      writes invalidate it. Correctness wins over speed.
-- [ ] Run the full suite, CI and a production verification pass at the end.
+- **The Mini App has never been exercised on a phone.** The bot token lives in
+  Script Properties and was not available to these sessions, so signed
+  `initData` could not be produced. Everything is covered by integration tests
+  that drive the real backend and the real task engine, but somebody with the
+  phone should open it and try Omad, Café and Tasks once.
 
-### Known gaps and risks
+### Known gaps
 
-- **The Mini App has never been exercised live.** The bot token is in Script
-  Properties and was not available to this session, so signed `initData` could
-  not be produced. All Mini App verification is through integration tests that
-  drive the real backend. Someone with the phone should open it and try Omad,
-  Café and Tasks.
 - **System Health reports one warning:** `Trigger — Ro'yxatni o'qib bo'lmadi`.
-  This is a *reporting* limitation, not a broken scheduler:
+  A *reporting* limitation, not a broken scheduler:
   `ScriptApp.getProjectTriggers()` throws because the live manifest's OAuth
   scopes do not include `script.scriptapp`. The trigger demonstrably works — a
   job queued with inline draining disabled was picked up and completed on its
   own. Fixing it means adding a scope to the live manifest, which forces a
-  re-authorisation of the deployment; that was judged not worth the risk without
-  the owner present.
+  re-authorisation of the deployment; judged not worth the risk unattended.
 - **The repository is public** and `diagnostics/*.json` contains committed
   financial dumps (118 transactions with tenant names and amounts). Deleting the
   files does not help — git history keeps them. Making the repo private is the
   real fix and is the owner's call.
-- **Test data left behind:** none in Omad (every test row was cancelled or
-  reversed and balances verified identical). One cancelled task,
+- **Test data left behind:** none in Omad or Café — every test record was
+  cancelled or voided and the totals verified identical. One cancelled task,
   `CLAUDE TEST — tekshiruv`, remains on the task board as audit history.
+- **`Cafe_Inventory_Rev` started at 0** in production, so the very first
+  inventory save after deploy was accepted without a version check by design.
+  It is 1 now and enforcement is active — verified live.
 
----
+### Possible next work
+
+- The Telegram task wizard and the report-job queue were not part of this scope
+  and were not audited for the same class of bug (field-name drift between a
+  client and the engine).
+- `cafe_admin.html` recipes, categories and settings still save wholesale with
+  no version check. Only inventory was guarded, because only inventory is now
+  also written by the server.
 
 ## 5. How to work on this safely
 
@@ -194,8 +190,8 @@ a function that still exists. Do **not** reach for the blanket
 ## 6. Credentials
 
 The Cloudflare API token and `OMAD_ADMIN_KEY` were supplied by the owner for
-this session and **the owner intends to rotate them now that the work has
-stopped.** Assume they are dead. Nothing in the repository contains a
+this work and **the owner intends to rotate them now that it is finished.**
+Assume they are dead. Nothing in the repository contains a
 credential — `npm run scan:secrets` is clean, and the deploy reads its Apps
 Script credentials from the `CLASP_JSON` GitHub secret.
 
