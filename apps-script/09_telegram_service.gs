@@ -175,7 +175,11 @@ function isVerifiedTelegramWebhookRequest_(e) {
   if (!expected) return true;
 
   var provided = e && e.parameter ? e.parameter[TELEGRAM_WEBHOOK_SECRET_PARAM] : "";
-  if (secretsMatch_(provided, expected)) {
+  // During a rotation the outgoing secret is still accepted, because Telegram
+  // may not have been told the new one yet. It is cleared as soon as the new
+  // webhook is confirmed, so this window is the length of one API round trip.
+  var previous = getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_SECRET_PREVIOUS);
+  if (secretsMatch_(provided, expected) || (previous && secretsMatch_(provided, previous))) {
     return !enforceRateLimit_("tg_webhook", TELEGRAM_WEBHOOK_RATE_LIMIT, TELEGRAM_RATE_WINDOW_SECONDS);
   }
   return false;
@@ -393,7 +397,10 @@ function processOmadTextStep_(text, chatId, key, cache, doc, configSheet, fromId
           date: Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy"),
           comment: text,
           msgId: "",
-          requestId: requestId
+          requestId: requestId,
+          // One /yangi conversation is one business action, so it gets one
+          // group id of its own rather than inheriting the id's prefix.
+          groupId: newEntryGroupId_()
         });
         appendOmadTransaction_(doc, transaction);
       }
@@ -411,6 +418,7 @@ function processOmadTextStep_(text, chatId, key, cache, doc, configSheet, fromId
     var reportJobId = "";
     try {
       reportJobId = enqueueJob_(doc, "omad_transaction_report", transaction.id, {
+        groupId: String(transaction.groupId || ""),
         baseId: String(transaction.id).split("_")[0],
         messageId: ""
       });

@@ -517,6 +517,7 @@ function validateOmadTelegramReport_(report) {
     return "telegramReport.operation noto'g'ri.";
   }
   if (String(report.baseId || "").length > 64) return "telegramReport.baseId juda uzun.";
+  if (String(report.groupId || "").length > 128) return "telegramReport.groupId juda uzun.";
   if (report.messageId !== undefined && report.messageId !== null && report.messageId !== "" &&
       !/^\d{1,20}$/.test(String(report.messageId))) {
     return "telegramReport.messageId noto'g'ri.";
@@ -635,6 +636,8 @@ function storedSecretValues_() {
   var names = [
     TELEGRAM_PROP_BOT_TOKEN,
     TELEGRAM_PROP_WEBHOOK_SECRET,
+    // The outgoing secret during a rotation is still a secret.
+    TELEGRAM_PROP_WEBHOOK_SECRET_PREVIOUS,
     OMAD_PROP_ADMIN_KEY
   ];
   var values = [];
@@ -721,7 +724,8 @@ function buildTelegramSettingsView_() {
     lastError: safeParseJSON_(getTelegramSetting_(TELEGRAM_PROP_LAST_ERROR), null),
     adminKeyConfigured: !!getTelegramSetting_(OMAD_PROP_ADMIN_KEY),
     // Whether a webhook verification secret exists - never the secret itself.
-    webhookSecretConfigured: !!getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_SECRET)
+    webhookSecretConfigured: !!getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_SECRET),
+    webhookSecretRotatedAt: getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_ROTATED_AT)
   };
 }
 
@@ -1706,8 +1710,11 @@ var OMAD_ACTIVE_TX_SHEET_KEY = "Omad_Active_Transactions_Sheet";
 
 var OMAD_TRANSACTION_HEADER = [
   "ID", "Tenant", "Month", "Type", "Amount", "Currency", "Method", "Date", "Comment",
-  "Telegram_Msg_ID", "Request_ID"
+  "Telegram_Msg_ID", "Request_ID", "Entry_Group_ID"
 ];
+
+/** Column 12. One business action's rows all carry the same value. */
+var OMAD_GROUP_ID_COLUMN = 12;
 
 function ensureOmadTransactionHeader_(sheet) {
   var header = OMAD_TRANSACTION_HEADER;
@@ -1716,8 +1723,8 @@ function ensureOmadTransactionHeader_(sheet) {
     return;
   }
   var firstRow = sheet.getRange(1, 1, 1, header.length).getValues()[0];
-  // Upgrades a legacy 10-column header in place; existing rows keep their data
-  // and simply carry an empty Request_ID.
+  // Upgrades a legacy 10- or 11-column header in place; existing rows keep
+  // their data and simply carry an empty Request_ID / Entry_Group_ID.
   if (firstRow[0] !== "ID" || firstRow[header.length - 1] !== header[header.length - 1]) {
     sheet.getRange(1, 1, 1, header.length).setValues([header]);
   }
@@ -1759,11 +1766,55 @@ function applyTransactionColumnFormats_(sheet, startRow, numRows, sheetName) {
   sheet.getRange(startRow, 8, numRows, 1).setNumberFormat("dd/MM/yyyy");
 }
 
+// ------------------------------------------------------------- entry groups
+//
+// A business action can be several accounting rows: two currencies on one
+// payment, or the tenant-paid-on-our-behalf pair that is one income and one
+// expense. Every row keeps its own transaction id; the rows that belong
+// together share one immutable Entry_Group_ID.
+//
+// The group id is *stored*, never inferred. Timestamps collide, and the
+// "<epochMillis>_<n>" id prefix cannot express a group whose rows were written
+// at different times or under different ids. The only exception is the
+// deterministic backfill below, which exists solely to give rows written before
+// the column existed a stable identity.
+
+var OMAD_GROUP_ID_PREFIX = "grp_";
+var OMAD_LEGACY_GROUP_ID_PREFIX = "grp_legacy_";
+
+/** A fresh, immutable group id for one new business action. */
+function newEntryGroupId_() {
+  return OMAD_GROUP_ID_PREFIX + Utilities.getUuid().split("-").join("");
+}
+
+/**
+ * The group id for a row that predates the column.
+ *
+ * Deterministic, so running the backfill twice — or backfilling a row that a
+ * report job already resolved in memory — always produces the same value. The
+ * base of "<epochMillis>_<n>" is what the whole-list save has always used to
+ * keep the lines of one entry together, so this preserves exactly the grouping
+ * the data already had, without ever being consulted for a row that carries a
+ * real stored group id.
+ */
+function legacyEntryGroupId_(transactionId) {
+  var base = String(transactionId === null || transactionId === undefined ? "" : transactionId).split("_")[0];
+  if (!base) return "";
+  return OMAD_LEGACY_GROUP_ID_PREFIX + base;
+}
+
+/** The stored group id, or the deterministic backfill when there is none. */
+function resolveEntryGroupId_(transaction) {
+  var stored = String((transaction && transaction.groupId) || "").trim();
+  if (stored) return stored;
+  return legacyEntryGroupId_(transaction && transaction.id);
+}
+
 function transactionToRow_(t) {
   return [
     t.id, t.tenant, t.month, t.type, t.amount, t.currency, t.method,
     toSheetDateValue_(t.date),
-    t.comment || "", t.msgId || "", t.requestId || ""
+    t.comment || "", t.msgId || "", t.requestId || "", t.groupId || ""
   ];
 }
 
@@ -1793,7 +1844,11 @@ function normalizeTransaction_(raw) {
     date: t.date || Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy"),
     comment: t.comment || "",
     msgId: t.msgId || "",
-    requestId: String(t.requestId || "")
+    requestId: String(t.requestId || ""),
+    // Preserved when the caller supplies one, derived deterministically when it
+    // does not, so a row written before the column existed still resolves to a
+    // stable group instead of to "".
+    groupId: resolveEntryGroupId_(t)
   };
 }
 
@@ -1841,6 +1896,11 @@ function readTransactionsFromSheet_(doc, sheetName) {
       // Legacy 10-column rows simply have no request id.
       requestId: data[i].length > 10 ? data[i][10] : ""
     };
+    // Rows written before the column existed resolve to their deterministic
+    // group id in memory, so every reader sees a group whether or not the
+    // backfill has been run against the sheet.
+    transaction.groupId = String((data[i].length > 11 ? data[i][11] : "") || "").trim() ||
+      legacyEntryGroupId_(transaction.id);
     var resolved = resolveTransactionPeriod_(transaction, fallbackYear);
     transaction.period = resolved.period;
     transaction.periodSource = resolved.source;
@@ -1860,7 +1920,31 @@ function findTransactionByRequestId_(doc, requestId) {
   return null;
 }
 
-/** Transactions whose id is "<baseId>" or "<baseId>_<n>". */
+/**
+ * Every row of one business action, found by its stored group id.
+ *
+ * This is the grouping reporting, editing, cancellation and history use. It
+ * asks the data what belongs together rather than deducing it from an id
+ * shape, which is what lets one entry span two transaction types.
+ */
+function findTransactionsByGroupId_(doc, groupId) {
+  var wanted = String(groupId || "").trim();
+  if (!wanted) return [];
+  var all = readOmadTransactions_(doc);
+  var group = [];
+  for (var i = 0; i < all.length; i++) {
+    if (String(all[i].groupId || "") === wanted) group.push(all[i]);
+  }
+  return group;
+}
+
+/**
+ * Transactions whose id is "<baseId>" or "<baseId>_<n>".
+ *
+ * Kept for queued jobs written before group ids existed: a job sitting on
+ * Omad_Job_Queue across the deploy carries only a baseId, and must still find
+ * its rows. New work goes through findTransactionsByGroupId_.
+ */
 function findTransactionGroup_(doc, baseId) {
   var all = readOmadTransactions_(doc);
   var group = [];
@@ -1870,6 +1954,68 @@ function findTransactionGroup_(doc, baseId) {
     if (id === String(baseId) || id.indexOf(prefix) === 0) group.push(all[i]);
   }
   return group;
+}
+
+/**
+ * Appends several rows of one business action in a single write.
+ *
+ * One setValues call is one spreadsheet operation: either every row of the
+ * group lands or none of them does. That is what makes a two-entry action —
+ * the tenant-paid-on-our-behalf pair — impossible to half-create.
+ */
+function appendOmadTransactionGroup_(doc, transactions) {
+  var rows = Array.isArray(transactions) ? transactions : [];
+  if (rows.length === 0) return [];
+
+  var sheetName = activeTransactionSheetName_(doc);
+  var txSheet = doc.getSheetByName(sheetName) || doc.insertSheet(sheetName);
+  ensureOmadTransactionHeader_(txSheet);
+
+  var normalized = [];
+  var values = [];
+  for (var i = 0; i < rows.length; i++) {
+    var transaction = normalizeTransaction_(rows[i]);
+    normalized.push(transaction);
+    values.push(transactionToRow_(transaction));
+  }
+
+  var startRow = txSheet.getLastRow() + 1;
+  applyTransactionColumnFormats_(txSheet, startRow, values.length, sheetName);
+  txSheet.getRange(startRow, 1, values.length, OMAD_TRANSACTION_HEADER.length).setValues(values);
+  return normalized;
+}
+
+/**
+ * Writes the deterministic group id onto rows that predate the column.
+ *
+ * Idempotent: a row that already carries a group id is left exactly as it is,
+ * so this can be run repeatedly and can never re-group anything.
+ */
+function backfillEntryGroupIds_(doc) {
+  var sheetName = activeTransactionSheetName_(doc);
+  if (sheetName === OMAD_TRANSACTIONS_V2_SHEET) return backfillLedgerEntryGroupIds_(doc);
+
+  var txSheet = doc.getSheetByName(sheetName);
+  if (!txSheet || txSheet.getLastRow() < 2) return { status: "success", filled: 0, alreadySet: 0 };
+
+  ensureOmadTransactionHeader_(txSheet);
+  var data = txSheet.getDataRange().getValues();
+  var filled = 0;
+  var alreadySet = 0;
+
+  for (var i = 1; i < data.length; i++) {
+    var id = data[i][0];
+    if (id === "" || id === null || id === undefined) continue;
+    var current = String((data[i].length > 11 ? data[i][11] : "") || "").trim();
+    if (current) { alreadySet++; continue; }
+    var derived = legacyEntryGroupId_(id);
+    if (!derived) continue;
+    txSheet.getRange(i + 1, OMAD_GROUP_ID_COLUMN).setValue(derived);
+    filled++;
+  }
+
+  if (filled > 0) appendAuditRow_(doc, "entry_group_ids_backfilled", String(filled));
+  return { status: "success", filled: filled, alreadySet: alreadySet };
 }
 
 function safeRewriteOmadTransactions_(doc, incomingTransactions) {
@@ -2149,7 +2295,11 @@ function isVerifiedTelegramWebhookRequest_(e) {
   if (!expected) return true;
 
   var provided = e && e.parameter ? e.parameter[TELEGRAM_WEBHOOK_SECRET_PARAM] : "";
-  if (secretsMatch_(provided, expected)) {
+  // During a rotation the outgoing secret is still accepted, because Telegram
+  // may not have been told the new one yet. It is cleared as soon as the new
+  // webhook is confirmed, so this window is the length of one API round trip.
+  var previous = getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_SECRET_PREVIOUS);
+  if (secretsMatch_(provided, expected) || (previous && secretsMatch_(provided, previous))) {
     return !enforceRateLimit_("tg_webhook", TELEGRAM_WEBHOOK_RATE_LIMIT, TELEGRAM_RATE_WINDOW_SECONDS);
   }
   return false;
@@ -2367,7 +2517,10 @@ function processOmadTextStep_(text, chatId, key, cache, doc, configSheet, fromId
           date: Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy"),
           comment: text,
           msgId: "",
-          requestId: requestId
+          requestId: requestId,
+          // One /yangi conversation is one business action, so it gets one
+          // group id of its own rather than inheriting the id's prefix.
+          groupId: newEntryGroupId_()
         });
         appendOmadTransaction_(doc, transaction);
       }
@@ -2385,6 +2538,7 @@ function processOmadTextStep_(text, chatId, key, cache, doc, configSheet, fromId
     var reportJobId = "";
     try {
       reportJobId = enqueueJob_(doc, "omad_transaction_report", transaction.id, {
+        groupId: String(transaction.groupId || ""),
         baseId: String(transaction.id).split("_")[0],
         messageId: ""
       });
@@ -2767,9 +2921,14 @@ function queueOmadTransactionReport_(doc, report) {
     });
   }
   if (operation === "transaction_upsert") {
+    var groupId = String(report.groupId || "");
     var baseId = String(report.baseId || "");
-    if (!baseId) return "";
-    return enqueueJob_(doc, "omad_transaction_report", baseId, {
+    if (!groupId && !baseId) return "";
+    return enqueueJob_(doc, "omad_transaction_report", groupId || baseId, {
+      // The group id is what the report resolves against. baseId rides along so
+      // a job queued by an older client — or one already on the queue across a
+      // deploy — still finds its rows.
+      groupId: groupId,
       baseId: baseId,
       messageId: report.messageId ? String(report.messageId) : ""
     });
@@ -2781,8 +2940,7 @@ function runOmadTransactionReportJob_(doc, job) {
   var chatId = getOmadGroupChatId_();
   if (!chatId) throw new Error("Telegram guruh ID o'rnatilmagan.");
 
-  var baseId = String(job.payload.baseId || "");
-  var group = findTransactionGroup_(doc, baseId);
+  var group = resolveReportGroup_(doc, job.payload);
   if (group.length === 0) {
     // The group was deleted before the report went out. Nothing to report.
     return;
@@ -2805,6 +2963,23 @@ function runOmadTransactionReportJob_(doc, job) {
   var response = sendTelegramMessage_(chatId, text);
   var newMessageId = extractTelegramMessageId_(response);
   if (newMessageId) applyMsgIdToGroup_(doc, group, newMessageId);
+}
+
+/**
+ * The rows a report job covers.
+ *
+ * Stored group id first, because that is the grouping the data actually
+ * asserts. The id-prefix fallback is only for jobs enqueued before the column
+ * existed, which can still be sitting on the queue when this deploys.
+ */
+function resolveReportGroup_(doc, payload) {
+  var groupId = String((payload && payload.groupId) || "");
+  if (groupId) {
+    var byGroup = findTransactionsByGroupId_(doc, groupId);
+    if (byGroup.length > 0) return byGroup;
+  }
+  var baseId = String((payload && payload.baseId) || "");
+  return baseId ? findTransactionGroup_(doc, baseId) : [];
 }
 
 function applyMsgIdToGroup_(doc, group, messageId) {
@@ -3076,7 +3251,8 @@ function readRawTransactionRows_(sheet) {
       id: data[i][0], tenant: data[i][1], month: data[i][2], type: data[i][3],
       amount: data[i][4], currency: data[i][5], method: data[i][6],
       date: data[i][7], comment: data[i][8], msgId: data[i][9],
-      requestId: data[i].length > 10 ? data[i][10] : ""
+      requestId: data[i].length > 10 ? data[i][10] : "",
+      groupId: data[i].length > 11 ? data[i][11] : ""
     });
   }
   return rows;
@@ -3485,7 +3661,11 @@ function migratedRowToLedger_(row, period, migratedAt) {
   var normalized = normalizeTransaction_({
     id: row.id, tenant: row.tenant, month: period, type: row.type,
     amount: row.amount, currency: row.currency, method: row.method,
-    date: row.date, comment: row.comment, msgId: row.msgId, requestId: row.requestId
+    date: row.date, comment: row.comment, msgId: row.msgId, requestId: row.requestId,
+    // Carried across verbatim when the legacy row has one, and derived
+    // deterministically when it does not, so a business action that spanned
+    // several rows before the migration still spans them after it.
+    groupId: row.groupId
   });
   var snapshot = buildRateSnapshot_(period, normalized.currency, "sell");
 
@@ -3514,7 +3694,8 @@ function migratedRowToLedger_(row, period, migratedAt) {
     status: TX_STATUS_ACTIVE,
     relatedId: "",
     msgId: normalized.msgId,
-    schemaVersion: LEDGER_SCHEMA_VERSION
+    schemaVersion: LEDGER_SCHEMA_VERSION,
+    groupId: normalized.groupId
   };
 }
 
@@ -3579,12 +3760,27 @@ var LEDGER_HEADER = [
   "Status",             // 19 Active | Corrected | Cancelled
   "Related_ID",         // 20 the transaction this one corrects
   "Telegram_Msg_ID",    // 21 group message id
-  "Schema_Version"      // 22
+  "Schema_Version",     // 22
+  "Entry_Group_ID"      // 23 the business action this row belongs to
 ];
+
+/** Column 23. Shared by every row of one business action. */
+var LEDGER_GROUP_ID_COLUMN = 23;
 
 var TX_STATUS_ACTIVE = "Active";
 var TX_STATUS_CORRECTED = "Corrected";
 var TX_STATUS_CANCELLED = "Cancelled";
+/**
+ * A row that was written but never counted.
+ *
+ * A correction writes its replacement first and only then hides the original.
+ * If hiding the original fails, the replacement is marked Void and the whole
+ * correction is reported as failed — so the pair can never end up as two
+ * Active rows, and the original can never end up hidden with nothing to
+ * replace it. Void rows are excluded from every read, exactly like Cancelled
+ * ones, and are ignored when a retry looks its request id up.
+ */
+var TX_STATUS_VOID = "Void";
 
 var TX_SOURCE_WEB = "Web";
 var TX_SOURCE_TELEGRAM = "Telegram";
@@ -3603,7 +3799,17 @@ function isLedgerActive_(doc) {
 function ledgerSheet_(doc) {
   var sheet = doc.getSheetByName(OMAD_TRANSACTIONS_V2_SHEET) ||
               doc.insertSheet(OMAD_TRANSACTIONS_V2_SHEET);
-  if (sheet.getLastRow() === 0) sheet.appendRow(LEDGER_HEADER);
+  if (sheet.getLastRow() === 0) {
+    sheet.appendRow(LEDGER_HEADER);
+    return sheet;
+  }
+  // Upgrades a sheet written before Entry_Group_ID in place. Existing rows keep
+  // their values and read back through the deterministic backfill until
+  // backfill_entry_group_ids is run against them.
+  var firstRow = sheet.getRange(1, 1, 1, LEDGER_HEADER.length).getValues()[0];
+  if (firstRow[LEDGER_HEADER.length - 1] !== LEDGER_HEADER[LEDGER_HEADER.length - 1]) {
+    sheet.getRange(1, 1, 1, LEDGER_HEADER.length).setValues([LEDGER_HEADER]);
+  }
   return sheet;
 }
 
@@ -3655,7 +3861,11 @@ function ledgerRowToTransaction_(row, rowNumber) {
     status: String(row[18] || TX_STATUS_ACTIVE),
     relatedId: String(row[19] || ""),
     msgId: String(row[20] || ""),
-    schemaVersion: Number(row[21]) || LEDGER_SCHEMA_VERSION
+    schemaVersion: Number(row[21]) || LEDGER_SCHEMA_VERSION,
+    // Rows written before the column existed fall back to the same
+    // deterministic derivation the legacy sheet uses, so grouping is
+    // consistent across both schemas and across the migration.
+    groupId: String(row[22] || "").trim() || legacyEntryGroupId_(row[0])
   };
 }
 
@@ -3664,7 +3874,7 @@ function transactionToLedgerRow_(t) {
     t.id, t.requestId, t.createdAt, t.updatedAt, t.createdBy, t.source, t.period,
     t.tenant, t.type, t.amount, t.currency, t.rateBuy, t.rateSell, t.rateUsed,
     t.rateType, t.amountUZS, t.method, t.comment, t.status, t.relatedId,
-    t.msgId, t.schemaVersion
+    t.msgId, t.schemaVersion, t.groupId || ""
   ];
 }
 
@@ -3690,13 +3900,57 @@ function findLedgerRow_(doc, transactionId) {
   return null;
 }
 
+/**
+ * The record a request id produced, or null.
+ *
+ * Void rows are skipped: they are the discarded half of a correction that
+ * failed, so treating one as "already done" would answer a retry with a record
+ * that deliberately counts for nothing.
+ */
 function findLedgerRowByRequestId_(doc, requestId) {
   if (!requestId) return null;
   var rows = readLedgerRows_(doc);
   for (var i = 0; i < rows.length; i++) {
+    if (rows[i].status === TX_STATUS_VOID) continue;
     if (rows[i].requestId && rows[i].requestId === String(requestId)) return rows[i];
   }
   return null;
+}
+
+/** Every row of one business action, whatever its status. */
+function findLedgerRowsByGroupId_(doc, groupId) {
+  var wanted = String(groupId || "").trim();
+  if (!wanted) return [];
+  var rows = readLedgerRows_(doc);
+  var group = [];
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i].groupId === wanted) group.push(rows[i]);
+  }
+  return group;
+}
+
+/** Writes deterministic group ids onto ledger rows that predate the column. */
+function backfillLedgerEntryGroupIds_(doc) {
+  var sheet = doc.getSheetByName(OMAD_TRANSACTIONS_V2_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) return { status: "success", filled: 0, alreadySet: 0 };
+
+  ledgerSheet_(doc);
+  var data = sheet.getDataRange().getValues();
+  var filled = 0;
+  var alreadySet = 0;
+
+  for (var i = 1; i < data.length; i++) {
+    var id = data[i][0];
+    if (id === "" || id === null || id === undefined) continue;
+    if (String((data[i].length > 22 ? data[i][22] : "") || "").trim()) { alreadySet++; continue; }
+    var derived = legacyEntryGroupId_(id);
+    if (!derived) continue;
+    sheet.getRange(i + 1, LEDGER_GROUP_ID_COLUMN).setValue(derived);
+    filled++;
+  }
+
+  if (filled > 0) appendAuditRow_(doc, "entry_group_ids_backfilled", String(filled));
+  return { status: "success", filled: filled, alreadySet: alreadySet };
 }
 
 /**
@@ -3706,6 +3960,7 @@ function findLedgerRowByRequestId_(doc, requestId) {
 function ledgerToLegacyShape_(t) {
   return {
     id: t.id,
+    groupId: t.groupId,
     tenant: t.tenant,
     month: t.period,
     period: t.period,
@@ -3835,7 +4090,10 @@ function createTransaction_(doc, input) {
       status: TX_STATUS_ACTIVE,
       relatedId: "",
       msgId: String(input.msgId || ""),
-      schemaVersion: LEDGER_SCHEMA_VERSION
+      schemaVersion: LEDGER_SCHEMA_VERSION,
+      // Supplied when this row is one line of a larger business action; its own
+      // group when it stands alone. Never derived from the id.
+      groupId: String(input.groupId || "").trim() || newEntryGroupId_()
     };
 
     appendLedgerRow_(ledgerSheet_(doc), transactionToLedgerRow_(transaction));
@@ -3869,9 +4127,23 @@ function nextTransactionId_(doc) {
 // ------------------------------------------------------------------- correct
 
 /**
- * Marks the original Corrected and appends a replacement that points back at
- * it. The original row is never edited beyond its status and timestamp, so the
- * audit trail keeps the value that was actually recorded at the time.
+ * Replaces a transaction: the replacement is written first, then the original
+ * is hidden. The original row is never edited beyond its status and timestamp,
+ * so the audit trail keeps the value that was actually recorded at the time.
+ *
+ * The order is the whole point. Hiding the original first — which is what this
+ * used to do — meant a failure between the two writes left the original marked
+ * Corrected with no replacement in the sheet: money that silently left the
+ * books, in the one operation the append-only design exists to make safe.
+ *
+ * Writing the replacement first cannot lose money. It can, for exactly as long
+ * as the second write takes, double-count it, so the failure path marks the
+ * replacement Void and reports the correction as failed. The three outcomes are
+ * therefore: both writes land, or neither counts, or — only if the rollback
+ * *also* fails, against a spreadsheet that has already failed twice — two
+ * Active rows and a loud audit entry naming both ids. Never a hidden original.
+ *
+ * All of it runs under the script lock, so no other write interleaves.
  */
 function correctTransaction_(doc, input) {
   var requestId = String((input && input.requestId) || "").trim();
@@ -3926,12 +4198,24 @@ function correctTransaction_(doc, input) {
       // The replacement inherits the group message so the report is edited
       // rather than duplicated.
       msgId: original.msgId,
-      schemaVersion: LEDGER_SCHEMA_VERSION
+      schemaVersion: LEDGER_SCHEMA_VERSION,
+      // A correction stays inside the business action it corrects.
+      groupId: original.groupId
     };
 
     var sheet = ledgerSheet_(doc);
-    setLedgerStatus_(sheet, original.rowNumber, TX_STATUS_CORRECTED, now);
     appendLedgerRow_(sheet, transactionToLedgerRow_(replacement));
+
+    var replacementRow = sheet.getLastRow();
+    try {
+      setLedgerStatus_(sheet, original.rowNumber, TX_STATUS_CORRECTED, now);
+    } catch (statusError) {
+      voidFailedReplacement_(doc, sheet, replacementRow, replacement, original, statusError);
+      return {
+        status: "error",
+        message: "Tuzatishni saqlab bo'lmadi, asl yozuv o'zgarmadi. Qaytadan urinib ko'ring."
+      };
+    }
 
     appendAuditRow_(doc, "transaction_corrected", JSON.stringify({
       original: original.id, replacement: replacement.id,
@@ -3970,6 +4254,10 @@ function cancelTransaction_(doc, input) {
     if (original.status === TX_STATUS_CORRECTED) {
       return { status: "error", message: "Tuzatilgan yozuvni bekor qilib bo'lmaydi. Yangi yozuvni bekor qiling." };
     }
+    if (original.status === TX_STATUS_VOID) {
+      // Already counts for nothing; there is nothing to cancel.
+      return { status: "success", duplicate: true, transaction: ledgerToLegacyShape_(original) };
+    }
 
     var now = new Date().toISOString();
     setLedgerStatus_(ledgerSheet_(doc), original.rowNumber, TX_STATUS_CANCELLED, now);
@@ -3989,6 +4277,33 @@ function cancelTransaction_(doc, input) {
 function setLedgerStatus_(sheet, rowNumber, status, timestamp) {
   sheet.getRange(rowNumber, 19).setValue(status);
   sheet.getRange(rowNumber, 4).setValue(timestamp);
+}
+
+/**
+ * Discards a replacement whose correction could not be completed.
+ *
+ * The original is untouched and still Active, so the books are already correct;
+ * this only stops the replacement being counted a second time. If even this
+ * write fails the spreadsheet is failing repeatedly, and the one useful thing
+ * left is to say so loudly and name both rows — silence here would leave a
+ * double count nobody knows to look for.
+ */
+function voidFailedReplacement_(doc, sheet, rowNumber, replacement, original, cause) {
+  try {
+    setLedgerStatus_(sheet, rowNumber, TX_STATUS_VOID, new Date().toISOString());
+    appendAuditRow_(doc, "transaction_correction_failed", JSON.stringify({
+      original: original.id,
+      voidedReplacement: replacement.id,
+      reason: redactSecrets_(cause).slice(0, 300)
+    }));
+  } catch (rollbackError) {
+    appendAuditRow_(doc, "transaction_correction_rollback_failed", JSON.stringify({
+      original: original.id,
+      orphanReplacement: replacement.id,
+      reason: redactSecrets_(cause).slice(0, 200),
+      rollbackReason: redactSecrets_(rollbackError).slice(0, 200)
+    }));
+  }
 }
 
 // ---------------------------------------------------------------------- read
@@ -4181,6 +4496,356 @@ function retryFailedJobs_(doc) {
     recordLastOperation_(doc, "retry_failed_jobs");
   }
   return { status: "success", retried: retried, queue: buildJobQueueStatus_(doc) };
+}
+
+// ----- apps-script/15a_maintenance.gs ------------------------------------------
+
+// ============================================================
+// Maintenance
+// ------------------------------------------------------------
+// One-off, operator-triggered repairs to live data and live configuration.
+//
+// Everything here is admin-key protected, backs up before it writes, is safe
+// to run twice, and reports counts rather than contents. Nothing in this file
+// runs on its own.
+// ============================================================
+
+// -------------------------------------------------------------- date repair
+//
+// Older rows show day and month transposed: the app wrote "05/08/2026" as text
+// and the spreadsheet read it back through a MM/DD locale, so 5 August became
+// 8 May. Writes have since been fixed (08_omad_transactions.gs writes real
+// date values), and the Month/period column — not this one — is what every
+// figure is calculated from, so the damage is cosmetic.
+//
+// It is still repairable *provably*, without guessing, because the transaction
+// id is "<epochMillis>_<n>" and the app has only ever written today's date. The
+// id therefore records the instant the row was created, and the correct date is
+// that instant in the script's timezone. A row is corrected only when swapping
+// the stored day and month reproduces the id's date exactly. Anything else —
+// a row whose date disagrees for some other reason, or whose id carries no
+// usable timestamp — is reported and left alone.
+
+/** The Tashkent calendar date an id's epoch prefix refers to, or null. */
+function transactionIdDateParts_(transactionId) {
+  var base = String(transactionId === null || transactionId === undefined ? "" : transactionId).split("_")[0];
+  if (!/^\d{12,16}$/.test(base)) return null;
+  var millis = Number(base);
+  if (!isFinite(millis) || millis <= 0) return null;
+
+  var stamp = Utilities.formatDate(new Date(millis), Session.getScriptTimeZone(), "dd/MM/yyyy");
+  var parts = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(stamp);
+  if (!parts) return null;
+  return { day: Number(parts[1]), month: Number(parts[2]), year: Number(parts[3]) };
+}
+
+/** The calendar date a stored Date cell holds, or null. */
+function storedDateParts_(value) {
+  if (value && typeof value === "object" && typeof value.getFullYear === "function") {
+    if (isNaN(value.getTime())) return null;
+    return { day: value.getDate(), month: value.getMonth() + 1, year: value.getFullYear() };
+  }
+  var parsed = parseTransactionDate_(value);
+  if (!parsed) return null;
+  var text = String(value || "");
+  var dmy = /^(\d{1,2})[\/.-]\d{1,2}[\/.-]\d{4}$/.exec(text);
+  return {
+    day: dmy ? Number(dmy[1]) : (parsed.day || 1),
+    month: parsed.month,
+    year: parsed.year
+  };
+}
+
+function sameDateParts_(a, b) {
+  return !!a && !!b && a.day === b.day && a.month === b.month && a.year === b.year;
+}
+
+/** True when a and b are the same date with day and month swapped. */
+function transposedDateParts_(stored, fromId) {
+  if (!stored || !fromId) return false;
+  if (sameDateParts_(stored, fromId)) return false;
+  return stored.year === fromId.year && stored.day === fromId.month && stored.month === fromId.day;
+}
+
+function formatDateParts_(parts) {
+  if (!parts) return "";
+  var pad = function (n) { return (n < 10 ? "0" : "") + n; };
+  return pad(parts.day) + "/" + pad(parts.month) + "/" + parts.year;
+}
+
+var DATE_AUDIT_SAMPLE_SIZE = 25;
+
+/**
+ * Classifies every row's Date cell against the date its id proves.
+ *
+ * Writes nothing. The samples are capped so the response stays small; the
+ * counts always cover every row.
+ */
+function auditTransactionDates_(doc) {
+  var sheetName = activeTransactionSheetName_(doc);
+  var sheet = doc.getSheetByName(sheetName);
+  var result = {
+    sheet: sheetName,
+    total: 0,
+    correct: 0,
+    transposed: 0,
+    unprovable: 0,
+    noIdTimestamp: 0,
+    transposedSample: [],
+    unprovableSample: []
+  };
+  if (!sheet || sheet.getLastRow() < 2) return result;
+  // The ledger stores an ISO Created_At rather than a display date, so it has
+  // nothing to transpose.
+  if (sheetName === OMAD_TRANSACTIONS_V2_SHEET) return result;
+
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    var id = data[i][0];
+    if (id === "" || id === null || id === undefined) continue;
+    result.total++;
+
+    var fromId = transactionIdDateParts_(id);
+    if (!fromId) { result.noIdTimestamp++; continue; }
+
+    var stored = storedDateParts_(data[i][7]);
+    if (sameDateParts_(stored, fromId)) { result.correct++; continue; }
+
+    if (transposedDateParts_(stored, fromId)) {
+      result.transposed++;
+      if (result.transposedSample.length < DATE_AUDIT_SAMPLE_SIZE) {
+        result.transposedSample.push({
+          rowNumber: i + 1, id: String(id),
+          stored: formatDateParts_(stored), correct: formatDateParts_(fromId)
+        });
+      }
+      continue;
+    }
+
+    result.unprovable++;
+    if (result.unprovableSample.length < DATE_AUDIT_SAMPLE_SIZE) {
+      result.unprovableSample.push({
+        rowNumber: i + 1, id: String(id),
+        stored: formatDateParts_(stored), fromId: formatDateParts_(fromId)
+      });
+    }
+  }
+  return result;
+}
+
+/**
+ * Rewrites the Date cell of every provably transposed row, and nothing else.
+ *
+ * Backs the whole Omad state up first. Idempotent: a row corrected by an
+ * earlier run matches its id's date and is skipped. `dryRun` reports what
+ * would change without touching the sheet.
+ */
+function fixTransposedTransactionDates_(doc, options) {
+  var settings = options || {};
+  var audit = auditTransactionDates_(doc);
+  if (settings.dryRun === true) {
+    return { status: "success", dryRun: true, audit: audit, fixed: 0 };
+  }
+  if (audit.transposed === 0) {
+    return { status: "success", dryRun: false, audit: audit, fixed: 0 };
+  }
+
+  var sheetName = audit.sheet;
+  var sheet = doc.getSheetByName(sheetName);
+  if (!sheet) return { status: "error", message: "Tranzaksiya varag'i topilmadi." };
+
+  var configSheet = doc.getSheetByName("System_Config") || doc.insertSheet("System_Config");
+  backupOmadState_(doc, configSheet, "fix_transaction_dates");
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  var fixed = 0;
+  try {
+    var data = sheet.getDataRange().getValues();
+    for (var i = 1; i < data.length; i++) {
+      var id = data[i][0];
+      if (id === "" || id === null || id === undefined) continue;
+      var fromId = transactionIdDateParts_(id);
+      if (!fromId) continue;
+      if (!transposedDateParts_(storedDateParts_(data[i][7]), fromId)) continue;
+
+      // A real date value, not text: text is what the locale re-read in the
+      // first place. The column format is reapplied so it displays day-first.
+      applyTransactionColumnFormats_(sheet, i + 1, 1, sheetName);
+      sheet.getRange(i + 1, 8).setValue(new Date(fromId.year, fromId.month - 1, fromId.day));
+      fixed++;
+    }
+  } finally {
+    lock.releaseLock();
+  }
+
+  appendAuditRow_(doc, "transaction_dates_corrected", JSON.stringify({
+    fixed: fixed, unprovableLeftAlone: audit.unprovable
+  }));
+  recordLastOperation_(doc, "fix_transaction_dates");
+
+  return { status: "success", dryRun: false, fixed: fixed, audit: auditTransactionDates_(doc) };
+}
+
+// ------------------------------------------------- historical secret cleanup
+//
+// Request bodies are no longer logged, so a secret cannot reach
+// Telegram_Debug_Log any more. Rows written *before* that change can still
+// contain the webhook verification secret, because setWebhook carries it twice.
+// This re-redacts them in place, after copying the sheet.
+
+var DEBUG_LOG_SHEET = "Telegram_Debug_Log";
+
+/**
+ * Anything left that is shaped like a high-entropy credential.
+ *
+ * The webhook secret is two UUIDs with the dashes removed — 64 hex characters
+ * — so a bare occurrence that no `wh=` or `secret_token=` context caught is
+ * still removed. Deliberately blunt: this runs over a debug log, where losing
+ * a long hex identifier costs nothing and keeping a secret costs everything.
+ */
+function redactHighEntropyValues_(text) {
+  return String(text === null || text === undefined ? "" : text)
+    .replace(/\b[0-9a-fA-F]{32,}\b/g, "[REDACTED]");
+}
+
+/** Full redaction for a stored log row: the live rules plus the blunt one. */
+function redactStoredLogValue_(value) {
+  return redactHighEntropyValues_(redactSecrets_(value));
+}
+
+/**
+ * Copies Telegram_Debug_Log, then rewrites every Details cell through the
+ * redactor. Reports how many rows changed; never returns a cell's contents.
+ *
+ * Safe to run twice: a row already redacted comes back identical and is left
+ * alone. The backup is made once per run and named for the minute it was taken.
+ */
+function purgeTelegramDebugSecrets_(doc) {
+  var sheet = doc.getSheetByName(DEBUG_LOG_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) {
+    return { status: "success", rows: 0, redacted: 0, backupSheet: "" };
+  }
+
+  var lastRow = sheet.getLastRow();
+  var values = sheet.getRange(2, 1, lastRow - 1, 3).getValues();
+
+  var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyyMMdd_HHmmss");
+  var backupName = (DEBUG_LOG_SHEET + "_Backup_" + stamp).slice(0, 95);
+  var backup = doc.getSheetByName(backupName) || doc.insertSheet(backupName);
+  if (backup.getLastRow() === 0) backup.appendRow(["Timestamp", "Event", "Details"]);
+  backup.getRange(backup.getLastRow() + 1, 1, values.length, 3).setValues(values);
+
+  var redacted = 0;
+  for (var i = 0; i < values.length; i++) {
+    var before = values[i][2];
+    var after = redactStoredLogValue_(before);
+    if (after === String(before === null || before === undefined ? "" : before)) continue;
+    sheet.getRange(i + 2, 3).setValue(after);
+    redacted++;
+  }
+
+  appendAuditRow_(doc, "telegram_debug_log_redacted", JSON.stringify({
+    rows: values.length, redacted: redacted, backupSheet: backupName
+  }));
+  recordLastOperation_(doc, "purge_telegram_debug_secrets");
+
+  return { status: "success", rows: values.length, redacted: redacted, backupSheet: backupName };
+}
+
+// ------------------------------------------------------ webhook secret rotation
+
+var TELEGRAM_PROP_WEBHOOK_SECRET_PREVIOUS = "TELEGRAM_WEBHOOK_SECRET_PREVIOUS";
+var TELEGRAM_PROP_WEBHOOK_ROTATED_AT = "TELEGRAM_WEBHOOK_ROTATED_AT";
+
+function generateWebhookSecret_() {
+  return Utilities.getUuid().split("-").join("") + Utilities.getUuid().split("-").join("");
+}
+
+/**
+ * Replaces the webhook verification secret and re-points Telegram at it.
+ *
+ * The previous secret stays accepted for the length of the rotation, which is
+ * what removes the race: between storing the new value and Telegram learning
+ * it, an update signed with either one verifies, so no update is ever dropped.
+ * It is cleared the moment Telegram confirms the new URL.
+ *
+ * If setWebhook or the verification fails, the old secret is put back and the
+ * webhook is re-pointed at it, so a failed rotation leaves the bot exactly as
+ * it was rather than deaf. The secret itself is never returned or logged.
+ */
+function rotateTelegramWebhookSecret_(payload) {
+  if (!getBotToken_()) return { status: "error", message: "Bot token o'rnatilmagan." };
+
+  var webhookUrl = stripWebhookSecret_(
+    (payload && payload.webhookUrl) || getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_URL) || ""
+  );
+  if (!/^https:\/\/[^\s]+$/.test(webhookUrl)) {
+    return { status: "error", message: "Webhook manzili https:// bilan boshlanishi kerak." };
+  }
+
+  var previous = getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_SECRET);
+  var next = generateWebhookSecret_();
+
+  // Accept both before Telegram is told anything, so neither ordering can drop
+  // an update that is already in flight.
+  if (previous) setTelegramSetting_(TELEGRAM_PROP_WEBHOOK_SECRET_PREVIOUS, previous);
+  setTelegramSetting_(TELEGRAM_PROP_WEBHOOK_SECRET, next);
+
+  try {
+    var separator = webhookUrl.indexOf("?") === -1 ? "?" : "&";
+    telegramFetch_("setWebhook", {
+      url: webhookUrl + separator + TELEGRAM_WEBHOOK_SECRET_PARAM + "=" + next,
+      secret_token: next,
+      allowed_updates: ["message", "callback_query"]
+    });
+
+    var info = safeParseJSON_(telegramFetch_("getWebhookInfo", {}).getContentText(), {});
+    var result = (info && info.result) || {};
+    if (!result.url) throw new Error("Telegram webhook manzilini tasdiqlamadi.");
+
+    setTelegramSetting_(TELEGRAM_PROP_WEBHOOK_SECRET_PREVIOUS, "");
+    setTelegramSetting_(TELEGRAM_PROP_WEBHOOK_URL, webhookUrl);
+    setTelegramSetting_(TELEGRAM_PROP_WEBHOOK_ROTATED_AT, new Date().toISOString());
+    setTelegramSetting_(TELEGRAM_PROP_WEBHOOK_STATUS, JSON.stringify({
+      configured: true,
+      verified: true,
+      pendingUpdateCount: result.pending_update_count || 0,
+      lastErrorMessage: redactSecrets_(result.last_error_message || ""),
+      checkedAt: new Date().toISOString()
+    }));
+
+    auditTelegramSettingsChange_(["webhookSecret"]);
+    return { status: "success", rotated: true, settings: buildTelegramSettingsView_() };
+  } catch (error) {
+    restoreWebhookSecret_(previous, webhookUrl);
+    return {
+      status: "error",
+      message: "Kalitni almashtirib bo'lmadi, eski kalit qaytarildi. " + redactSecrets_(error).slice(0, 200),
+      settings: buildTelegramSettingsView_()
+    };
+  }
+}
+
+/** Puts the old secret back and re-points Telegram at it. Never throws. */
+function restoreWebhookSecret_(previous, webhookUrl) {
+  try {
+    setTelegramSetting_(TELEGRAM_PROP_WEBHOOK_SECRET, previous || "");
+    setTelegramSetting_(TELEGRAM_PROP_WEBHOOK_SECRET_PREVIOUS, "");
+    if (!previous) return;
+    var separator = webhookUrl.indexOf("?") === -1 ? "?" : "&";
+    telegramFetch_("setWebhook", {
+      url: webhookUrl + separator + TELEGRAM_WEBHOOK_SECRET_PARAM + "=" + previous,
+      secret_token: previous,
+      allowed_updates: ["message", "callback_query"]
+    });
+  } catch (restoreError) {
+    // Nothing further is safe to try automatically. The operator's recovery is
+    // the Webhook button, which mints and installs a secret from scratch.
+    try {
+      recordTelegramError_("rotateWebhookSecret", restoreError);
+    } catch (ignored) {}
+  }
 }
 
 // ----- apps-script/16_tasks_recurrence.gs --------------------------------------
@@ -7655,6 +8320,11 @@ function doPost(e) {
       return jsonOutput_(systemResult);
     }
 
+    // ---- Maintenance ------------------------------------------------------
+    if (isMaintenanceAction_(action)) {
+      return maintenanceAction_(action, payload, doc);
+    }
+
     // ---- Migration --------------------------------------------------------
     if (action === 'get_migration_status') {
       return jsonOutput_({ status: "success", migration: getMigrationStatus_(doc) });
@@ -7772,6 +8442,40 @@ function telegramAdminAction_(action, payload) {
   if (action === 'test_telegram_connection') return jsonOutput_(testTelegramConnection_());
   if (action === 'send_telegram_test_message') return jsonOutput_(sendTelegramTestMessage_());
   return jsonOutput_(configureTelegramWebhook_(payload));
+}
+
+function isMaintenanceAction_(action) {
+  return action === 'audit_transaction_dates' ||
+         action === 'fix_transaction_dates' ||
+         action === 'backfill_entry_group_ids' ||
+         action === 'purge_telegram_debug_secrets' ||
+         action === 'rotate_telegram_webhook_secret';
+}
+
+/**
+ * One-off repairs to live data and live configuration.
+ *
+ * Every one of these reads the whole ledger, rewrites stored rows or changes a
+ * credential, so all of them take the admin key — including the audit, which
+ * would otherwise report on financial rows to anyone who asked.
+ */
+function maintenanceAction_(action, payload, doc) {
+  var adminError = checkAdminKey_(payload);
+  if (adminError) return jsonOutput_({ status: "error", message: adminError });
+
+  if (action === 'audit_transaction_dates') {
+    return jsonOutput_({ status: "success", audit: auditTransactionDates_(doc) });
+  }
+  if (action === 'fix_transaction_dates') {
+    return jsonOutput_(fixTransposedTransactionDates_(doc, { dryRun: payload.dryRun === true }));
+  }
+  if (action === 'backfill_entry_group_ids') {
+    return jsonOutput_(backfillEntryGroupIds_(doc));
+  }
+  if (action === 'purge_telegram_debug_secrets') {
+    return jsonOutput_(purgeTelegramDebugSecrets_(doc));
+  }
+  return jsonOutput_(rotateTelegramWebhookSecret_(payload));
 }
 
 function isMigrationAction_(action) {
@@ -7895,6 +8599,7 @@ function queueLedgerReport_(doc, action, result) {
   }
 
   return enqueueJob_(doc, "omad_transaction_report", transaction.id, {
+    groupId: String(transaction.groupId || ""),
     baseId: String(transaction.id).split("_")[0],
     messageId: String(transaction.msgId || "")
   });

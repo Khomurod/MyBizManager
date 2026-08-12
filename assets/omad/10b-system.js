@@ -346,3 +346,88 @@ async function rollbackMigration() {
     await loadSystemStatus();
     await syncData();
 }
+
+// ==========================================================
+// Data maintenance
+// ----------------------------------------------------------
+// One-off repairs. Each of them backs up before it writes, is safe to press
+// twice, and reports counts rather than contents.
+// ==========================================================
+
+function setMaintenanceStatus(html) {
+    const box = document.getElementById('maintenanceStatus');
+    if (box) box.innerHTML = html;
+}
+
+function describeDateAudit(audit) {
+    if (!audit) return "";
+    return [
+        statusRow("Jami yozuv", audit.total),
+        statusRow("Sanasi to'g'ri", audit.correct, "text-green-600"),
+        statusRow("Tuzatish mumkin", audit.transposed, audit.transposed ? "text-amber-600" : "text-slate-700"),
+        statusRow("Isbotlanmagan", audit.unprovable, audit.unprovable ? "text-slate-500" : "text-slate-700")
+    ].join('');
+}
+
+async function maintenanceCall(payload, confirmText) {
+    const adminKey = requireAdminKey();
+    if (!adminKey) return null;
+    if (confirmText && !confirm(confirmText)) return null;
+
+    showLoader(true);
+    try {
+        return await callBackend({ ...payload, adminKey });
+    } finally {
+        showLoader(false);
+    }
+}
+
+async function auditTransactionDates() {
+    const data = await maintenanceCall({ action: 'audit_transaction_dates' });
+    if (!data) return;
+    if (data.status !== 'success') return alert(data.message || "Xatolik yuz berdi.");
+    setMaintenanceStatus(describeDateAudit(data.audit));
+}
+
+async function fixTransactionDates() {
+    const data = await maintenanceCall(
+        { action: 'fix_transaction_dates' },
+        "Faqat tranzaksiya ID'si bilan isbotlangan sanalar tuzatiladi. Avval zaxira olinadi. Davom etamizmi?");
+    if (!data) return;
+    if (data.status !== 'success') return alert(data.message || "Xatolik yuz berdi.");
+
+    setMaintenanceStatus(describeDateAudit(data.audit));
+    alert(`${data.fixed} ta sana tuzatildi.`);
+    await loadSystemStatus();
+    await syncData();
+}
+
+async function backfillEntryGroups() {
+    const data = await maintenanceCall({ action: 'backfill_entry_group_ids' });
+    if (!data) return;
+    if (data.status !== 'success') return alert(data.message || "Xatolik yuz berdi.");
+    alert(`${data.filled} ta yozuvga guruh ID berildi (${data.alreadySet} tasida allaqachon bor edi).`);
+    await syncData();
+}
+
+async function purgeTelegramLogSecrets() {
+    const data = await maintenanceCall(
+        { action: 'purge_telegram_debug_secrets' },
+        "Eski Telegram loglaridagi maxfiy qiymatlar o'chiriladi. Avval nusxa olinadi. Davom etamizmi?");
+    if (!data) return;
+    if (data.status !== 'success') return alert(data.message || "Xatolik yuz berdi.");
+    alert(`${data.rows} ta qatordan ${data.redacted} tasi tozalandi.`);
+    await loadSystemStatus();
+}
+
+async function rotateWebhookSecret() {
+    const data = await maintenanceCall(
+        { action: 'rotate_telegram_webhook_secret' },
+        "Webhook maxfiy kaliti yangilanadi va Telegram qayta ulanadi. Davom etamizmi?");
+    if (!data) return;
+    if (data.status !== 'success') return alert(data.message || "Xatolik yuz berdi.");
+
+    alert("Webhook kaliti almashtirildi va tekshirildi.");
+    if (typeof loadTelegramSettings === 'function') await loadTelegramSettings();
+    await loadSystemStatus();
+}

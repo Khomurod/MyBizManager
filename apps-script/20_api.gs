@@ -86,6 +86,11 @@ function doPost(e) {
       return jsonOutput_(systemResult);
     }
 
+    // ---- Maintenance ------------------------------------------------------
+    if (isMaintenanceAction_(action)) {
+      return maintenanceAction_(action, payload, doc);
+    }
+
     // ---- Migration --------------------------------------------------------
     if (action === 'get_migration_status') {
       return jsonOutput_({ status: "success", migration: getMigrationStatus_(doc) });
@@ -203,6 +208,40 @@ function telegramAdminAction_(action, payload) {
   if (action === 'test_telegram_connection') return jsonOutput_(testTelegramConnection_());
   if (action === 'send_telegram_test_message') return jsonOutput_(sendTelegramTestMessage_());
   return jsonOutput_(configureTelegramWebhook_(payload));
+}
+
+function isMaintenanceAction_(action) {
+  return action === 'audit_transaction_dates' ||
+         action === 'fix_transaction_dates' ||
+         action === 'backfill_entry_group_ids' ||
+         action === 'purge_telegram_debug_secrets' ||
+         action === 'rotate_telegram_webhook_secret';
+}
+
+/**
+ * One-off repairs to live data and live configuration.
+ *
+ * Every one of these reads the whole ledger, rewrites stored rows or changes a
+ * credential, so all of them take the admin key — including the audit, which
+ * would otherwise report on financial rows to anyone who asked.
+ */
+function maintenanceAction_(action, payload, doc) {
+  var adminError = checkAdminKey_(payload);
+  if (adminError) return jsonOutput_({ status: "error", message: adminError });
+
+  if (action === 'audit_transaction_dates') {
+    return jsonOutput_({ status: "success", audit: auditTransactionDates_(doc) });
+  }
+  if (action === 'fix_transaction_dates') {
+    return jsonOutput_(fixTransposedTransactionDates_(doc, { dryRun: payload.dryRun === true }));
+  }
+  if (action === 'backfill_entry_group_ids') {
+    return jsonOutput_(backfillEntryGroupIds_(doc));
+  }
+  if (action === 'purge_telegram_debug_secrets') {
+    return jsonOutput_(purgeTelegramDebugSecrets_(doc));
+  }
+  return jsonOutput_(rotateTelegramWebhookSecret_(payload));
 }
 
 function isMigrationAction_(action) {
@@ -326,6 +365,7 @@ function queueLedgerReport_(doc, action, result) {
   }
 
   return enqueueJob_(doc, "omad_transaction_report", transaction.id, {
+    groupId: String(transaction.groupId || ""),
     baseId: String(transaction.id).split("_")[0],
     messageId: String(transaction.msgId || "")
   });

@@ -121,6 +121,7 @@ function validateOmadTelegramReport_(report) {
     return "telegramReport.operation noto'g'ri.";
   }
   if (String(report.baseId || "").length > 64) return "telegramReport.baseId juda uzun.";
+  if (String(report.groupId || "").length > 128) return "telegramReport.groupId juda uzun.";
   if (report.messageId !== undefined && report.messageId !== null && report.messageId !== "" &&
       !/^\d{1,20}$/.test(String(report.messageId))) {
     return "telegramReport.messageId noto'g'ri.";

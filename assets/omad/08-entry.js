@@ -115,11 +115,51 @@ function nextEntryBaseId() {
     return pendingEntryBase;
 }
 
+/**
+ * The immutable group id every row of this entry is written under.
+ *
+ * One business action, one group id — the several cart lines of a single
+ * payment, and later the two halves of a tenant-paid expense, all carry it. It
+ * is generated once and kept in sessionStorage for the same reason the request
+ * id is: a retry after a network error has to land in the *same* group rather
+ * than mint a second one. An edit reuses the group the entry already has, so
+ * correcting an entry never re-groups it.
+ */
+const PENDING_GROUP_KEY = 'omad_pending_group';
+let pendingGroupId = "";
+
+function nextEntryGroupId() {
+    if(!pendingGroupId) {
+        try { pendingGroupId = sessionStorage.getItem(PENDING_GROUP_KEY) || ""; } catch (e) { pendingGroupId = ""; }
+    }
+    if(!pendingGroupId) {
+        pendingGroupId = `grp_web_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    }
+    try { sessionStorage.setItem(PENDING_GROUP_KEY, pendingGroupId); } catch (e) {}
+    return pendingGroupId;
+}
+
 function clearPendingRequest() {
     pendingRequestBase = "";
     pendingEntryBase = "";
+    pendingGroupId = "";
     try { sessionStorage.removeItem(PENDING_ENTRY_KEY); } catch (e) {}
     try { sessionStorage.removeItem(PENDING_REQUEST_KEY); } catch (e) {}
+    try { sessionStorage.removeItem(PENDING_GROUP_KEY); } catch (e) {}
+}
+
+/** The group a transaction belongs to, falling back to the legacy derivation. */
+function txGroupId(tx) {
+    const stored = String((tx && tx.groupId) || "").trim();
+    if(stored) return stored;
+    return tx && tx.id ? `grp_legacy_${getTxBaseId(tx.id)}` : "";
+}
+
+/** Every loaded row of one business action, in cart order. */
+function entryGroupRows(groupId) {
+    return app.transactions
+        .filter(t => txGroupId(t) === groupId)
+        .sort((a, b) => (Number(String(a.id).split('_')[1]) || 0) - (Number(String(b.id).split('_')[1]) || 0));
 }
 
 async function submitAll() {
@@ -177,13 +217,16 @@ async function submitViaLedger() {
     const requestBase = nextRequestBase();
     const common = currentEntryCommon();
     const editId = document.getElementById('editId').value;
-    const existingIds = editId ? entryGroupIds(getTxBaseId(editId)) : [];
+    // An edit stays inside the group it is editing; a new entry opens one.
+    const groupId = editId ? editingGroupId(editId) : nextEntryGroupId();
+    const existingIds = editId ? entryGroupRows(groupId).map(t => t.id) : [];
 
     showLoader(true);
     try {
         for(let i = 0; i < cart.length; i++) {
             const line = {
                 requestId: `${requestBase}_${i}`,
+                groupId,
                 ...common,
                 amount: Number(cart[i].amount) || 0,
                 currency: cart[i].currency,
@@ -215,12 +258,10 @@ async function submitViaLedger() {
     await syncData();
 }
 
-/** Ids of one entry group, in cart order. */
-function entryGroupIds(baseId) {
-    return app.transactions
-        .filter(t => String(t.id).startsWith(baseId + "_"))
-        .sort((a, b) => (Number(String(a.id).split('_')[1]) || 0) - (Number(String(b.id).split('_')[1]) || 0))
-        .map(t => t.id);
+/** The group id of the entry currently being edited. */
+function editingGroupId(editId) {
+    const tx = app.transactions.find(t => String(t.id) === String(editId));
+    return tx ? txGroupId(tx) : `grp_legacy_${getTxBaseId(editId)}`;
 }
 
 /** Legacy path, used until the ledger migration has been cut over. */
@@ -231,6 +272,7 @@ async function submitViaWholeListSave() {
     // Stable across retries, so resubmitting after a failure rewrites the same
     // rows rather than creating a second entry.
     const baseId = editBaseId || nextEntryBaseId();
+    const groupId = editId ? editingGroupId(editId) : nextEntryGroupId();
 
     const common = {
         tenant: normalizeTenantName(document.getElementById('entryTenant').value),
@@ -239,12 +281,15 @@ async function submitViaWholeListSave() {
         date: new Date().toLocaleDateString('en-GB')
     };
 
-    const baseTransactions = editBaseId
-        ? app.transactions.filter(t => !t.id.startsWith(editBaseId + "_"))
+    // Rows are replaced by group, not by id prefix, so an entry whose rows were
+    // written under different ids is still edited as one thing.
+    const baseTransactions = editId
+        ? app.transactions.filter(t => txGroupId(t) !== groupId)
         : [...app.transactions];
 
     const pendingTransactions = cart.map((item, i) => ({
         id: baseId + "_" + i,
+        groupId,
         ...common,
         type: currentType,
         amount: Number(item.amount) || 0,
@@ -268,6 +313,7 @@ async function submitViaWholeListSave() {
     try {
         await saveCloud({
             operation: 'transaction_upsert',
+            groupId,
             baseId,
             messageId: keptMsgId || ""
         });
@@ -281,14 +327,8 @@ async function submitViaWholeListSave() {
 }
 
 function editTx(id) {
-    const baseId = getTxBaseId(id);
-    const grouped = app.transactions
-        .filter(t => t.id.startsWith(baseId + "_"))
-        .sort((a, b) => {
-            const aIndex = Number(String(a.id).split('_')[1]) || 0;
-            const bIndex = Number(String(b.id).split('_')[1]) || 0;
-            return aIndex - bIndex;
-        });
+    const target = app.transactions.find(t => String(t.id) === String(id));
+    const grouped = entryGroupRows(target ? txGroupId(target) : `grp_legacy_${getTxBaseId(id)}`);
 
     const tx = grouped[0];
     if(!tx) return;
@@ -318,13 +358,15 @@ async function deleteTx(id) {
     const label = app.ledgerActive ? "Bekor qilmoqchimisiz?" : "O'chirmoqchimisiz?";
     if(!confirm(label)) return;
 
+    const target = app.transactions.find(t => String(t.id) === String(id));
+    const groupId = target ? txGroupId(target) : `grp_legacy_${getTxBaseId(id)}`;
     const baseId = getTxBaseId(id);
 
     if(app.ledgerActive) {
         const requestBase = `web_cancel_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         showLoader(true);
         try {
-            const ids = entryGroupIds(baseId);
+            const ids = entryGroupRows(groupId).map(t => t.id);
             for(let i = 0; i < ids.length; i++) {
                 await callBackend({
                     action: 'cancel_transaction',
@@ -340,8 +382,8 @@ async function deleteTx(id) {
         return;
     }
 
-    const grouped = app.transactions.filter(t => t.id.startsWith(baseId + "_"));
+    const grouped = entryGroupRows(groupId);
     const msgId = grouped.find(t => t.msgId)?.msgId || "";
-    app.transactions = app.transactions.filter(t => !t.id.startsWith(baseId + "_"));
-    await saveCloud(msgId ? { operation: 'transaction_delete', baseId, messageId: msgId } : null);
+    app.transactions = app.transactions.filter(t => txGroupId(t) !== groupId);
+    await saveCloud(msgId ? { operation: 'transaction_delete', groupId, baseId, messageId: msgId } : null);
 }

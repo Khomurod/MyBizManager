@@ -93,7 +93,8 @@ function readRawTransactionRows_(sheet) {
       id: data[i][0], tenant: data[i][1], month: data[i][2], type: data[i][3],
       amount: data[i][4], currency: data[i][5], method: data[i][6],
       date: data[i][7], comment: data[i][8], msgId: data[i][9],
-      requestId: data[i].length > 10 ? data[i][10] : ""
+      requestId: data[i].length > 10 ? data[i][10] : "",
+      groupId: data[i].length > 11 ? data[i][11] : ""
     });
   }
   return rows;
@@ -502,7 +503,11 @@ function migratedRowToLedger_(row, period, migratedAt) {
   var normalized = normalizeTransaction_({
     id: row.id, tenant: row.tenant, month: period, type: row.type,
     amount: row.amount, currency: row.currency, method: row.method,
-    date: row.date, comment: row.comment, msgId: row.msgId, requestId: row.requestId
+    date: row.date, comment: row.comment, msgId: row.msgId, requestId: row.requestId,
+    // Carried across verbatim when the legacy row has one, and derived
+    // deterministically when it does not, so a business action that spanned
+    // several rows before the migration still spans them after it.
+    groupId: row.groupId
   });
   var snapshot = buildRateSnapshot_(period, normalized.currency, "sell");
 
@@ -531,7 +536,8 @@ function migratedRowToLedger_(row, period, migratedAt) {
     status: TX_STATUS_ACTIVE,
     relatedId: "",
     msgId: normalized.msgId,
-    schemaVersion: LEDGER_SCHEMA_VERSION
+    schemaVersion: LEDGER_SCHEMA_VERSION,
+    groupId: normalized.groupId
   };
 }
 
