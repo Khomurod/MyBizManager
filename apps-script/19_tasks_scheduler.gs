@@ -344,6 +344,7 @@ function runTaskScheduler_(doc, nowMs) {
  * alongside one cannot duplicate anything.
  */
 function processTaskSchedules() {
+  resetRequestMemos_();
   var doc = SpreadsheetApp.getActiveSpreadsheet();
   runTaskScheduler_(doc, Date.now());
   return processPendingJobs_(doc, JOB_QUEUE_MANUAL_BATCH);

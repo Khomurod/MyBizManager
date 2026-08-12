@@ -10,11 +10,18 @@
 
 var DEFAULT_RATE_UZS = 12500;
 
+/**
+ * The rate table.
+ *
+ * Called from inside the money loops -- once per tenant in the balance
+ * calculation, once per transaction in the projection -- so it reads through
+ * the per-request memo rather than passing over System_Config each time.
+ */
 function getOmadRates_() {
   var doc = SpreadsheetApp.getActiveSpreadsheet();
   var configSheet = doc.getSheetByName("System_Config");
   if (!configSheet) return {};
-  return safeParseJSON_(getConfig(configSheet, "Omad_Rates"), {});
+  return safeParseJSON_(getConfigOnce_(configSheet, "Omad_Rates"), {});
 }
 
 function normalizeRateEntry_(rawRate) {

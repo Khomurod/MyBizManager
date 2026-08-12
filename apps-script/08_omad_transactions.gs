@@ -191,7 +191,7 @@ function normalizeTransaction_(raw) {
 function activeTransactionSheetName_(doc) {
   var configSheet = doc.getSheetByName("System_Config");
   if (!configSheet) return OMAD_TRANSACTIONS_SHEET;
-  var configured = String(getConfig(configSheet, OMAD_ACTIVE_TX_SHEET_KEY) || "").trim();
+  var configured = String(getConfigOnce_(configSheet, OMAD_ACTIVE_TX_SHEET_KEY) || "").trim();
   if (configured && doc.getSheetByName(configured)) return configured;
   return OMAD_TRANSACTIONS_SHEET;
 }

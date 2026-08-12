@@ -236,6 +236,7 @@ function drainJobQueueQuietly_(doc, options) {
  * combination of entry points can produce a duplicate.
  */
 function processPendingTelegramJobs() {
+  resetRequestMemos_();
   var doc = SpreadsheetApp.getActiveSpreadsheet();
   try {
     runTaskScheduler_(doc, Date.now());

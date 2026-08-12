@@ -57,12 +57,12 @@ function handleMiniAppAction_(action, payload, doc) {
   // the task case for counts no screen ever rendered. Café and Tasks are
   // fetched when their tab is first opened.
   if (action === 'mini_home' || action === 'mini_omad') {
-    var omadCtx = miniOmadContext_(doc, configSheet);
+    var omadCtx = miniOmadContext_(doc, configSheet, payload.period);
     var response = {
       status: "success", authorized: true,
-      omad: buildMiniOmadSummary_(omadCtx, payload.period),
-      tenants: buildMiniTenantStatus_(omadCtx, payload.period),
-      transactions: buildMiniRecentEntries_(omadCtx, payload.period)
+      omad: buildMiniOmadSummary_(omadCtx),
+      tenants: buildMiniTenantStatus_(omadCtx),
+      transactions: buildMiniRecentEntries_(omadCtx)
     };
     if (action === 'mini_home') response.user = auth.user;
     return jsonOutput_(response);
@@ -98,19 +98,29 @@ function handleMiniAppAction_(action, payload, doc) {
  * same rows every time inside a single request, so they are read once here and
  * passed down.
  */
-function miniOmadContext_(doc, configSheet) {
+function miniOmadContext_(doc, configSheet, requestedPeriod) {
+  var period = isCanonicalPeriod_(requestedPeriod) ? String(requestedPeriod) : currentPeriod_();
+  var transactions = readOmadTransactions_(doc);
   return {
     doc: doc,
-    transactions: readOmadTransactions_(doc),
+    // Resolved once here so the summary, the tenant list and the pre-aggregated
+    // totals cannot end up describing different months.
+    period: period,
+    requestedPeriod: requestedPeriod,
+    transactions: transactions,
     tenants: normalizeTenantList_(safeParseJSON_(getConfig(configSheet, "Omad_Tenants"), [])),
     rates: getOmadRates_(),
+    // The summary and the per-tenant list both need what each tenant paid, and
+    // each was walking the ledger once per tenant to find out. One pass here
+    // serves both.
+    paidTotals: tenantPaidTotals_(transactions, period),
     ledgerActive: isLedgerActive_(doc)
   };
 }
 
 /** The month figures, the balances and the tenant debt total, for one period. */
-function buildMiniOmadSummary_(ctx, requestedPeriod) {
-  var period = isCanonicalPeriod_(requestedPeriod) ? String(requestedPeriod) : currentPeriod_();
+function buildMiniOmadSummary_(ctx) {
+  var period = ctx.period;
   var transactions = ctx.transactions;
   var tenants = ctx.tenants;
   var rates = ctx.rates;
@@ -121,7 +131,7 @@ function buildMiniOmadSummary_(ctx, requestedPeriod) {
   var debt = 0;
   var paidTenants = 0;
   for (var i = 0; i < tenants.length; i++) {
-    var balance = calculateTenantBalance_(transactions, tenants[i], period);
+    var balance = calculateTenantBalance_(transactions, tenants[i], period, ctx.paidTotals);
     if (balance.difference < 0) debt += -balance.difference;
     else if (balance.expected > 0) paidTenants++;
   }
@@ -145,15 +155,15 @@ function buildMiniOmadSummary_(ctx, requestedPeriod) {
 }
 
 /** Per-tenant expected / paid / debt for the period, smallest debt last. */
-function buildMiniTenantStatus_(ctx, requestedPeriod) {
-  var period = isCanonicalPeriod_(requestedPeriod) ? String(requestedPeriod) : currentPeriod_();
+function buildMiniTenantStatus_(ctx) {
+  var period = ctx.period;
   var transactions = ctx.transactions;
   var tenants = ctx.tenants;
 
   var rows = [];
   for (var i = 0; i < tenants.length; i++) {
     if (tenants[i].active === false) continue;
-    var balance = calculateTenantBalance_(transactions, tenants[i], period);
+    var balance = calculateTenantBalance_(transactions, tenants[i], period, ctx.paidTotals);
     rows.push({
       name: tenants[i].name,
       expected: Math.round(balance.expected),
@@ -173,9 +183,11 @@ function buildMiniTenantStatus_(ctx, requestedPeriod) {
  * is one entry, and the several lines of one payment are one entry with a
  * total, so the reader is never asked to pair rows up themselves.
  */
-function buildMiniRecentEntries_(ctx, requestedPeriod) {
+function buildMiniRecentEntries_(ctx) {
   var transactions = ctx.transactions;
-  var period = isCanonicalPeriod_(requestedPeriod) ? String(requestedPeriod) : "";
+  // Unlike the summary, an unrecognised period here means "no filter" rather
+  // than "this month", so the list is never silently empty.
+  var period = isCanonicalPeriod_(ctx.requestedPeriod) ? String(ctx.requestedPeriod) : "";
   var rates = ctx.rates;
 
   var order = [];

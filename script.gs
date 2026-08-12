@@ -33,7 +33,56 @@ function okHtmlOutput_() {
   return HtmlService.createHtmlOutput("OK");
 }
 
+// ------------------------------------------------------------ config reads
+//
+// Every System_Config lookup is a full pass over the sheet to pull one cell
+// out, and the hot ones are asked for repeatedly while answering a single
+// request: which sheet the ledger lives in, the fallback year, the rate table.
+// One Mini App request with sixteen tenants was making thirty-odd of those
+// passes, all returning the same bytes.
+//
+// So the *read* is memoised, never the decision made from it -- callers still
+// re-derive whatever they derive. The memo lasts one request: Apps Script
+// gives each execution a fresh global scope, `doPost`/`doGet` clear it anyway
+// so the guarantee does not depend on that, and `setConfig` drops the entry it
+// overwrites so a handler that changes a value and then reads it back sees the
+// new one. Nothing writes System_Config except `setConfig`, which is what makes
+// that last part sufficient.
+
+var CONFIG_MEMO_ = {};
+
+/**
+ * Drops every request-scoped memo. Called at the top of each entry point.
+ *
+ * Nothing is cached across requests, so no screen can ever show a figure
+ * derived from a value someone else has since changed.
+ */
+function resetRequestMemos_() {
+  CONFIG_MEMO_ = {};
+}
+
+function invalidateConfigMemo_(key) {
+  delete CONFIG_MEMO_[key];
+}
+
+/**
+ * `getConfig`, read at most once per key per request.
+ *
+ * Only for keys whose value cannot change between two reads within a request
+ * except through `setConfig`. Anything else should call `getConfig` directly.
+ */
+function getConfigOnce_(sheet, key) {
+  if (Object.prototype.hasOwnProperty.call(CONFIG_MEMO_, key)) return CONFIG_MEMO_[key];
+  var value = getConfig(sheet, key);
+  CONFIG_MEMO_[key] = value;
+  return value;
+}
+
 function setConfig(sheet, key, value) {
+  // Hooking the single writer means a memo cannot be added elsewhere and then
+  // forgotten here.
+  invalidateConfigMemo_(key);
+
   var data = sheet.getDataRange().getValues();
   for (var i = 0; i < data.length; i++) {
     if (data[i][0] === key) {
@@ -372,7 +421,7 @@ function disagreementYear_(parsedDate, namedMonth) {
 /** The configured fallback year, or 0 when the operator has not chosen one. */
 function getFallbackYear_(configSheet) {
   if (!configSheet) return 0;
-  var stored = Number(getConfig(configSheet, OMAD_FALLBACK_YEAR_KEY));
+  var stored = Number(getConfigOnce_(configSheet, OMAD_FALLBACK_YEAR_KEY));
   return isFinite(stored) && stored >= 1970 && stored <= 2999 ? stored : 0;
 }
 
@@ -958,11 +1007,18 @@ function appendAuditRow_(doc, event, details) {
 
 var DEFAULT_RATE_UZS = 12500;
 
+/**
+ * The rate table.
+ *
+ * Called from inside the money loops -- once per tenant in the balance
+ * calculation, once per transaction in the projection -- so it reads through
+ * the per-request memo rather than passing over System_Config each time.
+ */
 function getOmadRates_() {
   var doc = SpreadsheetApp.getActiveSpreadsheet();
   var configSheet = doc.getSheetByName("System_Config");
   if (!configSheet) return {};
-  return safeParseJSON_(getConfig(configSheet, "Omad_Rates"), {});
+  return safeParseJSON_(getConfigOnce_(configSheet, "Omad_Rates"), {});
 }
 
 function normalizeRateEntry_(rawRate) {
@@ -1174,6 +1230,35 @@ function calculateTenantPaid_(transactions, tenantName, period) {
 }
 
 /**
+ * What every tenant paid in a period, from one pass over the ledger.
+ *
+ * `calculateTenantPaid_` walks the whole ledger to answer for one tenant, so
+ * asking about sixteen tenants walked it sixteen times. The filter is per
+ * tenant but the pass is not, so the pass is done once and the results are
+ * bucketed by name. Same rules, same rounding, same answer -- see the test
+ * that asserts the two agree tenant by tenant.
+ *
+ * Keys are the trimmed tenant name, exactly as `calculateTenantPaid_` matches.
+ */
+function tenantPaidTotals_(transactions, period) {
+  var rates = getOmadRates_();
+  var totals = {};
+  var list = Array.isArray(transactions) ? transactions : [];
+
+  for (var i = 0; i < list.length; i++) {
+    var t = list[i];
+    if (!isCountableTransaction_(t)) continue;
+    if (t.type !== "Income") continue;
+    if (period && period !== ALL_PERIODS_LABEL && transactionPeriod_(t) !== period) continue;
+    var key = String(t.tenant || "").trim();
+    totals[key] = (totals[key] || 0) + transactionUZS_(t, rates);
+  }
+
+  Object.keys(totals).forEach(function (key) { totals[key] = Math.round(totals[key]); });
+  return totals;
+}
+
+/**
  * The rent expected from a tenant in a period, at the sell rate.
  * The amount comes from the tenant's effective-dated schedule, so a month with
  * an exception, a no-rent month, or a month outside the agreement all resolve
@@ -1189,10 +1274,18 @@ function tenantExpectedRentUZS_(tenant, period) {
 /**
  * A tenant's position for a period.
  * Negative `difference` is debt; positive is an overpayment.
+ *
+ * `paidTotals` is optional: pass the map from `tenantPaidTotals_` when asking
+ * about several tenants over the same rows, and the ledger is walked once for
+ * all of them instead of once each. Omit it and the single-tenant path runs,
+ * which is what every existing caller does.
  */
-function calculateTenantBalance_(transactions, tenant, period) {
+function calculateTenantBalance_(transactions, tenant, period, paidTotals) {
   var expected = tenantExpectedRentUZS_(tenant, period);
-  var paid = calculateTenantPaid_(transactions, tenant && tenant.name, period);
+  var name = String((tenant && tenant.name) || "").trim();
+  var paid = paidTotals
+    ? (paidTotals[name] || 0)
+    : calculateTenantPaid_(transactions, tenant && tenant.name, period);
   return { expected: expected, paid: paid, difference: paid - expected };
 }
 
@@ -1887,7 +1980,7 @@ function normalizeTransaction_(raw) {
 function activeTransactionSheetName_(doc) {
   var configSheet = doc.getSheetByName("System_Config");
   if (!configSheet) return OMAD_TRANSACTIONS_SHEET;
-  var configured = String(getConfig(configSheet, OMAD_ACTIVE_TX_SHEET_KEY) || "").trim();
+  var configured = String(getConfigOnce_(configSheet, OMAD_ACTIVE_TX_SHEET_KEY) || "").trim();
   if (configured && doc.getSheetByName(configured)) return configured;
   return OMAD_TRANSACTIONS_SHEET;
 }
@@ -3353,6 +3446,7 @@ function drainJobQueueQuietly_(doc, options) {
  * combination of entry points can produce a duplicate.
  */
 function processPendingTelegramJobs() {
+  resetRequestMemos_();
   var doc = SpreadsheetApp.getActiveSpreadsheet();
   try {
     runTaskScheduler_(doc, Date.now());
@@ -7917,6 +8011,7 @@ function runTaskScheduler_(doc, nowMs) {
  * alongside one cannot duplicate anything.
  */
 function processTaskSchedules() {
+  resetRequestMemos_();
   var doc = SpreadsheetApp.getActiveSpreadsheet();
   runTaskScheduler_(doc, Date.now());
   return processPendingJobs_(doc, JOB_QUEUE_MANUAL_BATCH);
@@ -9536,6 +9631,13 @@ function handleWizardSave_(state, chatId, key, cache, doc, fromId) {
 // ============================================================
 
 function doPost(e) {
+  // Anything memoised for the life of a request starts empty. Apps Script
+  // gives each execution a fresh global scope so this is already true in
+  // production, but saying it here means the guarantee is in the code rather
+  // than in an assumption about the runtime -- and it is what makes the memos
+  // safe under a test harness that serves many requests from one load.
+  resetRequestMemos_();
+
   var doc = SpreadsheetApp.getActiveSpreadsheet();
   var isTelegramWebhook = false;
 
@@ -10280,12 +10382,12 @@ function handleMiniAppAction_(action, payload, doc) {
   // the task case for counts no screen ever rendered. Café and Tasks are
   // fetched when their tab is first opened.
   if (action === 'mini_home' || action === 'mini_omad') {
-    var omadCtx = miniOmadContext_(doc, configSheet);
+    var omadCtx = miniOmadContext_(doc, configSheet, payload.period);
     var response = {
       status: "success", authorized: true,
-      omad: buildMiniOmadSummary_(omadCtx, payload.period),
-      tenants: buildMiniTenantStatus_(omadCtx, payload.period),
-      transactions: buildMiniRecentEntries_(omadCtx, payload.period)
+      omad: buildMiniOmadSummary_(omadCtx),
+      tenants: buildMiniTenantStatus_(omadCtx),
+      transactions: buildMiniRecentEntries_(omadCtx)
     };
     if (action === 'mini_home') response.user = auth.user;
     return jsonOutput_(response);
@@ -10321,19 +10423,29 @@ function handleMiniAppAction_(action, payload, doc) {
  * same rows every time inside a single request, so they are read once here and
  * passed down.
  */
-function miniOmadContext_(doc, configSheet) {
+function miniOmadContext_(doc, configSheet, requestedPeriod) {
+  var period = isCanonicalPeriod_(requestedPeriod) ? String(requestedPeriod) : currentPeriod_();
+  var transactions = readOmadTransactions_(doc);
   return {
     doc: doc,
-    transactions: readOmadTransactions_(doc),
+    // Resolved once here so the summary, the tenant list and the pre-aggregated
+    // totals cannot end up describing different months.
+    period: period,
+    requestedPeriod: requestedPeriod,
+    transactions: transactions,
     tenants: normalizeTenantList_(safeParseJSON_(getConfig(configSheet, "Omad_Tenants"), [])),
     rates: getOmadRates_(),
+    // The summary and the per-tenant list both need what each tenant paid, and
+    // each was walking the ledger once per tenant to find out. One pass here
+    // serves both.
+    paidTotals: tenantPaidTotals_(transactions, period),
     ledgerActive: isLedgerActive_(doc)
   };
 }
 
 /** The month figures, the balances and the tenant debt total, for one period. */
-function buildMiniOmadSummary_(ctx, requestedPeriod) {
-  var period = isCanonicalPeriod_(requestedPeriod) ? String(requestedPeriod) : currentPeriod_();
+function buildMiniOmadSummary_(ctx) {
+  var period = ctx.period;
   var transactions = ctx.transactions;
   var tenants = ctx.tenants;
   var rates = ctx.rates;
@@ -10344,7 +10456,7 @@ function buildMiniOmadSummary_(ctx, requestedPeriod) {
   var debt = 0;
   var paidTenants = 0;
   for (var i = 0; i < tenants.length; i++) {
-    var balance = calculateTenantBalance_(transactions, tenants[i], period);
+    var balance = calculateTenantBalance_(transactions, tenants[i], period, ctx.paidTotals);
     if (balance.difference < 0) debt += -balance.difference;
     else if (balance.expected > 0) paidTenants++;
   }
@@ -10368,15 +10480,15 @@ function buildMiniOmadSummary_(ctx, requestedPeriod) {
 }
 
 /** Per-tenant expected / paid / debt for the period, smallest debt last. */
-function buildMiniTenantStatus_(ctx, requestedPeriod) {
-  var period = isCanonicalPeriod_(requestedPeriod) ? String(requestedPeriod) : currentPeriod_();
+function buildMiniTenantStatus_(ctx) {
+  var period = ctx.period;
   var transactions = ctx.transactions;
   var tenants = ctx.tenants;
 
   var rows = [];
   for (var i = 0; i < tenants.length; i++) {
     if (tenants[i].active === false) continue;
-    var balance = calculateTenantBalance_(transactions, tenants[i], period);
+    var balance = calculateTenantBalance_(transactions, tenants[i], period, ctx.paidTotals);
     rows.push({
       name: tenants[i].name,
       expected: Math.round(balance.expected),
@@ -10396,9 +10508,11 @@ function buildMiniTenantStatus_(ctx, requestedPeriod) {
  * is one entry, and the several lines of one payment are one entry with a
  * total, so the reader is never asked to pair rows up themselves.
  */
-function buildMiniRecentEntries_(ctx, requestedPeriod) {
+function buildMiniRecentEntries_(ctx) {
   var transactions = ctx.transactions;
-  var period = isCanonicalPeriod_(requestedPeriod) ? String(requestedPeriod) : "";
+  // Unlike the summary, an unrecognised period here means "no filter" rather
+  // than "this month", so the list is never silently empty.
+  var period = isCanonicalPeriod_(ctx.requestedPeriod) ? String(ctx.requestedPeriod) : "";
   var rates = ctx.rates;
 
   var order = [];
