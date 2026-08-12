@@ -12,14 +12,17 @@ anonymous-endpoint exposure re-checked directly against the live systems).
 
 | | |
 |---|---|
-| Active transaction sheet | **`Omad_Transactions`** (legacy) |
-| Is the V2 ledger live? | **No.** `Omad_Transactions_V2` does not exist |
-| Migration state | `not_started` |
+| Active transaction sheet | **`Omad_Transactions_V2`** (the append-only ledger) |
+| Is the V2 ledger live? | **Yes**, cut over 2026-08-12 |
+| Migration state | `cutover` |
 | Fallback year | `2026` |
+| Legacy sheet | `Omad_Transactions` — kept intact, 226 rows, so rollback stays one action |
 
-**V2 is not live and cutting over is not part of current work.** The migration
-code is maintained and tested, but the application reads and writes the legacy
-sheet. Do not run `cutover_omad_migration` without a separate, approved plan.
+**V2 is live.** Transactions are appended, corrected and cancelled; nothing
+rewrites the list. `save_omad` still carries the tenants, rates and template
+expenses, and its transaction half is ignored — `saveOmadSettingsOnly_` is what
+runs. `rollback_omad_migration` points reads and writes back at the legacy
+sheet and is the tested way back.
 
 ---
 
@@ -113,6 +116,49 @@ Two things to know:
 
 Opened in an ordinary browser it shows one sentence and asks the server for
 nothing.
+
+## The V2 cutover
+
+Done on 2026-08-12, in the order preview → apply → verify → cutover, with the
+legacy sheet left untouched throughout.
+
+Two things were found and fixed before it was safe:
+
+1. **The migration never read `Entry_Kind`.** `readRawTransactionRows_` read
+   twelve of the legacy sheet's thirteen columns, so every migrated row arrived
+   with an empty kind and a tenant-paid pair would have become two unrelated
+   rows. Verification could not see it either — it compared ten fields, none of
+   which were `Entry_Group_ID`, `Entry_Kind` or `Comment`. It now compares
+   those three, checks that every source group arrives as the same set of ids,
+   and checks that a tenant-paid pair still nets to zero.
+2. **The Telegram `/yangi` entry would have corrupted the ledger.**
+   `appendOmadTransaction_` wrote a thirteen-column legacy row into whichever
+   sheet was active, and called `ensureOmadTransactionHeader_` first — which on
+   a ledger sheet would have stamped the legacy header over `Rate_Buy`,
+   `Rate_Sell`, `Status` and the rest. One bot entry was enough. This was found
+   by cutting over and checking every write path; the cutover was rolled back
+   within minutes, the fix shipped, and the cutover redone.
+
+Verified after the cutover: 226 rows in and 226 out, identical ids, identical
+tenant balances, identical per-period totals and cash/bank figures; a
+whole-list `save_omad` changes no transaction; append, correct and cancel all
+behave; and `Omad_Transactions` still holds its original 226 rows.
+
+## The café is server-priced
+
+The till used to compute the total, the cost and the profit and send them to be
+written down, and it depleted stock only in its own memory — so a refresh
+restored the stock it had just sold, two devices each tracked a different
+inventory, and a stale screen could file any figure.
+
+The POS now sends **what was ordered and how many**. The server reads the
+catalogue, prices each line, costs a recipe from its ingredients, refuses a
+sale the stock cannot cover, moves the stock and writes the sale — all under
+one lock, keyed by a request id so a double tap cannot ring it up twice. A void
+restores stock from the receipt that was stored rather than from an inventory
+the browser supplies. Close-day totals revenue and profit from the sales
+actually recorded and accepts only the counted stock level, which is the one
+figure a person has to supply.
 
 ## System health
 

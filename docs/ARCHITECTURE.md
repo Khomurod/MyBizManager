@@ -341,6 +341,35 @@ at nothing. The health check no longer reports a flag — it *probes* `doGet` fo
 both retired routes on every run, because a flag describes what the source
 intended and a probe describes what the deployed router does.
 
+### The café is server-priced
+
+`apps-script/12_cafe.gs`. The POS sends **which items and how many**. Everything
+that decides money or stock is computed here, from what is stored:
+
+| | |
+|---|---|
+| price | the product's `sellPrice`, or the recipe's |
+| cost | the product's unit cost, or the recipe's ingredients |
+| stock movement | the product's serving size, or the recipe's ingredient quantities |
+| totals and profit | summed from the priced lines |
+| close-day revenue/profit | totalled from the sales actually recorded |
+
+`resolveCafeSaleLines_` refuses an item the catalogue does not contain rather
+than selling it at whatever the caller suggested, and `cafeStockShortfall_`
+refuses a sale the stock cannot cover. Reading the stock, deciding it is
+sufficient and writing it back is a read-modify-write, so the whole of
+`saveCafeSale_` runs under the script lock — two tills selling the last item at
+the same moment would otherwise both succeed.
+
+The sale carries a `requestId`. A retry, a double tap or a redelivered request
+resolves to the sale the first attempt created; the response says `duplicate:
+true` and the stock moves once. A void restores stock from the receipt that was
+stored, never from an inventory the browser supplies, and voiding twice is a
+no-op rather than a second refund of stock.
+
+Close-day accepts `countedInventory`, because a physical count is the one thing
+only a person can supply. It ignores any revenue or profit the till reports.
+
 ### Telegram Mini App
 
 `apps-script/21_miniapp_auth.gs`. Telegram signs `initData` with a key derived
@@ -398,6 +427,19 @@ Three tabs and nothing else:
 The full web app remains the administration interface. Rates, tenant
 schedules, planned expenses, migration and the maintenance actions are
 deliberately not here.
+
+### One read per request
+
+Every Mini App screen used to pay for the others. `mini_home` built the Omad
+summary, the café summary and the whole task view, and the client then called
+`mini_omad` anyway because the tenant list and the recent entries were missing
+from it — two round trips and **four separate full reads of the ledger** to
+paint one tab, plus a café read and a task-view build for tabs nobody had
+opened. The task counts it computed were never rendered by any screen.
+
+`miniOmadContext_` reads the ledger, the tenant list and the rate table once,
+and the three builders take that context. `mini_home` answers Omad completely
+from it. Café and Tasks are fetched when their tab is first opened.
 
 ### It computes nothing
 
