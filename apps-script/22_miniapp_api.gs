@@ -84,6 +84,16 @@ function handleMiniAppAction_(action, payload, doc) {
   if (action === 'mini_tenant_paid') return miniTenantPaid_(doc, configSheet, payload);
   if (action === 'mini_task_action') return miniTaskAction_(doc, payload, auth);
 
+  // Sending the group card is a Telegram round trip, and a phone on a slow
+  // connection should not be holding a spinner through it. The write returns
+  // as soon as the record is stored, and the client calls this afterwards
+  // without waiting for the answer, so the card still appears in seconds
+  // instead of waiting for the next five-minute trigger tick. Losing this
+  // request costs nothing: the job stays queued and the trigger sends it.
+  if (action === 'mini_flush_reports') {
+    return jsonOutput_({ status: "success", authorized: true, sent: drainJobQueueQuietly_(doc, null) });
+  }
+
   return jsonOutput_({ status: "error", message: "Unknown action" });
 }
 
@@ -398,6 +408,7 @@ function miniSaveTransaction_(doc, configSheet, payload) {
     if (created.status === "success" && !created.duplicate) {
       queueMiniTransactionReport_(doc, created.transaction);
     }
+    if (created.status === "success") recordLastOperation_(doc, "mini_save_transaction");
     return jsonOutput_(created);
   }
 
@@ -428,7 +439,7 @@ function miniSaveTransaction_(doc, configSheet, payload) {
 
   recordLastOperation_(doc, "mini_save_transaction");
   if (!duplicate) queueMiniTransactionReport_(doc, transaction);
-  drainJobQueueQuietly_(doc, payload);
+  // The report is queued, not sent: see `mini_flush_reports`.
 
   return jsonOutput_({ status: "success", duplicate: duplicate, transaction: transaction });
 }
@@ -448,13 +459,29 @@ function queueMiniTransactionReport_(doc, transaction) {
 
 /** The tenant-paid pair, through exactly the same code path the web app uses. */
 function miniTenantPaid_(doc, configSheet, payload) {
-  backupOmadState_(doc, configSheet, "miniapp_tenant_paid");
-  var result = createTenantPaidExpense_(doc, {
+  var input = {
     requestId: payload.requestId, groupId: payload.groupId,
     tenant: payload.tenant, period: payload.period, amount: payload.amount,
     currency: payload.currency, method: payload.method, comment: payload.comment,
     createdBy: "miniapp", source: TX_SOURCE_TELEGRAM
-  });
+  };
+
+  // The snapshot exists to undo a rewrite. On the ledger there is no rewrite to
+  // undo -- a write is an append and a correction is another append, with the
+  // audit row already recording it -- so copying the entire ledger into a cell
+  // before each entry bought nothing and grew with the ledger.
+  //
+  // The legacy sheet is genuinely rewritten in place, so it keeps its snapshot.
+  // What changes there is the order: this used to run before anything was
+  // checked, so a typo'd amount wrote a full copy of the ledger and then
+  // refused the entry.
+  if (!isLedgerActive_(doc)) {
+    var invalid = validateTenantPaidInput_(input, configuredTenants_(doc));
+    if (invalid) return jsonOutput_({ status: "error", message: invalid });
+    backupOmadState_(doc, configSheet, "miniapp_tenant_paid");
+  }
+
+  var result = createTenantPaidExpense_(doc, input);
   if (result.status !== "success") return jsonOutput_(result);
 
   recordLastOperation_(doc, "mini_tenant_paid");
@@ -468,7 +495,8 @@ function miniTenantPaid_(doc, configSheet, payload) {
     } catch (queueError) {
       debugLog_(doc, "report_enqueue_failed", String(queueError));
     }
-    drainJobQueueQuietly_(doc, payload);
+    // Not drained here: the phone is waiting on this response, and the client
+    // asks for the flush once it has one. See `mini_flush_reports`.
   }
   return jsonOutput_(result);
 }

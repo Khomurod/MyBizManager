@@ -79,6 +79,28 @@ async function api(action, payload = {}) {
 }
 
 /**
+ * Asks the backend to send the Telegram cards it has queued, without waiting.
+ *
+ * A write returns as soon as the record is stored; sending the group card is a
+ * separate Telegram round trip that the person holding the phone has no reason
+ * to wait through. This is called after a successful write and deliberately not
+ * awaited, so the card appears within seconds rather than at the next
+ * five-minute trigger tick.
+ *
+ * Nothing depends on it arriving. If the request is dropped -- the app closed,
+ * the connection lost -- the job is still queued and the trigger sends it, so
+ * the failure is a delay and never a missing report. That is why it swallows
+ * its errors: there is nothing for the user to do about one.
+ */
+function flushReports() {
+    try {
+        api('mini_flush_reports').catch(() => {});
+    } catch (error) {
+        // Not even a signed-out client should turn a saved entry into an error.
+    }
+}
+
+/**
  * A stable id for one submission, kept until it succeeds.
  *
  * The same reason the web app keeps one: a retry after a dropped connection
