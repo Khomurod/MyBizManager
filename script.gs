@@ -7351,6 +7351,19 @@ function runTaskAction_(action, payload, doc) {
   return jsonOutput_(result);
 }
 
+/**
+ * Whether the caller actually said anything about a field.
+ *
+ * The difference between "leave this alone" and "clear this" is the whole
+ * safety of an edit. A payload that never mentions `recurrence` is a client
+ * editing a title; a payload carrying `recurrence: null` is a client asking
+ * for a default. Only the second may overwrite what is stored.
+ */
+function taskFieldSupplied_(payload, field) {
+  return !!payload && Object.prototype.hasOwnProperty.call(payload, field) &&
+    payload[field] !== undefined;
+}
+
 /** Builds a validated task object from a web payload. Returns {task} or {error}. */
 function normalizeTaskInput_(payload, existing) {
   // The type decides which columns mean anything and what an occurrence even
@@ -7395,20 +7408,45 @@ function normalizeTaskInput_(payload, existing) {
       : (payload.meta && typeof payload.meta === "object" && !Array.isArray(payload.meta) ? payload.meta : {})
   };
 
+  // Schedule fields fall back to what is stored whenever the caller did not
+  // mention them. Without this, editing a title through any client that sends
+  // only the fields it shows silently rewrote the schedule: a weekly Monday
+  // routine came back daily, and a deadline came back empty, because an absent
+  // field and a cleared field were treated identically.
+  var keep = function (field, fallback) {
+    return taskFieldSupplied_(payload, field) ? payload[field] : fallback;
+  };
+
   if (type === "once") {
-    if (payload.deadlineKey && !isTaskDateKey_(payload.deadlineKey)) return { error: "Muddat sanasi noto'g'ri." };
-    if (payload.deadlineTime && !isTaskTimeKey_(payload.deadlineTime)) return { error: "Muddat vaqti noto'g'ri." };
-    task.deadlineKey = isTaskDateKey_(payload.deadlineKey) ? String(payload.deadlineKey) : "";
-    task.deadlineTime = isTaskTimeKey_(payload.deadlineTime) ? String(payload.deadlineTime) : "";
+    var deadlineKey = keep("deadlineKey", existing ? existing.deadlineKey : "");
+    var deadlineTime = keep("deadlineTime", existing ? existing.deadlineTime : "");
+    if (deadlineKey && !isTaskDateKey_(deadlineKey)) return { error: "Muddat sanasi noto'g'ri." };
+    if (deadlineTime && !isTaskTimeKey_(deadlineTime)) return { error: "Muddat vaqti noto'g'ri." };
+    task.deadlineKey = isTaskDateKey_(deadlineKey) ? String(deadlineKey) : "";
+    task.deadlineTime = isTaskTimeKey_(deadlineTime) ? String(deadlineTime) : "";
   } else if (type === "routine") {
-    task.recurrence = normalizeTaskRecurrence_(payload.recurrence);
+    // An edit that does not mention the cadence keeps the cadence. Sending
+    // `recurrence` explicitly still replaces it, so the web editor is
+    // unchanged.
+    task.recurrence = taskFieldSupplied_(payload, "recurrence")
+      ? normalizeTaskRecurrence_(payload.recurrence)
+      : (existing && existing.recurrence && existing.recurrence.freq
+        ? normalizeTaskRecurrence_(existing.recurrence)
+        : normalizeTaskRecurrence_(payload.recurrence));
+
     task.startKey = isTaskDateKey_(payload.startKey) ? String(payload.startKey) : (existing && existing.startKey ? existing.startKey : taskTodayKey_(Date.now()));
-    if (payload.endKey && !isTaskDateKey_(payload.endKey)) return { error: "Tugash sanasi noto'g'ri." };
-    task.endKey = isTaskDateKey_(payload.endKey) ? String(payload.endKey) : "";
+
+    var endKey = keep("endKey", existing ? existing.endKey : "");
+    if (endKey && !isTaskDateKey_(endKey)) return { error: "Tugash sanasi noto'g'ri." };
+    task.endKey = isTaskDateKey_(endKey) ? String(endKey) : "";
     if (task.endKey && task.endKey < task.startKey) return { error: "Tugash sanasi boshlanish sanasidan oldin." };
-    task.dueTime = isTaskTimeKey_(payload.dueTime) ? String(payload.dueTime) : "";
+
+    var dueTime = keep("dueTime", existing ? existing.dueTime : "");
+    task.dueTime = isTaskTimeKey_(dueTime) ? String(dueTime) : "";
   } else if (type === "goal") {
-    task.steps = normalizeGoalSteps_(payload.steps);
+    task.steps = taskFieldSupplied_(payload, "steps")
+      ? normalizeGoalSteps_(payload.steps)
+      : (existing ? (existing.steps || []) : []);
     if (task.steps.length === 0) return { error: "Maqsad uchun kamida bitta qadam kiriting." };
   }
 
@@ -7713,11 +7751,39 @@ function completeOccurrenceAction_(doc, payload) {
     return { status: "error",
       message: "Kelgusi kun uchun vazifani oldindan bajarilgan deb belgilab bo'lmaydi." };
   }
-  completeTaskOccurrence_(doc, occ, {
-    byId: "",
-    byName: String(payload.completedBy || "Admin (panel)"),
-    source: "web"
-  });
+
+  // A caller with a verified identity is recorded as themselves. The admin
+  // panel has no identity beyond the key, so it keeps its old label.
+  var byId = String(payload.completedById || "");
+  var byName = String(payload.completedBy || payload.completedByName || "").trim() ||
+    (byId ? byId : "Admin (panel)");
+  var source = String(payload.completedSource || "web");
+
+  // A task that asks for a photo does not become done because a button was
+  // pressed - that is the rule the group cards already enforce. Any client
+  // that can name a person can start the proof flow instead of bypassing it;
+  // one that cannot has no one to ask, so it completes as before.
+  if (occ.photoRequired && occ.status !== TASK_STATUS_WAITING && byId) {
+    occ.status = TASK_STATUS_WAITING;
+    occ.proofAwaitingUserId = byId;
+    occ.completedByName = byName;                  // provisional; confirmed on proof
+    occ.meta = occ.meta || {};
+    occ.meta.proofPromptMsgId = "";
+    occ.meta.proofRequestedAt = new Date().toISOString();
+    writeOccurrenceRow_(doc, occ);
+
+    enqueueTaskJob_(doc, "task_proof_prompt", occ.id, {
+      occurrenceId: occ.id, userId: byId, userName: byName
+    });
+    if (occ.msgId) enqueueTaskJob_(doc, "task_update_message", occ.id, { occurrenceId: occ.id });
+    appendAuditRow_(doc, "task_proof_requested", occ.id + " by:" + byName);
+    return {
+      status: "success", awaitingProof: true,
+      message: "📷 Rasm kutilmoqda — guruhda so'ralgan xabarga javob bering."
+    };
+  }
+
+  completeTaskOccurrence_(doc, occ, { byId: byId, byName: byName, source: source });
   return { status: "success" };
 }
 
@@ -9545,22 +9611,21 @@ function handleMiniAppAction_(action, payload, doc) {
 
   var configSheet = doc.getSheetByName("System_Config") || doc.insertSheet("System_Config");
 
-  if (action === 'mini_home') {
-    return jsonOutput_({
-      status: "success", authorized: true, user: auth.user,
-      omad: buildMiniOmadSummary_(doc, configSheet, payload.period),
-      cafe: buildMiniCafeSummary_(doc, configSheet),
-      tasks: buildMiniTaskSummary_(doc)
-    });
-  }
-
-  if (action === 'mini_omad') {
-    return jsonOutput_({
+  // The first screen is Omad, so the first request answers Omad completely and
+  // nothing else. It used to also build the café summary and the whole task
+  // view — two more full sheet reads for tabs the user had not opened, and in
+  // the task case for counts no screen ever rendered. Café and Tasks are
+  // fetched when their tab is first opened.
+  if (action === 'mini_home' || action === 'mini_omad') {
+    var omadCtx = miniOmadContext_(doc, configSheet);
+    var response = {
       status: "success", authorized: true,
-      omad: buildMiniOmadSummary_(doc, configSheet, payload.period),
-      tenants: buildMiniTenantStatus_(doc, configSheet, payload.period),
-      transactions: buildMiniRecentEntries_(doc, payload.period)
-    });
+      omad: buildMiniOmadSummary_(omadCtx, payload.period),
+      tenants: buildMiniTenantStatus_(omadCtx, payload.period),
+      transactions: buildMiniRecentEntries_(omadCtx, payload.period)
+    };
+    if (action === 'mini_home') response.user = auth.user;
+    return jsonOutput_(response);
   }
 
   if (action === 'mini_cafe') {
@@ -9584,12 +9649,31 @@ function handleMiniAppAction_(action, payload, doc) {
 
 // ------------------------------------------------------------------- reading
 
+/**
+ * Everything the Omad screens read, fetched once per request.
+ *
+ * The three builders below each used to call `readOmadTransactions_` for
+ * themselves, so answering one Mini App request read the whole ledger three
+ * times over — and the tenant list and the rate table with it. They are the
+ * same rows every time inside a single request, so they are read once here and
+ * passed down.
+ */
+function miniOmadContext_(doc, configSheet) {
+  return {
+    doc: doc,
+    transactions: readOmadTransactions_(doc),
+    tenants: normalizeTenantList_(safeParseJSON_(getConfig(configSheet, "Omad_Tenants"), [])),
+    rates: getOmadRates_(),
+    ledgerActive: isLedgerActive_(doc)
+  };
+}
+
 /** The month figures, the balances and the tenant debt total, for one period. */
-function buildMiniOmadSummary_(doc, configSheet, requestedPeriod) {
+function buildMiniOmadSummary_(ctx, requestedPeriod) {
   var period = isCanonicalPeriod_(requestedPeriod) ? String(requestedPeriod) : currentPeriod_();
-  var transactions = readOmadTransactions_(doc);
-  var tenants = normalizeTenantList_(safeParseJSON_(getConfig(configSheet, "Omad_Tenants"), []));
-  var rates = getOmadRates_();
+  var transactions = ctx.transactions;
+  var tenants = ctx.tenants;
+  var rates = ctx.rates;
   var actuals = calculateActuals_(transactions, period);
 
   // calculateTenantBalance_ reports a signed difference: negative is owed.
@@ -9616,16 +9700,15 @@ function buildMiniOmadSummary_(doc, configSheet, requestedPeriod) {
     tenantCount: tenants.length,
     tenantsSettled: paidTenants,
     rate: { buy: entry.buy, sell: entry.sell },
-    ledgerActive: isLedgerActive_(doc)
+    ledgerActive: ctx.ledgerActive
   };
 }
 
 /** Per-tenant expected / paid / debt for the period, smallest debt last. */
-function buildMiniTenantStatus_(doc, configSheet, requestedPeriod) {
+function buildMiniTenantStatus_(ctx, requestedPeriod) {
   var period = isCanonicalPeriod_(requestedPeriod) ? String(requestedPeriod) : currentPeriod_();
-  var transactions = readOmadTransactions_(doc);
-  var tenants = normalizeTenantList_(safeParseJSON_(getConfig(configSheet, "Omad_Tenants"), []));
-  var rates = getOmadRates_();
+  var transactions = ctx.transactions;
+  var tenants = ctx.tenants;
 
   var rows = [];
   for (var i = 0; i < tenants.length; i++) {
@@ -9650,10 +9733,10 @@ function buildMiniTenantStatus_(doc, configSheet, requestedPeriod) {
  * is one entry, and the several lines of one payment are one entry with a
  * total, so the reader is never asked to pair rows up themselves.
  */
-function buildMiniRecentEntries_(doc, requestedPeriod) {
-  var transactions = readOmadTransactions_(doc);
+function buildMiniRecentEntries_(ctx, requestedPeriod) {
+  var transactions = ctx.transactions;
   var period = isCanonicalPeriod_(requestedPeriod) ? String(requestedPeriod) : "";
-  var rates = getOmadRates_();
+  var rates = ctx.rates;
 
   var order = [];
   var groups = {};
@@ -9799,18 +9882,6 @@ function cafeDateKey_(value) {
   return Utilities.formatDate(parsed, Session.getScriptTimeZone(), "yyyy-MM-dd");
 }
 
-/** Counts only — the Home tab shows how much is waiting, not what. */
-function buildMiniTaskSummary_(doc) {
-  var view = buildTaskViews_(doc, Date.now());
-  return {
-    overdue: (view.overdue || []).length,
-    today: (view.dueToday || []).length,
-    upcoming: (view.upcoming || []).length,
-    waitingProof: (view.waitingProof || []).length,
-    completedToday: (view.completedToday || []).length
-  };
-}
-
 // ------------------------------------------------------------------ writing
 
 /**
@@ -9838,6 +9909,16 @@ function miniSaveTransaction_(doc, configSheet, payload) {
   // An income has to land on a tenant; only an expense may come from a bucket.
   if (type === "Income" && isExpenseSourceName_(tenant)) {
     return jsonOutput_({ status: "error", message: "Kirim uchun ijarachi tanlang." });
+  }
+  // ...and it has to be a tenant that exists. An income credits a balance, so
+  // an unrecognised name invents debt against nobody -- the same rule the
+  // tenant-paid pair already enforces, applied to the ordinary entry too.
+  if (type === "Income") {
+    var known = findConfiguredTenant_(
+      normalizeTenantList_(safeParseJSON_(getConfig(configSheet, "Omad_Tenants"), [])), tenant);
+    if (!known) {
+      return jsonOutput_({ status: "error", message: "Bunday ijarachi ro'yxatda yo'q: " + tenant });
+    }
   }
 
   if (isLedgerActive_(doc)) {
@@ -9938,14 +10019,33 @@ function miniTaskAction_(doc, payload, auth) {
   if (!isTaskMutationAction_(taskAction)) {
     return jsonOutput_({ status: "error", message: "Unknown action" });
   }
+
+  var displayName = String(auth.user.firstName || "").trim() ||
+    String(auth.user.username || "").trim() || String(auth.userId);
+
   var forwarded = Object.assign({}, payload, {
     action: taskAction,
-    // The Mini App has a verified identity, so completions are attributed to
-    // the person rather than to "admin".
+    // The task engine identifies a *task* by `id` and an *occurrence* by
+    // `occurrenceId`. The Mini App speaks in `taskId` because that is what its
+    // own view calls the field, so it is translated here rather than in four
+    // separate places on the client. Without this, save/cancel/pause/resume
+    // all reported "Vazifa topilmadi" and an edit silently created a second
+    // task instead of changing the one on screen.
+    id: payload.id || payload.taskId || "",
+    // The Mini App has a verified identity, so a completion is attributed to
+    // the person rather than to "Admin (panel)".
     completedById: payload.completedById || auth.userId,
-    completedByName: payload.completedByName || auth.user.firstName || auth.userId,
+    completedBy: payload.completedBy || payload.completedByName || displayName,
+    completedSource: "miniapp",
     createdBy: payload.createdBy || ("tg:" + auth.userId)
   });
+
+  // `save_task` treats an absent field as "leave it alone", so an edit sheet
+  // that does not offer a cadence must not send one at all.
+  if (taskAction === "save_task" && !forwarded.id) {
+    forwarded.createdBy = "tg:" + auth.userId;
+  }
+
   return runTaskAction_(taskAction, forwarded, doc);
 }
 

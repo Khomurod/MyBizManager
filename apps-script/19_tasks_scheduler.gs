@@ -422,6 +422,19 @@ function runTaskAction_(action, payload, doc) {
   return jsonOutput_(result);
 }
 
+/**
+ * Whether the caller actually said anything about a field.
+ *
+ * The difference between "leave this alone" and "clear this" is the whole
+ * safety of an edit. A payload that never mentions `recurrence` is a client
+ * editing a title; a payload carrying `recurrence: null` is a client asking
+ * for a default. Only the second may overwrite what is stored.
+ */
+function taskFieldSupplied_(payload, field) {
+  return !!payload && Object.prototype.hasOwnProperty.call(payload, field) &&
+    payload[field] !== undefined;
+}
+
 /** Builds a validated task object from a web payload. Returns {task} or {error}. */
 function normalizeTaskInput_(payload, existing) {
   // The type decides which columns mean anything and what an occurrence even
@@ -466,20 +479,45 @@ function normalizeTaskInput_(payload, existing) {
       : (payload.meta && typeof payload.meta === "object" && !Array.isArray(payload.meta) ? payload.meta : {})
   };
 
+  // Schedule fields fall back to what is stored whenever the caller did not
+  // mention them. Without this, editing a title through any client that sends
+  // only the fields it shows silently rewrote the schedule: a weekly Monday
+  // routine came back daily, and a deadline came back empty, because an absent
+  // field and a cleared field were treated identically.
+  var keep = function (field, fallback) {
+    return taskFieldSupplied_(payload, field) ? payload[field] : fallback;
+  };
+
   if (type === "once") {
-    if (payload.deadlineKey && !isTaskDateKey_(payload.deadlineKey)) return { error: "Muddat sanasi noto'g'ri." };
-    if (payload.deadlineTime && !isTaskTimeKey_(payload.deadlineTime)) return { error: "Muddat vaqti noto'g'ri." };
-    task.deadlineKey = isTaskDateKey_(payload.deadlineKey) ? String(payload.deadlineKey) : "";
-    task.deadlineTime = isTaskTimeKey_(payload.deadlineTime) ? String(payload.deadlineTime) : "";
+    var deadlineKey = keep("deadlineKey", existing ? existing.deadlineKey : "");
+    var deadlineTime = keep("deadlineTime", existing ? existing.deadlineTime : "");
+    if (deadlineKey && !isTaskDateKey_(deadlineKey)) return { error: "Muddat sanasi noto'g'ri." };
+    if (deadlineTime && !isTaskTimeKey_(deadlineTime)) return { error: "Muddat vaqti noto'g'ri." };
+    task.deadlineKey = isTaskDateKey_(deadlineKey) ? String(deadlineKey) : "";
+    task.deadlineTime = isTaskTimeKey_(deadlineTime) ? String(deadlineTime) : "";
   } else if (type === "routine") {
-    task.recurrence = normalizeTaskRecurrence_(payload.recurrence);
+    // An edit that does not mention the cadence keeps the cadence. Sending
+    // `recurrence` explicitly still replaces it, so the web editor is
+    // unchanged.
+    task.recurrence = taskFieldSupplied_(payload, "recurrence")
+      ? normalizeTaskRecurrence_(payload.recurrence)
+      : (existing && existing.recurrence && existing.recurrence.freq
+        ? normalizeTaskRecurrence_(existing.recurrence)
+        : normalizeTaskRecurrence_(payload.recurrence));
+
     task.startKey = isTaskDateKey_(payload.startKey) ? String(payload.startKey) : (existing && existing.startKey ? existing.startKey : taskTodayKey_(Date.now()));
-    if (payload.endKey && !isTaskDateKey_(payload.endKey)) return { error: "Tugash sanasi noto'g'ri." };
-    task.endKey = isTaskDateKey_(payload.endKey) ? String(payload.endKey) : "";
+
+    var endKey = keep("endKey", existing ? existing.endKey : "");
+    if (endKey && !isTaskDateKey_(endKey)) return { error: "Tugash sanasi noto'g'ri." };
+    task.endKey = isTaskDateKey_(endKey) ? String(endKey) : "";
     if (task.endKey && task.endKey < task.startKey) return { error: "Tugash sanasi boshlanish sanasidan oldin." };
-    task.dueTime = isTaskTimeKey_(payload.dueTime) ? String(payload.dueTime) : "";
+
+    var dueTime = keep("dueTime", existing ? existing.dueTime : "");
+    task.dueTime = isTaskTimeKey_(dueTime) ? String(dueTime) : "";
   } else if (type === "goal") {
-    task.steps = normalizeGoalSteps_(payload.steps);
+    task.steps = taskFieldSupplied_(payload, "steps")
+      ? normalizeGoalSteps_(payload.steps)
+      : (existing ? (existing.steps || []) : []);
     if (task.steps.length === 0) return { error: "Maqsad uchun kamida bitta qadam kiriting." };
   }
 
@@ -784,11 +822,39 @@ function completeOccurrenceAction_(doc, payload) {
     return { status: "error",
       message: "Kelgusi kun uchun vazifani oldindan bajarilgan deb belgilab bo'lmaydi." };
   }
-  completeTaskOccurrence_(doc, occ, {
-    byId: "",
-    byName: String(payload.completedBy || "Admin (panel)"),
-    source: "web"
-  });
+
+  // A caller with a verified identity is recorded as themselves. The admin
+  // panel has no identity beyond the key, so it keeps its old label.
+  var byId = String(payload.completedById || "");
+  var byName = String(payload.completedBy || payload.completedByName || "").trim() ||
+    (byId ? byId : "Admin (panel)");
+  var source = String(payload.completedSource || "web");
+
+  // A task that asks for a photo does not become done because a button was
+  // pressed - that is the rule the group cards already enforce. Any client
+  // that can name a person can start the proof flow instead of bypassing it;
+  // one that cannot has no one to ask, so it completes as before.
+  if (occ.photoRequired && occ.status !== TASK_STATUS_WAITING && byId) {
+    occ.status = TASK_STATUS_WAITING;
+    occ.proofAwaitingUserId = byId;
+    occ.completedByName = byName;                  // provisional; confirmed on proof
+    occ.meta = occ.meta || {};
+    occ.meta.proofPromptMsgId = "";
+    occ.meta.proofRequestedAt = new Date().toISOString();
+    writeOccurrenceRow_(doc, occ);
+
+    enqueueTaskJob_(doc, "task_proof_prompt", occ.id, {
+      occurrenceId: occ.id, userId: byId, userName: byName
+    });
+    if (occ.msgId) enqueueTaskJob_(doc, "task_update_message", occ.id, { occurrenceId: occ.id });
+    appendAuditRow_(doc, "task_proof_requested", occ.id + " by:" + byName);
+    return {
+      status: "success", awaitingProof: true,
+      message: "📷 Rasm kutilmoqda — guruhda so'ralgan xabarga javob bering."
+    };
+  }
+
+  completeTaskOccurrence_(doc, occ, { byId: byId, byName: byName, source: source });
   return { status: "success" };
 }
 

@@ -65,9 +65,16 @@ function switchTab(name) {
 /**
  * The one call that decides everything.
  *
- * mini_home returns the Omad summary, the café summary and the task counts
- * together, so the app is usable after a single round trip on a phone
- * connection. The detail for each tab is fetched when that tab is opened.
+ * mini_home answers the Omad tab completely -- summary, tenant status and
+ * recent entries -- and nothing else, so the first screen is one round trip
+ * and one pass over the ledger.
+ *
+ * It used to return the café summary and the task counts too, and then this
+ * function immediately called mini_omad anyway because the tenant list and the
+ * entries were missing from it. That was two requests and four separate reads
+ * of the whole ledger to paint one tab, plus a café read and a full task-view
+ * build for tabs nobody had opened yet. Café and Tasks now load when they are
+ * first opened.
  */
 async function bootstrap() {
     showGate('⏳', 'Tekshirilmoqda...', false);
@@ -82,14 +89,11 @@ async function bootstrap() {
         state.user = body.user;
         state.omad = body.omad;
         state.period = body.omad.period;
-        state.cafe = body.cafe;
-        state.taskCounts = body.tasks;
+        state.tenants = body.tenants || [];
+        state.entries = body.transactions || [];
 
         showApp();
         renderOmad();
-        // The tenant list and the recent entries are not in mini_home; this
-        // fills them in without the user waiting for them to arrive first.
-        loadOmad();
     } catch (error) {
         if (error.unauthorized) return failAuth(error);
         showGate('⚠️', error.message || 'Xatolik', true);

@@ -24,7 +24,15 @@ function renderTasks() {
     if (!state.tasks) { host.innerHTML = skeleton(4); return; }
 
     const view = state.tasks;
-    const counts = key => (view[key] || []).length;
+    // buildTaskViews_ returns the lists under `today` and the totals under
+    // `counts`, and calls the due-today list `needsAttention`. Reading
+    // view[key] straight off the root -- which is what this did -- found
+    // nothing at all, so every tab was empty and every count read 0.
+    const lists = view.today || {};
+    const listFor = key => lists[key === 'dueToday' ? 'needsAttention' : key] || [];
+    const counts = key => (view.counts && view.counts[key] !== undefined)
+        ? view.counts[key]
+        : listFor(key).length;
 
     host.innerHTML = `
         <div class="between" style="margin-bottom:12px">
@@ -38,7 +46,7 @@ function renderTasks() {
                         onclick="setTaskFilter('${f.key}')">${escapeHtml(f.label)} ${counts(f.key)}</button>`).join('')}
         </div>
 
-        <div class="card list" style="margin-top:10px">${occurrenceRows(view[taskFilter] || [])}</div>
+        <div class="card list" style="margin-top:10px">${occurrenceRows(listFor(taskFilter))}</div>
 
         ${routineSection(view)}
         ${goalSection(view)}
@@ -95,7 +103,7 @@ function routineSection(view) {
                 <div class="item">
                     <div class="grow">
                         <p class="title ellipsis">${escapeHtml(t.title)}</p>
-                        <p class="tiny muted">${t.status === 'paused' ? "To'xtatilgan" : 'Faol'}${t.streak ? ' · ' + t.streak + ' kun' : ''}</p>
+                        <p class="tiny muted">${t.status === 'paused' ? "To'xtatilgan" : 'Faol'}${(t.stats && t.stats.streak) ? ' · ' + t.stats.streak + ' kun' : ''}${(t.recurrenceLabel ? ' · ' + escapeHtml(t.recurrenceLabel) : '')}</p>
                     </div>
                     <button class="btn-sm" onclick="taskAction('${t.status === 'paused' ? 'resume_routine' : 'pause_routine'}','','${escapeHtml(t.id)}')">
                         ${t.status === 'paused' ? 'Davom' : "To'xtatish"}
@@ -111,9 +119,10 @@ function goalSection(view) {
         <h2>Maqsadlar</h2>
         <div class="card list">
             ${goals.map(t => {
-                const total = Number(t.stepCount) || 0;
-                const done = Number(t.stepsCompleted) || 0;
-                const percent = total > 0 ? Math.round((done / total) * 100) : 0;
+                const progress = t.progress || {};
+                const total = Number(progress.total) || 0;
+                const done = Number(progress.done) || 0;
+                const percent = Number(progress.percent) || 0;
                 return `
                 <div class="item" style="flex-direction:column;align-items:stretch">
                     <div class="between">
@@ -128,21 +137,41 @@ function goalSection(view) {
 
 // ------------------------------------------------------------------- actions
 
-async function taskAction(action, occurrenceId, taskId) {
+/** Occurrence-level actions take an occurrence; task-level ones take a task. */
+const OCCURRENCE_ACTIONS = ['complete_occurrence', 'reopen_occurrence', 'skip_occurrence'];
+
+async function taskAction(action, occurrenceId, taskId, extra) {
     haptic();
+    // The engine names a task `id` and an occurrence `occurrenceId`. Sending
+    // `taskId` for a task action meant pause, resume and cancel all came back
+    // "Vazifa topilmadi"; the backend now maps it, and this sends both so an
+    // older backend behaves too.
+    const payload = Object.assign({
+        taskAction: action,
+        occurrenceId: OCCURRENCE_ACTIONS.indexOf(action) === -1 ? '' : (occurrenceId || ''),
+        taskId: taskId || '',
+        id: taskId || ''
+    }, extra || {});
+
     try {
-        const body = await api('mini_task_action', {
-            taskAction: action,
-            occurrenceId: occurrenceId || '',
-            taskId: taskId || ''
-        });
+        const body = await api('mini_task_action', payload);
         if (body.view) state.tasks = body.view;
         renderTasks();
-        toast('Bajarildi');
-        // The counts on the Omad tab come from the same view.
-        state.taskCounts = null;
+        // A photo-required task is not finished by pressing a button: it moves
+        // to "waiting" and the proof is asked for in the Tasks group, exactly
+        // as it does from a group card.
+        toast(body.awaitingProof ? (body.message || '📷 Rasm kutilmoqda') : 'Bajarildi');
     } catch (error) {
         if (error.unauthorized) return failAuth(error);
+        // Skipping a future day is legitimate but has to be deliberate, so the
+        // server refuses once and asks. Confirm and send the same action again.
+        if (error.needsFutureConfirm) {
+            const when = error.dateKey ? shortDate(error.dateKey) : '';
+            if (await askConfirm(`${when} kuni o'tkazib yuborilsinmi?`)) {
+                return taskAction(action, occurrenceId, taskId, { confirmFuture: true });
+            }
+            return;
+        }
         toast(error.message, true);
     }
 }
@@ -200,19 +229,33 @@ async function submitTask(taskId) {
     button.disabled = true;
     button.textContent = 'Saqlanmoqda...';
     try {
-        const body = await api('mini_task_action', {
+        const payload = {
             taskAction: 'save_task',
-            taskId: taskId || '',
-            type: typeField ? typeField.value : undefined,
             title,
             description: document.getElementById('tDescription').value.trim(),
-            deadlineKey: document.getElementById('tDeadline').value || '',
             priority: document.getElementById('tPriority').value,
-            responsible: document.getElementById('tResponsible').value.trim(),
-            // A routine needs a recurrence; daily is the only one worth
-            // offering on a phone, and the web app edits the rest.
-            recurrence: typeField && typeField.value === 'routine' ? { type: 'daily' } : undefined
-        });
+            responsible: document.getElementById('tResponsible').value.trim()
+        };
+
+        if (taskId) {
+            // An edit sends only the fields this sheet actually shows. The
+            // server keeps everything it is not told about, so a weekly
+            // routine edited here stays weekly -- it used to come back daily.
+            payload.taskId = taskId;
+            payload.id = taskId;
+            const deadline = document.getElementById('tDeadline').value || '';
+            const editing = ((state.tasks && state.tasks.tasks) || []).find(t => t.id === taskId);
+            if (!editing || editing.type === 'once') payload.deadlineKey = deadline;
+        } else {
+            payload.type = typeField ? typeField.value : 'once';
+            payload.deadlineKey = document.getElementById('tDeadline').value || '';
+            // A new routine needs a cadence. The engine's shape is
+            // {freq, interval}; `{type:'daily'}` matched nothing and fell
+            // through to the default.
+            if (payload.type === 'routine') payload.recurrence = { freq: 'daily', interval: 1 };
+        }
+
+        const body = await api('mini_task_action', payload);
         if (body.view) state.tasks = body.view;
         closeSheet();
         renderTasks();
@@ -229,7 +272,7 @@ async function submitTask(taskId) {
 async function cancelTask(taskId) {
     if (!await askConfirm('Vazifa bekor qilinsinmi?')) return;
     try {
-        const body = await api('mini_task_action', { taskAction: 'cancel_task', taskId });
+        const body = await api('mini_task_action', { taskAction: 'cancel_task', taskId, id: taskId });
         if (body.view) state.tasks = body.view;
         closeSheet();
         renderTasks();

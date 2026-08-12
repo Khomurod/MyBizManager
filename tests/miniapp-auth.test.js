@@ -82,9 +82,16 @@ test('the authorized user, with a genuine signature, gets data', () => {
   assert.equal(response.status, 'success');
   assert.equal(response.authorized, true);
   assert.equal(response.user.id, AUTHORIZED_ID);
+
+  // The first screen is Omad, so the first request answers Omad completely...
   assert.ok(response.omad);
-  assert.ok(response.cafe);
-  assert.ok(response.tasks);
+  assert.ok(Array.isArray(response.tenants));
+  assert.ok(Array.isArray(response.transactions));
+
+  // ...and nothing else. Building the café summary and the whole task view for
+  // tabs nobody has opened cost two more full sheet reads on every launch.
+  assert.ok(!response.cafe, 'the café summary is not built until the tab is opened');
+  assert.ok(!response.tasks, 'the task view is not built until the tab is opened');
 });
 
 // --------------------------------------------------------------- forgeries
