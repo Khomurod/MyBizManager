@@ -45,7 +45,12 @@ function runOmadTransactionReportJob_(doc, job) {
   // every report quoted a month balance of 0.
   var balances = calculateBalancesFromTransactions_(
     readOmadTransactions_(doc), transactionPeriod_(group[0]));
-  var text = buildOmadGroupReportMessage_(group, balances);
+  // The linked pair is one business action and gets one message that says so.
+  // The kind is read off the stored rows rather than the job payload, so a
+  // report re-sent after an edit always describes what the data now is.
+  var text = isTenantPaidGroup_(group)
+    ? buildTenantPaidReportMessage_(group, balances)
+    : buildOmadGroupReportMessage_(group, balances);
   var existingMessageId = String(job.payload.messageId || group[0].msgId || "");
 
   if (existingMessageId) {

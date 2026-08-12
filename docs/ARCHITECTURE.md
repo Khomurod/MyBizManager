@@ -48,7 +48,8 @@ file for file. See [DEPLOYMENT.md](DEPLOYMENT.md).
 | `05a_calculations.gs` | Every monetary rule, mirrored by `assets/omad/02b-calc.js` |
 | `06_tenants.gs` | Tenant records |
 | `07_planned_expenses.gs` | Template expenses |
-| `08_omad_transactions.gs` | The ledger: read/normalise/append/rewrite |
+| `08_omad_transactions.gs` | The ledger: read/normalise/append/rewrite, entry groups |
+| `08a_tenant_paid.gs` | The tenant-paid-on-our-behalf pair: create, replace, report |
 | `09_telegram_service.gs` | Telegram API calls and the `/yangi` conversation |
 | `10_retry_queue.gs` | `Omad_Job_Queue` worker |
 | `11_report_jobs.gs` | Server-composed business reports |
@@ -165,6 +166,63 @@ Reporting, editing, cancellation and history all resolve rows through the group
 id. Queued report jobs carry both `groupId` and the old `baseId`, so a job
 sitting on `Omad_Job_Queue` across a deploy still finds its rows.
 
+### Entry kinds
+
+`Entry_Kind` (legacy column 13, ledger column 24) says *what* a group is:
+
+| Value | Meaning |
+|---|---|
+| `""` | an ordinary entry — one or more lines of a single income or expense |
+| `tenant_paid_expense` | the linked income/expense pair described below |
+
+It is stored rather than deduced, because reporting and history both have to
+know without reconstructing the intent from the rows. A correction inherits it,
+so an entry cannot change kind by being edited.
+
+## Tenant-paid-on-our-behalf expenses
+
+A tenant sometimes settles one of our bills directly — the electrician — and
+the amount comes off what they owe us. That is two accounting facts and always
+was: the tenant paid us, and the bill was paid. Entering them as two separate
+transactions worked, but nothing recorded that they were the same event, so
+either half could be edited or deleted alone, the group received two unrelated
+reports, and history showed two rows the reader had to pair up mentally.
+
+`tenant_paid_expense` is one operation:
+
+| | Row |
+|---|---|
+| income | `Tenant` = the tenant, `Type` = `Income` |
+| expense | `Tenant` = `Umumiy Naqd Puldan` / `Umumiy Bankdan` (matching the method), `Type` = `Expense` |
+
+Both carry the same amount, currency, method, period, `Entry_Group_ID` and
+`Entry_Kind`, and are written in **one** `setValues` call — one spreadsheet
+operation, so either both rows exist or neither does. Partial creation is not
+a state the code can reach.
+
+The expense is booked against the same method the credit was recorded under, so
+**cash and bank do not move**: the tenant's balance changes, ours does not.
+Income and expense are each still reported in the period totals rather than
+netted away, because both facts are true.
+
+| Property | How |
+|---|---|
+| one operation | one action, one request |
+| idempotent | the client mints the group id once and keeps it in `sessionStorage`; a repeat resolves to the pair the first call created |
+| one report | `isTenantPaidGroup_` selects `buildTenantPaidReportMessage_`, which states the zero cash impact explicitly — it looks like an error otherwise |
+| one history card | rows are grouped by `Entry_Group_ID`, and a group whose rows are all `tenant_paid_expense` renders once |
+| edited as a pair | `replaceGroupId` replaces the whole group under the same id, keeping the group's Telegram message so the report is edited rather than duplicated |
+| cancelled as a pair | cancellation already resolves by group; the confirmation names both halves |
+
+On the ledger the same operation cancels the old rows and appends replacements
+rather than rewriting, and both halves freeze the same converted value, so the
+pair nets to exactly zero however the rate moves afterwards.
+
+The tenant must be a real tenant: an expense bucket has no balance to credit,
+and choosing one would silently produce an entry that cancels itself out and
+means nothing. The purpose is required, because it is what makes the expense
+half readable a year later.
+
 ### Other sheets
 
 | Sheet | Purpose |
@@ -198,7 +256,8 @@ Secrets and configuration that must never reach the browser.
 
 | Action | Admin key | Notes |
 |---|---|---|
-| `save_omad` / `migrate_omad` | no | **Rewrites the whole transaction list** (see limitations). Optional `telegramReport: {operation, baseId, messageId}` queues a server-composed report |
+| `save_omad` / `migrate_omad` | no | **Rewrites the whole transaction list** (see limitations). Optional `telegramReport: {operation, groupId, baseId, messageId}` queues a server-composed report |
+| `tenant_paid_expense` | no | One tenant-paid expense: two linked rows, one group, one report. `replaceGroupId` edits an existing pair |
 | `get_telegram_settings` | no | Never includes the token |
 | `save_telegram_settings` | **yes** | Validates before accepting |
 | `test_telegram_connection` | **yes** | `getMe` |

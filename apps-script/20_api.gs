@@ -45,6 +45,10 @@ function doPost(e) {
       return saveOmadAction_(action, payload, doc, configSheet);
     }
 
+    if (action === 'tenant_paid_expense') {
+      return tenantPaidExpenseAction_(payload, doc, configSheet);
+    }
+
     // ---- Append-only ledger -----------------------------------------------
     if (isLedgerAction_(action)) {
       return ledgerAction_(action, payload, doc);
@@ -181,6 +185,40 @@ function saveOmadAction_(action, payload, doc, configSheet) {
   drainJobQueueQuietly_(doc, payload);
 
   return jsonOutput_({ status: "success", reportJobId: queuedJobId || "" });
+}
+
+/**
+ * One tenant-paid expense: two linked rows, one group, one report.
+ *
+ * The backup happens before the write for the same reason every other Omad
+ * write takes one. The report is queued afterwards and, as everywhere else,
+ * failing to queue it never undoes a pair that is already stored.
+ */
+function tenantPaidExpenseAction_(payload, doc, configSheet) {
+  backupOmadState_(doc, configSheet, "tenant_paid_expense");
+
+  var result = createTenantPaidExpense_(doc, payload);
+  if (result.status !== "success") return jsonOutput_(result);
+
+  recordLastOperation_(doc, "tenant_paid_expense");
+
+  if (!result.duplicate) {
+    try {
+      result.reportJobId = enqueueJob_(doc, "omad_transaction_report", result.groupId, {
+        groupId: result.groupId,
+        baseId: String((result.transactions[0] || {}).id || "").split("_")[0],
+        // An edited pair keeps its group message, so the report is edited in
+        // place rather than a second one appearing beside a stale first.
+        messageId: String(result.messageId || "")
+      }) || "";
+    } catch (queueError) {
+      result.reportJobId = "";
+      debugLog_(doc, "report_enqueue_failed", String(queueError));
+    }
+    drainJobQueueQuietly_(doc, payload);
+  }
+
+  return jsonOutput_(result);
 }
 
 function isTelegramAdminAction_(action) {

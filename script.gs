@@ -1710,11 +1710,33 @@ var OMAD_ACTIVE_TX_SHEET_KEY = "Omad_Active_Transactions_Sheet";
 
 var OMAD_TRANSACTION_HEADER = [
   "ID", "Tenant", "Month", "Type", "Amount", "Currency", "Method", "Date", "Comment",
-  "Telegram_Msg_ID", "Request_ID", "Entry_Group_ID"
+  "Telegram_Msg_ID", "Request_ID", "Entry_Group_ID", "Entry_Kind"
 ];
 
 /** Column 12. One business action's rows all carry the same value. */
 var OMAD_GROUP_ID_COLUMN = 12;
+
+/**
+ * Column 13. *What* business action the group is.
+ *
+ * "" is an ordinary entry — one or more lines of a single income or expense.
+ * A named kind says the group has a shape the reader must respect: the
+ * tenant-paid pair is one income and one expense that only make sense
+ * together, and reporting and history both need to know that without having
+ * to guess it back from the rows.
+ */
+var OMAD_ENTRY_KIND_COLUMN = 13;
+
+var ENTRY_KIND_ORDINARY = "";
+var ENTRY_KIND_TENANT_PAID = "tenant_paid_expense";
+
+var ENTRY_KINDS = {};
+ENTRY_KINDS[ENTRY_KIND_TENANT_PAID] = true;
+
+function normalizeEntryKind_(value) {
+  var kind = String(value === null || value === undefined ? "" : value).trim();
+  return ENTRY_KINDS[kind] ? kind : ENTRY_KIND_ORDINARY;
+}
 
 function ensureOmadTransactionHeader_(sheet) {
   var header = OMAD_TRANSACTION_HEADER;
@@ -1814,7 +1836,7 @@ function transactionToRow_(t) {
   return [
     t.id, t.tenant, t.month, t.type, t.amount, t.currency, t.method,
     toSheetDateValue_(t.date),
-    t.comment || "", t.msgId || "", t.requestId || "", t.groupId || ""
+    t.comment || "", t.msgId || "", t.requestId || "", t.groupId || "", t.entryKind || ""
   ];
 }
 
@@ -1848,7 +1870,8 @@ function normalizeTransaction_(raw) {
     // Preserved when the caller supplies one, derived deterministically when it
     // does not, so a row written before the column existed still resolves to a
     // stable group instead of to "".
-    groupId: resolveEntryGroupId_(t)
+    groupId: resolveEntryGroupId_(t),
+    entryKind: normalizeEntryKind_(t.entryKind)
   };
 }
 
@@ -1901,6 +1924,7 @@ function readTransactionsFromSheet_(doc, sheetName) {
     // backfill has been run against the sheet.
     transaction.groupId = String((data[i].length > 11 ? data[i][11] : "") || "").trim() ||
       legacyEntryGroupId_(transaction.id);
+    transaction.entryKind = normalizeEntryKind_(data[i].length > 12 ? data[i][12] : "");
     var resolved = resolveTransactionPeriod_(transaction, fallbackYear);
     transaction.period = resolved.period;
     transaction.periodSource = resolved.source;
@@ -2114,6 +2138,340 @@ function saveOmadSettingsOnly_(doc, configSheet, payload) {
     setConfig(configSheet, "Omad_Template_Expenses",
       JSON.stringify(normalizeTemplateExpenses_(payload.templateExpenses || [])));
   }
+}
+
+// ----- apps-script/08a_tenant_paid.gs ------------------------------------------
+
+// ============================================================
+// Tenant-paid-on-our-behalf expenses
+// ------------------------------------------------------------
+// A tenant sometimes settles one of our bills directly — the electrician, say
+// — and the amount comes off what they owe us.
+//
+// That is two accounting facts, and it always was: the tenant paid us
+// (income), and the bill was paid (expense). Entering them as two separate
+// transactions worked, but nothing recorded that they were the same event, so
+// either half could be edited or deleted on its own, the group received two
+// unrelated reports, and history showed two rows the reader had to pair up
+// mentally.
+//
+// This is one operation that writes both rows, under one Entry_Group_ID, in a
+// single spreadsheet write. Either both exist or neither does.
+// ============================================================
+
+/**
+ * The expense source that makes the cash impact net to zero.
+ *
+ * No money passed through our safe or our account: the tenant paid the
+ * supplier. Booking the expense against the same method the credit was
+ * recorded under leaves cash and bank exactly where they were, which is the
+ * whole point — the tenant's balance moves, our cash does not.
+ */
+function tenantPaidExpenseSource_(method) {
+  return method === "Bank" ? "Umumiy Bankdan" : "Umumiy Naqd Puldan";
+}
+
+/** The two source names that are expense buckets rather than tenants. */
+function isExpenseSourceName_(name) {
+  var text = String(name || "").trim();
+  return text === "Umumiy Naqd Puldan" || text === "Umumiy Bankdan";
+}
+
+function validateTenantPaidInput_(input) {
+  var payload = input || {};
+
+  if (!isCanonicalPeriod_(payload.period)) return "Davr noto'g'ri (masalan 2026-01).";
+
+  var tenant = String(payload.tenant || "").trim();
+  if (!tenant) return "Ijarachi tanlanmagan.";
+  if (tenant.length > 200) return "Ijarachi nomi juda uzun.";
+  // The income half has to land on a tenant's balance. An expense bucket has
+  // no balance to credit, and choosing one would silently produce an entry
+  // that cancels itself out and means nothing.
+  if (isExpenseSourceName_(tenant)) return "Ijarachi tanlang — umumiy kassa bo'lmaydi.";
+
+  var amount = Number(payload.amount);
+  if (!isFinite(amount) || amount <= 0) return "Summa musbat raqam bo'lishi kerak.";
+  if (amount > 1e15) return "Summa juda katta.";
+
+  if (payload.currency !== "UZS" && payload.currency !== "USD") return "Valyuta noto'g'ri.";
+  if (payload.method !== "Naqd" && payload.method !== "Bank") return "To'lov usuli noto'g'ri.";
+
+  // The purpose is what makes the expense half readable a year from now, so it
+  // is required here even though an ordinary entry's comment is optional.
+  var purpose = String(payload.comment || "").trim();
+  if (!purpose) return "Chiqim maqsadini kiriting.";
+  if (purpose.length > 2000) return "Izoh juda uzun.";
+
+  var requestId = String(payload.requestId || "").trim();
+  if (!requestId) return "requestId talab qilinadi.";
+  if (requestId.length > 128) return "requestId juda uzun.";
+
+  var groupId = String(payload.groupId || "").trim();
+  if (groupId.length > 128) return "groupId juda uzun.";
+
+  return "";
+}
+
+/** The comment stored on each half, so either row reads correctly alone. */
+function tenantPaidComment_(half, tenant, purpose) {
+  if (half === "income") return "Ijarachi bizning nomimizdan to'ladi: " + purpose;
+  return purpose + " (to'lovchi: " + tenant + ")";
+}
+
+/**
+ * Creates the linked income/expense pair for one tenant-paid expense.
+ *
+ * Idempotent on the group id: a double click, a retried request or a
+ * redelivered Telegram update all resolve to the pair the first call created,
+ * because the client mints the group id once and keeps it. Returns the pair
+ * either way, so the caller cannot tell a retry from the original except by
+ * the `duplicate` flag.
+ */
+function createTenantPaidExpense_(doc, input) {
+  var validationError = validateTenantPaidInput_(input);
+  if (validationError) return { status: "error", message: validationError };
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var replaceGroupId = String((input && input.replaceGroupId) || "").trim();
+    if (replaceGroupId) return replaceTenantPaidExpense_(doc, input, replaceGroupId);
+
+    var groupId = String(input.groupId || "").trim() || newEntryGroupId_();
+    var ledgerLive = isLedgerActive_(doc);
+
+    var existing = ledgerLive
+      ? findLedgerRowsByGroupId_(doc, groupId).map(ledgerToLegacyShape_)
+      : findTransactionsByGroupId_(doc, groupId);
+    if (existing.length > 0) {
+      return { status: "success", duplicate: true, groupId: groupId, transactions: existing };
+    }
+
+    var written = ledgerLive
+      ? writeTenantPaidToLedger_(doc, input, groupId)
+      : writeTenantPaidToLegacySheet_(doc, input, groupId);
+
+    appendAuditRow_(doc, "tenant_paid_expense_created", JSON.stringify({
+      groupId: groupId, tenant: String(input.tenant).trim(),
+      amount: Number(input.amount), currency: input.currency, period: String(input.period)
+    }));
+
+    return { status: "success", duplicate: false, groupId: groupId, transactions: written };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Rewrites an existing pair, as a pair.
+ *
+ * Both halves go together or neither does — editing one side of a
+ * tenant-paid expense is never a coherent thing to want, so the whole group is
+ * replaced under the same group id. Keeping the id also keeps the group's
+ * Telegram message, so the report is edited in place rather than a second one
+ * appearing next to a stale first.
+ *
+ * Called with the script lock already held.
+ */
+function replaceTenantPaidExpense_(doc, input, groupId) {
+  var ledgerLive = isLedgerActive_(doc);
+  var existing = ledgerLive
+    ? findLedgerRowsByGroupId_(doc, groupId)
+    : findTransactionsByGroupId_(doc, groupId);
+
+  if (existing.length === 0) return { status: "error", message: "O'zgartiriladigan yozuv topilmadi." };
+  if (!isTenantPaidGroup_(existing)) {
+    return { status: "error", message: "Bu yozuv ijarachi to'lovi emas." };
+  }
+
+  var msgId = "";
+  for (var i = 0; i < existing.length; i++) {
+    if (existing[i].msgId) { msgId = String(existing[i].msgId); break; }
+  }
+
+  var replacement;
+  if (ledgerLive) {
+    // Append-only: the old rows are cancelled, never rewritten.
+    for (var c = 0; c < existing.length; c++) {
+      if (existing[c].status !== TX_STATUS_ACTIVE) continue;
+      setLedgerStatus_(ledgerSheet_(doc), existing[c].rowNumber, TX_STATUS_CANCELLED, new Date().toISOString());
+    }
+    replacement = writeTenantPaidToLedger_(doc, input, groupId);
+  } else {
+    var keep = [];
+    var all = readOmadTransactions_(doc);
+    for (var k = 0; k < all.length; k++) {
+      if (String(all[k].groupId || "") !== groupId) keep.push(all[k]);
+    }
+    replacement = buildLegacyTenantPaidRows_(input, groupId, msgId);
+    archiveChangedOmadTransactions_(doc, all, keep.concat(replacement));
+    safeRewriteOmadTransactions_(doc, normalizeTransactions_(keep.concat(replacement)));
+    replacement = normalizeTransactions_(replacement);
+  }
+
+  appendAuditRow_(doc, "tenant_paid_expense_replaced", JSON.stringify({
+    groupId: groupId, tenant: String(input.tenant).trim(),
+    amount: Number(input.amount), currency: input.currency, period: String(input.period)
+  }));
+
+  return {
+    status: "success", duplicate: false, replaced: true,
+    groupId: groupId, messageId: msgId, transactions: replacement
+  };
+}
+
+/** The two legacy rows of one pair, not yet written anywhere. */
+function buildLegacyTenantPaidRows_(input, groupId, msgId) {
+  var tenant = String(input.tenant).trim();
+  var purpose = String(input.comment).trim();
+  var requestId = String(input.requestId).trim();
+  var baseId = String(new Date().getTime());
+
+  var common = {
+    month: String(input.period),
+    amount: Number(input.amount),
+    currency: input.currency,
+    method: input.method,
+    date: Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy"),
+    msgId: msgId || "",
+    groupId: groupId,
+    entryKind: ENTRY_KIND_TENANT_PAID
+  };
+
+  return [
+    Object.assign({}, common, {
+      id: baseId + "_0",
+      tenant: tenant,
+      type: "Income",
+      comment: tenantPaidComment_("income", tenant, purpose),
+      requestId: requestId + "_0"
+    }),
+    Object.assign({}, common, {
+      id: baseId + "_1",
+      tenant: tenantPaidExpenseSource_(input.method),
+      type: "Expense",
+      comment: tenantPaidComment_("expense", tenant, purpose),
+      requestId: requestId + "_1"
+    })
+  ];
+}
+
+/** The pair as two legacy rows, appended in one write. */
+function writeTenantPaidToLegacySheet_(doc, input, groupId) {
+  return appendOmadTransactionGroup_(doc, buildLegacyTenantPaidRows_(input, groupId, ""));
+}
+
+/** The same pair as two ledger rows, also appended in one write. */
+function writeTenantPaidToLedger_(doc, input, groupId) {
+  var tenant = String(input.tenant).trim();
+  var purpose = String(input.comment).trim();
+  var amount = Number(input.amount);
+  var requestId = String(input.requestId).trim();
+  var period = String(input.period);
+  var now = new Date().toISOString();
+  var snapshot = buildRateSnapshot_(period, input.currency, input.rateType);
+  var baseId = String(new Date().getTime());
+
+  var common = {
+    createdAt: now,
+    updatedAt: "",
+    createdBy: String(input.createdBy || "").slice(0, 120),
+    source: TX_SOURCES[input.source] ? input.source : TX_SOURCE_WEB,
+    period: period,
+    amount: amount,
+    currency: input.currency,
+    rateBuy: snapshot.rateBuy,
+    rateSell: snapshot.rateSell,
+    rateUsed: snapshot.rateUsed,
+    rateType: snapshot.rateType,
+    // Both halves freeze the same converted value, so the pair nets to exactly
+    // zero however the rate moves afterwards.
+    amountUZS: Math.round(input.currency === "USD" ? amount * snapshot.rateUsed : amount),
+    method: input.method,
+    status: TX_STATUS_ACTIVE,
+    relatedId: "",
+    msgId: "",
+    schemaVersion: LEDGER_SCHEMA_VERSION,
+    groupId: groupId,
+    entryKind: ENTRY_KIND_TENANT_PAID
+  };
+
+  var pair = [
+    Object.assign({}, common, {
+      id: baseId + "_0",
+      requestId: requestId + "_0",
+      tenant: tenant,
+      type: "Income",
+      comment: tenantPaidComment_("income", tenant, purpose)
+    }),
+    Object.assign({}, common, {
+      id: baseId + "_1",
+      requestId: requestId + "_1",
+      tenant: tenantPaidExpenseSource_(input.method),
+      type: "Expense",
+      comment: tenantPaidComment_("expense", tenant, purpose)
+    })
+  ];
+
+  appendLedgerRows_(ledgerSheet_(doc), pair.map(transactionToLedgerRow_));
+  return pair.map(ledgerToLegacyShape_);
+}
+
+// ------------------------------------------------------------------ reporting
+
+/** True when a group is the linked pair rather than an ordinary entry. */
+function isTenantPaidGroup_(group) {
+  if (!group || group.length === 0) return false;
+  for (var i = 0; i < group.length; i++) {
+    if (normalizeEntryKind_(group[i].entryKind) !== ENTRY_KIND_TENANT_PAID) return false;
+  }
+  return true;
+}
+
+/**
+ * One report for the pair, not two.
+ *
+ * Two separate reports were the actual complaint: the group saw an income and
+ * an unrelated expense minutes apart and had to work out that they were the
+ * same event. This says what happened once, and states the cash impact
+ * explicitly, because "we recorded an expense and our cash did not move" is
+ * the part that looks wrong until it is spelled out.
+ */
+function buildTenantPaidReportMessage_(group, balances) {
+  var rates = getOmadRates_();
+  var income = null;
+  var expense = null;
+  for (var i = 0; i < group.length; i++) {
+    if (group[i].type === "Income") income = group[i];
+    else expense = group[i];
+  }
+  var primary = income || group[0];
+
+  var period = transactionPeriod_(primary);
+  var periodText = formatPeriodLabel_(period) || "Noma'lum";
+  var valueUZS = transactionUZS_(primary, rates);
+  var amountText = Number(primary.amount || 0).toLocaleString() + " " + primary.currency;
+
+  var lines = [
+    "🔄 IJARACHI BIZNING NOMIMIZDAN TO'LADI",
+    "",
+    "🏢 Ijarachi: " + (String(primary.tenant || "").trim() || "Noma'lum"),
+    "📅 Davr: " + periodText,
+    "💵 Summa: " + amountText,
+    "💳 Usul: " + String(primary.method || ""),
+    "📝 Maqsad: " + (String((expense && expense.comment) || primary.comment || "").trim() || "Kiritilmagan"),
+    "",
+    "🟢 Ijarachiga hisoblandi: +" + formatUZS_(valueUZS) + " UZS",
+    "🔴 Chiqim yozildi: −" + formatUZS_(valueUZS) + " UZS",
+    "⚖️ Kassaga ta'siri: 0 UZS",
+    "",
+    "📊 HISOBOT:",
+    "🔹 " + periodText + " qoldig'i: " + formatUZS_(balances.monthBalance) + " UZS",
+    "🏦 Umumiy balans: " + formatUZS_(balances.allTimeBalance) + " UZS"
+  ];
+
+  return lines.join("\n").slice(0, TELEGRAM_MAX_TEXT_LENGTH);
 }
 
 // ----- apps-script/09_telegram_service.gs --------------------------------------
@@ -2951,7 +3309,12 @@ function runOmadTransactionReportJob_(doc, job) {
   // every report quoted a month balance of 0.
   var balances = calculateBalancesFromTransactions_(
     readOmadTransactions_(doc), transactionPeriod_(group[0]));
-  var text = buildOmadGroupReportMessage_(group, balances);
+  // The linked pair is one business action and gets one message that says so.
+  // The kind is read off the stored rows rather than the job payload, so a
+  // report re-sent after an edit always describes what the data now is.
+  var text = isTenantPaidGroup_(group)
+    ? buildTenantPaidReportMessage_(group, balances)
+    : buildOmadGroupReportMessage_(group, balances);
   var existingMessageId = String(job.payload.messageId || group[0].msgId || "");
 
   if (existingMessageId) {
@@ -3761,11 +4124,15 @@ var LEDGER_HEADER = [
   "Related_ID",         // 20 the transaction this one corrects
   "Telegram_Msg_ID",    // 21 group message id
   "Schema_Version",     // 22
-  "Entry_Group_ID"      // 23 the business action this row belongs to
+  "Entry_Group_ID",     // 23 the business action this row belongs to
+  "Entry_Kind"          // 24 what kind of business action that is
 ];
 
 /** Column 23. Shared by every row of one business action. */
 var LEDGER_GROUP_ID_COLUMN = 23;
+
+/** Column 24. Mirrors the legacy sheet's Entry_Kind. */
+var LEDGER_ENTRY_KIND_COLUMN = 24;
 
 var TX_STATUS_ACTIVE = "Active";
 var TX_STATUS_CORRECTED = "Corrected";
@@ -3830,9 +4197,21 @@ function applyLedgerColumnFormats_(sheet, startRow, numRows) {
 
 /** Appends one ledger row with its text columns protected first. */
 function appendLedgerRow_(sheet, values) {
-  var row = sheet.getLastRow() + 1;
-  applyLedgerColumnFormats_(sheet, row, 1);
-  sheet.getRange(row, 1, 1, LEDGER_HEADER.length).setValues([values]);
+  appendLedgerRows_(sheet, [values]);
+}
+
+/**
+ * Appends several ledger rows in a single write.
+ *
+ * One setValues call is one spreadsheet operation, so a business action made
+ * of several rows either lands whole or not at all. This is what makes the
+ * tenant-paid pair impossible to half-create.
+ */
+function appendLedgerRows_(sheet, rows) {
+  if (!rows || rows.length === 0) return;
+  var start = sheet.getLastRow() + 1;
+  applyLedgerColumnFormats_(sheet, start, rows.length);
+  sheet.getRange(start, 1, rows.length, LEDGER_HEADER.length).setValues(rows);
 }
 
 function ledgerRowToTransaction_(row, rowNumber) {
@@ -3865,7 +4244,8 @@ function ledgerRowToTransaction_(row, rowNumber) {
     // Rows written before the column existed fall back to the same
     // deterministic derivation the legacy sheet uses, so grouping is
     // consistent across both schemas and across the migration.
-    groupId: String(row[22] || "").trim() || legacyEntryGroupId_(row[0])
+    groupId: String(row[22] || "").trim() || legacyEntryGroupId_(row[0]),
+    entryKind: normalizeEntryKind_(row[23])
   };
 }
 
@@ -3874,7 +4254,7 @@ function transactionToLedgerRow_(t) {
     t.id, t.requestId, t.createdAt, t.updatedAt, t.createdBy, t.source, t.period,
     t.tenant, t.type, t.amount, t.currency, t.rateBuy, t.rateSell, t.rateUsed,
     t.rateType, t.amountUZS, t.method, t.comment, t.status, t.relatedId,
-    t.msgId, t.schemaVersion, t.groupId || ""
+    t.msgId, t.schemaVersion, t.groupId || "", t.entryKind || ""
   ];
 }
 
@@ -3961,6 +4341,7 @@ function ledgerToLegacyShape_(t) {
   return {
     id: t.id,
     groupId: t.groupId,
+    entryKind: t.entryKind,
     tenant: t.tenant,
     month: t.period,
     period: t.period,
@@ -4093,7 +4474,8 @@ function createTransaction_(doc, input) {
       schemaVersion: LEDGER_SCHEMA_VERSION,
       // Supplied when this row is one line of a larger business action; its own
       // group when it stands alone. Never derived from the id.
-      groupId: String(input.groupId || "").trim() || newEntryGroupId_()
+      groupId: String(input.groupId || "").trim() || newEntryGroupId_(),
+      entryKind: normalizeEntryKind_(input.entryKind)
     };
 
     appendLedgerRow_(ledgerSheet_(doc), transactionToLedgerRow_(transaction));
@@ -4199,8 +4581,10 @@ function correctTransaction_(doc, input) {
       // rather than duplicated.
       msgId: original.msgId,
       schemaVersion: LEDGER_SCHEMA_VERSION,
-      // A correction stays inside the business action it corrects.
-      groupId: original.groupId
+      // A correction stays inside the business action it corrects, and cannot
+      // change what kind of action that is.
+      groupId: original.groupId,
+      entryKind: original.entryKind
     };
 
     var sheet = ledgerSheet_(doc);
@@ -8279,6 +8663,10 @@ function doPost(e) {
       return saveOmadAction_(action, payload, doc, configSheet);
     }
 
+    if (action === 'tenant_paid_expense') {
+      return tenantPaidExpenseAction_(payload, doc, configSheet);
+    }
+
     // ---- Append-only ledger -----------------------------------------------
     if (isLedgerAction_(action)) {
       return ledgerAction_(action, payload, doc);
@@ -8415,6 +8803,40 @@ function saveOmadAction_(action, payload, doc, configSheet) {
   drainJobQueueQuietly_(doc, payload);
 
   return jsonOutput_({ status: "success", reportJobId: queuedJobId || "" });
+}
+
+/**
+ * One tenant-paid expense: two linked rows, one group, one report.
+ *
+ * The backup happens before the write for the same reason every other Omad
+ * write takes one. The report is queued afterwards and, as everywhere else,
+ * failing to queue it never undoes a pair that is already stored.
+ */
+function tenantPaidExpenseAction_(payload, doc, configSheet) {
+  backupOmadState_(doc, configSheet, "tenant_paid_expense");
+
+  var result = createTenantPaidExpense_(doc, payload);
+  if (result.status !== "success") return jsonOutput_(result);
+
+  recordLastOperation_(doc, "tenant_paid_expense");
+
+  if (!result.duplicate) {
+    try {
+      result.reportJobId = enqueueJob_(doc, "omad_transaction_report", result.groupId, {
+        groupId: result.groupId,
+        baseId: String((result.transactions[0] || {}).id || "").split("_")[0],
+        // An edited pair keeps its group message, so the report is edited in
+        // place rather than a second one appearing beside a stale first.
+        messageId: String(result.messageId || "")
+      }) || "";
+    } catch (queueError) {
+      result.reportJobId = "";
+      debugLog_(doc, "report_enqueue_failed", String(queueError));
+    }
+    drainJobQueueQuietly_(doc, payload);
+  }
+
+  return jsonOutput_(result);
 }
 
 function isTelegramAdminAction_(action) {
