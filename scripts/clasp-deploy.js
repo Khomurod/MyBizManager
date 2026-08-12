@@ -230,6 +230,27 @@ function functionNames(code) {
 }
 
 /**
+ * Functions deliberately removed from the repository, and why.
+ *
+ * A removal that was meant looks exactly like the accident this guard exists
+ * to catch, so it is named here rather than waved through with the blanket
+ * APPS_SCRIPT_ALLOW_REMOTE_DRIFT flag: everything not on this list still stops
+ * the deploy, which is the point of the guard.
+ *
+ * Entries become inert once the push that removes them has run - the function
+ * is no longer in the live project, so it can no longer appear as drift - and
+ * can be deleted at any later tidy-up.
+ */
+const RETIRED_FUNCTIONS = {
+  // Both removed when the pre-key compatibility layer was closed. The grace
+  // flag and its second access check are gone; the health check that reported
+  // the flag is replaced by anonymousReadCheck_, which probes doGet instead.
+  // See tests/anonymous-access.test.js.
+  'checkAccessKeyDuringRollout_': 'rollout grace closed',
+  'rolloutGraceCheck_': 'replaced by anonymousReadCheck_'
+};
+
+/**
  * Proves the modular sources comprehensively represent what is running.
  *
  * Because a push replaces rather than merges, a function that exists only in
@@ -251,12 +272,16 @@ function assertNoRemoteDrift(pulled) {
       .forEach(fn => local.add(fn));
   }
 
-  const missing = Array.from(remote).filter(fn => !local.has(fn)).sort();
+  const gone = Array.from(remote).filter(fn => !local.has(fn)).sort();
+  const retired = gone.filter(fn => Object.prototype.hasOwnProperty.call(RETIRED_FUNCTIONS, fn));
+  const missing = gone.filter(fn => !Object.prototype.hasOwnProperty.call(RETIRED_FUNCTIONS, fn));
   const added = Array.from(local).filter(fn => !remote.has(fn)).sort();
 
   console.log('  remote functions ' + remote.size + ', repository functions ' + local.size);
   if (added.length) console.log('  new in this push ' + added.length + ': ' + added.slice(0, 10).join(', ') +
     (added.length > 10 ? ', …' : ''));
+  if (retired.length) console.log('  retiring ' + retired.length + ' on purpose: ' +
+    retired.map(fn => fn + ' (' + RETIRED_FUNCTIONS[fn] + ')').join(', '));
 
   if (missing.length === 0) return;
   const summary = missing.slice(0, 20).join(', ') + (missing.length > 20 ? ', …' : '');
