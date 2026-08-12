@@ -173,6 +173,15 @@ amount used to write a full copy of the ledger and then refuse the entry.
   mention it" from "asked for it to be empty", so those fields could be written
   and never deleted.
 
+  The other editable fields were checked for the same mistake and are correct
+  as they stand: the schedule fields already distinguish absent from empty,
+  the flags and lists test `!== undefined` so an explicit `false` or `[]`
+  applies, and a title cannot be blank at all. `startKey` is left alone on
+  purpose — a routine has to begin somewhere, so "cleared" has no meaning for
+  it, and resetting a running routine's start date to today would change which
+  days it covers. Keeping the stored value is the safe reading of a blank
+  field there.
+
 ## The V2 cutover
 
 Done on 2026-08-12, in the order preview → apply → verify → cutover, with the
