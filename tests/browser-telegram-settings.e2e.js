@@ -340,7 +340,10 @@ describe('Telegram settings panel (browser)', () => {
     const closes = backendRequests.filter(r => r.action === 'close_day');
     assert.strictEqual(closes.length, 1);
     assert.deepStrictEqual(closes[0].soldItems, [{ name: 'Kofe', qty: 3 }]);
-    assert.strictEqual(closes[0].totalRevenue, 36000);
+    // The money is the server's to total, from the sales it recorded. This
+    // test is about the report leaving through the backend rather than the
+    // browser, and it still is.
+    assert.strictEqual(closes[0].totalRevenue, undefined, 'the till reports no revenue');
 
     // No Telegram action of any kind leaves the browser.
     const telegramActions = backendRequests.filter(r => String(r.action || '').startsWith('telegram_'));

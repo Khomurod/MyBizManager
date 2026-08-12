@@ -130,31 +130,50 @@ test('balances use the sell rate and net income against expenses', () => {
 // ------------------------------------------------------------------ café
 
 test('café sale, close day and void still work end to end', () => {
-  const gas = loadScript({ properties: omadProperties() });
+  // The server prices the sale now, so the fixture is a catalogue rather than
+  // a set of totals: one product at 22 500 that costs us 16 500.
+  const gas = loadScript({
+    properties: omadProperties(),
+    sheets: {
+      System_Config: [
+        ['Cafe_Inventory', JSON.stringify([
+          { id: 'i1', name: 'Kola', type: 'product', qty: 10, unit: 'dona', sellPrice: 22500, unitCost: 16500, totalCost: 165000 }
+        ])]
+      ]
+    }
+  });
+
+  const sale = readJsonOutput(gas.doPost(postEvent({
+    action: 'save_sale', adminKey: ADMIN_KEY, date: '2026-01-01', seller: 'kassir',
+    id: 'sale-1', requestId: 'req-sale-1',
+    items: [{ kind: 'product', inventoryId: 'i1', qty: 2 }]
+  })));
+  assert.strictEqual(sale.status, 'success');
+  assert.strictEqual(sale.sale.total, 45000, 'the server computed the total');
+  assert.strictEqual(sale.sale.profit, 12000, 'and the profit');
 
   assert.strictEqual(readJsonOutput(gas.doPost(postEvent({
-    action: 'save_sale', adminKey: ADMIN_KEY, date: '2026-01-01', seller: 'kassir', total: 45000, profit: 12000, items: [{ id: 'a', qty: 2 }], id: 'sale-1'
-  }))).status, 'success');
-
-  assert.strictEqual(readJsonOutput(gas.doPost(postEvent({
-    action: 'close_day', adminKey: ADMIN_KEY, date: '2026-01-01', seller: 'kassir', inventory: [{ id: 'i1', qty: 5 }], summary: [], totalRevenue: 45000, totalProfit: 12000
+    action: 'close_day', adminKey: ADMIN_KEY, date: '2026-01-01', seller: 'kassir', summary: []
   }))).status, 'success');
 
   let cafe = readJsonOutput(gas.doPost(postEvent({ action: 'get_cafe_data', adminKey: ADMIN_KEY })));
   assert.strictEqual(cafe.sales.length, 1);
   assert.strictEqual(cafe.sales[0].total, 45000);
   assert.strictEqual(cafe.closeReports.length, 1);
-  assert.strictEqual(cafe.closeReports[0].totalRevenue, 45000);
-  assert.strictEqual(cafe.inventory[0].qty, 5);
+  assert.strictEqual(cafe.closeReports[0].totalRevenue, 45000,
+    'the close-day figure came from the stored sales');
+  assert.strictEqual(cafe.inventory[0].qty, 8, 'two were sold out of ten');
 
   assert.strictEqual(readJsonOutput(gas.doPost(postEvent({
-    action: 'void_sale', adminKey: ADMIN_KEY, id: 'sale-1', inventory: [{ id: 'i1', qty: 7 }]
+    action: 'void_sale', adminKey: ADMIN_KEY, id: 'sale-1'
   }))).status, 'success');
 
   cafe = readJsonOutput(gas.doPost(postEvent({ action: 'get_cafe_data', adminKey: ADMIN_KEY })));
   assert.strictEqual(cafe.sales.length, 0, 'voided sale must be removed');
-  assert.strictEqual(cafe.inventory[0].qty, 7, 'inventory must be restored');
+  assert.strictEqual(cafe.inventory[0].qty, 10,
+    'stock is restored from the stored receipt, not from the browser');
 });
+
 
 test('café admin saves round-trip through System_Config', () => {
   const gas = loadScript({ properties: omadProperties() });

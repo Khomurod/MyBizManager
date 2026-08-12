@@ -3565,66 +3565,421 @@ function handleCafeAction_(action, payload, doc, configSheet) {
     setConfig(configSheet, "Cafe_Settings", JSON.stringify(payload.settings));
     return jsonOutput_({ status: "success" });
   }
-  if (action === 'save_sale') return saveCafeSale_(doc, payload);
+  if (action === 'save_sale') return saveCafeSale_(doc, configSheet, payload);
   if (action === 'void_sale') return voidCafeSale_(doc, configSheet, payload);
   if (action === 'close_day') return closeCafeDay_(doc, configSheet, payload);
   return null;
 }
 
-function saveCafeSale_(doc, payload) {
-  var salesSheet = doc.getSheetByName("Cafe_Sales") || doc.insertSheet("Cafe_Sales");
-  if (salesSheet.getLastRow() === 0) salesSheet.appendRow(CAFE_SALES_HEADER);
+// ------------------------------------------------------- authoritative pricing
+//
+// The browser used to decide what a sale was worth. It sent the total, the
+// cost and the profit, and the server wrote them down; it also depleted stock
+// only in its own memory, so a refresh restored the stock it had just sold and
+// two devices each tracked a different inventory.
+//
+// Everything below computes those figures from what is stored: the price on
+// the product or recipe, the recipe's ingredients, and the stock on hand. The
+// client says which items and how many; the server decides the rest.
 
-  salesSheet.appendRow([
-    payload.date,
-    payload.seller,
-    payload.total,
-    payload.profit,
-    JSON.stringify(payload.items),
-    payload.id || Date.now().toString()
-  ]);
-  return jsonOutput_({ status: "success" });
+var CAFE_STOCK_EPSILON = 0.0001;
+
+/** Rounds a quantity the way the POS does, so stock stays comparable. */
+function cafeRoundQty_(value) {
+  var n = Number(value) || 0;
+  return Math.round(n * 10000) / 10000;
 }
 
-function voidCafeSale_(doc, configSheet, payload) {
-  var salesSheet = doc.getSheetByName("Cafe_Sales");
-  if (salesSheet) {
-    var data = salesSheet.getDataRange().getValues();
-    for (var i = 1; i < data.length; i++) {
-      if (data[i][5] == payload.id) {
-        salesSheet.deleteRow(i + 1);
-        break;
+/** Index inventory by id once, rather than scanning per line. */
+function cafeInventoryIndex_(inventory) {
+  var map = {};
+  for (var i = 0; i < inventory.length; i++) {
+    map[String(inventory[i].id)] = inventory[i];
+  }
+  return map;
+}
+
+function cafeRecipeIndex_(recipes) {
+  var map = {};
+  for (var i = 0; i < recipes.length; i++) map[String(recipes[i].id)] = recipes[i];
+  return map;
+}
+
+/** What one unit of a product costs us, honouring bulk servings. */
+function cafeProductUnitCost_(product) {
+  if (product.isBulk && Number(product.gramsPerServing) > 0) {
+    return Math.round((Number(product.unitCost) || 0) * (Number(product.gramsPerServing) / 1000));
+  }
+  return Number(product.unitCost) || 0;
+}
+
+/** How much stock one sold unit consumes. */
+function cafeProductStockPerUnit_(product) {
+  if (product.isBulk && Number(product.gramsPerServing) > 0) {
+    return Number(product.gramsPerServing) / 1000;
+  }
+  return 1;
+}
+
+/**
+ * Turns the requested items into priced lines, or explains why it cannot.
+ *
+ * Nothing on the request is trusted for money: `price` and `baseCost` are read
+ * from the stored product or recipe, never from the payload. An item the
+ * catalogue does not contain is refused rather than sold at whatever the
+ * caller suggested.
+ */
+function resolveCafeSaleLines_(state, items) {
+  var requested = Array.isArray(items) ? items : [];
+  if (requested.length === 0) return { error: "Savat bo'sh." };
+  if (requested.length > 200) return { error: "Savatda juda ko'p mahsulot." };
+
+  var inventory = cafeInventoryIndex_(state.inventory);
+  var recipes = cafeRecipeIndex_(state.recipes);
+  var lines = [];
+  var consumption = {};   // inventory id -> { qty, cost }
+
+  var consume = function (id, qty, cost) {
+    var key = String(id);
+    if (!consumption[key]) consumption[key] = { qty: 0, cost: 0 };
+    consumption[key].qty += qty;
+    consumption[key].cost += cost;
+  };
+
+  for (var i = 0; i < requested.length; i++) {
+    var item = requested[i] || {};
+    var qty = Number(item.qty);
+    if (!isFinite(qty) || qty <= 0) return { error: "Miqdor musbat bo'lishi kerak." };
+    if (qty > 100000) return { error: "Miqdor juda katta." };
+
+    var kind = String(item.kind || "");
+
+    if (kind === "recipe") {
+      var recipe = recipes[String(item.recipeId)];
+      if (!recipe) return { error: "Retsept topilmadi: " + String(item.name || item.recipeId || "") };
+      var recipePrice = Number(recipe.sellPrice) || 0;
+      if (recipePrice <= 0) return { error: "Retsept narxi belgilanmagan: " + String(recipe.name || "") };
+
+      var recipeCost = 0;
+      var ingredients = Array.isArray(recipe.ingredients) ? recipe.ingredients : [];
+      for (var g = 0; g < ingredients.length; g++) {
+        var ing = ingredients[g] || {};
+        var ingQty = (Number(ing.qty) || 0) * qty;
+        var ingCost = (Number(ing.cost) || 0) * qty;
+        recipeCost += ingCost;
+        if (ing.inventoryId) consume(ing.inventoryId, ingQty, ingCost);
       }
+      // A recipe may record its own cost; the ingredients are the truth when
+      // they exist, because that is what the stock movement will charge.
+      if (ingredients.length === 0) recipeCost = (Number(recipe.baseCost) || 0) * qty;
+
+      lines.push({
+        id: String(item.id || ("recipe_" + recipe.id)),
+        kind: "recipe", recipeId: String(recipe.id),
+        name: String(recipe.name || ""), qty: qty,
+        price: recipePrice, baseCost: ingredients.length ? Math.round(recipeCost / qty) : (Number(recipe.baseCost) || 0),
+        lineTotal: Math.round(recipePrice * qty),
+        lineCost: Math.round(recipeCost)
+      });
+      continue;
+    }
+
+    var product = inventory[String(item.inventoryId)];
+    if (!product) return { error: "Mahsulot topilmadi: " + String(item.name || item.inventoryId || "") };
+    if (product.type !== "product") return { error: "Bu mahsulot sotuvda emas: " + String(product.name || "") };
+    var price = Number(product.sellPrice) || 0;
+    if (price <= 0) return { error: "Mahsulot narxi belgilanmagan: " + String(product.name || "") };
+
+    var unitCost = cafeProductUnitCost_(product);
+    var stockPerUnit = cafeProductStockPerUnit_(product);
+    consume(product.id, stockPerUnit * qty, unitCost * qty);
+
+    lines.push({
+      id: String(item.id || ("product_" + product.id)),
+      kind: "product", inventoryId: String(product.id),
+      name: String(product.name || ""), qty: qty,
+      price: price, baseCost: unitCost,
+      isBulk: !!product.isBulk,
+      gramsPerServing: Number(product.gramsPerServing) || 0,
+      lineTotal: Math.round(price * qty),
+      lineCost: Math.round(unitCost * qty)
+    });
+  }
+
+  var total = 0;
+  var cost = 0;
+  for (var l = 0; l < lines.length; l++) { total += lines[l].lineTotal; cost += lines[l].lineCost; }
+
+  return {
+    lines: lines,
+    consumption: consumption,
+    total: Math.round(total),
+    cost: Math.round(cost),
+    profit: Math.round(total - cost)
+  };
+}
+
+/** Refuses a sale that the stock on hand cannot cover. */
+function cafeStockShortfall_(state, consumption) {
+  var inventory = cafeInventoryIndex_(state.inventory);
+  var short = [];
+  Object.keys(consumption).forEach(function (id) {
+    var item = inventory[id];
+    if (!item) { short.push("Omborda yo'q: " + id); return; }
+    var have = Number(item.qty) || 0;
+    if (have + CAFE_STOCK_EPSILON < consumption[id].qty) {
+      short.push(String(item.name || id) + ": " + have + " " + String(item.unit || "") +
+                 " qoldi, " + cafeRoundQty_(consumption[id].qty) + " kerak");
+    }
+  });
+  return short;
+}
+
+/**
+ * Moves stock. `direction` is -1 for a sale and +1 for a void.
+ *
+ * The unit cost is recomputed from the remaining total so the next sale is
+ * charged what the stock actually cost, which is what the POS did in the
+ * browser and what the close-day figures assume.
+ */
+function applyCafeStockMovement_(state, consumption, direction) {
+  var inventory = cafeInventoryIndex_(state.inventory);
+  Object.keys(consumption).forEach(function (id) {
+    var item = inventory[id];
+    if (!item) return;
+    item.qty = cafeRoundQty_((Number(item.qty) || 0) + consumption[id].qty * direction);
+    item.totalCost = Math.max(0, Math.round((Number(item.totalCost) || 0) + consumption[id].cost * direction));
+    if (item.qty > 0) {
+      item.unitCost = Math.round(item.totalCost / item.qty);
+    } else {
+      item.qty = 0;
+      item.unitCost = 0;
+    }
+  });
+  return state.inventory;
+}
+
+/** The stored sale with this request id, if the request has already run. */
+function findCafeSaleByRequestId_(salesSheet, requestId) {
+  if (!salesSheet || !requestId || salesSheet.getLastRow() < 2) return null;
+  var data = salesSheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    var detail = safeParseJSON_(data[i][4], null);
+    if (detail && String(detail.requestId || "") === String(requestId)) {
+      return { rowNumber: i + 1, row: data[i], detail: detail };
     }
   }
-  setConfig(configSheet, "Cafe_Inventory", JSON.stringify(payload.inventory));
-  return jsonOutput_({ status: "success" });
+  return null;
 }
 
-function closeCafeDay_(doc, configSheet, payload) {
-  setConfig(configSheet, "Cafe_Inventory", JSON.stringify(payload.inventory));
+function cafeSaleResponse_(id, date, seller, resolved, inventory) {
+  return {
+    status: "success",
+    sale: {
+      id: id, date: date, seller: seller,
+      total: resolved.total, profit: resolved.profit, cost: resolved.cost,
+      items: resolved.lines
+    },
+    inventory: inventory
+  };
+}
 
-  var closeSheet = doc.getSheetByName("Cafe_Kun_Yakuni") || doc.insertSheet("Cafe_Kun_Yakuni");
-  if (closeSheet.getLastRow() === 0) closeSheet.appendRow(CAFE_CLOSE_DAY_HEADER);
-  closeSheet.appendRow([
-    payload.date,
-    payload.seller,
-    payload.totalRevenue,
-    payload.totalProfit,
-    JSON.stringify(payload.summary)
-  ]);
+/**
+ * Records one sale, priced and stock-checked by the server, atomically.
+ *
+ * The lock matters as much as the arithmetic: reading stock, deciding it is
+ * sufficient and writing it back is a read-modify-write, and two tills selling
+ * the last item at the same moment would otherwise both succeed.
+ */
+function saveCafeSale_(doc, configSheet, payload) {
+  var requestId = String(payload.requestId || payload.id || "").trim();
+  if (!requestId) return jsonOutput_({ status: "error", message: "requestId talab qilinadi." });
+  if (requestId.length > 128) return jsonOutput_({ status: "error", message: "requestId juda uzun." });
 
-  // The close-day record is stored. Its Telegram report is queued server-side;
-  // the browser never composes a Telegram message.
-  // Queueing the report must never undo a close-day that is already stored.
-  var closeJobId = "";
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
   try {
-    closeJobId = queueCafeCloseDayReport_(doc, payload);
-  } catch (queueError) {
-    debugLog_(doc, "report_enqueue_failed", String(queueError));
+    var salesSheet = doc.getSheetByName("Cafe_Sales") || doc.insertSheet("Cafe_Sales");
+    if (salesSheet.getLastRow() === 0) salesSheet.appendRow(CAFE_SALES_HEADER);
+
+    // A retry, a double tap or a redelivered request resolves to the sale the
+    // first attempt created rather than ringing it up twice.
+    var existing = findCafeSaleByRequestId_(salesSheet, requestId);
+    if (existing) {
+      var state = readCafeState_(doc, configSheet);
+      return jsonOutput_(Object.assign(
+        cafeSaleResponse_(String(existing.row[5]), existing.row[0], existing.row[1], {
+          total: Number(existing.row[2]) || 0,
+          profit: Number(existing.row[3]) || 0,
+          cost: (Number(existing.row[2]) || 0) - (Number(existing.row[3]) || 0),
+          lines: existing.detail.items || []
+        }, state.inventory),
+        { duplicate: true }));
+    }
+
+    var current = readCafeState_(doc, configSheet);
+    var resolved = resolveCafeSaleLines_(current, payload.items);
+    if (resolved.error) return jsonOutput_({ status: "error", message: resolved.error });
+
+    var short = cafeStockShortfall_(current, resolved.consumption);
+    if (short.length > 0) {
+      return jsonOutput_({ status: "error", message: "Omborda yetarli emas — " + short.join("; ") });
+    }
+
+    var inventory = applyCafeStockMovement_(current, resolved.consumption, -1);
+    setConfig(configSheet, "Cafe_Inventory", JSON.stringify(inventory));
+
+    var saleId = String(payload.id || new Date().getTime());
+    var saleDate = payload.date || new Date().toISOString();
+    var seller = String(payload.seller || "").slice(0, 120);
+
+    salesSheet.appendRow([
+      saleDate, seller, resolved.total, resolved.profit,
+      JSON.stringify({ requestId: requestId, items: resolved.lines }),
+      saleId
+    ]);
+
+    return jsonOutput_(Object.assign(
+      cafeSaleResponse_(saleId, saleDate, seller, resolved, inventory),
+      { duplicate: false }));
+  } finally {
+    lock.releaseLock();
   }
-  drainJobQueueQuietly_(doc, payload);
-  return jsonOutput_({ status: "success", reportJobId: closeJobId || "" });
+}
+
+/**
+ * Reverses a stored sale.
+ *
+ * The stock is restored from the sale that was recorded, not from an inventory
+ * the caller supplies. A browser that had drifted -- or one replaying an old
+ * screen -- could otherwise overwrite the whole stock with a stale copy under
+ * the guise of voiding one receipt.
+ */
+function voidCafeSale_(doc, configSheet, payload) {
+  var saleId = String(payload.id || "").trim();
+  if (!saleId) return jsonOutput_({ status: "error", message: "Sotuv ID talab qilinadi." });
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var salesSheet = doc.getSheetByName("Cafe_Sales");
+    var rowNumber = 0;
+    var detail = null;
+
+    if (salesSheet && salesSheet.getLastRow() >= 2) {
+      var data = salesSheet.getDataRange().getValues();
+      for (var i = 1; i < data.length; i++) {
+        if (String(data[i][5]) === saleId) {
+          rowNumber = i + 1;
+          detail = safeParseJSON_(data[i][4], null);
+          break;
+        }
+      }
+    }
+
+    if (!rowNumber) {
+      // Idempotent, including when that receipt was the only one on the sheet.
+      // A repeated void of something already gone is not an error, and must
+      // never be an excuse to put its stock back a second time.
+      var already = readCafeState_(doc, configSheet);
+      return jsonOutput_({ status: "success", duplicate: true, inventory: already.inventory });
+    }
+
+    var current = readCafeState_(doc, configSheet);
+    var items = detail && Array.isArray(detail.items) ? detail.items
+      : (Array.isArray(detail) ? detail : []);
+    var restored = resolveCafeSaleLines_(current, items);
+
+    var inventory = current.inventory;
+    if (!restored.error) {
+      inventory = applyCafeStockMovement_(current, restored.consumption, 1);
+      setConfig(configSheet, "Cafe_Inventory", JSON.stringify(inventory));
+    } else {
+      // The receipt names something the catalogue no longer has. The sale is
+      // still voided -- the money is what matters -- but the stock cannot be
+      // put back automatically, and saying so is better than guessing.
+      debugLog_(doc, "cafe_void_stock_unresolved", saleId + ": " + restored.error);
+    }
+
+    salesSheet.deleteRow(rowNumber);
+    appendAuditRow_(doc, "cafe_sale_voided", saleId);
+
+    return jsonOutput_({
+      status: "success", duplicate: false, inventory: inventory,
+      stockRestored: !restored.error
+    });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Closes the day.
+ *
+ * Revenue, profit and the sale count are totalled from the sales that were
+ * actually recorded; the browser's own running totals are not consulted. A
+ * counted stock level *is* user-measured -- somebody looked in the fridge --
+ * so it is accepted when supplied, and the day's own arithmetic is what
+ * decides the money.
+ */
+function closeCafeDay_(doc, configSheet, payload) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var state = readCafeState_(doc, configSheet);
+    var dayKey = cafeDateKey_(payload.date || new Date().toISOString());
+
+    var revenue = 0;
+    var profit = 0;
+    var count = 0;
+    for (var i = 0; i < state.sales.length; i++) {
+      if (cafeDateKey_(state.sales[i].date) !== dayKey) continue;
+      revenue += Number(state.sales[i].total) || 0;
+      profit += Number(state.sales[i].profit) || 0;
+      count++;
+    }
+
+    // A physical count is the one thing only a person can supply.
+    if (Array.isArray(payload.countedInventory)) {
+      setConfig(configSheet, "Cafe_Inventory", JSON.stringify(payload.countedInventory));
+      state.inventory = payload.countedInventory;
+    }
+
+    var closeSheet = doc.getSheetByName("Cafe_Kun_Yakuni") || doc.insertSheet("Cafe_Kun_Yakuni");
+    if (closeSheet.getLastRow() === 0) closeSheet.appendRow(CAFE_CLOSE_DAY_HEADER);
+    closeSheet.appendRow([
+      payload.date || new Date().toISOString(),
+      String(payload.seller || "").slice(0, 120),
+      Math.round(revenue),
+      Math.round(profit),
+      JSON.stringify(Array.isArray(payload.summary) ? payload.summary : [])
+    ]);
+
+    var report = {
+      date: payload.date, seller: payload.seller,
+      totalRevenue: Math.round(revenue), totalProfit: Math.round(profit),
+      salesCount: count, summary: payload.summary
+    };
+
+    // The close-day record is stored. Its Telegram report is queued
+    // server-side; the browser never composes a Telegram message, and queueing
+    // must never undo a close-day that is already stored.
+    var closeJobId = "";
+    try {
+      closeJobId = queueCafeCloseDayReport_(doc, report);
+    } catch (queueError) {
+      debugLog_(doc, "report_enqueue_failed", String(queueError));
+    }
+    drainJobQueueQuietly_(doc, payload);
+
+    return jsonOutput_({
+      status: "success", reportJobId: closeJobId || "",
+      totalRevenue: Math.round(revenue), totalProfit: Math.round(profit),
+      salesCount: count, inventory: state.inventory
+    });
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 /** Everything cafe_admin.html and cafe_pos.html need on load. */
