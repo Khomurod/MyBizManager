@@ -161,7 +161,7 @@ function buildHealthReport_(doc) {
   var checks = [];
 
   checks.push(check_("backend", "Backend", HEALTH_OK, "Javob bermoqda"));
-  checks.push(rolloutGraceCheck_());
+  checks.push(anonymousReadCheck_());
   checks.push(deploymentCheck_());
   checks.push(botCheck_());
   checks.push(miniAppCheck_());
@@ -187,20 +187,41 @@ function buildHealthReport_(doc) {
 }
 
 /**
- * Whether the pre-key compatibility window is still open.
+ * Whether the private reads are actually private.
  *
- * It exists because the frontend and the backend deploy separately and the
- * browser was left unable to save. It is a real hole for as long as it is
- * open, so it says so every time anyone looks — and names both the command
- * that proves it is safe to close and the line that closes it.
+ * There used to be a `LEGACY_CLIENT_GRACE` flag here and this check reported
+ * whether it was set, which proved nothing about the running system — a flag
+ * says what the source intended, not what the deployed router does.
+ *
+ * So it asks instead. Both retired anonymous routes are called exactly as an
+ * outsider with the /exec URL would call them, and the answer has to be the
+ * inert banner rather than the ledger. If a future edit re-opens one, this
+ * turns red on the next look rather than on the next breach.
  */
-function rolloutGraceCheck_() {
-  if (!LEGACY_CLIENT_GRACE) {
+function anonymousReadCheck_() {
+  var probes = ["get_omad", "get_cafe"];
+  var open = [];
+
+  for (var i = 0; i < probes.length; i++) {
+    var body = "";
+    try {
+      body = String(doGet({ parameter: { action: probes[i] } }).getContent() || "");
+    } catch (error) {
+      // A route that throws is not a route that answers with the ledger.
+      body = "";
+    }
+    if (body.indexOf("\"transactions\"") !== -1 ||
+        body.indexOf("\"inventory\"") !== -1 ||
+        body.indexOf("\"tenants\"") !== -1) {
+      open.push(probes[i]);
+    }
+  }
+
+  if (open.length === 0) {
     return check_("grace", "Kalit himoyasi", HEALTH_OK, "To'liq yoqilgan");
   }
-  return check_("grace", "Kalit himoyasi", HEALTH_WARN,
-    "Eski frontend uchun vaqtincha ochiq. Yangi frontend ishga tushgach " +
-    "LEGACY_CLIENT_GRACE = false qiling");
+  return check_("grace", "Kalit himoyasi", HEALTH_ERROR,
+    "Kalitsiz ochiq: " + open.join(", "));
 }
 
 /**

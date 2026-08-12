@@ -316,29 +316,30 @@ rather than a GET, because a GET puts its parameters in the URL — which is
 where a key must never be. Both are compared **after** a rate limit, so the
 endpoint cannot be used to guess the key.
 
-`get_omad` / `get_cafe` still answer anonymously, deliberately, for exactly one
-release: the static host and Apps Script deploy separately, so removing them in the same
-change could leave the live frontend calling a route that no longer exists. The
-UI already calls the authenticated routes; the anonymous ones are removed once
-that is confirmed live.
+The GET surface is **inert**. `doGet` reads nothing and answers every request,
+whatever action it names, with the same sentence. `get_omad` / `get_cafe` used
+to answer there anonymously — that was the exposure, since the /exec URL is
+hardcoded in pages served from a public site — and they are gone.
 
-### The rollout grace
+### The rollout grace, and why it no longer exists
 
-The frontend and the backend deploy on different pipelines, and they do not
-land together. `LEGACY_CLIENT_GRACE` in `03_settings.gs` bridges the gap: while
-it is on, the actions the pre-key frontend calls accept a request carrying **no
-key at all**, exactly as they did before.
+The frontend and the backend deploy on different pipelines and do not land
+together. When the backend started demanding a key and the deployed browser had
+not learned to send one, every save failed. `LEGACY_CLIENT_GRACE` bridged that
+gap: while it was on, the actions the pre-key frontend called accepted a request
+carrying no key at all.
 
-| | With the grace on |
-|---|---|
-| no key, on an action the old frontend called | accepted |
-| no key, on anything else | refused |
-| **wrong** key, on anything | refused |
-| Mini App | unaffected — a signature or nothing |
+It was always meant to be temporary, and it is gone — the flag, the second
+access check (`checkAccessKeyDuringRollout_`) and the anonymous GET routes with
+it. Every business action now takes the same key, and `api-security.test.js`
+asserts that neither the flag nor the bypass function exists any more, so there
+is no undocumented way back.
 
-It is a deliberate temporary hole, the health check warns while it is open, and
-`rollout-grace.test.js` pins both what it opens and what it does not. Turning it
-off is a one-line change with nothing else to migrate.
+`anonymous-access.test.js` is the inventory, written from the outside: it asks
+what a stranger holding the /exec URL can read and write, and pins the answers
+at nothing. The health check no longer reports a flag — it *probes* `doGet` for
+both retired routes on every run, because a flag describes what the source
+intended and a probe describes what the deployed router does.
 
 ### Telegram Mini App
 

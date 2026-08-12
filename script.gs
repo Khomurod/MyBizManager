@@ -733,42 +733,6 @@ function buildTelegramSettingsView_() {
 }
 
 /**
- * Whether a client that predates the access key is still being served.
- *
- * The frontend and the backend deploy separately — the static host from `main`,
- * Apps Script from CI — so there is a window where the browser has not learned
- * to send a key and the server has already started demanding one. In that
- * window every save fails: no rent recorded, no café sale rung up.
- *
- * While this is true, the actions the *old* frontend calls accept a request
- * that carries no key at all, exactly as they did before. A request carrying a
- * WRONG key is still refused, and everything the old frontend never called —
- * the Mini App, the new authenticated reads, the maintenance and migration
- * actions — stays strict.
- *
- * This is a deliberate, temporary hole. Turn it off by setting this to false
- * once the production frontend actually serves the current build — that is,
- * once `<production-host>/assets/omad/06-api.js` contains `omad_access_key`.
- * Verify the live host rather than assuming a merge reached it; the health
- * check reports a warning until this is false.
- */
-var LEGACY_CLIENT_GRACE = true;
-
-/**
- * The access check for an action the pre-key frontend calls.
- *
- * A client that has been updated always sends a key, so "no key at all" is a
- * reliable signal of an old client rather than something an updated one can
- * produce by accident.
- */
-function checkAccessKeyDuringRollout_(payload) {
-  if (!LEGACY_CLIENT_GRACE) return checkAdminKey_(payload);
-  var provided = String((payload && payload.adminKey) || "");
-  if (!provided) return "";
-  return checkAdminKey_(payload);
-}
-
-/**
  * Settings mutations require an admin key stored in Script Properties.
  * Returns "" when authorized, or an error message.
  */
@@ -3518,7 +3482,7 @@ function isCafeAction_(action) {
 function handleCafeAction_(action, payload, doc, configSheet) {
   if (!isCafeAction_(action)) return null;
 
-  var accessError = checkAccessKeyDuringRollout_(payload);
+  var accessError = checkAdminKey_(payload);
   if (accessError) return jsonOutput_({ status: "error", message: accessError });
 
   if (action === 'save_inventory') {
@@ -8919,7 +8883,7 @@ function doPost(e) {
     // Financial writes take the access key. They were reachable by anyone who
     // knew the /exec URL, which meant anyone could rewrite the whole ledger.
     if (action === 'migrate_omad' || action === 'save_omad') {
-      var saveAccessError = checkAccessKeyDuringRollout_(payload);
+      var saveAccessError = checkAdminKey_(payload);
       if (saveAccessError) return jsonOutput_({ status: "error", message: saveAccessError });
       return saveOmadAction_(action, payload, doc, configSheet);
     }
@@ -8939,7 +8903,7 @@ function doPost(e) {
 
     // ---- Retry queue ------------------------------------------------------
     if (action === 'get_job_queue_status') {
-      var queueAccessError = checkAccessKeyDuringRollout_(payload);
+      var queueAccessError = checkAdminKey_(payload);
       if (queueAccessError) return jsonOutput_({ status: "error", message: queueAccessError });
       return jsonOutput_({ status: "success", queue: buildJobQueueStatus_(doc) });
     }
@@ -8955,7 +8919,7 @@ function doPost(e) {
     // The view carries no secret, but it does carry the authorized user id and
     // both group chat ids -- enough to know exactly who and where to target.
     if (action === 'get_telegram_settings') {
-      var settingsAccessError = checkAccessKeyDuringRollout_(payload);
+      var settingsAccessError = checkAdminKey_(payload);
       if (settingsAccessError) return jsonOutput_({ status: "error", message: settingsAccessError });
       return jsonOutput_({ status: "success", settings: buildTelegramSettingsView_() });
     }
@@ -8968,7 +8932,7 @@ function doPost(e) {
     // Counts and event names only, but the audit tail names tasks, people and
     // operations, and the counts describe the size of the business.
     if (action === 'get_system_status') {
-      var statusAccessError = checkAccessKeyDuringRollout_(payload);
+      var statusAccessError = checkAdminKey_(payload);
       if (statusAccessError) return jsonOutput_({ status: "error", message: statusAccessError });
       return jsonOutput_({ status: "success", system: buildSystemStatus_(doc) });
     }
@@ -8998,7 +8962,7 @@ function doPost(e) {
 
     // ---- Migration --------------------------------------------------------
     if (action === 'get_migration_status') {
-      var migrationReadError = checkAccessKeyDuringRollout_(payload);
+      var migrationReadError = checkAdminKey_(payload);
       if (migrationReadError) return jsonOutput_({ status: "error", message: migrationReadError });
       return jsonOutput_({ status: "success", migration: getMigrationStatus_(doc) });
     }
@@ -9026,10 +8990,16 @@ function doPost(e) {
   }
 }
 
+/**
+ * The GET surface, which is now entirely inert.
+ *
+ * Nothing readable is served over GET at all: a GET puts its parameters in the
+ * URL, and the URL is the one place an access key must never be, so every
+ * authenticated read is a POST. This exists to answer the browser, the uptime
+ * check and the curious with the same sentence.
+ */
 function doGet(e) {
-  var action = e.parameter.action;
-  var doc = SpreadsheetApp.getActiveSpreadsheet();
-  var configSheet = doc.getSheetByName("System_Config");
+  var action = (e && e.parameter && e.parameter.action) || "";
 
   if (action === 'get_tasks') {
     // A GET puts its parameters in the URL, which is exactly where an admin key
@@ -9040,20 +9010,16 @@ function doGet(e) {
     });
   }
 
-  if (!configSheet) return jsonOutput_({ status: "empty" });
-
-  // Deprecated, and reachable by anyone who knows the URL. Kept for exactly one
-  // release so the deployed frontend keeps working while the static host and
-  // Apps Script roll out separately; get_omad_data / get_cafe_data are the
-  // authenticated replacements and the UI already calls them.
-  if (action === 'get_omad') {
-    return jsonOutput_(readOmadPayload_(doc, configSheet));
-  }
-
-  if (action === 'get_cafe') {
-    return jsonOutput_(readCafeState_(doc, configSheet));
-  }
-
+  // `get_omad` and `get_cafe` used to answer here, unauthenticated, and that
+  // was the whole exposure: the /exec URL is hardcoded in pages served from a
+  // public site, so everyone who had seen the frontend could read the ledger,
+  // the tenant list and every café sale with its margin. They are gone. The
+  // authenticated replacements are get_omad_data / get_cafe_data over POST,
+  // where the key travels in the body instead of the URL.
+  //
+  // Nothing is special-cased for them: an unknown action falls through to the
+  // banner below, so they are indistinguishable from any other name someone
+  // might try.
   return ContentService.createTextOutput("System Database is Active.");
 }
 
@@ -10148,7 +10114,7 @@ function buildHealthReport_(doc) {
   var checks = [];
 
   checks.push(check_("backend", "Backend", HEALTH_OK, "Javob bermoqda"));
-  checks.push(rolloutGraceCheck_());
+  checks.push(anonymousReadCheck_());
   checks.push(deploymentCheck_());
   checks.push(botCheck_());
   checks.push(miniAppCheck_());
@@ -10174,20 +10140,41 @@ function buildHealthReport_(doc) {
 }
 
 /**
- * Whether the pre-key compatibility window is still open.
+ * Whether the private reads are actually private.
  *
- * It exists because the frontend and the backend deploy separately and the
- * browser was left unable to save. It is a real hole for as long as it is
- * open, so it says so every time anyone looks — and names both the command
- * that proves it is safe to close and the line that closes it.
+ * There used to be a `LEGACY_CLIENT_GRACE` flag here and this check reported
+ * whether it was set, which proved nothing about the running system — a flag
+ * says what the source intended, not what the deployed router does.
+ *
+ * So it asks instead. Both retired anonymous routes are called exactly as an
+ * outsider with the /exec URL would call them, and the answer has to be the
+ * inert banner rather than the ledger. If a future edit re-opens one, this
+ * turns red on the next look rather than on the next breach.
  */
-function rolloutGraceCheck_() {
-  if (!LEGACY_CLIENT_GRACE) {
+function anonymousReadCheck_() {
+  var probes = ["get_omad", "get_cafe"];
+  var open = [];
+
+  for (var i = 0; i < probes.length; i++) {
+    var body = "";
+    try {
+      body = String(doGet({ parameter: { action: probes[i] } }).getContent() || "");
+    } catch (error) {
+      // A route that throws is not a route that answers with the ledger.
+      body = "";
+    }
+    if (body.indexOf("\"transactions\"") !== -1 ||
+        body.indexOf("\"inventory\"") !== -1 ||
+        body.indexOf("\"tenants\"") !== -1) {
+      open.push(probes[i]);
+    }
+  }
+
+  if (open.length === 0) {
     return check_("grace", "Kalit himoyasi", HEALTH_OK, "To'liq yoqilgan");
   }
-  return check_("grace", "Kalit himoyasi", HEALTH_WARN,
-    "Eski frontend uchun vaqtincha ochiq. Yangi frontend ishga tushgach " +
-    "LEGACY_CLIENT_GRACE = false qiling");
+  return check_("grace", "Kalit himoyasi", HEALTH_ERROR,
+    "Kalitsiz ochiq: " + open.join(", "));
 }
 
 /**

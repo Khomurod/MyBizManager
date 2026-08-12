@@ -253,7 +253,7 @@ test('cutover points reads at the versioned sheet', () => {
   assert.strictEqual(cutover.status, 'success');
   assert.strictEqual(gas.activeTransactionSheetName_(gas.__spreadsheet), 'Omad_Transactions_V2');
 
-  const loaded = readJsonOutput(gas.doGet({ parameter: { action: 'get_omad' } }));
+  const loaded = readJsonOutput(gas.doPost(postEvent({ action: 'get_omad_data', adminKey: ADMIN_KEY })));
   assert.strictEqual(loaded.transactions[0].month, '2026-01');
   assert.strictEqual(loaded.transactions[0].period, '2026-01');
   assert.strictEqual(loaded.transactions[0].periodLabel, 'Yanvar 2026');
@@ -294,7 +294,7 @@ test('rollback points reads back and keeps the migrated data', () => {
 
 test('reads keep working before the migration runs', () => {
   const gas = boot([row('1_0', 'Fevral', '10/02/2026')]);
-  const loaded = readJsonOutput(gas.doGet({ parameter: { action: 'get_omad' } }));
+  const loaded = readJsonOutput(gas.doPost(postEvent({ action: 'get_omad_data', adminKey: ADMIN_KEY })));
 
   assert.strictEqual(loaded.transactions[0].month, 'Fevral', 'the stored value is unchanged');
   assert.strictEqual(loaded.transactions[0].period, '2026-02', 'but the period is resolved for the UI');

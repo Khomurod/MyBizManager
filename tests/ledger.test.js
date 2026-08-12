@@ -468,7 +468,7 @@ test('reads return the same shape before and after cutover', () => {
   const gas = bootLedger();
   gas.createTransaction_(gas.__spreadsheet, input({ requestId: 'r1' }));
 
-  const loaded = readJsonOutput(gas.doGet({ parameter: { action: 'get_omad' } }));
+  const loaded = readJsonOutput(gas.doPost(postEvent({ action: 'get_omad_data', adminKey: ADMIN_KEY })));
   const t = loaded.transactions[0];
 
   for (const field of ['id', 'tenant', 'month', 'type', 'amount', 'currency', 'method', 'date', 'comment']) {

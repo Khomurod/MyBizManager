@@ -8,9 +8,10 @@
  * read the whole financial ledger, the tenant list, every café sale and its
  * margin, and to write all of it.
  *
- * These tests are the inventory of what is now closed, and of the two reads
- * deliberately left open for one release so the deployed frontend cannot break
- * while the static host and Apps Script roll out separately.
+ * These tests are the inventory of what is closed. Nothing is open: the two
+ * anonymous reads that briefly survived the rollout, so the deployed frontend
+ * could not break while the static host and Apps Script rolled out separately,
+ * are gone along with the flag that allowed them.
  */
 
 const test = require('node:test');
@@ -52,10 +53,10 @@ function post(gas, body) {
 }
 
 /**
- * Actions that refuse an anonymous caller outright.
+ * Actions that have always refused an anonymous caller.
  *
- * Nothing the pre-key frontend ever called is in here — see GRACED below and
- * rollout-grace.test.js for why that distinction exists.
+ * Nothing the pre-key frontend ever called is in here — see FORMERLY_GRACED
+ * below, which is now held to exactly the same standard.
  */
 const STRICT = [
   { action: 'get_omad_data' },
@@ -87,13 +88,14 @@ const STRICT = [
 ];
 
 /**
- * Actions the pre-key frontend calls.
+ * The actions the pre-key frontend used to reach without any key at all.
  *
- * A wrong key is refused. A request with no key at all is accepted while
- * LEGACY_CLIENT_GRACE is on, because the alternative was a live app that could
- * not record a payment.
+ * They were opened deliberately and temporarily, because the alternative was a
+ * live app that could not record a payment while the two halves deployed
+ * separately. That window is closed: they are listed separately only so a
+ * regression that re-opens one of them is obvious in the failure output.
  */
-const GRACED = [
+const FORMERLY_GRACED = [
   { action: 'get_system_status' },
   { action: 'get_telegram_settings' },
   { action: 'get_migration_status' },
@@ -109,11 +111,11 @@ const GRACED = [
   { action: 'close_day', date: 'x', seller: 'x', inventory: [], summary: [], totalRevenue: 0, totalProfit: 0, deferReports: true }
 ];
 
-const GATED = STRICT.concat(GRACED);
+const GATED = STRICT.concat(FORMERLY_GRACED);
 
-test('no strictly gated action answers a caller with no key', () => {
+test('no gated action answers a caller with no key', () => {
   const gas = boot();
-  for (const body of STRICT) {
+  for (const body of GATED) {
     const response = post(gas, body);
     assert.equal(response.status, 'error', `${body.action} answered an anonymous caller`);
   }
@@ -127,12 +129,13 @@ test('no gated action answers a caller with the wrong key', () => {
   }
 });
 
-test('with the rollout grace off, every gated action refuses an anonymous caller', () => {
+test('there is no flag left that can re-open them', () => {
   const gas = boot();
-  gas.LEGACY_CLIENT_GRACE = false;
-  for (const body of GATED) {
-    assert.equal(post(gas, body).status, 'error', `${body.action} answered an anonymous caller`);
-  }
+  // The compatibility layer was a module-level variable and a second access
+  // check. Both are gone, so there is nothing to set back to true - and no
+  // undocumented bypass for a reader of this file to wonder about.
+  assert.strictEqual(gas.LEGACY_CLIENT_GRACE, undefined);
+  assert.strictEqual(gas.checkAccessKeyDuringRollout_, undefined);
 });
 
 test('a refusal never carries the data it refused', () => {
@@ -144,7 +147,8 @@ test('a refusal never carries the data it refused', () => {
     assert.ok(!dump.includes('-1001234567890'), `${action} leaked a chat id`);
   }
 
-  // The graced reads refuse a wrong key the same way, and say nothing either.
+  // The formerly-graced reads refuse a wrong key the same way, and say
+  // nothing either.
   for (const action of ['get_system_status', 'get_telegram_settings']) {
     const dump = JSON.stringify(post(gas, { action, adminKey: 'not-the-key' }));
     assert.ok(!dump.includes('Apteka'), `${action} leaked a tenant name`);
@@ -167,28 +171,29 @@ test('the correct key opens the authenticated reads', () => {
   assert.equal(post(gas, { action: 'verify_access', adminKey: ADMIN_KEY }).status, 'success');
 });
 
-test('the authenticated read returns exactly what the legacy GET returns', () => {
+test('the authenticated read carries the whole payload the app needs', () => {
   const gas = boot();
-  const legacy = JSON.parse(gas.doGet({ parameter: { action: 'get_omad' } }).__text);
   const authenticated = post(gas, { action: 'get_omad_data', adminKey: ADMIN_KEY });
 
-  // Same payload, one extra status field: the frontend can switch without any
-  // change to what it does with the answer.
-  assert.deepEqual(authenticated.transactions, legacy.transactions);
-  assert.deepEqual(authenticated.tenants, legacy.tenants);
-  assert.deepEqual(authenticated.rates, legacy.rates);
-  assert.deepEqual(authenticated.templateExpenses, legacy.templateExpenses);
+  // This is the only Omad read there is now, so it has to be complete: the
+  // ledger, the tenant list, the rates and the expense templates.
+  assert.equal(authenticated.status, 'success');
+  assert.equal(authenticated.transactions.length, 1);
+  assert.equal(authenticated.tenants[0].name, 'Apteka');
+  assert.ok(authenticated.rates);
+  assert.ok(Array.isArray(authenticated.templateExpenses));
 });
 
-test('the anonymous GET routes still answer, for exactly one release', () => {
+test('the anonymous GET routes are gone', () => {
   const gas = boot();
-  // Deliberate: the static host and Apps Script deploy separately, so removing these
-  // in the same change could leave the live frontend calling a route that no
-  // longer exists. They are removed once the new path is confirmed live.
-  const omad = JSON.parse(gas.doGet({ parameter: { action: 'get_omad' } }).__text);
-  assert.equal(omad.transactions.length, 1);
-  const cafe = JSON.parse(gas.doGet({ parameter: { action: 'get_cafe' } }).__text);
-  assert.ok(Array.isArray(cafe.inventory));
+  // These were the exposure: the /exec URL is hardcoded in pages served from a
+  // public site, so anyone who had seen the frontend could read all of it.
+  ['get_omad', 'get_cafe'].forEach(action => {
+    const body = gas.doGet({ parameter: { action } }).getContent();
+    assert.equal(body, 'System Database is Active.', `${action} still answers`);
+    assert.ok(body.indexOf('Apteka') === -1);
+    assert.ok(body.indexOf('transactions') === -1);
+  });
 });
 
 test('the task board is still POST-only, and a GET is refused by name', () => {
