@@ -735,10 +735,10 @@ function buildTelegramSettingsView_() {
 /**
  * Whether a client that predates the access key is still being served.
  *
- * The frontend and the backend deploy separately — Netlify from `main`, Apps
- * Script from CI — so there is a window where the browser has not learned to
- * send a key and the server has already started demanding one. In that window
- * every save fails: no rent recorded, no café sale rung up.
+ * The frontend and the backend deploy separately — the static host from `main`,
+ * Apps Script from CI — so there is a window where the browser has not learned
+ * to send a key and the server has already started demanding one. In that
+ * window every save fails: no rent recorded, no café sale rung up.
  *
  * While this is true, the actions the *old* frontend calls accept a request
  * that carries no key at all, exactly as they did before. A request carrying a
@@ -747,8 +747,10 @@ function buildTelegramSettingsView_() {
  * actions — stays strict.
  *
  * This is a deliberate, temporary hole. Turn it off by setting this to false
- * once <https://omad-d.netlify.app/assets/omad/06-api.js> contains
- * `omad_access_key`; the health check reports a warning until then.
+ * once the production frontend actually serves the current build — that is,
+ * once `<production-host>/assets/omad/06-api.js` contains `omad_access_key`.
+ * Verify the live host rather than assuming a merge reached it; the health
+ * check reports a warning until this is false.
  */
 var LEGACY_CLIENT_GRACE = true;
 
@@ -2208,13 +2210,62 @@ function tenantPaidExpenseSource_(method) {
   return method === "Bank" ? "Umumiy Bankdan" : "Umumiy Naqd Puldan";
 }
 
+/** The tenant list as configured, through the same reader the app uses. */
+function configuredTenants_(doc) {
+  var configSheet = doc.getSheetByName("System_Config");
+  if (!configSheet) return [];
+  return normalizeTenantList_(safeParseJSON_(getConfig(configSheet, "Omad_Tenants"), []));
+}
+
 /** The two source names that are expense buckets rather than tenants. */
 function isExpenseSourceName_(name) {
   var text = String(name || "").trim();
   return text === "Umumiy Naqd Puldan" || text === "Umumiy Bankdan";
 }
 
-function validateTenantPaidInput_(input) {
+/**
+ * The configured tenant of that name, or null.
+ *
+ * Matched on the trimmed name, which is the identity the whole app already
+ * uses: the ledger stores the name, `Omad_Tenants` is keyed by it, and the
+ * balance is computed by grouping rows on it. Anything that does not match one
+ * of those names has no balance to credit, whatever it is.
+ */
+function findConfiguredTenant_(tenants, name) {
+  var wanted = String(name || "").trim();
+  var list = Array.isArray(tenants) ? tenants : [];
+  for (var i = 0; i < list.length; i++) {
+    if (String(list[i].name || "").trim() === wanted) return list[i];
+  }
+  return null;
+}
+
+/**
+ * Whether the tenant's agreement covers this period.
+ *
+ * Deliberately *not* `isTenantInScheduleForPeriod_`: that also refuses a
+ * tenant whose record is marked inactive, which is right for "what should this
+ * tenant be billed now" and wrong here. A tenant who moved out in March still
+ * legitimately paid a February bill on our behalf, and recording it late — or
+ * correcting it a year later — has to stay possible. The agreement window is
+ * the honest boundary; the active flag is about today, not about history.
+ *
+ * A tenant with no window configured is covered for every period, which is how
+ * every existing tenant record behaves.
+ */
+function tenantAgreementCoversPeriod_(tenant, period) {
+  var t = tenant || {};
+  if (!isCanonicalPeriod_(period)) return false;
+  if (t.startPeriod && comparePeriods_(period, t.startPeriod) < 0) return false;
+  if (t.endPeriod && comparePeriods_(period, t.endPeriod) > 0) return false;
+  return true;
+}
+
+/**
+ * @param {object} input     the request
+ * @param {Array}  tenants   the configured tenant list, normalized
+ */
+function validateTenantPaidInput_(input, tenants) {
   var payload = input || {};
 
   if (!isCanonicalPeriod_(payload.period)) return "Davr noto'g'ri (masalan 2026-01).";
@@ -2226,6 +2277,17 @@ function validateTenantPaidInput_(input) {
   // no balance to credit, and choosing one would silently produce an entry
   // that cancels itself out and means nothing.
   if (isExpenseSourceName_(tenant)) return "Ijarachi tanlang — umumiy kassa bo'lmaydi.";
+
+  // A non-empty string is not a tenant. Until now any text at all was accepted
+  // and credited, which invents a balance nobody owes and quietly corrupts the
+  // debt figure the whole app is for.
+  var configured = findConfiguredTenant_(tenants, tenant);
+  if (!configured) return "Bunday ijarachi ro'yxatda yo'q: " + tenant;
+
+  // Backdating is legitimate; backdating outside the agreement is not.
+  if (!tenantAgreementCoversPeriod_(configured, payload.period)) {
+    return "Bu davr ijarachining shartnomasiga kirmaydi: " + tenant + " (" + payload.period + ").";
+  }
 
   var amount = Number(payload.amount);
   if (!isFinite(amount) || amount <= 0) return "Summa musbat raqam bo'lishi kerak.";
@@ -2266,7 +2328,7 @@ function tenantPaidComment_(half, tenant, purpose) {
  * the `duplicate` flag.
  */
 function createTenantPaidExpense_(doc, input) {
-  var validationError = validateTenantPaidInput_(input);
+  var validationError = validateTenantPaidInput_(input, configuredTenants_(doc));
   if (validationError) return { status: "error", message: validationError };
 
   var lock = LockService.getScriptLock();
@@ -5154,43 +5216,151 @@ function redactStoredLogValue_(value) {
   return redactHighEntropyValues_(redactSecrets_(value));
 }
 
+/** True for a sheet this cleanup created on some earlier run. */
+function isDebugLogBackupSheetName_(name) {
+  return String(name || "").indexOf(DEBUG_LOG_SHEET + "_Backup_") === 0;
+}
+
 /**
- * Copies Telegram_Debug_Log, then rewrites every Details cell through the
- * redactor. Reports how many rows changed; never returns a cell's contents.
+ * Redacts one sheet's Details column in place. Returns how many rows changed.
  *
- * Safe to run twice: a row already redacted comes back identical and is left
- * alone. The backup is made once per run and named for the minute it was taken.
+ * Reads and writes the whole column in two operations rather than one call per
+ * row: the live log is thousands of rows, and a per-row setValue is both slow
+ * enough to time out and non-atomic enough to leave a half-cleaned sheet
+ * behind if it does.
  */
-function purgeTelegramDebugSecrets_(doc) {
-  var sheet = doc.getSheetByName(DEBUG_LOG_SHEET);
-  if (!sheet || sheet.getLastRow() < 2) {
-    return { status: "success", rows: 0, redacted: 0, backupSheet: "" };
-  }
+function redactDebugSheetInPlace_(sheet) {
+  if (!sheet || sheet.getLastRow() < 2) return { rows: 0, redacted: 0 };
 
-  var lastRow = sheet.getLastRow();
-  var values = sheet.getRange(2, 1, lastRow - 1, 3).getValues();
-
-  var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyyMMdd_HHmmss");
-  var backupName = (DEBUG_LOG_SHEET + "_Backup_" + stamp).slice(0, 95);
-  var backup = doc.getSheetByName(backupName) || doc.insertSheet(backupName);
-  if (backup.getLastRow() === 0) backup.appendRow(["Timestamp", "Event", "Details"]);
-  backup.getRange(backup.getLastRow() + 1, 1, values.length, 3).setValues(values);
-
+  var rowCount = sheet.getLastRow() - 1;
+  var range = sheet.getRange(2, 3, rowCount, 1);
+  var details = range.getValues();
   var redacted = 0;
-  for (var i = 0; i < values.length; i++) {
-    var before = values[i][2];
+
+  for (var i = 0; i < details.length; i++) {
+    var before = String(details[i][0] === null || details[i][0] === undefined ? "" : details[i][0]);
     var after = redactStoredLogValue_(before);
-    if (after === String(before === null || before === undefined ? "" : before)) continue;
-    sheet.getRange(i + 2, 3).setValue(after);
+    if (after === before) continue;
+    details[i][0] = after;
     redacted++;
   }
 
+  if (redacted > 0) range.setValues(details);
+  return { rows: rowCount, redacted: redacted };
+}
+
+/**
+ * Removes historical credentials from Telegram_Debug_Log and from every backup
+ * an earlier run of this cleanup left behind.
+ *
+ * The order matters, and getting it wrong is why this was rewritten: copying
+ * the sheet first and redacting the original afterwards moves the leaked
+ * secret into a second tab rather than removing it. Nothing is copied until it
+ * has been through the redactor, so the backup is born clean and the raw value
+ * exists in exactly one place — the live sheet — right up to the moment it is
+ * overwritten.
+ *
+ * Backups from before this change are swept too, in place. A secret already
+ * duplicated into one of them is the same leak; leaving it there because this
+ * run did not create it would be pointless.
+ *
+ * Safe to run twice: a row already redacted comes back identical, is left
+ * alone, and produces no further backup. Reports counts only, never contents.
+ */
+function purgeTelegramDebugSecrets_(doc) {
+  var priorBackups = sweepDebugLogBackups_(doc);
+  var sheet = doc.getSheetByName(DEBUG_LOG_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) {
+    return {
+      status: "success", rows: 0, redacted: 0, backupSheet: "",
+      backupsSwept: priorBackups.sheets, backupRowsRedacted: priorBackups.redacted
+    };
+  }
+
+  var rowCount = sheet.getLastRow() - 1;
+  var values = sheet.getRange(2, 1, rowCount, 3).getValues();
+
+  // Redact first, in memory. `values` holds no secret from here on, so it is
+  // safe to write anywhere.
+  var redacted = 0;
+  for (var i = 0; i < values.length; i++) {
+    var before = String(values[i][2] === null || values[i][2] === undefined ? "" : values[i][2]);
+    var after = redactStoredLogValue_(before);
+    if (after === before) continue;
+    values[i][2] = after;
+    redacted++;
+  }
+
+  // A run that found nothing to redact has nothing worth backing up either,
+  // and a backup per no-op run is just more sheets to audit later.
+  var backupName = "";
+  if (redacted > 0) {
+    var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyyMMdd_HHmmss");
+    backupName = (DEBUG_LOG_SHEET + "_Backup_" + stamp).slice(0, 95);
+    var backup = doc.getSheetByName(backupName) || doc.insertSheet(backupName);
+    if (backup.getLastRow() === 0) backup.appendRow(["Timestamp", "Event", "Details"]);
+    backup.getRange(backup.getLastRow() + 1, 1, values.length, 3).setValues(values);
+
+    sheet.getRange(2, 1, rowCount, 3).setValues(values);
+  }
+
   appendAuditRow_(doc, "telegram_debug_log_redacted", JSON.stringify({
-    rows: values.length, redacted: redacted, backupSheet: backupName
+    rows: rowCount, redacted: redacted, backupSheet: backupName,
+    backupsSwept: priorBackups.sheets, backupRowsRedacted: priorBackups.redacted
   }));
   recordLastOperation_(doc, "purge_telegram_debug_secrets");
 
-  return { status: "success", rows: values.length, redacted: redacted, backupSheet: backupName };
+  return {
+    status: "success", rows: rowCount, redacted: redacted, backupSheet: backupName,
+    backupsSwept: priorBackups.sheets, backupRowsRedacted: priorBackups.redacted
+  };
+}
+
+/** Redacts every backup sheet an earlier cleanup created. */
+function sweepDebugLogBackups_(doc) {
+  var sheets = doc.getSheets();
+  var swept = [];
+  var redacted = 0;
+
+  for (var i = 0; i < sheets.length; i++) {
+    var name = sheets[i].getName();
+    if (!isDebugLogBackupSheetName_(name)) continue;
+    var result = redactDebugSheetInPlace_(sheets[i]);
+    swept.push(name);
+    redacted += result.redacted;
+  }
+
+  return { sheets: swept, redacted: redacted };
+}
+
+/**
+ * What a reader of the sheet could still find, as counts and sheet names.
+ *
+ * Deliberately reports only how many rows still look like they carry a
+ * credential — printing the offending row would defeat the point of the
+ * cleanup that produced this number.
+ */
+function auditTelegramSecretExposure_(doc) {
+  var sheets = doc.getSheets();
+  var findings = [];
+  var total = 0;
+
+  for (var i = 0; i < sheets.length; i++) {
+    var name = sheets[i].getName();
+    if (name !== DEBUG_LOG_SHEET && !isDebugLogBackupSheetName_(name)) continue;
+    if (sheets[i].getLastRow() < 2) continue;
+
+    var details = sheets[i].getRange(2, 3, sheets[i].getLastRow() - 1, 1).getValues();
+    var dirty = 0;
+    for (var r = 0; r < details.length; r++) {
+      var before = String(details[r][0] === null || details[r][0] === undefined ? "" : details[r][0]);
+      if (redactStoredLogValue_(before) !== before) dirty++;
+    }
+    if (dirty > 0) findings.push({ sheet: name, rows: dirty });
+    total += dirty;
+  }
+
+  return { status: "success", clean: total === 0, exposedRows: total, sheets: findings };
 }
 
 // ------------------------------------------------------ webhook secret rotation
@@ -8738,8 +8908,9 @@ function doPost(e) {
     // The financial ledger, the tenant list and the whole café state are the
     // business's private data. get_omad / get_cafe still answer an anonymous
     // GET for one release so the deployed frontend cannot break between the
-    // Netlify and Apps Script rollouts; these are what the UI now calls, and
-    // the anonymous routes are removed once this is confirmed live.
+    // static-host and Apps Script rollouts; these are what the UI now calls,
+    // and the anonymous routes are removed once the live host serves the
+    // current build.
     if (action === 'verify_access' || action === 'get_omad_data' || action === 'get_cafe_data') {
       return authenticatedReadAction_(action, payload, doc, configSheet);
     }
@@ -8872,8 +9043,8 @@ function doGet(e) {
   if (!configSheet) return jsonOutput_({ status: "empty" });
 
   // Deprecated, and reachable by anyone who knows the URL. Kept for exactly one
-  // release so the deployed frontend keeps working while Netlify and Apps
-  // Script roll out separately; get_omad_data / get_cafe_data are the
+  // release so the deployed frontend keeps working while the static host and
+  // Apps Script roll out separately; get_omad_data / get_cafe_data are the
   // authenticated replacements and the UI already calls them.
   if (action === 'get_omad') {
     return jsonOutput_(readOmadPayload_(doc, configSheet));
@@ -9013,6 +9184,7 @@ function isMaintenanceAction_(action) {
          action === 'fix_transaction_dates' ||
          action === 'backfill_entry_group_ids' ||
          action === 'purge_telegram_debug_secrets' ||
+         action === 'audit_telegram_secret_exposure' ||
          action === 'rotate_telegram_webhook_secret';
 }
 
@@ -9038,6 +9210,9 @@ function maintenanceAction_(action, payload, doc) {
   }
   if (action === 'purge_telegram_debug_secrets') {
     return jsonOutput_(purgeTelegramDebugSecrets_(doc));
+  }
+  if (action === 'audit_telegram_secret_exposure') {
+    return jsonOutput_(auditTelegramSecretExposure_(doc));
   }
   return jsonOutput_(rotateTelegramWebhookSecret_(payload));
 }
@@ -9824,7 +9999,16 @@ function miniTaskAction_(doc, payload, auth) {
 var TELEGRAM_PROP_MINI_APP_URL = "TELEGRAM_MINI_APP_URL";
 var TELEGRAM_PROP_MINI_APP_STATUS = "TELEGRAM_MINI_APP_STATUS";
 
-var DEFAULT_MINI_APP_URL = "https://omad-d.netlify.app/mini";
+/**
+ * There is deliberately no default Mini App URL.
+ *
+ * There used to be one, pointing at the Netlify host. A default is worse than
+ * nothing here: the frontend host changes, the constant does not, and the menu
+ * button then silently installs a URL that 404s — which looks configured and
+ * is not. The operator supplies the production `/mini` URL once, it is stored,
+ * and every later run reuses the stored value.
+ */
+var DEFAULT_MINI_APP_URL = "";
 var MINI_APP_MENU_BUTTON_TEXT = "📊 Omad";
 
 var HEALTH_OK = "ok";
@@ -9865,6 +10049,12 @@ function configureMiniApp_(payload) {
   var url = String((payload && payload.miniAppUrl) || "").trim() ||
             getTelegramSetting_(TELEGRAM_PROP_MINI_APP_URL) ||
             DEFAULT_MINI_APP_URL;
+  if (!url) {
+    return {
+      status: "error",
+      message: "Mini App manzili kiritilmagan. Frontend manzilini /mini bilan kiriting."
+    };
+  }
   if (!/^https:\/\/[^\s]+$/.test(url)) {
     return { status: "error", message: "Mini App manzili https:// bilan boshlanishi kerak." };
   }
@@ -9996,7 +10186,7 @@ function rolloutGraceCheck_() {
     return check_("grace", "Kalit himoyasi", HEALTH_OK, "To'liq yoqilgan");
   }
   return check_("grace", "Kalit himoyasi", HEALTH_WARN,
-    "Eski frontend uchun vaqtincha ochiq. Netlify yangilangach " +
+    "Eski frontend uchun vaqtincha ochiq. Yangi frontend ishga tushgach " +
     "LEGACY_CLIENT_GRACE = false qiling");
 }
 

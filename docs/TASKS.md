@@ -17,8 +17,10 @@ source-level guard in `tests/static-analysis.test.js` enforce that. What the
 private bot *may* do is file a new task, through the
 [`📋 Vazifa` wizard](#creating-a-task-from-the-bot).
 
-Live URL: **<https://omad-d.netlify.app/tasks>** (served from `tasks.html` via
-the `netlify.toml` rewrite).
+Live URL: **`https://<production-host>/tasks`**, served from `tasks.html`.
+Netlify needed the `netlify.toml` rewrite for that clean path; Cloudflare Pages
+serves it without any configuration. See `docs/LIVE_STATE.md` for which host is
+actually live — as of 2026-08-12 no host serves the current build.
 
 ## What it does
 

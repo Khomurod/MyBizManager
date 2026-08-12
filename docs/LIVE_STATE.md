@@ -3,7 +3,8 @@
 What is actually running, as opposed to what the design documents describe.
 Update this file whenever the live system changes.
 
-**Last verified: 2026-08-11.**
+**Last verified: 2026-08-12** (frontend hosts, Telegram configuration and the
+anonymous-endpoint exposure re-checked directly against the live systems).
 
 ---
 
@@ -22,17 +23,26 @@ sheet. Do not run `cutover_omad_migration` without a separate, approved plan.
 
 ---
 
-## ⚠️ Netlify is not deploying `main`
+## ⚠️ No frontend host is serving the current build
 
-**Checked 2026-08-12 13:2x.** <https://omad-d.netlify.app> is serving the
-frontend from *before* PR #19 — `assets/omad/08-entry.js` is byte-identical to
-the pre-change file and contains none of the group-id work, and `login.html`
-has no access-key field. Deploy **previews** build fine
-(`deploy-preview-22--omad-d.netlify.app` serves the new pages), so the build
-works; production publishing from `main` is not happening.
+**Re-checked 2026-08-12 15:2x, independently, against the live systems.**
+
+| Host | State |
+|---|---|
+| Netlify (`omad-d.netlify.app`) | **Serving, but stale.** `/assets/omad/06-api.js` does not contain `omad_access_key`; `/mini` returns 404 |
+| Cloudflare Pages | **Not found.** No Pages project is connected to `Khomurod/MyBizManager` |
+| GitHub Pages | **Off.** `khomurod.github.io/MyBizManager` returns 404 |
+
+How the Cloudflare conclusion was reached, so it can be re-checked rather than
+believed: the Cloudflare Pages GitHub App creates a GitHub *deployment* and a
+*check run* on every build. The repository has 22 deployments and every one of
+them was created by `github-actions` (the Apps Script deploy) or by the old
+`github-pages` app — none by Cloudflare — and the four check runs on `main` are
+all CI jobs. Nothing in the repository references Cloudflare either: there is no
+`wrangler.toml`, no `_headers`, no `_redirects`.
 
 This matters because the two halves deploy separately. CI pushes Apps Script
-within a minute of a merge; Netlify evidently does not. When the backend
+within a minute of a merge; the static host evidently does not. When the backend
 started requiring an access key and the browser had not learned to send one,
 **every save failed** — no rent recorded, no café sale rung up.
 
@@ -54,12 +64,22 @@ check reports a warning until it is.
 
 ### To close it
 
-1. Get Netlify publishing `main` again (check the site's *Build & deploy →
-   Continuous deployment* settings — auto-publishing may be stopped).
-2. Confirm with:
-   `curl -s https://omad-d.netlify.app/assets/omad/06-api.js | grep -c omad_access_key`
-   — it should print `1`, not `0`.
-3. Set `LEGACY_CLIENT_GRACE = false` and merge. Everything then requires the key.
+The order is not negotiable: closing the grace before a current frontend is
+live takes the whole application down — reads *and* writes — for a business
+that is using it daily.
+
+1. Get some host publishing `main`. Netlify's free build credits are spent, so
+   the intended replacement is a Cloudflare Pages project connected to
+   `Khomurod/MyBizManager` with production branch `main`. Pages serves
+   `mini.html` and `tasks.html` at `/mini` and `/tasks` without any config, so
+   `netlify.toml` does not need reproducing.
+2. Confirm the live host actually serves the current build — do not infer it
+   from a green merge:
+   `curl -s https://<production-host>/assets/omad/06-api.js | grep -c omad_access_key`
+   must print `1`, and `https://<production-host>/mini` must not 404.
+3. Sign in on that host, load Omad and Café, save one entry, and reverse it.
+4. Only then set `LEGACY_CLIENT_GRACE = false`, delete the anonymous
+   `get_omad` / `get_cafe` routes, and merge.
 
 ## Signing in now needs the access key
 
@@ -88,8 +108,8 @@ The Telegram bot is unaffected: it is authorized by the webhook secret and
 
 ## The Telegram Mini App
 
-A phone-first app at <https://omad-d.netlify.app/mini>, opened from the bot's
-menu button. It is reachable **only** by the Telegram user in
+A phone-first app served at `/mini` by whichever host serves the frontend,
+opened from the bot's menu button. It is reachable **only** by the Telegram user in
 `TELEGRAM_AUTHORIZED_USER_ID` — the same setting that already decides who may
 run `/yangi`. There is no second user list.
 
@@ -98,8 +118,11 @@ Two things to know:
 1. **Setting it up is one button.** Sozlamalar → Tizim → *Mini Appni Sozlash*
    installs the menu button through the Bot API and verifies it. Nothing has to
    be typed into BotFather.
-2. **It has not been configured against the live bot yet** — that button needs
-   the admin key.
+2. **It has not been configured against the live bot yet.** Confirmed on
+   2026-08-12: `get_telegram_settings` reports `miniAppUrl` empty and
+   `miniAppStatus` null, so no menu button has ever been installed. Nothing
+   points at Netlify, so nothing needs un-pointing — the URL to supply is the
+   new production host's `/mini`. That button needs the admin key.
 
 Opened in an ordinary browser it shows one sentence and asks the server for
 nothing.
@@ -116,7 +139,7 @@ detected rather than discovered weeks later.
 
 | Piece | Value |
 |---|---|
-| Frontend | <https://omad-d.netlify.app> — Netlify, auto-deploys `main` |
+| Frontend | **Unsettled.** Netlify (`omad-d.netlify.app`) still answers but serves a stale build and no longer deploys `main`; the intended replacement is Cloudflare Pages, which was not connected as of 2026-08-12 |
 | Apps Script project | **LIVE** (renamed from "Untitled project") |
 | Script ID | `1afG6M-…9fgsWcpG` — full value only in the `CLASP_JSON` secret |
 | Google Sheet | `1Q9_v2PrusZimoAjqbOUmHkW_NzDiV0z_8Wtr-v963CA` ("Budgeting app") |

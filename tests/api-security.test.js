@@ -10,7 +10,7 @@
  *
  * These tests are the inventory of what is now closed, and of the two reads
  * deliberately left open for one release so the deployed frontend cannot break
- * while Netlify and Apps Script roll out separately.
+ * while the static host and Apps Script roll out separately.
  */
 
 const test = require('node:test');
@@ -182,7 +182,7 @@ test('the authenticated read returns exactly what the legacy GET returns', () =>
 
 test('the anonymous GET routes still answer, for exactly one release', () => {
   const gas = boot();
-  // Deliberate: Netlify and Apps Script deploy separately, so removing these
+  // Deliberate: the static host and Apps Script deploy separately, so removing these
   // in the same change could leave the live frontend calling a route that no
   // longer exists. They are removed once the new path is confirmed live.
   const omad = JSON.parse(gas.doGet({ parameter: { action: 'get_omad' } }).__text);

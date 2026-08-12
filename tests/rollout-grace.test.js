@@ -3,7 +3,7 @@
 /**
  * The compatibility window between the two deploys.
  *
- * Netlify serves the frontend from `main` and CI deploys Apps Script from
+ * The static host serves the frontend from `main` and CI deploys Apps Script from
  * `main`, but they are not the same pipeline and do not land together. When
  * the backend started requiring an access key and the browser had not yet
  * learned to send one, every save failed — no rent recorded, no café sale rung

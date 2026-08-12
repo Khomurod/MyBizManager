@@ -282,7 +282,8 @@ Mini App manzilini BotFather'da qo'lda saqlash **shart emas**.
 5. webhook holatini tekshiradi;
 6. Mini App tayyor yoki yo'qligini aytadi.
 
-Manzil odatda `https://omad-d.netlify.app/mini`.
+Manzil — sayt qaysi hostda bo'lsa, o'shaning `/mini` sahifasi
+(masalan `https://<sayt-manzili>/mini`).
 
 ---
 
