@@ -56,6 +56,7 @@ file for file. See [DEPLOYMENT.md](DEPLOYMENT.md).
 | `13_migration.gs` | Period migration: preview, apply, verify, cutover, rollback |
 | `14_ledger.gs` | Append-only ledger: create / correct / cancel / read / audit |
 | `15_system_status.gs` | Backups, queue, migration state, audit tail, safe diagnostics |
+| `15a_maintenance.gs` | Operator repairs: historical dates, debug-log secrets, webhook secret rotation |
 | `16_tasks_recurrence.gs` | Task module: Asia/Tashkent time + recurrence engine (pure) |
 | `17_tasks_store.gs` | Task module: `Tasks`/`Task_Occurrences` sheets, occurrences, views |
 | `18_tasks_service.gs` | Task module: isolated Telegram namespace (`t_done:`, photo proof) |
@@ -131,6 +132,38 @@ Column A = key, column B = a JSON string.
 | 9 | `Comment` | free text |
 | 10 | `Telegram_Msg_ID` | group message id, for later edit/delete |
 | 11 | `Request_ID` | idempotency key; empty on legacy rows |
+| 12 | `Entry_Group_ID` | the business action this row belongs to (see below) |
+
+### Entry groups
+
+One business action can be several accounting rows: two currencies on one
+payment, or the income/expense pair of a tenant-paid expense. Every row keeps
+its own transaction id; the rows that belong together share one immutable
+**`Entry_Group_ID`**.
+
+The group id is **stored, never inferred**. Timestamps collide, and the
+`<epochMillis>_<n>` id prefix cannot express a group whose rows were written
+under different id bases — which is exactly what a two-sided entry needs. The
+client generates the id once per business action and keeps it in
+`sessionStorage`, so a retry lands in the same group instead of opening a
+second one; an edit reuses the group it is editing.
+
+| Where | Value |
+|---|---|
+| Web entry | `grp_web_<millis>_<random>`, generated once per submission |
+| Telegram `/yangi` | `grp_<uuid>`, one per conversation |
+| Ledger `create_transaction` | the supplied `groupId`, or a fresh `grp_<uuid>` |
+| Rows written before the column | `grp_legacy_<idBase>` |
+
+The last row is the only inference, and it exists solely so rows that predate
+the column have a stable identity. It is deterministic, so reads resolve it in
+memory and `backfill_entry_group_ids` writes exactly the same value into the
+sheet — running it twice changes nothing. A row that already carries a group id
+is never re-grouped.
+
+Reporting, editing, cancellation and history all resolve rows through the group
+id. Queued report jobs carry both `groupId` and the old `baseId`, so a job
+sitting on `Omad_Job_Queue` across a deploy still finds its rows.
 
 ### Other sheets
 
@@ -178,6 +211,11 @@ Secrets and configuration that must never reach the browser.
 | `retry_failed_jobs` | **yes** | Puts failed jobs back in the queue |
 | `save_inventory`, `save_recipe`, `save_categories`, `save_cafe_settings` | no | Café admin |
 | `save_sale`, `void_sale`, `close_day` | no | Café POS |
+| `audit_transaction_dates` | **yes** | Classifies every Date cell against the date its id proves. Writes nothing |
+| `fix_transaction_dates` | **yes** | Corrects only provably transposed dates. `dryRun` reports without writing |
+| `backfill_entry_group_ids` | **yes** | Writes the deterministic group id onto rows that predate the column |
+| `purge_telegram_debug_secrets` | **yes** | Copies `Telegram_Debug_Log`, then re-redacts every row in place |
+| `rotate_telegram_webhook_secret` | **yes** | New verification secret, `setWebhook`, verify, or roll back |
 
 `doGet` supports `action=get_omad` and `action=get_cafe`.
 
@@ -330,13 +368,20 @@ Financial records are never rewritten in place and never deleted.
 | 20 | `Related_ID` | the transaction this one corrects |
 | 21 | `Telegram_Msg_ID` | group message id |
 | 22 | `Schema_Version` | `2` |
+| 23 | `Entry_Group_ID` | the business action this row belongs to |
+
+`Entry_Group_ID` was added while `Omad_Transactions_V2` had never existed in
+any spreadsheet, so there is no earlier shape of this schema in the wild and
+the version stays at 2. `ledgerSheet_` upgrades a 22-column header in place
+anyway, and reads fall back to the deterministic derivation, so a sheet created
+by an older build keeps working.
 
 ### Operations
 
 | Action | Effect |
 |---|---|
 | `create_transaction` | Appends one `Active` row. Idempotent on `Request_ID` |
-| `correct_transaction` | Marks the original `Corrected` and appends a replacement whose `Related_ID` points back at it. The original's values are untouched |
+| `correct_transaction` | Appends the replacement, then marks the original `Corrected`. The original's values are untouched |
 | `cancel_transaction` | Marks the row `Cancelled`. Nothing is removed |
 | `list_transactions` | `Active` rows only, optionally filtered by period / tenant / type |
 | `get_transaction` | One row, whatever its status |
@@ -345,6 +390,29 @@ Financial records are never rewritten in place and never deleted.
 All writes take the script lock. Correcting an already-corrected or cancelled
 record is refused rather than silently applied. Cancelling twice is the same
 outcome as cancelling once.
+
+#### Why a correction writes the replacement first
+
+Marking the original `Corrected` first — which is what this used to do — meant
+a failure between the two writes left the original hidden with no replacement:
+money that silently disappeared from every figure the business acts on, in the
+one operation the append-only design exists to make safe.
+
+Writing the replacement first cannot lose money. For as long as the second
+write takes it could double-count it, so a failure marks the replacement
+**`Void`** and reports the correction as failed. The reachable outcomes are
+therefore:
+
+| | Result |
+|---|---|
+| both writes land | corrected, one `Active` row |
+| the status write fails | replacement `Void`, original still `Active` — nothing changed |
+| the rollback *also* fails | two `Active` rows and an audit row naming both ids |
+
+Never a hidden original. `Void` rows are excluded from every read exactly as
+`Cancelled` ones are, and are skipped when a retry looks its request id up — so
+resubmitting a failed correction succeeds rather than replaying the discarded
+attempt.
 
 ### Backward-compatible reads
 
@@ -479,6 +547,61 @@ the reporting month. Cancelled and corrected records are excluded everywhere.
 
 Projections are a plan, not money that moved: a planned expense is never
 counted as paid, and projection and actual figures are never summed together.
+
+## Historical repairs
+
+Three operator-run repairs live in `15a_maintenance.gs`. None of them runs on
+its own, all of them take the admin key, all of them back up before writing,
+and all of them are safe to run twice.
+
+### Transposed dates
+
+Older rows show day and month swapped, because the app wrote `05/08/2026` as
+text and the spreadsheet read it back through a MM/DD locale. Writes have since
+been fixed and the `Month`/period column — not this one — drives every figure,
+so the damage is cosmetic.
+
+It is repairable **without guessing** because the transaction id is
+`<epochMillis>_<n>` and the app has only ever written *today's* date: the id
+records the instant the row was created, so the correct date is that instant in
+the script timezone. A row is corrected only when swapping the stored day and
+month reproduces the id's date exactly.
+
+| Case | Action |
+|---|---|
+| stored date == the id's date | left alone |
+| swapping day and month gives the id's date | corrected |
+| any other disagreement | reported, never touched |
+| id has no usable epoch prefix | reported, never touched |
+
+`audit_transaction_dates` classifies and writes nothing;
+`fix_transaction_dates` corrects only the second row of that table, after a
+full backup, writing a real date value rather than text.
+
+### Debug-log secrets
+
+Request bodies are no longer logged, so the webhook secret cannot reach
+`Telegram_Debug_Log` any more. Rows written *before* that change can still
+contain it. `purge_telegram_debug_secrets` copies the sheet to
+`Telegram_Debug_Log_Backup_<stamp>` and then re-redacts every `Details` cell
+through `redactSecrets_` plus a blunt "32+ hex characters" rule — the webhook
+secret is two UUIDs with the dashes removed, so a bare occurrence with no
+`wh=` or `secret_token` context around it is caught too. Losing a long hex
+identifier from a debug log costs nothing; keeping a secret costs everything.
+
+### Webhook secret rotation
+
+`rotate_telegram_webhook_secret` mints a new secret, points Telegram at it and
+verifies with `getWebhookInfo`. The **previous secret stays accepted for the
+length of the rotation** (`TELEGRAM_WEBHOOK_SECRET_PREVIOUS`), which removes
+the race: between storing the new value and Telegram learning it, an update
+signed with either verifies. It is cleared the moment the new webhook is
+confirmed.
+
+If `setWebhook` fails or Telegram will not confirm, the old secret is restored
+*and the webhook is re-pointed at it*, so a failed rotation leaves the bot
+exactly as it was rather than deaf. The secret is never returned to the browser
+and never written to a log.
 
 ## Known limitations (not addressed by this change)
 

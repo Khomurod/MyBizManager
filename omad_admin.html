@@ -525,6 +525,22 @@
             </div>
 
             <div class="card">
+                <h3 class="font-bold mb-1 text-slate-700">Ma'lumotlarni Tuzatish</h3>
+                <p class="text-[11px] text-slate-400 mb-3">
+                    Eski yozuvlardagi sana xatosini tuzatadi va guruh ID'larini to'ldiradi.
+                    Faqat tranzaksiya ID'si bilan isbotlangan sanalar o'zgartiriladi.
+                </p>
+                <div id="maintenanceStatus" class="text-[11px] text-slate-500 mb-3"></div>
+                <div class="grid grid-cols-2 gap-2">
+                    <button onclick="auditTransactionDates()" class="py-2 bg-slate-800 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">1. Sanalarni Tekshirish</button>
+                    <button onclick="fixTransactionDates()" class="py-2 bg-slate-800 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">2. Sanalarni Tuzatish</button>
+                    <button onclick="backfillEntryGroups()" class="py-2 bg-slate-800 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">Guruh ID'lari</button>
+                    <button onclick="purgeTelegramLogSecrets()" class="py-2 bg-slate-800 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">Loglarni Tozalash</button>
+                </div>
+                <button onclick="rotateWebhookSecret()" class="w-full mt-2 py-2 bg-amber-600 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">Webhook Kalitini Almashtirish</button>
+            </div>
+
+            <div class="card">
                 <h3 class="font-bold mb-3 text-slate-700">Oxirgi Amallar</h3>
                 <div id="auditList" class="space-y-1 text-[11px] text-slate-500 max-h-64 overflow-y-auto"></div>
             </div>

@@ -17,8 +17,11 @@ var OMAD_ACTIVE_TX_SHEET_KEY = "Omad_Active_Transactions_Sheet";
 
 var OMAD_TRANSACTION_HEADER = [
   "ID", "Tenant", "Month", "Type", "Amount", "Currency", "Method", "Date", "Comment",
-  "Telegram_Msg_ID", "Request_ID"
+  "Telegram_Msg_ID", "Request_ID", "Entry_Group_ID"
 ];
+
+/** Column 12. One business action's rows all carry the same value. */
+var OMAD_GROUP_ID_COLUMN = 12;
 
 function ensureOmadTransactionHeader_(sheet) {
   var header = OMAD_TRANSACTION_HEADER;
@@ -27,8 +30,8 @@ function ensureOmadTransactionHeader_(sheet) {
     return;
   }
   var firstRow = sheet.getRange(1, 1, 1, header.length).getValues()[0];
-  // Upgrades a legacy 10-column header in place; existing rows keep their data
-  // and simply carry an empty Request_ID.
+  // Upgrades a legacy 10- or 11-column header in place; existing rows keep
+  // their data and simply carry an empty Request_ID / Entry_Group_ID.
   if (firstRow[0] !== "ID" || firstRow[header.length - 1] !== header[header.length - 1]) {
     sheet.getRange(1, 1, 1, header.length).setValues([header]);
   }
@@ -70,11 +73,55 @@ function applyTransactionColumnFormats_(sheet, startRow, numRows, sheetName) {
   sheet.getRange(startRow, 8, numRows, 1).setNumberFormat("dd/MM/yyyy");
 }
 
+// ------------------------------------------------------------- entry groups
+//
+// A business action can be several accounting rows: two currencies on one
+// payment, or the tenant-paid-on-our-behalf pair that is one income and one
+// expense. Every row keeps its own transaction id; the rows that belong
+// together share one immutable Entry_Group_ID.
+//
+// The group id is *stored*, never inferred. Timestamps collide, and the
+// "<epochMillis>_<n>" id prefix cannot express a group whose rows were written
+// at different times or under different ids. The only exception is the
+// deterministic backfill below, which exists solely to give rows written before
+// the column existed a stable identity.
+
+var OMAD_GROUP_ID_PREFIX = "grp_";
+var OMAD_LEGACY_GROUP_ID_PREFIX = "grp_legacy_";
+
+/** A fresh, immutable group id for one new business action. */
+function newEntryGroupId_() {
+  return OMAD_GROUP_ID_PREFIX + Utilities.getUuid().split("-").join("");
+}
+
+/**
+ * The group id for a row that predates the column.
+ *
+ * Deterministic, so running the backfill twice — or backfilling a row that a
+ * report job already resolved in memory — always produces the same value. The
+ * base of "<epochMillis>_<n>" is what the whole-list save has always used to
+ * keep the lines of one entry together, so this preserves exactly the grouping
+ * the data already had, without ever being consulted for a row that carries a
+ * real stored group id.
+ */
+function legacyEntryGroupId_(transactionId) {
+  var base = String(transactionId === null || transactionId === undefined ? "" : transactionId).split("_")[0];
+  if (!base) return "";
+  return OMAD_LEGACY_GROUP_ID_PREFIX + base;
+}
+
+/** The stored group id, or the deterministic backfill when there is none. */
+function resolveEntryGroupId_(transaction) {
+  var stored = String((transaction && transaction.groupId) || "").trim();
+  if (stored) return stored;
+  return legacyEntryGroupId_(transaction && transaction.id);
+}
+
 function transactionToRow_(t) {
   return [
     t.id, t.tenant, t.month, t.type, t.amount, t.currency, t.method,
     toSheetDateValue_(t.date),
-    t.comment || "", t.msgId || "", t.requestId || ""
+    t.comment || "", t.msgId || "", t.requestId || "", t.groupId || ""
   ];
 }
 
@@ -104,7 +151,11 @@ function normalizeTransaction_(raw) {
     date: t.date || Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy"),
     comment: t.comment || "",
     msgId: t.msgId || "",
-    requestId: String(t.requestId || "")
+    requestId: String(t.requestId || ""),
+    // Preserved when the caller supplies one, derived deterministically when it
+    // does not, so a row written before the column existed still resolves to a
+    // stable group instead of to "".
+    groupId: resolveEntryGroupId_(t)
   };
 }
 
@@ -152,6 +203,11 @@ function readTransactionsFromSheet_(doc, sheetName) {
       // Legacy 10-column rows simply have no request id.
       requestId: data[i].length > 10 ? data[i][10] : ""
     };
+    // Rows written before the column existed resolve to their deterministic
+    // group id in memory, so every reader sees a group whether or not the
+    // backfill has been run against the sheet.
+    transaction.groupId = String((data[i].length > 11 ? data[i][11] : "") || "").trim() ||
+      legacyEntryGroupId_(transaction.id);
     var resolved = resolveTransactionPeriod_(transaction, fallbackYear);
     transaction.period = resolved.period;
     transaction.periodSource = resolved.source;
@@ -171,7 +227,31 @@ function findTransactionByRequestId_(doc, requestId) {
   return null;
 }
 
-/** Transactions whose id is "<baseId>" or "<baseId>_<n>". */
+/**
+ * Every row of one business action, found by its stored group id.
+ *
+ * This is the grouping reporting, editing, cancellation and history use. It
+ * asks the data what belongs together rather than deducing it from an id
+ * shape, which is what lets one entry span two transaction types.
+ */
+function findTransactionsByGroupId_(doc, groupId) {
+  var wanted = String(groupId || "").trim();
+  if (!wanted) return [];
+  var all = readOmadTransactions_(doc);
+  var group = [];
+  for (var i = 0; i < all.length; i++) {
+    if (String(all[i].groupId || "") === wanted) group.push(all[i]);
+  }
+  return group;
+}
+
+/**
+ * Transactions whose id is "<baseId>" or "<baseId>_<n>".
+ *
+ * Kept for queued jobs written before group ids existed: a job sitting on
+ * Omad_Job_Queue across the deploy carries only a baseId, and must still find
+ * its rows. New work goes through findTransactionsByGroupId_.
+ */
 function findTransactionGroup_(doc, baseId) {
   var all = readOmadTransactions_(doc);
   var group = [];
@@ -181,6 +261,68 @@ function findTransactionGroup_(doc, baseId) {
     if (id === String(baseId) || id.indexOf(prefix) === 0) group.push(all[i]);
   }
   return group;
+}
+
+/**
+ * Appends several rows of one business action in a single write.
+ *
+ * One setValues call is one spreadsheet operation: either every row of the
+ * group lands or none of them does. That is what makes a two-entry action —
+ * the tenant-paid-on-our-behalf pair — impossible to half-create.
+ */
+function appendOmadTransactionGroup_(doc, transactions) {
+  var rows = Array.isArray(transactions) ? transactions : [];
+  if (rows.length === 0) return [];
+
+  var sheetName = activeTransactionSheetName_(doc);
+  var txSheet = doc.getSheetByName(sheetName) || doc.insertSheet(sheetName);
+  ensureOmadTransactionHeader_(txSheet);
+
+  var normalized = [];
+  var values = [];
+  for (var i = 0; i < rows.length; i++) {
+    var transaction = normalizeTransaction_(rows[i]);
+    normalized.push(transaction);
+    values.push(transactionToRow_(transaction));
+  }
+
+  var startRow = txSheet.getLastRow() + 1;
+  applyTransactionColumnFormats_(txSheet, startRow, values.length, sheetName);
+  txSheet.getRange(startRow, 1, values.length, OMAD_TRANSACTION_HEADER.length).setValues(values);
+  return normalized;
+}
+
+/**
+ * Writes the deterministic group id onto rows that predate the column.
+ *
+ * Idempotent: a row that already carries a group id is left exactly as it is,
+ * so this can be run repeatedly and can never re-group anything.
+ */
+function backfillEntryGroupIds_(doc) {
+  var sheetName = activeTransactionSheetName_(doc);
+  if (sheetName === OMAD_TRANSACTIONS_V2_SHEET) return backfillLedgerEntryGroupIds_(doc);
+
+  var txSheet = doc.getSheetByName(sheetName);
+  if (!txSheet || txSheet.getLastRow() < 2) return { status: "success", filled: 0, alreadySet: 0 };
+
+  ensureOmadTransactionHeader_(txSheet);
+  var data = txSheet.getDataRange().getValues();
+  var filled = 0;
+  var alreadySet = 0;
+
+  for (var i = 1; i < data.length; i++) {
+    var id = data[i][0];
+    if (id === "" || id === null || id === undefined) continue;
+    var current = String((data[i].length > 11 ? data[i][11] : "") || "").trim();
+    if (current) { alreadySet++; continue; }
+    var derived = legacyEntryGroupId_(id);
+    if (!derived) continue;
+    txSheet.getRange(i + 1, OMAD_GROUP_ID_COLUMN).setValue(derived);
+    filled++;
+  }
+
+  if (filled > 0) appendAuditRow_(doc, "entry_group_ids_backfilled", String(filled));
+  return { status: "success", filled: filled, alreadySet: alreadySet };
 }
 
 function safeRewriteOmadTransactions_(doc, incomingTransactions) {

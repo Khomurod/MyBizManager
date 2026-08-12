@@ -107,6 +107,8 @@ function storedSecretValues_() {
   var names = [
     TELEGRAM_PROP_BOT_TOKEN,
     TELEGRAM_PROP_WEBHOOK_SECRET,
+    // The outgoing secret during a rotation is still a secret.
+    TELEGRAM_PROP_WEBHOOK_SECRET_PREVIOUS,
     OMAD_PROP_ADMIN_KEY
   ];
   var values = [];
@@ -193,7 +195,8 @@ function buildTelegramSettingsView_() {
     lastError: safeParseJSON_(getTelegramSetting_(TELEGRAM_PROP_LAST_ERROR), null),
     adminKeyConfigured: !!getTelegramSetting_(OMAD_PROP_ADMIN_KEY),
     // Whether a webhook verification secret exists - never the secret itself.
-    webhookSecretConfigured: !!getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_SECRET)
+    webhookSecretConfigured: !!getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_SECRET),
+    webhookSecretRotatedAt: getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_ROTATED_AT)
   };
 }
 

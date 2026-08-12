@@ -36,12 +36,27 @@ var LEDGER_HEADER = [
   "Status",             // 19 Active | Corrected | Cancelled
   "Related_ID",         // 20 the transaction this one corrects
   "Telegram_Msg_ID",    // 21 group message id
-  "Schema_Version"      // 22
+  "Schema_Version",     // 22
+  "Entry_Group_ID"      // 23 the business action this row belongs to
 ];
+
+/** Column 23. Shared by every row of one business action. */
+var LEDGER_GROUP_ID_COLUMN = 23;
 
 var TX_STATUS_ACTIVE = "Active";
 var TX_STATUS_CORRECTED = "Corrected";
 var TX_STATUS_CANCELLED = "Cancelled";
+/**
+ * A row that was written but never counted.
+ *
+ * A correction writes its replacement first and only then hides the original.
+ * If hiding the original fails, the replacement is marked Void and the whole
+ * correction is reported as failed — so the pair can never end up as two
+ * Active rows, and the original can never end up hidden with nothing to
+ * replace it. Void rows are excluded from every read, exactly like Cancelled
+ * ones, and are ignored when a retry looks its request id up.
+ */
+var TX_STATUS_VOID = "Void";
 
 var TX_SOURCE_WEB = "Web";
 var TX_SOURCE_TELEGRAM = "Telegram";
@@ -60,7 +75,17 @@ function isLedgerActive_(doc) {
 function ledgerSheet_(doc) {
   var sheet = doc.getSheetByName(OMAD_TRANSACTIONS_V2_SHEET) ||
               doc.insertSheet(OMAD_TRANSACTIONS_V2_SHEET);
-  if (sheet.getLastRow() === 0) sheet.appendRow(LEDGER_HEADER);
+  if (sheet.getLastRow() === 0) {
+    sheet.appendRow(LEDGER_HEADER);
+    return sheet;
+  }
+  // Upgrades a sheet written before Entry_Group_ID in place. Existing rows keep
+  // their values and read back through the deterministic backfill until
+  // backfill_entry_group_ids is run against them.
+  var firstRow = sheet.getRange(1, 1, 1, LEDGER_HEADER.length).getValues()[0];
+  if (firstRow[LEDGER_HEADER.length - 1] !== LEDGER_HEADER[LEDGER_HEADER.length - 1]) {
+    sheet.getRange(1, 1, 1, LEDGER_HEADER.length).setValues([LEDGER_HEADER]);
+  }
   return sheet;
 }
 
@@ -112,7 +137,11 @@ function ledgerRowToTransaction_(row, rowNumber) {
     status: String(row[18] || TX_STATUS_ACTIVE),
     relatedId: String(row[19] || ""),
     msgId: String(row[20] || ""),
-    schemaVersion: Number(row[21]) || LEDGER_SCHEMA_VERSION
+    schemaVersion: Number(row[21]) || LEDGER_SCHEMA_VERSION,
+    // Rows written before the column existed fall back to the same
+    // deterministic derivation the legacy sheet uses, so grouping is
+    // consistent across both schemas and across the migration.
+    groupId: String(row[22] || "").trim() || legacyEntryGroupId_(row[0])
   };
 }
 
@@ -121,7 +150,7 @@ function transactionToLedgerRow_(t) {
     t.id, t.requestId, t.createdAt, t.updatedAt, t.createdBy, t.source, t.period,
     t.tenant, t.type, t.amount, t.currency, t.rateBuy, t.rateSell, t.rateUsed,
     t.rateType, t.amountUZS, t.method, t.comment, t.status, t.relatedId,
-    t.msgId, t.schemaVersion
+    t.msgId, t.schemaVersion, t.groupId || ""
   ];
 }
 
@@ -147,13 +176,57 @@ function findLedgerRow_(doc, transactionId) {
   return null;
 }
 
+/**
+ * The record a request id produced, or null.
+ *
+ * Void rows are skipped: they are the discarded half of a correction that
+ * failed, so treating one as "already done" would answer a retry with a record
+ * that deliberately counts for nothing.
+ */
 function findLedgerRowByRequestId_(doc, requestId) {
   if (!requestId) return null;
   var rows = readLedgerRows_(doc);
   for (var i = 0; i < rows.length; i++) {
+    if (rows[i].status === TX_STATUS_VOID) continue;
     if (rows[i].requestId && rows[i].requestId === String(requestId)) return rows[i];
   }
   return null;
+}
+
+/** Every row of one business action, whatever its status. */
+function findLedgerRowsByGroupId_(doc, groupId) {
+  var wanted = String(groupId || "").trim();
+  if (!wanted) return [];
+  var rows = readLedgerRows_(doc);
+  var group = [];
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i].groupId === wanted) group.push(rows[i]);
+  }
+  return group;
+}
+
+/** Writes deterministic group ids onto ledger rows that predate the column. */
+function backfillLedgerEntryGroupIds_(doc) {
+  var sheet = doc.getSheetByName(OMAD_TRANSACTIONS_V2_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) return { status: "success", filled: 0, alreadySet: 0 };
+
+  ledgerSheet_(doc);
+  var data = sheet.getDataRange().getValues();
+  var filled = 0;
+  var alreadySet = 0;
+
+  for (var i = 1; i < data.length; i++) {
+    var id = data[i][0];
+    if (id === "" || id === null || id === undefined) continue;
+    if (String((data[i].length > 22 ? data[i][22] : "") || "").trim()) { alreadySet++; continue; }
+    var derived = legacyEntryGroupId_(id);
+    if (!derived) continue;
+    sheet.getRange(i + 1, LEDGER_GROUP_ID_COLUMN).setValue(derived);
+    filled++;
+  }
+
+  if (filled > 0) appendAuditRow_(doc, "entry_group_ids_backfilled", String(filled));
+  return { status: "success", filled: filled, alreadySet: alreadySet };
 }
 
 /**
@@ -163,6 +236,7 @@ function findLedgerRowByRequestId_(doc, requestId) {
 function ledgerToLegacyShape_(t) {
   return {
     id: t.id,
+    groupId: t.groupId,
     tenant: t.tenant,
     month: t.period,
     period: t.period,
@@ -292,7 +366,10 @@ function createTransaction_(doc, input) {
       status: TX_STATUS_ACTIVE,
       relatedId: "",
       msgId: String(input.msgId || ""),
-      schemaVersion: LEDGER_SCHEMA_VERSION
+      schemaVersion: LEDGER_SCHEMA_VERSION,
+      // Supplied when this row is one line of a larger business action; its own
+      // group when it stands alone. Never derived from the id.
+      groupId: String(input.groupId || "").trim() || newEntryGroupId_()
     };
 
     appendLedgerRow_(ledgerSheet_(doc), transactionToLedgerRow_(transaction));
@@ -326,9 +403,23 @@ function nextTransactionId_(doc) {
 // ------------------------------------------------------------------- correct
 
 /**
- * Marks the original Corrected and appends a replacement that points back at
- * it. The original row is never edited beyond its status and timestamp, so the
- * audit trail keeps the value that was actually recorded at the time.
+ * Replaces a transaction: the replacement is written first, then the original
+ * is hidden. The original row is never edited beyond its status and timestamp,
+ * so the audit trail keeps the value that was actually recorded at the time.
+ *
+ * The order is the whole point. Hiding the original first — which is what this
+ * used to do — meant a failure between the two writes left the original marked
+ * Corrected with no replacement in the sheet: money that silently left the
+ * books, in the one operation the append-only design exists to make safe.
+ *
+ * Writing the replacement first cannot lose money. It can, for exactly as long
+ * as the second write takes, double-count it, so the failure path marks the
+ * replacement Void and reports the correction as failed. The three outcomes are
+ * therefore: both writes land, or neither counts, or — only if the rollback
+ * *also* fails, against a spreadsheet that has already failed twice — two
+ * Active rows and a loud audit entry naming both ids. Never a hidden original.
+ *
+ * All of it runs under the script lock, so no other write interleaves.
  */
 function correctTransaction_(doc, input) {
   var requestId = String((input && input.requestId) || "").trim();
@@ -383,12 +474,24 @@ function correctTransaction_(doc, input) {
       // The replacement inherits the group message so the report is edited
       // rather than duplicated.
       msgId: original.msgId,
-      schemaVersion: LEDGER_SCHEMA_VERSION
+      schemaVersion: LEDGER_SCHEMA_VERSION,
+      // A correction stays inside the business action it corrects.
+      groupId: original.groupId
     };
 
     var sheet = ledgerSheet_(doc);
-    setLedgerStatus_(sheet, original.rowNumber, TX_STATUS_CORRECTED, now);
     appendLedgerRow_(sheet, transactionToLedgerRow_(replacement));
+
+    var replacementRow = sheet.getLastRow();
+    try {
+      setLedgerStatus_(sheet, original.rowNumber, TX_STATUS_CORRECTED, now);
+    } catch (statusError) {
+      voidFailedReplacement_(doc, sheet, replacementRow, replacement, original, statusError);
+      return {
+        status: "error",
+        message: "Tuzatishni saqlab bo'lmadi, asl yozuv o'zgarmadi. Qaytadan urinib ko'ring."
+      };
+    }
 
     appendAuditRow_(doc, "transaction_corrected", JSON.stringify({
       original: original.id, replacement: replacement.id,
@@ -427,6 +530,10 @@ function cancelTransaction_(doc, input) {
     if (original.status === TX_STATUS_CORRECTED) {
       return { status: "error", message: "Tuzatilgan yozuvni bekor qilib bo'lmaydi. Yangi yozuvni bekor qiling." };
     }
+    if (original.status === TX_STATUS_VOID) {
+      // Already counts for nothing; there is nothing to cancel.
+      return { status: "success", duplicate: true, transaction: ledgerToLegacyShape_(original) };
+    }
 
     var now = new Date().toISOString();
     setLedgerStatus_(ledgerSheet_(doc), original.rowNumber, TX_STATUS_CANCELLED, now);
@@ -446,6 +553,33 @@ function cancelTransaction_(doc, input) {
 function setLedgerStatus_(sheet, rowNumber, status, timestamp) {
   sheet.getRange(rowNumber, 19).setValue(status);
   sheet.getRange(rowNumber, 4).setValue(timestamp);
+}
+
+/**
+ * Discards a replacement whose correction could not be completed.
+ *
+ * The original is untouched and still Active, so the books are already correct;
+ * this only stops the replacement being counted a second time. If even this
+ * write fails the spreadsheet is failing repeatedly, and the one useful thing
+ * left is to say so loudly and name both rows — silence here would leave a
+ * double count nobody knows to look for.
+ */
+function voidFailedReplacement_(doc, sheet, rowNumber, replacement, original, cause) {
+  try {
+    setLedgerStatus_(sheet, rowNumber, TX_STATUS_VOID, new Date().toISOString());
+    appendAuditRow_(doc, "transaction_correction_failed", JSON.stringify({
+      original: original.id,
+      voidedReplacement: replacement.id,
+      reason: redactSecrets_(cause).slice(0, 300)
+    }));
+  } catch (rollbackError) {
+    appendAuditRow_(doc, "transaction_correction_rollback_failed", JSON.stringify({
+      original: original.id,
+      orphanReplacement: replacement.id,
+      reason: redactSecrets_(cause).slice(0, 200),
+      rollbackReason: redactSecrets_(rollbackError).slice(0, 200)
+    }));
+  }
 }
 
 // ---------------------------------------------------------------------- read

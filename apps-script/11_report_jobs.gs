@@ -15,9 +15,14 @@ function queueOmadTransactionReport_(doc, report) {
     });
   }
   if (operation === "transaction_upsert") {
+    var groupId = String(report.groupId || "");
     var baseId = String(report.baseId || "");
-    if (!baseId) return "";
-    return enqueueJob_(doc, "omad_transaction_report", baseId, {
+    if (!groupId && !baseId) return "";
+    return enqueueJob_(doc, "omad_transaction_report", groupId || baseId, {
+      // The group id is what the report resolves against. baseId rides along so
+      // a job queued by an older client — or one already on the queue across a
+      // deploy — still finds its rows.
+      groupId: groupId,
       baseId: baseId,
       messageId: report.messageId ? String(report.messageId) : ""
     });
@@ -29,8 +34,7 @@ function runOmadTransactionReportJob_(doc, job) {
   var chatId = getOmadGroupChatId_();
   if (!chatId) throw new Error("Telegram guruh ID o'rnatilmagan.");
 
-  var baseId = String(job.payload.baseId || "");
-  var group = findTransactionGroup_(doc, baseId);
+  var group = resolveReportGroup_(doc, job.payload);
   if (group.length === 0) {
     // The group was deleted before the report went out. Nothing to report.
     return;
@@ -53,6 +57,23 @@ function runOmadTransactionReportJob_(doc, job) {
   var response = sendTelegramMessage_(chatId, text);
   var newMessageId = extractTelegramMessageId_(response);
   if (newMessageId) applyMsgIdToGroup_(doc, group, newMessageId);
+}
+
+/**
+ * The rows a report job covers.
+ *
+ * Stored group id first, because that is the grouping the data actually
+ * asserts. The id-prefix fallback is only for jobs enqueued before the column
+ * existed, which can still be sitting on the queue when this deploys.
+ */
+function resolveReportGroup_(doc, payload) {
+  var groupId = String((payload && payload.groupId) || "");
+  if (groupId) {
+    var byGroup = findTransactionsByGroupId_(doc, groupId);
+    if (byGroup.length > 0) return byGroup;
+  }
+  var baseId = String((payload && payload.baseId) || "");
+  return baseId ? findTransactionGroup_(doc, baseId) : [];
 }
 
 function applyMsgIdToGroup_(doc, group, messageId) {

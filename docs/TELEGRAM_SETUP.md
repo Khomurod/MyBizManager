@@ -158,6 +158,30 @@ Panel faqat "kalit o'rnatilganmi" holatini ko'rsatadi.
 > Kalit hali o'rnatilmagan bo'lsa (eski o'rnatish), webhook vaqtincha
 > tekshirilmasdan qabul qilinadi. **🔄 Webhook** ni bir marta bosish kifoya.
 
+### Kalitni almashtirish (rotatsiya)
+
+**Sozlamalar → Tizim → Ma'lumotlarni Tuzatish → Webhook Kalitini Almashtirish**
+(`rotate_telegram_webhook_secret`, admin kaliti talab qilinadi):
+
+1. yangi tasodifiy kalit yaratiladi;
+2. **eski kalit vaqtincha qabul qilinaveradi** — shu sababli Telegram hali
+   yangi manzilni bilmagan paytda kelgan yangilanish ham rad etilmaydi;
+3. `setWebhook` yangi manzil bilan chaqiriladi;
+4. `getWebhookInfo` bilan tasdiqlanadi;
+5. tasdiqlangach eski kalit darhol o'chiriladi.
+
+Biror bosqich muvaffaqiyatsiz bo'lsa, eski kalit qaytariladi **va webhook
+o'sha eski kalitga qayta ulanadi** — ya'ni muvaffaqiyatsiz rotatsiya botni
+ishlamay qolgan holatda qoldirmaydi. Kalit hech qachon brauzerga
+qaytarilmaydi va logga yozilmaydi.
+
+Eski loglarni tozalash uchun avval **Loglarni Tozalash**
+(`purge_telegram_debug_secrets`) ni bosing: `Telegram_Debug_Log` nusxasi
+olinadi, so'ng har bir qator qaytadan redaksiya qilinadi.
+
+**Tavsiya etilgan tartib:** avval loglarni tozalang, keyin kalitni
+almashtiring.
+
 ## Hisobot navbati (qayta urinish)
 
 `Omad_Job_Queue` varag'i barcha Telegram hisobot vazifalarini saqlaydi:

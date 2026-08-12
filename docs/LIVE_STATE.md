@@ -157,9 +157,27 @@ result, a masked chat id and Telegram's error description after redaction.
 and also removes anything *shaped* like a credential so a rotated value is
 still caught.
 
-**Outstanding:** debug rows written before this change may still contain the
-old webhook secret. Rotating that secret and clearing those rows is still to be
-done.
+**Outstanding, with the tooling now shipped.** Debug rows written before that
+change may still contain the old webhook secret. Two controls in
+**Sozlamalar → Tizim → Ma'lumotlarni Tuzatish** do the work, and both need the
+admin key:
+
+1. **Loglarni Tozalash** (`purge_telegram_debug_secrets`) — copies
+   `Telegram_Debug_Log` to a timestamped backup sheet, then re-redacts every row
+   in place. Safe to press twice.
+2. **Webhook Kalitini Almashtirish** (`rotate_telegram_webhook_secret`) — mints
+   a new verification secret, re-points Telegram at it and verifies. The old
+   secret stays accepted until the new one is confirmed, so no update is
+   dropped; if anything fails the old secret is restored and the webhook is
+   re-pointed at it.
+
+Run 1 then 2. Neither has been run against the live project yet — they need the
+admin key, which only the operator has.
+
+**The bot token is not being rotated.** The two tokens exposed in git history
+belong to a bot id that was revoked; nothing in this change indicates the
+current token has ever left Script Properties, and the debug logger has never
+recorded it since request bodies stopped being logged.
 
 ---
 
@@ -175,9 +193,24 @@ as real date values and the Month column is text-formatted before values land.
 Reads also understand a Month cell that was already turned into a date, so
 affected rows resolve correctly without editing the sheet.
 
-**Outstanding:** the Date column on roughly 143 older rows still shows day and
-month transposed. The accounting is unaffected — month labels drive every
-figure — so this is cosmetic, and a correction has not been applied.
+**Outstanding, with the tooling now shipped.** The Date column on older rows
+still shows day and month transposed. The accounting is unaffected — month
+labels drive every figure — so this is cosmetic.
+
+Measured against the live sheet on 2026-08-12, over all 226 rows:
+
+| | Rows |
+|---|---|
+| date agrees with the instant its transaction id encodes | 80 |
+| **provably transposed** — swapping day and month reproduces that instant | **142** |
+| disagrees some other way — not provable, left alone | 4 |
+| no usable epoch prefix on the id | 0 |
+
+**Sozlamalar → Tizim → Ma'lumotlarni Tuzatish** has *1. Sanalarni Tekshirish*
+(reports the table above, writes nothing) and *2. Sanalarni Tuzatish* (backs up,
+then corrects only the 142). The 4 unprovable rows are reported and never
+touched — correcting them would mean guessing, which is why they are left as
+they are. Neither control has been run live: both need the admin key.
 
 ---
 
