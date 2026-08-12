@@ -17,11 +17,33 @@ var OMAD_ACTIVE_TX_SHEET_KEY = "Omad_Active_Transactions_Sheet";
 
 var OMAD_TRANSACTION_HEADER = [
   "ID", "Tenant", "Month", "Type", "Amount", "Currency", "Method", "Date", "Comment",
-  "Telegram_Msg_ID", "Request_ID", "Entry_Group_ID"
+  "Telegram_Msg_ID", "Request_ID", "Entry_Group_ID", "Entry_Kind"
 ];
 
 /** Column 12. One business action's rows all carry the same value. */
 var OMAD_GROUP_ID_COLUMN = 12;
+
+/**
+ * Column 13. *What* business action the group is.
+ *
+ * "" is an ordinary entry — one or more lines of a single income or expense.
+ * A named kind says the group has a shape the reader must respect: the
+ * tenant-paid pair is one income and one expense that only make sense
+ * together, and reporting and history both need to know that without having
+ * to guess it back from the rows.
+ */
+var OMAD_ENTRY_KIND_COLUMN = 13;
+
+var ENTRY_KIND_ORDINARY = "";
+var ENTRY_KIND_TENANT_PAID = "tenant_paid_expense";
+
+var ENTRY_KINDS = {};
+ENTRY_KINDS[ENTRY_KIND_TENANT_PAID] = true;
+
+function normalizeEntryKind_(value) {
+  var kind = String(value === null || value === undefined ? "" : value).trim();
+  return ENTRY_KINDS[kind] ? kind : ENTRY_KIND_ORDINARY;
+}
 
 function ensureOmadTransactionHeader_(sheet) {
   var header = OMAD_TRANSACTION_HEADER;
@@ -121,7 +143,7 @@ function transactionToRow_(t) {
   return [
     t.id, t.tenant, t.month, t.type, t.amount, t.currency, t.method,
     toSheetDateValue_(t.date),
-    t.comment || "", t.msgId || "", t.requestId || "", t.groupId || ""
+    t.comment || "", t.msgId || "", t.requestId || "", t.groupId || "", t.entryKind || ""
   ];
 }
 
@@ -155,7 +177,8 @@ function normalizeTransaction_(raw) {
     // Preserved when the caller supplies one, derived deterministically when it
     // does not, so a row written before the column existed still resolves to a
     // stable group instead of to "".
-    groupId: resolveEntryGroupId_(t)
+    groupId: resolveEntryGroupId_(t),
+    entryKind: normalizeEntryKind_(t.entryKind)
   };
 }
 
@@ -208,6 +231,7 @@ function readTransactionsFromSheet_(doc, sheetName) {
     // backfill has been run against the sheet.
     transaction.groupId = String((data[i].length > 11 ? data[i][11] : "") || "").trim() ||
       legacyEntryGroupId_(transaction.id);
+    transaction.entryKind = normalizeEntryKind_(data[i].length > 12 ? data[i][12] : "");
     var resolved = resolveTransactionPeriod_(transaction, fallbackYear);
     transaction.period = resolved.period;
     transaction.periodSource = resolved.source;

@@ -6,8 +6,21 @@
 // The Yangi tab: cart, submit, edit and delete.
 // ==========================================================
 
+/**
+ * True while the entry form is filling in a tenant-paid-on-our-behalf expense.
+ *
+ * It is a third *mode*, not a third transaction type: the entry produces one
+ * income and one expense, so `currentType` stays meaningless here and the
+ * submit path is its own.
+ */
+function isTenantPaidMode() {
+    return currentType === 'TenantPaid';
+}
+
 function renderEntryDropdowns() {
     let options = app.tenants.map(t => t.name);
+    // The income half has to land on a tenant's balance, so the two expense
+    // buckets are not offered in this mode.
     if(currentType === 'Expense') {
         options.push("Umumiy Naqd Puldan");
         options.push("Umumiy Bankdan");
@@ -40,11 +53,48 @@ function renderCart() {
         </div>`).join('');
 }
 
+/** Shows the controls this mode uses and hides the ones it does not. */
+function applyEntryMode() {
+    const tenantPaid = isTenantPaidMode();
+    const toggle = (id, hidden) => {
+        const el = document.getElementById(id);
+        if(el) el.classList.toggle('hidden', hidden);
+    };
+    // One amount, so no cart: the pair is 1:1 by construction.
+    toggle('addToCartBtn', tenantPaid);
+    toggle('tenantPaidNote', !tenantPaid);
+    if(tenantPaid) toggle('cartList', true);
+
+    const comment = document.getElementById('entryComment');
+    if(comment) comment.placeholder = tenantPaid ? "Chiqim maqsadi (masalan: Elektrik xizmati)..." : "Izoh...";
+
+    const btnTp = document.getElementById('btn-tenantpaid');
+    if(btnTp) {
+        btnTp.className = tenantPaid
+            ? "w-full mb-4 py-2 rounded-lg font-bold text-xs border border-amber-500 bg-amber-500 text-white shadow transition-all"
+            : "w-full mb-4 py-2 rounded-lg font-bold text-xs border border-slate-300 bg-white text-slate-500 transition-all";
+    }
+}
+
 function setType(type) {
     currentType = type;
     const btnIn = document.getElementById('btn-income');
     const btnEx = document.getElementById('btn-expense');
     const sub = document.getElementById('submitBtn');
+
+    if(type === 'TenantPaid') {
+        // Editing an ordinary entry and then switching mode would submit the
+        // wrong shape, so the mode switch always starts clean.
+        cancelEdit();
+        btnIn.className = "flex-1 py-2 rounded-md font-bold text-sm text-slate-500 transition-all";
+        btnEx.className = "flex-1 py-2 rounded-md font-bold text-sm text-slate-500 transition-all";
+        sub.className = "w-full bg-amber-600 text-white py-3 rounded-lg font-bold text-sm shadow-lg shadow-amber-200 active:scale-95 transition-all";
+        sub.innerText = "IJARACHI TO'LOVINI SAQLASH";
+        renderEntryDropdowns();
+        applyEntryMode();
+        return;
+    }
+
     if(type === 'Income') {
         btnIn.className = "flex-1 py-2 rounded-md font-bold text-sm bg-white text-green-600 shadow-sm transition-all";
         btnEx.className = "flex-1 py-2 rounded-md font-bold text-sm text-slate-500 transition-all";
@@ -57,10 +107,12 @@ function setType(type) {
         if(!document.getElementById('editId').value) sub.innerText = "CHIQIMNI SAQLASH";
     }
     renderEntryDropdowns();
+    applyEntryMode();
 }
 
 function cancelEdit() {
     cart = []; renderCart();
+    editingTenantPaidGroupId = "";
     document.getElementById('editId').value = "";
     document.getElementById('msgId').value = "";
     document.getElementById('entryComment').value = "";
@@ -69,6 +121,14 @@ function cancelEdit() {
 }
 
 // --- SUBMIT LOGIC ---
+
+/**
+ * The tenant-paid pair being edited, or "" for a new one.
+ *
+ * Declared alongside the other pending-entry state because cancelEdit clears
+ * it, and cancelEdit runs on every mode switch.
+ */
+let editingTenantPaidGroupId = "";
 
 /**
  * The request id for the submission in progress.
@@ -155,6 +215,11 @@ function txGroupId(tx) {
     return tx && tx.id ? `grp_legacy_${getTxBaseId(tx.id)}` : "";
 }
 
+/** True when a row is one half of a tenant-paid expense. */
+function isTenantPaidRow(t) {
+    return String((t && t.entryKind) || "") === 'tenant_paid_expense';
+}
+
 /** Every loaded row of one business action, in cart order. */
 function entryGroupRows(groupId) {
     return app.transactions
@@ -163,6 +228,7 @@ function entryGroupRows(groupId) {
 }
 
 async function submitAll() {
+    if(isTenantPaidMode()) return submitTenantPaid();
     if(cart.length === 0) return alert("Summani kiriting");
     const btn = document.getElementById('submitBtn');
     if(btn.disabled) return;                       // a second click while saving
@@ -258,6 +324,89 @@ async function submitViaLedger() {
     await syncData();
 }
 
+/**
+ * One tenant-paid expense: one request, two linked rows, one report.
+ *
+ * The group id and the request id are both minted once and kept in
+ * sessionStorage, so a double click, a network retry or a refresh mid-save all
+ * resolve to the pair the first attempt created rather than to a second pair.
+ * The server writes both rows in a single spreadsheet operation, so there is
+ * no half-created state to recover from either.
+ */
+/** Loads an existing pair back into the form, as a pair. */
+function editTenantPaid(groupId, rows) {
+    const income = rows.find(r => r.type === 'Income') || rows[0];
+    const expense = rows.find(r => r.type === 'Expense');
+
+    setType('TenantPaid');
+    editingTenantPaidGroupId = groupId;
+
+    document.getElementById('entryTenant').value = income.tenant;
+    document.getElementById('entryMonth').value = recordPeriod(income);
+    document.getElementById('tempCurr').value = income.currency;
+    document.getElementById('tempMethod').value = income.method;
+    document.getElementById('tempAmount').value = Number(income.amount || 0).toLocaleString('ru-RU');
+    // The purpose is stored on the expense half; the income half carries the
+    // same text behind a prefix, so the expense is the cleaner source.
+    document.getElementById('entryComment').value = String((expense && expense.comment) || income.comment || "")
+        .replace(/\s*\(to'lovchi:[^)]*\)\s*$/, "");
+
+    document.getElementById('submitBtn').innerText = "O'ZGARTIRISHNI SAQLASH";
+    document.getElementById('cancelEditBtn').classList.remove('hidden');
+    switchTab('entry');
+}
+
+async function submitTenantPaid() {
+    const amount = parseMoneyInput(document.getElementById('tempAmount').value);
+    if(!Number.isFinite(amount) || amount <= 0) return alert("To'g'ri summa kiriting");
+
+    const purpose = document.getElementById('entryComment').value.trim();
+    if(!purpose) return alert("Chiqim maqsadini kiriting (masalan: Elektrik xizmati)");
+
+    const btn = document.getElementById('submitBtn');
+    if(btn.disabled) return;
+    btn.disabled = true; btn.innerText = "Bajarilmoqda...";
+    showLoader(true);
+
+    try {
+        const response = await callBackend({
+            action: 'tenant_paid_expense',
+            requestId: nextRequestBase(),
+            groupId: nextEntryGroupId(),
+            replaceGroupId: editingTenantPaidGroupId,
+            tenant: normalizeTenantName(document.getElementById('entryTenant').value),
+            period: document.getElementById('entryMonth').value,
+            amount,
+            currency: document.getElementById('tempCurr').value,
+            method: document.getElementById('tempMethod').value,
+            comment: purpose,
+            source: 'Web',
+            createdBy: localStorage.getItem('omad_user') || 'web'
+        });
+
+        if(!response || response.status !== 'success') {
+            throw new Error((response && response.message) || SAVE_FAILED_MESSAGE);
+        }
+
+        clearPendingRequest();
+        editingTenantPaidGroupId = "";
+        document.getElementById('tempAmount').value = "";
+        document.getElementById('entryComment').value = "";
+        document.getElementById('cancelEditBtn').classList.add('hidden');
+        await syncData();
+        switchTab('dash');
+    } catch (error) {
+        // The form and both ids are left alone, so the same entry can simply be
+        // sent again without becoming a second pair.
+        console.error(error);
+        alert((error && error.message) || SAVE_FAILED_MESSAGE);
+    } finally {
+        showLoader(false);
+        btn.disabled = false;
+        btn.innerText = "IJARACHI TO'LOVINI SAQLASH";
+    }
+}
+
 /** The group id of the entry currently being edited. */
 function editingGroupId(editId) {
     const tx = app.transactions.find(t => String(t.id) === String(editId));
@@ -328,10 +477,16 @@ async function submitViaWholeListSave() {
 
 function editTx(id) {
     const target = app.transactions.find(t => String(t.id) === String(id));
-    const grouped = entryGroupRows(target ? txGroupId(target) : `grp_legacy_${getTxBaseId(id)}`);
+    const groupId = target ? txGroupId(target) : `grp_legacy_${getTxBaseId(id)}`;
+    const grouped = entryGroupRows(groupId);
 
     const tx = grouped[0];
     if(!tx) return;
+
+    // A tenant-paid pair is edited as a pair, in its own mode. Loading it into
+    // the ordinary form would let one half be changed on its own, which is
+    // never a coherent edit.
+    if(grouped.every(isTenantPaidRow)) return editTenantPaid(groupId, grouped);
 
     setType(tx.type);
     document.getElementById('entryTenant').value = tx.tenant;
@@ -355,11 +510,20 @@ function editTx(id) {
  * live the rows stay put with status Cancelled and remain in the audit trail.
  */
 async function deleteTx(id) {
-    const label = app.ledgerActive ? "Bekor qilmoqchimisiz?" : "O'chirmoqchimisiz?";
-    if(!confirm(label)) return;
-
     const target = app.transactions.find(t => String(t.id) === String(id));
     const groupId = target ? txGroupId(target) : `grp_legacy_${getTxBaseId(id)}`;
+
+    // Both halves of a tenant-paid expense go together. Removing one would
+    // leave a tenant credited for a bill nobody paid, or an expense with no
+    // funding, so the confirmation says what is actually about to happen.
+    const pair = entryGroupRows(groupId).every(isTenantPaidRow) && entryGroupRows(groupId).length > 1;
+    const label = pair
+        ? (app.ledgerActive
+            ? "Ijarachi to'lovi va unga bog'liq chiqim birga bekor qilinadi. Davom etamizmi?"
+            : "Ijarachi to'lovi va unga bog'liq chiqim birga o'chiriladi. Davom etamizmi?")
+        : (app.ledgerActive ? "Bekor qilmoqchimisiz?" : "O'chirmoqchimisiz?");
+    if(!confirm(label)) return;
+
     const baseId = getTxBaseId(id);
 
     if(app.ledgerActive) {

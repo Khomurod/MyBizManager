@@ -141,10 +141,14 @@
 
     <!-- 2-TAB: YANGI (ENTRY) -->
     <div id="tab-entry" class="tab-content p-4">
-        <div class="flex bg-slate-200 rounded-lg p-1 mb-4">
+        <div class="flex bg-slate-200 rounded-lg p-1 mb-2">
             <button onclick="setType('Income')" id="btn-income" class="flex-1 py-2 rounded-md font-bold text-sm bg-white text-green-600 shadow-sm transition-all">Kirim</button>
             <button onclick="setType('Expense')" id="btn-expense" class="flex-1 py-2 rounded-md font-bold text-sm text-slate-500 transition-all">Chiqim</button>
         </div>
+        <button onclick="setType('TenantPaid')" id="btn-tenantpaid"
+                class="w-full mb-4 py-2 rounded-lg font-bold text-xs border border-slate-300 bg-white text-slate-500 transition-all">
+            🏢 Ijarachi bizning nomimizdan to'ladi
+        </button>
 
         <div class="card">
             <input type="hidden" id="editId" value="">
@@ -168,10 +172,15 @@
             </div>
             <div class="flex gap-2 mb-4">
                  <select id="tempMethod" class="flex-1 p-2 border border-slate-200 rounded bg-white font-medium text-sm text-slate-600"><option value="Naqd">Naqd</option><option value="Bank">Bank</option></select>
-                 <button onclick="addToCart()" class="bg-slate-800 text-white px-4 rounded shadow active:scale-95"><i class="fas fa-plus"></i></button>
+                 <button onclick="addToCart()" id="addToCartBtn" class="bg-slate-800 text-white px-4 rounded shadow active:scale-95"><i class="fas fa-plus"></i></button>
             </div>
 
             <div id="cartList" class="hidden mb-4 bg-blue-50 border border-blue-100 rounded p-2 space-y-1"></div>
+
+            <div id="tenantPaidNote" class="hidden mb-4 bg-amber-50 border border-amber-200 rounded p-3 text-[11px] text-amber-800">
+                Ijarachiga to'lov sifatida hisoblanadi <b>va</b> shu summada chiqim yoziladi.
+                Kassa va bankdagi pulga ta'sir qilmaydi. Ikkalasi bitta yozuv sifatida saqlanadi.
+            </div>
 
             <textarea id="entryComment" placeholder="Izoh..." class="w-full p-3 border border-slate-200 rounded mb-4 text-sm h-20 outline-none resize-none"></textarea>
 

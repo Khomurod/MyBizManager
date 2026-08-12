@@ -37,11 +37,15 @@ var LEDGER_HEADER = [
   "Related_ID",         // 20 the transaction this one corrects
   "Telegram_Msg_ID",    // 21 group message id
   "Schema_Version",     // 22
-  "Entry_Group_ID"      // 23 the business action this row belongs to
+  "Entry_Group_ID",     // 23 the business action this row belongs to
+  "Entry_Kind"          // 24 what kind of business action that is
 ];
 
 /** Column 23. Shared by every row of one business action. */
 var LEDGER_GROUP_ID_COLUMN = 23;
+
+/** Column 24. Mirrors the legacy sheet's Entry_Kind. */
+var LEDGER_ENTRY_KIND_COLUMN = 24;
 
 var TX_STATUS_ACTIVE = "Active";
 var TX_STATUS_CORRECTED = "Corrected";
@@ -106,9 +110,21 @@ function applyLedgerColumnFormats_(sheet, startRow, numRows) {
 
 /** Appends one ledger row with its text columns protected first. */
 function appendLedgerRow_(sheet, values) {
-  var row = sheet.getLastRow() + 1;
-  applyLedgerColumnFormats_(sheet, row, 1);
-  sheet.getRange(row, 1, 1, LEDGER_HEADER.length).setValues([values]);
+  appendLedgerRows_(sheet, [values]);
+}
+
+/**
+ * Appends several ledger rows in a single write.
+ *
+ * One setValues call is one spreadsheet operation, so a business action made
+ * of several rows either lands whole or not at all. This is what makes the
+ * tenant-paid pair impossible to half-create.
+ */
+function appendLedgerRows_(sheet, rows) {
+  if (!rows || rows.length === 0) return;
+  var start = sheet.getLastRow() + 1;
+  applyLedgerColumnFormats_(sheet, start, rows.length);
+  sheet.getRange(start, 1, rows.length, LEDGER_HEADER.length).setValues(rows);
 }
 
 function ledgerRowToTransaction_(row, rowNumber) {
@@ -141,7 +157,8 @@ function ledgerRowToTransaction_(row, rowNumber) {
     // Rows written before the column existed fall back to the same
     // deterministic derivation the legacy sheet uses, so grouping is
     // consistent across both schemas and across the migration.
-    groupId: String(row[22] || "").trim() || legacyEntryGroupId_(row[0])
+    groupId: String(row[22] || "").trim() || legacyEntryGroupId_(row[0]),
+    entryKind: normalizeEntryKind_(row[23])
   };
 }
 
@@ -150,7 +167,7 @@ function transactionToLedgerRow_(t) {
     t.id, t.requestId, t.createdAt, t.updatedAt, t.createdBy, t.source, t.period,
     t.tenant, t.type, t.amount, t.currency, t.rateBuy, t.rateSell, t.rateUsed,
     t.rateType, t.amountUZS, t.method, t.comment, t.status, t.relatedId,
-    t.msgId, t.schemaVersion, t.groupId || ""
+    t.msgId, t.schemaVersion, t.groupId || "", t.entryKind || ""
   ];
 }
 
@@ -237,6 +254,7 @@ function ledgerToLegacyShape_(t) {
   return {
     id: t.id,
     groupId: t.groupId,
+    entryKind: t.entryKind,
     tenant: t.tenant,
     month: t.period,
     period: t.period,
@@ -369,7 +387,8 @@ function createTransaction_(doc, input) {
       schemaVersion: LEDGER_SCHEMA_VERSION,
       // Supplied when this row is one line of a larger business action; its own
       // group when it stands alone. Never derived from the id.
-      groupId: String(input.groupId || "").trim() || newEntryGroupId_()
+      groupId: String(input.groupId || "").trim() || newEntryGroupId_(),
+      entryKind: normalizeEntryKind_(input.entryKind)
     };
 
     appendLedgerRow_(ledgerSheet_(doc), transactionToLedgerRow_(transaction));
@@ -475,8 +494,10 @@ function correctTransaction_(doc, input) {
       // rather than duplicated.
       msgId: original.msgId,
       schemaVersion: LEDGER_SCHEMA_VERSION,
-      // A correction stays inside the business action it corrects.
-      groupId: original.groupId
+      // A correction stays inside the business action it corrects, and cannot
+      // change what kind of action that is.
+      groupId: original.groupId,
+      entryKind: original.entryKind
     };
 
     var sheet = ledgerSheet_(doc);
