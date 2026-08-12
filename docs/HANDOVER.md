@@ -267,5 +267,10 @@ The Telegram bot token and webhook secret live only in Script Properties.
 | Mini App auth | `apps-script/21_miniapp_auth.gs` |
 | Health check | `apps-script/23_health.gs` |
 
-Read `docs/LIVE_STATE.md` first — it is kept current and describes what is
-actually running, as opposed to what the design documents describe.
+Read **`docs/APP_BRIEF.md`** first — it is the central orientation document for
+the whole application. Then `docs/LIVE_STATE.md`, which describes what is
+actually running as opposed to what the design documents describe.
+
+> This handover is a **point-in-time** record of the 2026-08-12 session. Its
+> branch name and test counts are session-specific; do not treat them as
+> standing instructions.

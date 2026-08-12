@@ -1,5 +1,12 @@
 # Staged migration plan
 
+> **Historical.** Every stage below is delivered *and* the "remaining live
+> action" section is done: the period migration was run, the V2 ledger was cut
+> over on 2026-08-12, the backend deploys itself from `main`, the trigger is in
+> place and the credentials are set. Kept as the record of how the refactor was
+> staged. Current state: **[APP_BRIEF.md](APP_BRIEF.md)** and
+> [LIVE_STATE.md](LIVE_STATE.md).
+
 The full request spans a large refactor of the Omad accounting model. It is
 split into independently reviewable stages so each one can be tested and
 rolled back on its own.
