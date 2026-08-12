@@ -242,12 +242,12 @@ function functionNames(code) {
  * can be deleted at any later tidy-up.
  */
 const RETIRED_FUNCTIONS = {
-  // Both removed when the pre-key compatibility layer was closed. The grace
-  // flag and its second access check are gone; the health check that reported
-  // the flag is replaced by anonymousReadCheck_, which probes doGet instead.
-  // See tests/anonymous-access.test.js.
-  'checkAccessKeyDuringRollout_': 'rollout grace closed',
-  'rolloutGraceCheck_': 'replaced by anonymousReadCheck_'
+  // Removed when the Mini App stopped building a task summary for its home
+  // screen. It read view.overdue / view.dueToday, which buildTaskViews_ nests
+  // under view.today and view.counts, so every figure it produced was zero --
+  // and no screen rendered them. Deleting it also removes a full task-view
+  // build from every Mini App launch.
+  'buildMiniTaskSummary_': 'dead Mini App home counts, never rendered'
 };
 
 /**
