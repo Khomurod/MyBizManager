@@ -9869,6 +9869,11 @@ function doPost(e) {
  * check and the curious with the same sentence.
  */
 function doGet(e) {
+  // Nothing here reads System_Config today. It is reset anyway so that "every
+  // entry point starts with empty memos" stays true of the code rather than of
+  // one reading of it.
+  resetRequestMemos_();
+
   var action = (e && e.parameter && e.parameter.action) || "";
 
   if (action === 'get_tasks') {
