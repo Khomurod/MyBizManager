@@ -62,7 +62,7 @@ function doPost(e) {
     // Financial writes take the access key. They were reachable by anyone who
     // knew the /exec URL, which meant anyone could rewrite the whole ledger.
     if (action === 'migrate_omad' || action === 'save_omad') {
-      var saveAccessError = checkAdminKey_(payload);
+      var saveAccessError = checkAccessKeyDuringRollout_(payload);
       if (saveAccessError) return jsonOutput_({ status: "error", message: saveAccessError });
       return saveOmadAction_(action, payload, doc, configSheet);
     }
@@ -82,7 +82,7 @@ function doPost(e) {
 
     // ---- Retry queue ------------------------------------------------------
     if (action === 'get_job_queue_status') {
-      var queueAccessError = checkAdminKey_(payload);
+      var queueAccessError = checkAccessKeyDuringRollout_(payload);
       if (queueAccessError) return jsonOutput_({ status: "error", message: queueAccessError });
       return jsonOutput_({ status: "success", queue: buildJobQueueStatus_(doc) });
     }
@@ -98,7 +98,7 @@ function doPost(e) {
     // The view carries no secret, but it does carry the authorized user id and
     // both group chat ids -- enough to know exactly who and where to target.
     if (action === 'get_telegram_settings') {
-      var settingsAccessError = checkAdminKey_(payload);
+      var settingsAccessError = checkAccessKeyDuringRollout_(payload);
       if (settingsAccessError) return jsonOutput_({ status: "error", message: settingsAccessError });
       return jsonOutput_({ status: "success", settings: buildTelegramSettingsView_() });
     }
@@ -111,7 +111,7 @@ function doPost(e) {
     // Counts and event names only, but the audit tail names tasks, people and
     // operations, and the counts describe the size of the business.
     if (action === 'get_system_status') {
-      var statusAccessError = checkAdminKey_(payload);
+      var statusAccessError = checkAccessKeyDuringRollout_(payload);
       if (statusAccessError) return jsonOutput_({ status: "error", message: statusAccessError });
       return jsonOutput_({ status: "success", system: buildSystemStatus_(doc) });
     }
@@ -141,7 +141,7 @@ function doPost(e) {
 
     // ---- Migration --------------------------------------------------------
     if (action === 'get_migration_status') {
-      var migrationReadError = checkAdminKey_(payload);
+      var migrationReadError = checkAccessKeyDuringRollout_(payload);
       if (migrationReadError) return jsonOutput_({ status: "error", message: migrationReadError });
       return jsonOutput_({ status: "success", migration: getMigrationStatus_(doc) });
     }

@@ -51,17 +51,16 @@ function post(gas, body) {
   return readJsonOutput(gas.doPost(postEvent(body)));
 }
 
-/** Actions that must refuse a caller with no key and with a wrong key. */
-const GATED = [
+/**
+ * Actions that refuse an anonymous caller outright.
+ *
+ * Nothing the pre-key frontend ever called is in here — see GRACED below and
+ * rollout-grace.test.js for why that distinction exists.
+ */
+const STRICT = [
   { action: 'get_omad_data' },
   { action: 'get_cafe_data' },
   { action: 'verify_access' },
-  { action: 'get_system_status' },
-  { action: 'get_telegram_settings' },
-  { action: 'get_migration_status' },
-  { action: 'get_job_queue_status' },
-  { action: 'save_omad', transactions: [], tenants: [], rates: {}, templateExpenses: [] },
-  { action: 'migrate_omad', transactions: [], tenants: [], rates: {}, templateExpenses: [] },
   { action: 'tenant_paid_expense', tenant: 'Apteka', period: '2026-08', amount: 1, currency: 'UZS', method: 'Naqd', comment: 'x', requestId: 'r', groupId: 'g' },
   { action: 'list_transactions' },
   { action: 'get_transaction', transactionId: '1' },
@@ -69,13 +68,6 @@ const GATED = [
   { action: 'create_transaction' },
   { action: 'correct_transaction' },
   { action: 'cancel_transaction' },
-  { action: 'save_inventory', inventory: [] },
-  { action: 'save_recipe', recipes: [] },
-  { action: 'save_categories', categories: [] },
-  { action: 'save_cafe_settings', settings: {} },
-  { action: 'save_sale', date: 'x', seller: 'x', total: 1, profit: 1, items: [] },
-  { action: 'void_sale', id: '1', inventory: [] },
-  { action: 'close_day', date: 'x', seller: 'x', inventory: [], summary: [], totalRevenue: 0, totalProfit: 0 },
   { action: 'audit_transaction_dates' },
   { action: 'fix_transaction_dates' },
   { action: 'backfill_entry_group_ids' },
@@ -94,9 +86,34 @@ const GATED = [
   { action: 'complete_occurrence', occurrenceId: 'x' }
 ];
 
-test('no gated action answers a caller with no key', () => {
+/**
+ * Actions the pre-key frontend calls.
+ *
+ * A wrong key is refused. A request with no key at all is accepted while
+ * LEGACY_CLIENT_GRACE is on, because the alternative was a live app that could
+ * not record a payment.
+ */
+const GRACED = [
+  { action: 'get_system_status' },
+  { action: 'get_telegram_settings' },
+  { action: 'get_migration_status' },
+  { action: 'get_job_queue_status' },
+  { action: 'save_omad', transactions: [], tenants: [], rates: {}, templateExpenses: [], allowEmptyOmadTransactions: true, deferReports: true },
+  { action: 'migrate_omad', transactions: [], tenants: [], rates: {}, templateExpenses: [], allowEmptyOmadTransactions: true, deferReports: true },
+  { action: 'save_inventory', inventory: [] },
+  { action: 'save_recipe', recipes: [] },
+  { action: 'save_categories', categories: [] },
+  { action: 'save_cafe_settings', settings: {} },
+  { action: 'save_sale', date: 'x', seller: 'x', total: 1, profit: 1, items: [] },
+  { action: 'void_sale', id: '1', inventory: [] },
+  { action: 'close_day', date: 'x', seller: 'x', inventory: [], summary: [], totalRevenue: 0, totalProfit: 0, deferReports: true }
+];
+
+const GATED = STRICT.concat(GRACED);
+
+test('no strictly gated action answers a caller with no key', () => {
   const gas = boot();
-  for (const body of GATED) {
+  for (const body of STRICT) {
     const response = post(gas, body);
     assert.equal(response.status, 'error', `${body.action} answered an anonymous caller`);
   }
@@ -110,10 +127,26 @@ test('no gated action answers a caller with the wrong key', () => {
   }
 });
 
+test('with the rollout grace off, every gated action refuses an anonymous caller', () => {
+  const gas = boot();
+  gas.LEGACY_CLIENT_GRACE = false;
+  for (const body of GATED) {
+    assert.equal(post(gas, body).status, 'error', `${body.action} answered an anonymous caller`);
+  }
+});
+
 test('a refusal never carries the data it refused', () => {
   const gas = boot();
-  for (const action of ['get_omad_data', 'get_cafe_data', 'get_system_status', 'get_telegram_settings']) {
+  for (const action of ['get_omad_data', 'get_cafe_data']) {
     const dump = JSON.stringify(post(gas, { action }));
+    assert.ok(!dump.includes('Apteka'), `${action} leaked a tenant name`);
+    assert.ok(!dump.includes('49328655'), `${action} leaked the authorized user id`);
+    assert.ok(!dump.includes('-1001234567890'), `${action} leaked a chat id`);
+  }
+
+  // The graced reads refuse a wrong key the same way, and say nothing either.
+  for (const action of ['get_system_status', 'get_telegram_settings']) {
+    const dump = JSON.stringify(post(gas, { action, adminKey: 'not-the-key' }));
     assert.ok(!dump.includes('Apteka'), `${action} leaked a tenant name`);
     assert.ok(!dump.includes('49328655'), `${action} leaked the authorized user id`);
     assert.ok(!dump.includes('-1001234567890'), `${action} leaked a chat id`);

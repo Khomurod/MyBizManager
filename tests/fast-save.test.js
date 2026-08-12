@@ -194,10 +194,12 @@ test('the queue status needs the access key, and reports the backlog with it', (
   });
   gas.doPost(postEvent(input({ requestId: 'r1' })));
 
-  // The backlog describes how much business is waiting to be reported, so it
-  // is no longer answered to an anonymous caller.
-  const anonymous = readJsonOutput(gas.doPost(postEvent({ action: 'get_job_queue_status' })));
-  assert.strictEqual(anonymous.status, 'error');
+  // The backlog describes how much business is waiting to be reported, so a
+  // caller with the wrong key is told nothing. A caller with *no* key is the
+  // pre-key frontend, which is served until Netlify catches up - see
+  // rollout-grace.test.js.
+  const wrongKey = readJsonOutput(gas.doPost(postEvent({ action: 'get_job_queue_status', adminKey: 'nope' })));
+  assert.strictEqual(wrongKey.status, 'error');
 
   const status = readJsonOutput(gas.doPost(postEvent({ action: 'get_job_queue_status', adminKey: ADMIN_KEY })));
   assert.strictEqual(status.queue.counts.pending, 1);
