@@ -3,6 +3,10 @@
 What is actually running, as opposed to what the design documents describe.
 Update this file whenever the live system changes.
 
+> For orientation — what the app is, its rules, gates and background jobs —
+> read **[APP_BRIEF.md](APP_BRIEF.md)** first. This page is the deployment
+> detail behind it.
+
 **Last verified: 2026-08-12** (frontend hosts, Telegram configuration and the
 anonymous-endpoint exposure re-checked directly against the live systems).
 
@@ -311,9 +315,11 @@ than what a flag in the source says.
 | Active deployment | id begins `AKfycbzhKyEOG…`, ends `…DtCA2W` |
 | Executes as | the owner; access: Anyone |
 
-The backend URL is hardcoded in **three** places, which must always agree:
+The backend URL is hardcoded in **five** places, which must always agree:
 
-- `assets/omad/00-config.js`
+- `assets/omad/00-config.js` (also used by `omad_admin.html` and `tasks.html`)
+- `assets/mini/00-config.js` (the Mini App)
+- `login.html` (it loads no application script, so it repeats the URL)
 - `cafe_admin.html`
 - `cafe_pos.html`
 
@@ -383,11 +389,12 @@ Credentials live in Script Properties (`TELEGRAM_BOT_TOKEN`,
 Changing the backend URL means re-running the **Webhook** button, or Telegram
 keeps delivering to the old deployment.
 
-### Tasks (not yet deployed as of this change)
+### Tasks
 
 The task-management feature (`/tasks`, see [TASKS.md](TASKS.md)) is delivered
-and tested. The backend ships itself on the next merge to `main`; two operator
-steps remain, both about configuration rather than code:
+and tested, and its backend ships with every deploy to `main` — it has been
+live since that merge. What was outstanding was never code, but two operator
+**configuration** steps:
 
 1. set **Vazifalar Guruhi ID** in Sozlamalar → Telegram (Script Property
    `TELEGRAM_TASKS_GROUP_CHAT_ID`) and add the bot to that group. It must be the

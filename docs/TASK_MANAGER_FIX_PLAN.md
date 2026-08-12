@@ -28,7 +28,7 @@ what each work item names.
 | Source of truth | `apps-script/*.gs`. **Never hand-edit `script.gs`** — it is generated. Run `npm run build` after every backend edit and commit the regenerated bundle. `npm run build:check` (and CI) fails on a stale bundle. |
 | Timezone | All task scheduling/display stays **Asia/Tashkent** via the pure helpers in `16_tasks_recurrence.gs` (fixed UTC+5, epoch-ms math). Never introduce `Utilities.formatDate` or host-local date maths into the task modules. |
 | Isolation | The Task module must not read or write financial data (`Omad_Transactions`, `Omad_Transactions_V2`, ledger, rates, tenants). `tests/task-isolation.test.js` guards this — keep it passing. |
-| Omad V2 | Do **not** enable, migrate or cut over the V2 ledger. `LIVE_STATE.md` says `not_started`; it stays that way. |
+| Omad V2 | *(Superseded — this rule applied while the ledger was un-migrated. The V2 cutover happened on 2026-08-12 and V2 is now live; see [APP_BRIEF.md](APP_BRIEF.md).)* |
 | `/yangi` | Do not weaken its private-chat + authorized-user gating, and do not widen `isTaskTelegramUpdate_` beyond what §3.6 specifies. |
 | Telegram delivery | Every send goes through the existing `Omad_Job_Queue` (`enqueueJob_` → `runJob_`). Do not add a parallel retry/timer mechanism. |
 | Data compatibility | Task rows written by the current implementation must keep working. Column **order** in `TASKS_HEADER` / `TASK_OCC_HEADER` is positional on read — you may **append** columns at the end, never insert or reorder. This spec needs no new columns. |

@@ -3,12 +3,17 @@
 This is the step-by-step procedure for the one remaining live action. Everything
 in it is implemented and tested.
 
-> **Status as of 2026-08-05: not run. The live app is on the legacy
-> `Omad_Transactions` sheet, `Omad_Transactions_V2` does not exist, and the
-> migration state is `not_started`.** A migration was attempted earlier and
-> rolled back, so treat any earlier "applied" note as out of date. Running this
-> runbook is a separate, approved piece of work - see
-> [LIVE_STATE.md](LIVE_STATE.md).
+> **Status: DONE. This migration was run on 2026-08-12.**
+> `Omad_Transactions_V2` is the active sheet, the migration state is `cutover`,
+> and the legacy `Omad_Transactions` is kept intact for rollback. The status
+> block that used to sit here (`not_started`, "V2 does not exist") is no longer
+> true. This page is retained as the procedure for a **re-run after a
+> rollback** — see [APP_BRIEF.md](APP_BRIEF.md) and
+> [LIVE_STATE.md](LIVE_STATE.md) for current state.
+>
+> Note also that the "deploy `script.gs` by hand" instruction below is
+> superseded: merging to `main` deploys the backend
+> ([DEPLOYMENT.md](DEPLOYMENT.md)).
 >
 > Verification now also compares every migrated row field by field, including
 > each frozen `Amount_UZS` against the rate recorded on that same row. Do not

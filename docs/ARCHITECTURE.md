@@ -3,13 +3,18 @@
 Documented as of the Telegram credential-hardening change. This is the
 "before" picture that the remaining migration stages build on.
 
+> **Start with [APP_BRIEF.md](APP_BRIEF.md).** This file is the detailed design
+> reference — data shapes and rationale — and parts of it are out of date. The
+> App Brief lists what.
+>
 > **This file describes the design, not what is deployed.** For the live
 > deployment, which sheet is active, the Telegram setup and the work still
 > outstanding, see **[LIVE_STATE.md](LIVE_STATE.md)**.
 >
-> In particular: the application is running on the legacy `Omad_Transactions`
-> sheet. **The V2 ledger is not live and cutover is not part of current work**,
-> so every "after cutover" passage below is describing a future state.
+> **Correction (2026-08-12): the V2 append-only ledger *is* live.** The cutover
+> was performed and `Omad_Transactions_V2` is the active sheet; the legacy
+> `Omad_Transactions` is kept intact for rollback. Every "after cutover" passage
+> below therefore describes the **current** state, not a future one.
 
 ## Components
 
@@ -284,8 +289,9 @@ Secrets and configuration that must never reach the browser.
 | `purge_telegram_debug_secrets` | **yes** | Copies `Telegram_Debug_Log`, then re-redacts every row in place |
 | `rotate_telegram_webhook_secret` | **yes** | New verification secret, `setWebhook`, verify, or roll back |
 
-`doGet` still supports `action=get_omad` and `action=get_cafe`, **anonymously and
-deprecated** — see below.
+`doGet` is **inert**: it reads nothing and answers every request, whatever
+action it names, with the same sentence. The anonymous `get_omad` / `get_cafe`
+GET routes were removed — see below.
 
 ## Who may call what
 
