@@ -35,27 +35,55 @@ function doPost(e) {
       return handleOmadTelegramUpdate_(payload, doc, configSheet);
     }
 
+    // ---- Telegram Mini App ------------------------------------------------
+    // Placed before everything else so a mini_* action can never fall through
+    // into a handler with a different gate. Authorized by verified Telegram
+    // initData only; the admin key is neither sent to it nor accepted from it.
+    if (isMiniAppAction_(action)) {
+      return handleMiniAppAction_(action, payload, doc);
+    }
+
     // ---- Task management --------------------------------------------------
     if (isTaskAction_(action)) {
       return handleTaskAction_(action, payload, doc);
     }
 
+    // ---- Authenticated reads ----------------------------------------------
+    // The financial ledger, the tenant list and the whole café state are the
+    // business's private data. get_omad / get_cafe still answer an anonymous
+    // GET for one release so the deployed frontend cannot break between the
+    // Netlify and Apps Script rollouts; these are what the UI now calls, and
+    // the anonymous routes are removed once this is confirmed live.
+    if (action === 'verify_access' || action === 'get_omad_data' || action === 'get_cafe_data') {
+      return authenticatedReadAction_(action, payload, doc, configSheet);
+    }
+
     // ---- Omad ledger ------------------------------------------------------
+    // Financial writes take the access key. They were reachable by anyone who
+    // knew the /exec URL, which meant anyone could rewrite the whole ledger.
     if (action === 'migrate_omad' || action === 'save_omad') {
+      var saveAccessError = checkAdminKey_(payload);
+      if (saveAccessError) return jsonOutput_({ status: "error", message: saveAccessError });
       return saveOmadAction_(action, payload, doc, configSheet);
     }
 
     if (action === 'tenant_paid_expense') {
+      var pairAccessError = checkAdminKey_(payload);
+      if (pairAccessError) return jsonOutput_({ status: "error", message: pairAccessError });
       return tenantPaidExpenseAction_(payload, doc, configSheet);
     }
 
     // ---- Append-only ledger -----------------------------------------------
     if (isLedgerAction_(action)) {
+      var ledgerAccessError = checkAdminKey_(payload);
+      if (ledgerAccessError) return jsonOutput_({ status: "error", message: ledgerAccessError });
       return ledgerAction_(action, payload, doc);
     }
 
     // ---- Retry queue ------------------------------------------------------
     if (action === 'get_job_queue_status') {
+      var queueAccessError = checkAdminKey_(payload);
+      if (queueAccessError) return jsonOutput_({ status: "error", message: queueAccessError });
       return jsonOutput_({ status: "success", queue: buildJobQueueStatus_(doc) });
     }
 
@@ -67,7 +95,11 @@ function doPost(e) {
     }
 
     // ---- Telegram settings ------------------------------------------------
+    // The view carries no secret, but it does carry the authorized user id and
+    // both group chat ids -- enough to know exactly who and where to target.
     if (action === 'get_telegram_settings') {
+      var settingsAccessError = checkAdminKey_(payload);
+      if (settingsAccessError) return jsonOutput_({ status: "error", message: settingsAccessError });
       return jsonOutput_({ status: "success", settings: buildTelegramSettingsView_() });
     }
 
@@ -76,7 +108,11 @@ function doPost(e) {
     }
 
     // ---- System & data ----------------------------------------------------
+    // Counts and event names only, but the audit tail names tasks, people and
+    // operations, and the counts describe the size of the business.
     if (action === 'get_system_status') {
+      var statusAccessError = checkAdminKey_(payload);
+      if (statusAccessError) return jsonOutput_({ status: "error", message: statusAccessError });
       return jsonOutput_({ status: "success", system: buildSystemStatus_(doc) });
     }
 
@@ -97,6 +133,8 @@ function doPost(e) {
 
     // ---- Migration --------------------------------------------------------
     if (action === 'get_migration_status') {
+      var migrationReadError = checkAdminKey_(payload);
+      if (migrationReadError) return jsonOutput_({ status: "error", message: migrationReadError });
       return jsonOutput_({ status: "success", migration: getMigrationStatus_(doc) });
     }
 
@@ -139,14 +177,12 @@ function doGet(e) {
 
   if (!configSheet) return jsonOutput_({ status: "empty" });
 
+  // Deprecated, and reachable by anyone who knows the URL. Kept for exactly one
+  // release so the deployed frontend keeps working while Netlify and Apps
+  // Script roll out separately; get_omad_data / get_cafe_data are the
+  // authenticated replacements and the UI already calls them.
   if (action === 'get_omad') {
-    return jsonOutput_({
-      transactions: readOmadTransactions_(doc),
-      tenants: normalizeTenantList_(safeParseJSON_(getConfig(configSheet, "Omad_Tenants"), [])),
-      rates: safeParseJSON_(getConfig(configSheet, "Omad_Rates"), { "Fevral": 12500 }),
-      templateExpenses: normalizeTemplateExpenses_(
-        safeParseJSON_(getConfig(configSheet, "Omad_Template_Expenses"), []))
-    });
+    return jsonOutput_(readOmadPayload_(doc, configSheet));
   }
 
   if (action === 'get_cafe') {
@@ -246,6 +282,36 @@ function telegramAdminAction_(action, payload) {
   if (action === 'test_telegram_connection') return jsonOutput_(testTelegramConnection_());
   if (action === 'send_telegram_test_message') return jsonOutput_(sendTelegramTestMessage_());
   return jsonOutput_(configureTelegramWebhook_(payload));
+}
+
+/**
+ * Reads that require the access key.
+ *
+ * Throttled before the key is compared, exactly as the Telegram admin actions
+ * are, so the endpoint cannot be used to guess it.
+ */
+function authenticatedReadAction_(action, payload, doc, configSheet) {
+  var throttled = enforceRateLimit_("read_auth", TELEGRAM_ADMIN_RATE_LIMIT, TELEGRAM_RATE_WINDOW_SECONDS);
+  if (throttled) return jsonOutput_({ status: "error", message: throttled });
+
+  var accessError = checkAdminKey_(payload);
+  if (accessError) return jsonOutput_({ status: "error", message: accessError });
+
+  if (action === 'verify_access') return jsonOutput_({ status: "success" });
+  if (action === 'get_omad_data') return jsonOutput_(readOmadPayload_(doc, configSheet));
+  return jsonOutput_(readCafeState_(doc, configSheet));
+}
+
+/** The Omad read payload, shared by the authenticated and legacy routes. */
+function readOmadPayload_(doc, configSheet) {
+  return {
+    status: "success",
+    transactions: readOmadTransactions_(doc),
+    tenants: normalizeTenantList_(safeParseJSON_(getConfig(configSheet, "Omad_Tenants"), [])),
+    rates: safeParseJSON_(getConfig(configSheet, "Omad_Rates"), { "Fevral": 12500 }),
+    templateExpenses: normalizeTemplateExpenses_(
+      safeParseJSON_(getConfig(configSheet, "Omad_Template_Expenses"), []))
+  };
 }
 
 function isMaintenanceAction_(action) {

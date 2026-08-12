@@ -237,6 +237,43 @@ Hisobot guruhi faqat hisobot oladi — guruh ichida yozilgan har qanday xabar
 
 ---
 
+## Mini App (Telegram ichidagi ilova)
+
+Mini App faqat **`TELEGRAM_AUTHORIZED_USER_ID`** dagi foydalanuvchi uchun
+ochiladi — `/yangi` va vazifa yaratish uchun ishlatiladigan **aynan o'sha**
+sozlama. Ikkinchi foydalanuvchilar ro'yxati yo'q.
+
+### Qanday tekshiriladi
+
+Telegram Mini App'ga `initData` beradi va uni bot tokenidan olingan kalit bilan
+imzolaydi:
+
+```
+secret_key = HMAC_SHA256(bot_token, kalit = "WebAppData")
+kutilgan   = hex(HMAC_SHA256(data_check_string, kalit = secret_key))
+```
+
+Server imzoni tekshiradi, so'ng imzolangan **raqamli** `user.id` ni
+`TELEGRAM_AUTHORIZED_USER_ID` bilan solishtiradi. Faqat ikkalasi ham to'g'ri
+bo'lsa ma'lumot qaytariladi.
+
+**Ishonilmaydi:** URL'dagi user ID, username, `initDataUnsafe`, brauzerdagi
+har qanday saqlangan qiymat. Imzo o'zgartirilsa yoki boshqa token bilan
+imzolansa — rad etiladi.
+
+`auth_date` 24 soatdan eski bo'lsa sessiya muddati tugagan hisoblanadi va
+ilovani qaytadan ochish kerak bo'ladi.
+
+**Admin kaliti Mini App'ga yuborilmaydi va undan qabul qilinmaydi.** Telefon
+ekrani sozlamalarni ochadigan kalit uchun to'g'ri joy emas.
+
+### Sozlash
+
+Mini App manzilini BotFather'da qo'lda saqlash shart emas — **Sozlamalar →
+Telegram** bo'limidagi tugma buni Bot API orqali bajaradi va tekshiradi.
+
+---
+
 ## Git tarixidan sirni o'chirish (ixtiyoriy)
 
 Token BotFather orqali bekor qilingandan keyin tarixni tozalash **majburiy

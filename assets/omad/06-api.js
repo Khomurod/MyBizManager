@@ -13,17 +13,48 @@
 const SAVE_FAILED_MESSAGE = "Saqlanmadi. Internetni tekshirib, qayta urinib ko'ring.";
 
 /**
+ * The access key this browser was let in with.
+ *
+ * Reads and writes both need it now: the ledger, the tenant list and the whole
+ * café state are the business's private data, and until this change anyone who
+ * knew the /exec URL could read all of it. It is verified once at login and
+ * kept in localStorage, so the workflow is unchanged after the first sign-in.
+ */
+const ACCESS_KEY_STORAGE = 'omad_access_key';
+
+function accessKey() {
+    try { return localStorage.getItem(ACCESS_KEY_STORAGE) || ""; } catch (e) { return ""; }
+}
+
+/** Sends the browser back to the login page when the key is gone or wrong. */
+function requireAccess() {
+    try { localStorage.removeItem(ACCESS_KEY_STORAGE); } catch (e) {}
+    window.location.href = 'login.html';
+}
+
+/**
  * One request to Apps Script, returning the parsed JSON body.
  *
  * Apps Script answers HTTP 200 for almost everything, including its own
  * errors, so the status line says nothing about whether the work happened.
  * A body that cannot be parsed is a failure too - it means a login page or a
  * redirect came back instead of an answer.
+ *
+ * The access key rides on every request. A payload that supplies its own -
+ * the admin-key field in Sozlamalar - keeps it, so typing a different key
+ * there still works exactly as before.
  */
 async function callBackend(payload) {
+    const body = Object.assign({}, payload || {});
+    // A payload that names its own key keeps it - that is the Sozlamalar field,
+    // which exists so a different key can be tried without signing out. An
+    // empty one is not a choice, so the signed-in key is used instead.
+    if (!body.adminKey) body.adminKey = accessKey();
+    if (!body.adminKey) delete body.adminKey;
+
     const res = await fetch(GOOGLE_APP_URL.trim(), {
         method: 'POST',
-        body: JSON.stringify(payload)
+        body: JSON.stringify(body)
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
@@ -49,9 +80,14 @@ function isSuccessResponse(body) {
 async function syncData() {
     showLoader(true);
     try {
-        const res = await fetch(`${GOOGLE_APP_URL.trim()}?action=get_omad`);
-        if (res.ok) {
-            const data = await res.json();
+        // An authenticated POST, not the old anonymous GET: a GET puts its
+        // parameters in the URL, which is where a key must never be.
+        const data = await callBackend({ action: 'get_omad_data' });
+        if (data && data.status === 'error') {
+            requireAccess();
+            return;
+        }
+        if (data) {
             const remote = data.data || data.payload || data;
 
             if(remote.transactions) app.transactions = remote.transactions;

@@ -95,6 +95,7 @@ describe('Tasks UI (browser)', () => {
     await context.addInitScript((args) => {
       localStorage.setItem('omad_role', 'omad_admin');
       localStorage.setItem('omad_token', 'omad_admin_active');
+      localStorage.setItem('omad_access_key', 'e2e-access-key');
       if (args.withKey) sessionStorage.setItem('tasks_admin_key', args.key);
     }, { key: ADMIN_KEY, withKey });
 

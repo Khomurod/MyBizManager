@@ -11,7 +11,10 @@
 const GOOGLE_APP_URL = "https://script.google.com/macros/s/AKfycbzhKyEOGZbVdtpSd7fa6aTDZf1QsqWQeOpWRxrb7bYpzWWDQxUXZID8JNzGMfDtCA2W/exec";
 const ADMIN_TOKEN = "omad_admin_active";
 
+// The role decides which app opens; the access key is what the server checks.
+// Without one there is nothing to send, so there is no point loading the app.
 if (localStorage.getItem("omad_role") !== "omad_admin" ||
-    localStorage.getItem("omad_token") !== ADMIN_TOKEN) {
+    localStorage.getItem("omad_token") !== ADMIN_TOKEN ||
+    !localStorage.getItem("omad_access_key")) {
     window.location.href = "login.html";
 }

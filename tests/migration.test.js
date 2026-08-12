@@ -303,9 +303,13 @@ test('reads keep working before the migration runs', () => {
 
 // ------------------------------------------------------------------- the API
 
-test('migration status is readable without the admin key', () => {
+test('migration status needs the access key, and reads correctly with it', () => {
   const gas = boot([row('1_0', 'Yanvar', '05/01/2026')]);
-  const body = readJsonOutput(gas.doPost(postEvent({ action: 'get_migration_status' })));
+  assert.strictEqual(
+    readJsonOutput(gas.doPost(postEvent({ action: 'get_migration_status' }))).status, 'error',
+    'the ledger size and which sheet is live are not public facts');
+
+  const body = readJsonOutput(gas.doPost(postEvent({ action: 'get_migration_status', adminKey: ADMIN_KEY })));
 
   assert.strictEqual(body.status, 'success');
   assert.strictEqual(body.migration.state, 'not_started');

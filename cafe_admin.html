@@ -16,7 +16,46 @@
 <body class="pb-24 text-slate-800">
   <script>
     const GOOGLE_APP_URL = "https://script.google.com/macros/s/AKfycbzhKyEOGZbVdtpSd7fa6aTDZf1QsqWQeOpWRxrb7bYpzWWDQxUXZID8JNzGMfDtCA2W/exec";
-    if (localStorage.getItem("omad_role") !== "cafe_admin" || localStorage.getItem("omad_token") !== "cafe_admin_active") {
+
+    // ------------------------------------------------------------------
+    // Access key
+    // ------------------------------------------------------------------
+    // The café's inventory, prices, sales and margins are private business
+    // data, and every mutation here rewrites stock or files a sale. Both were
+    // reachable by anyone who knew the /exec URL. The key is verified once at
+    // login and rides on every request from here on.
+    const ACCESS_KEY_STORAGE = "omad_access_key";
+
+    function accessKey() {
+      try { return localStorage.getItem(ACCESS_KEY_STORAGE) || ""; } catch (e) { return ""; }
+    }
+
+    function requireAccess() {
+      try { localStorage.removeItem(ACCESS_KEY_STORAGE); } catch (e) {}
+      window.location.href = "login.html";
+    }
+
+    /** One authenticated POST, returning the parsed body. */
+    async function callCafeApi(payload) {
+      const res = await fetch(GOOGLE_APP_URL, {
+        method: "POST",
+        body: JSON.stringify(Object.assign({ adminKey: accessKey() }, payload))
+      });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const text = await res.text();
+      try { return JSON.parse(text); } catch (e) { throw new Error("Server javobi tushunarsiz"); }
+    }
+
+    /** The café state, over an authenticated POST rather than a public GET. */
+    async function loadCafeState() {
+      const data = await callCafeApi({ action: "get_cafe_data" });
+      if (data && data.status === "error") { requireAccess(); throw new Error(data.message || "Ruxsat yo'q"); }
+      return data;
+    }
+
+    if (localStorage.getItem("omad_role") !== "cafe_admin" ||
+        localStorage.getItem("omad_token") !== "cafe_admin_active" ||
+        !localStorage.getItem("omad_access_key")) {
       window.location.href = "login.html";
     }
   </script>
@@ -641,13 +680,7 @@
       if (input) input.value = dailyTarget > 0 ? String(dailyTarget) : "";
 
       try {
-        await fetch(GOOGLE_APP_URL, {
-          method: "POST",
-          body: JSON.stringify({
-            action: "save_cafe_settings",
-            settings: { ...state.settings }
-          })
-        });
+        await callCafeApi({ action: "save_cafe_settings", settings: { ...state.settings } });
         alert("Sozlamalar saqlandi.");
       } catch (e) {
         console.error("Sozlamalarni saqlashda xatolik:", e);
@@ -749,9 +782,7 @@
       categoryList.innerHTML = `<div class="glass rounded-2xl p-3 text-xs font-bold text-slate-500">Yuklanmoqda...</div>`;
 
       try {
-        const res = await fetch(`${GOOGLE_APP_URL}?action=get_cafe`);
-        if (!res.ok) throw new Error("Ma'lumot kelmadi");
-        const data = await res.json();
+        const data = await loadCafeState();
         const payload = data.data || data.payload || data;
         state.inventory = (Array.isArray(payload.inventory) ? payload.inventory : []).map(i => ({
           type: i.type || (i.sellPrice ? "product" : "ingredient"),
@@ -793,7 +824,7 @@
 
     async function sendToApi(action, payload) {
       try {
-        await fetch(GOOGLE_APP_URL, { method: "POST", body: JSON.stringify({ action, ...payload }) });
+        await callCafeApi({ action, ...payload });
       } catch (e) {
         console.error("API xatolik:", e);
       }
@@ -802,6 +833,7 @@
     function logout() {
       localStorage.removeItem("omad_role");
       localStorage.removeItem("omad_token");
+      localStorage.removeItem("omad_access_key");
       localStorage.removeItem("omad_user");
       window.location.href = "login.html";
     }

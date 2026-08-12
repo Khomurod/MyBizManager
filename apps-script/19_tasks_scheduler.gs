@@ -390,6 +390,18 @@ function handleTaskAction_(action, payload, doc) {
   var adminError = checkAdminKey_(payload);
   if (adminError) return jsonOutput_({ status: "error", message: adminError });
 
+  return runTaskAction_(action, payload, doc);
+}
+
+/**
+ * A task mutation that has already been authorized.
+ *
+ * Split out so the Mini App can reach exactly this code behind verified
+ * Telegram initData instead of the admin key. Everything below the gate — the
+ * occurrence bookkeeping, the inline scheduler pass, the group cards — is the
+ * same engine for both callers, which is what stops the two surfaces drifting.
+ */
+function runTaskAction_(action, payload, doc) {
   var result;
   if (action === "save_task") result = saveTaskAction_(doc, payload);
   else if (action === "cancel_task") result = cancelTaskAction_(doc, payload);

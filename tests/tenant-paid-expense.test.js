@@ -55,7 +55,7 @@ function boot(options = {}) {
 
 function payload(overrides = {}) {
   return Object.assign({
-    action: 'tenant_paid_expense',
+    action: 'tenant_paid_expense', adminKey: ADMIN_KEY,
     requestId: 'web_req_1',
     groupId: 'grp_web_pair_1',
     tenant: 'Apteka',
@@ -244,7 +244,7 @@ test('an ordinary entry still gets the ordinary report', () => {
   });
 
   post(gas, {
-    action: 'save_omad',
+    action: 'save_omad', adminKey: ADMIN_KEY,
     transactions: [{ id: '1800000000000_0', tenant: 'Apteka', month: '2026-08', type: 'Income', amount: 500000, currency: 'UZS', method: 'Naqd', groupId: 'grp_plain' }],
     tenants: TENANTS, rates: RATES, templateExpenses: [],
     telegramReport: { operation: 'transaction_upsert', groupId: 'grp_plain', baseId: '1800000000000' }
@@ -307,7 +307,7 @@ test('an edit keeps the group message, so the report is edited rather than dupli
 test('replacing something that is not a tenant-paid pair is refused', () => {
   const gas = boot();
   post(gas, {
-    action: 'save_omad',
+    action: 'save_omad', adminKey: ADMIN_KEY,
     transactions: [{ id: '1800000000000_0', tenant: 'Apteka', month: '2026-08', type: 'Income', amount: 500000, currency: 'UZS', method: 'Naqd', groupId: 'grp_plain' }],
     tenants: TENANTS, rates: RATES, templateExpenses: [], deferReports: true
   });

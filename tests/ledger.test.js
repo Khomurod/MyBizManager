@@ -369,33 +369,33 @@ test('the correction audit row records the before and after values', () => {
 test('create, correct and cancel are reachable over the API', () => {
   const gas = bootLedger();
 
-  const created = post(gas, { action: 'create_transaction', ...input({ requestId: 'r1' }) });
+  const created = post(gas, { action: 'create_transaction', adminKey: ADMIN_KEY, ...input({ requestId: 'r1' }) });
   assert.strictEqual(created.status, 'success');
   assert.ok(created.reportJobId, 'the Telegram report is queued, not sent inline');
 
-  const read = post(gas, { action: 'get_transaction', transactionId: created.transaction.id });
+  const read = post(gas, { action: 'get_transaction', adminKey: ADMIN_KEY, transactionId: created.transaction.id });
   assert.strictEqual(read.transaction.amount, 1000000);
 
   const corrected = post(gas, {
-    action: 'correct_transaction',
+    action: 'correct_transaction', adminKey: ADMIN_KEY,
     ...input({ requestId: 'r2', transactionId: created.transaction.id, amount: 1200000 })
   });
   assert.strictEqual(corrected.status, 'success');
 
   const history = post(gas, {
-    action: 'get_transaction_history', transactionId: created.transaction.id
+    action: 'get_transaction_history', adminKey: ADMIN_KEY, transactionId: created.transaction.id
   });
   assert.strictEqual(history.history.chain.length, 2);
 
-  const listed = post(gas, { action: 'list_transactions', period: '2026-01' });
+  const listed = post(gas, { action: 'list_transactions', adminKey: ADMIN_KEY, period: '2026-01' });
   assert.strictEqual(listed.transactions.length, 1);
   assert.strictEqual(listed.transactions[0].amount, 1200000);
 
   const cancelled = post(gas, {
-    action: 'cancel_transaction', requestId: 'r3', transactionId: corrected.transaction.id
+    action: 'cancel_transaction', adminKey: ADMIN_KEY, requestId: 'r3', transactionId: corrected.transaction.id
   });
   assert.strictEqual(cancelled.status, 'success');
-  assert.strictEqual(post(gas, { action: 'list_transactions' }).transactions.length, 0);
+  assert.strictEqual(post(gas, { action: 'list_transactions' , adminKey: ADMIN_KEY,}).transactions.length, 0);
 });
 
 test('a Telegram failure never fails the transaction', () => {
@@ -415,7 +415,7 @@ test('a Telegram failure never fails the transaction', () => {
     fetch: () => ({ getResponseCode: () => 503, getContentText: () => 'unavailable' })
   });
 
-  const created = post(gas, { action: 'create_transaction', ...input({ requestId: 'r1' }) });
+  const created = post(gas, { action: 'create_transaction', adminKey: ADMIN_KEY, ...input({ requestId: 'r1' }) });
   assert.strictEqual(created.status, 'success');
 
   const queue = gas.__spreadsheet.getSheetByName('Omad_Job_Queue').getDataRange().getValues();
@@ -437,12 +437,12 @@ test('the individual operations refuse until the ledger is live', () => {
     }
   });
 
-  const created = post(gas, { action: 'create_transaction', ...input() });
+  const created = post(gas, { action: 'create_transaction', adminKey: ADMIN_KEY, ...input() });
   assert.strictEqual(created.status, 'error');
   assert.match(created.message, /ko'chiring/);
 
   // Reads still work against the legacy sheet, with resolved periods.
-  const listed = post(gas, { action: 'list_transactions' });
+  const listed = post(gas, { action: 'list_transactions' , adminKey: ADMIN_KEY,});
   assert.strictEqual(listed.transactions.length, 1);
   assert.strictEqual(listed.transactions[0].period, '2026-01');
 });
@@ -452,7 +452,7 @@ test('the whole-list rewrite is refused once the ledger is live', () => {
   gas.createTransaction_(gas.__spreadsheet, input({ requestId: 'r1' }));
 
   const saved = post(gas, {
-    action: 'save_omad',
+    action: 'save_omad', adminKey: ADMIN_KEY,
     transactions: [],
     tenants: [{ name: 'Tehnopark', rent: 500, currency: 'USD', disabledMonths: [] }],
     rates: RATES,

@@ -3398,11 +3398,30 @@ function runCafeCloseDayReportJob_(job) {
 var CAFE_SALES_HEADER = ["Sana", "Sotuvchi", "Jami_Tushum", "Sof_Foyda", "Chek_Tafsilotlari", "ID"];
 var CAFE_CLOSE_DAY_HEADER = ["Sana", "Sotuvchi", "Jami_Tushum", "Sof_Foyda", "Tafsilotlar_JSON"];
 
+var CAFE_MUTATIONS = {
+  save_inventory: true, save_recipe: true, save_categories: true,
+  save_cafe_settings: true, save_sale: true, void_sale: true, close_day: true
+};
+
+function isCafeAction_(action) {
+  return CAFE_MUTATIONS[String(action || "")] === true;
+}
+
 /**
  * Handles every café action. Returns a ContentService output, or null when the
  * action does not belong to the café, so the router can carry on.
+ *
+ * Every one of these writes: inventory, recipes, prices, sales, voids and the
+ * close-day record. They were reachable by anyone who knew the /exec URL, which
+ * meant anyone could rewrite the stock or file a sale. They now take the same
+ * key the rest of the business actions take.
  */
 function handleCafeAction_(action, payload, doc, configSheet) {
+  if (!isCafeAction_(action)) return null;
+
+  var accessError = checkAdminKey_(payload);
+  if (accessError) return jsonOutput_({ status: "error", message: accessError });
+
   if (action === 'save_inventory') {
     setConfig(configSheet, "Cafe_Inventory", JSON.stringify(payload.inventory));
     return jsonOutput_({ status: "success" });
@@ -7129,6 +7148,18 @@ function handleTaskAction_(action, payload, doc) {
   var adminError = checkAdminKey_(payload);
   if (adminError) return jsonOutput_({ status: "error", message: adminError });
 
+  return runTaskAction_(action, payload, doc);
+}
+
+/**
+ * A task mutation that has already been authorized.
+ *
+ * Split out so the Mini App can reach exactly this code behind verified
+ * Telegram initData instead of the admin key. Everything below the gate — the
+ * occurrence bookkeeping, the inline scheduler pass, the group cards — is the
+ * same engine for both callers, which is what stops the two surfaces drifting.
+ */
+function runTaskAction_(action, payload, doc) {
   var result;
   if (action === "save_task") result = saveTaskAction_(doc, payload);
   else if (action === "cancel_task") result = cancelTaskAction_(doc, payload);
@@ -8653,27 +8684,55 @@ function doPost(e) {
       return handleOmadTelegramUpdate_(payload, doc, configSheet);
     }
 
+    // ---- Telegram Mini App ------------------------------------------------
+    // Placed before everything else so a mini_* action can never fall through
+    // into a handler with a different gate. Authorized by verified Telegram
+    // initData only; the admin key is neither sent to it nor accepted from it.
+    if (isMiniAppAction_(action)) {
+      return handleMiniAppAction_(action, payload, doc);
+    }
+
     // ---- Task management --------------------------------------------------
     if (isTaskAction_(action)) {
       return handleTaskAction_(action, payload, doc);
     }
 
+    // ---- Authenticated reads ----------------------------------------------
+    // The financial ledger, the tenant list and the whole café state are the
+    // business's private data. get_omad / get_cafe still answer an anonymous
+    // GET for one release so the deployed frontend cannot break between the
+    // Netlify and Apps Script rollouts; these are what the UI now calls, and
+    // the anonymous routes are removed once this is confirmed live.
+    if (action === 'verify_access' || action === 'get_omad_data' || action === 'get_cafe_data') {
+      return authenticatedReadAction_(action, payload, doc, configSheet);
+    }
+
     // ---- Omad ledger ------------------------------------------------------
+    // Financial writes take the access key. They were reachable by anyone who
+    // knew the /exec URL, which meant anyone could rewrite the whole ledger.
     if (action === 'migrate_omad' || action === 'save_omad') {
+      var saveAccessError = checkAdminKey_(payload);
+      if (saveAccessError) return jsonOutput_({ status: "error", message: saveAccessError });
       return saveOmadAction_(action, payload, doc, configSheet);
     }
 
     if (action === 'tenant_paid_expense') {
+      var pairAccessError = checkAdminKey_(payload);
+      if (pairAccessError) return jsonOutput_({ status: "error", message: pairAccessError });
       return tenantPaidExpenseAction_(payload, doc, configSheet);
     }
 
     // ---- Append-only ledger -----------------------------------------------
     if (isLedgerAction_(action)) {
+      var ledgerAccessError = checkAdminKey_(payload);
+      if (ledgerAccessError) return jsonOutput_({ status: "error", message: ledgerAccessError });
       return ledgerAction_(action, payload, doc);
     }
 
     // ---- Retry queue ------------------------------------------------------
     if (action === 'get_job_queue_status') {
+      var queueAccessError = checkAdminKey_(payload);
+      if (queueAccessError) return jsonOutput_({ status: "error", message: queueAccessError });
       return jsonOutput_({ status: "success", queue: buildJobQueueStatus_(doc) });
     }
 
@@ -8685,7 +8744,11 @@ function doPost(e) {
     }
 
     // ---- Telegram settings ------------------------------------------------
+    // The view carries no secret, but it does carry the authorized user id and
+    // both group chat ids -- enough to know exactly who and where to target.
     if (action === 'get_telegram_settings') {
+      var settingsAccessError = checkAdminKey_(payload);
+      if (settingsAccessError) return jsonOutput_({ status: "error", message: settingsAccessError });
       return jsonOutput_({ status: "success", settings: buildTelegramSettingsView_() });
     }
 
@@ -8694,7 +8757,11 @@ function doPost(e) {
     }
 
     // ---- System & data ----------------------------------------------------
+    // Counts and event names only, but the audit tail names tasks, people and
+    // operations, and the counts describe the size of the business.
     if (action === 'get_system_status') {
+      var statusAccessError = checkAdminKey_(payload);
+      if (statusAccessError) return jsonOutput_({ status: "error", message: statusAccessError });
       return jsonOutput_({ status: "success", system: buildSystemStatus_(doc) });
     }
 
@@ -8715,6 +8782,8 @@ function doPost(e) {
 
     // ---- Migration --------------------------------------------------------
     if (action === 'get_migration_status') {
+      var migrationReadError = checkAdminKey_(payload);
+      if (migrationReadError) return jsonOutput_({ status: "error", message: migrationReadError });
       return jsonOutput_({ status: "success", migration: getMigrationStatus_(doc) });
     }
 
@@ -8757,14 +8826,12 @@ function doGet(e) {
 
   if (!configSheet) return jsonOutput_({ status: "empty" });
 
+  // Deprecated, and reachable by anyone who knows the URL. Kept for exactly one
+  // release so the deployed frontend keeps working while Netlify and Apps
+  // Script roll out separately; get_omad_data / get_cafe_data are the
+  // authenticated replacements and the UI already calls them.
   if (action === 'get_omad') {
-    return jsonOutput_({
-      transactions: readOmadTransactions_(doc),
-      tenants: normalizeTenantList_(safeParseJSON_(getConfig(configSheet, "Omad_Tenants"), [])),
-      rates: safeParseJSON_(getConfig(configSheet, "Omad_Rates"), { "Fevral": 12500 }),
-      templateExpenses: normalizeTemplateExpenses_(
-        safeParseJSON_(getConfig(configSheet, "Omad_Template_Expenses"), []))
-    });
+    return jsonOutput_(readOmadPayload_(doc, configSheet));
   }
 
   if (action === 'get_cafe') {
@@ -8864,6 +8931,36 @@ function telegramAdminAction_(action, payload) {
   if (action === 'test_telegram_connection') return jsonOutput_(testTelegramConnection_());
   if (action === 'send_telegram_test_message') return jsonOutput_(sendTelegramTestMessage_());
   return jsonOutput_(configureTelegramWebhook_(payload));
+}
+
+/**
+ * Reads that require the access key.
+ *
+ * Throttled before the key is compared, exactly as the Telegram admin actions
+ * are, so the endpoint cannot be used to guess it.
+ */
+function authenticatedReadAction_(action, payload, doc, configSheet) {
+  var throttled = enforceRateLimit_("read_auth", TELEGRAM_ADMIN_RATE_LIMIT, TELEGRAM_RATE_WINDOW_SECONDS);
+  if (throttled) return jsonOutput_({ status: "error", message: throttled });
+
+  var accessError = checkAdminKey_(payload);
+  if (accessError) return jsonOutput_({ status: "error", message: accessError });
+
+  if (action === 'verify_access') return jsonOutput_({ status: "success" });
+  if (action === 'get_omad_data') return jsonOutput_(readOmadPayload_(doc, configSheet));
+  return jsonOutput_(readCafeState_(doc, configSheet));
+}
+
+/** The Omad read payload, shared by the authenticated and legacy routes. */
+function readOmadPayload_(doc, configSheet) {
+  return {
+    status: "success",
+    transactions: readOmadTransactions_(doc),
+    tenants: normalizeTenantList_(safeParseJSON_(getConfig(configSheet, "Omad_Tenants"), [])),
+    rates: safeParseJSON_(getConfig(configSheet, "Omad_Rates"), { "Fevral": 12500 }),
+    templateExpenses: normalizeTemplateExpenses_(
+      safeParseJSON_(getConfig(configSheet, "Omad_Template_Expenses"), []))
+  };
 }
 
 function isMaintenanceAction_(action) {
@@ -9025,5 +9122,644 @@ function queueLedgerReport_(doc, action, result) {
     baseId: String(transaction.id).split("_")[0],
     messageId: String(transaction.msgId || "")
   });
+}
+
+// ----- apps-script/21_miniapp_auth.gs ------------------------------------------
+
+// ============================================================
+// Telegram Mini App authentication
+// ------------------------------------------------------------
+// The Mini App is opened from inside Telegram, which hands the page a signed
+// `initData` string. Telegram signs it with a key derived from the bot token,
+// so a caller who does not hold the bot token cannot produce a valid one — and
+// the bot token never leaves Script Properties.
+//
+// This is the ONLY thing that authorizes a Mini App request. In particular it
+// never trusts:
+//
+//   - a user id in the URL or the payload
+//   - a username (changeable, and re-registrable by someone else)
+//   - `initDataUnsafe` (the client-side copy, unsigned by definition)
+//   - anything stored in the browser
+//
+// There is no second user database. The verified numeric id is compared
+// against TELEGRAM_AUTHORIZED_USER_ID — the same property that decides who may
+// run /yangi and file a task from the bot.
+// ============================================================
+
+/**
+ * How old a signed payload may be.
+ *
+ * Telegram refreshes `initData` when the Mini App is opened, but not while it
+ * stays open, so this is a session length rather than a request lifetime: too
+ * short and a Mini App left open in the background stops working mid-edit.
+ * A day is long enough for that and short enough that a captured payload —
+ * which would already require access to the authorized user's device — is not
+ * usable indefinitely.
+ */
+var MINI_APP_MAX_AUTH_AGE_SECONDS = 24 * 60 * 60;
+
+/** Rate limit for verification attempts, so the endpoint cannot be hammered. */
+var MINI_APP_RATE_LIMIT = 60;
+
+var MINI_APP_OPEN_IN_TELEGRAM_MESSAGE = "Bu sahifani Telegram bot orqali oching.";
+var MINI_APP_FORBIDDEN_MESSAGE = "⛔️ Sizda bu ilovadan foydalanish huquqi yo'q.";
+
+/** Percent-decoding for one `application/x-www-form-urlencoded` component. */
+function decodeQueryComponent_(value) {
+  var text = String(value === null || value === undefined ? "" : value).split("+").join(" ");
+  try {
+    return decodeURIComponent(text);
+  } catch (error) {
+    // A malformed escape is not a reason to throw: it simply will not match
+    // the signature, which is the answer we want anyway.
+    return text;
+  }
+}
+
+/**
+ * initData as an ordered list of raw `key=value` pairs.
+ *
+ * The values must be compared *decoded* but signed *decoded* too, per
+ * Telegram's rules: the data-check string is built from decoded values.
+ */
+function parseInitDataPairs_(initData) {
+  var text = String(initData || "");
+  if (!text) return [];
+  var parts = text.split("&");
+  var pairs = [];
+  for (var i = 0; i < parts.length; i++) {
+    if (!parts[i]) continue;
+    var split = parts[i].indexOf("=");
+    if (split === -1) continue;
+    pairs.push({
+      key: decodeQueryComponent_(parts[i].slice(0, split)),
+      value: decodeQueryComponent_(parts[i].slice(split + 1))
+    });
+  }
+  return pairs;
+}
+
+function bytesToHex_(bytes) {
+  var out = "";
+  for (var i = 0; i < bytes.length; i++) {
+    // Apps Script signature bytes are signed; & 0xff brings them back.
+    var part = (bytes[i] & 0xff).toString(16);
+    out += part.length === 1 ? "0" + part : part;
+  }
+  return out;
+}
+
+/**
+ * Compares two hex digests without leaking where they first differ.
+ *
+ * secretsMatch_ already does this for the webhook secret; this keeps the same
+ * property for a value an attacker can submit repeatedly.
+ */
+function hexDigestsMatch_(a, b) {
+  var left = String(a || "").toLowerCase();
+  var right = String(b || "").toLowerCase();
+  if (left.length !== right.length) return false;
+  var difference = 0;
+  for (var i = 0; i < left.length; i++) {
+    difference |= left.charCodeAt(i) ^ right.charCodeAt(i);
+  }
+  return difference === 0;
+}
+
+/**
+ * Verifies Telegram's signature over initData.
+ *
+ * Returns `{ ok, user, authDate, reason }`. `reason` is a short machine
+ * readable code; nothing it contains is ever derived from a secret.
+ */
+function verifyTelegramInitData_(initData, nowMs) {
+  var token = getBotToken_();
+  if (!token) return { ok: false, reason: "bot_token_missing" };
+
+  var pairs = parseInitDataPairs_(initData);
+  if (pairs.length === 0) return { ok: false, reason: "missing_init_data" };
+
+  var hash = "";
+  var checkPairs = [];
+  for (var i = 0; i < pairs.length; i++) {
+    if (pairs[i].key === "hash") { hash = pairs[i].value; continue; }
+    checkPairs.push(pairs[i]);
+  }
+  if (!hash) return { ok: false, reason: "missing_hash" };
+
+  checkPairs.sort(function (a, b) { return a.key < b.key ? -1 : (a.key > b.key ? 1 : 0); });
+  var lines = [];
+  for (var j = 0; j < checkPairs.length; j++) {
+    lines.push(checkPairs[j].key + "=" + checkPairs[j].value);
+  }
+  var dataCheckString = lines.join("\n");
+
+  // secret_key = HMAC_SHA256(bot_token, "WebAppData"), then the digest of the
+  // data-check string under that key. Both steps are HMAC(message, key).
+  var secretKey = Utilities.computeHmacSha256Signature(token, "WebAppData");
+  var digest = Utilities.computeHmacSha256Signature(
+    Utilities.newBlob(dataCheckString).getBytes(), secretKey);
+
+  if (!hexDigestsMatch_(bytesToHex_(digest), hash)) return { ok: false, reason: "bad_signature" };
+
+  var authDate = 0;
+  for (var k = 0; k < checkPairs.length; k++) {
+    if (checkPairs[k].key === "auth_date") authDate = Number(checkPairs[k].value) || 0;
+  }
+  if (!authDate) return { ok: false, reason: "missing_auth_date" };
+
+  var now = Math.floor((nowMs === undefined ? Date.now() : nowMs) / 1000);
+  // A payload dated in the future is as wrong as one that is too old.
+  if (authDate > now + 300) return { ok: false, reason: "auth_date_in_future" };
+  if (now - authDate > MINI_APP_MAX_AUTH_AGE_SECONDS) return { ok: false, reason: "stale" };
+
+  var user = null;
+  for (var u = 0; u < checkPairs.length; u++) {
+    if (checkPairs[u].key === "user") user = safeParseJSON_(checkPairs[u].value, null);
+  }
+  if (!user || (user.id === undefined || user.id === null || user.id === "")) {
+    return { ok: false, reason: "missing_user" };
+  }
+
+  return { ok: true, user: user, authDate: authDate, reason: "" };
+}
+
+/**
+ * Authorizes one Mini App request.
+ *
+ * Signature first, then identity: a valid signature proves the payload came
+ * from Telegram, and only then does the verified numeric id decide whether
+ * this particular person may see anything.
+ */
+function authorizeMiniAppRequest_(payload) {
+  var throttled = enforceRateLimit_("mini_auth", MINI_APP_RATE_LIMIT, TELEGRAM_RATE_WINDOW_SECONDS);
+  if (throttled) return { ok: false, message: throttled };
+
+  var verified = verifyTelegramInitData_((payload && payload.initData) || "");
+  if (!verified.ok) {
+    return {
+      ok: false,
+      reason: verified.reason,
+      // Nothing here tells a caller how to forge a better attempt.
+      message: verified.reason === "stale"
+        ? "Sessiya muddati tugadi. Ilovani qaytadan oching."
+        : MINI_APP_OPEN_IN_TELEGRAM_MESSAGE
+    };
+  }
+
+  if (!isAuthorizedTelegramUser_(verified.user.id)) {
+    return { ok: false, reason: "not_authorized", message: MINI_APP_FORBIDDEN_MESSAGE };
+  }
+
+  return {
+    ok: true,
+    userId: String(verified.user.id),
+    user: {
+      id: String(verified.user.id),
+      firstName: String(verified.user.first_name || "").slice(0, 100),
+      username: String(verified.user.username || "").slice(0, 100)
+    }
+  };
+}
+
+// ----- apps-script/22_miniapp_api.gs -------------------------------------------
+
+// ============================================================
+// Telegram Mini App API
+// ------------------------------------------------------------
+// Every action here is authorized by authorizeMiniAppRequest_ and by nothing
+// else. The admin key is never sent to the Mini App and is not accepted from
+// it — a phone screen is the wrong place for the key that also unlocks the
+// settings and the maintenance actions.
+//
+// Nothing in this file re-implements a calculation. Figures come from
+// 05a_calculations.gs, tenant debt from 06_tenants.gs, tasks from
+// 17_tasks_store.gs and the tenant-paid pair from 08a_tenant_paid.gs, so the
+// Mini App cannot drift from the numbers the web app and the reports show.
+//
+// The responses are *summaries*. The café state alone is a third of a
+// megabyte; sending it to a phone to be totalled there would be slow and would
+// be a second implementation of the same arithmetic.
+// ============================================================
+
+var MINI_APP_RECENT_TRANSACTIONS = 15;
+var MINI_APP_RECENT_SALES = 10;
+var MINI_APP_RECENT_CLOSINGS = 5;
+
+function isMiniAppAction_(action) {
+  return String(action || "").indexOf("mini_") === 0;
+}
+
+function handleMiniAppAction_(action, payload, doc) {
+  var auth = authorizeMiniAppRequest_(payload);
+  if (!auth.ok) {
+    return jsonOutput_({ status: "error", authorized: false, reason: auth.reason || "", message: auth.message });
+  }
+
+  var configSheet = doc.getSheetByName("System_Config") || doc.insertSheet("System_Config");
+
+  if (action === 'mini_home') {
+    return jsonOutput_({
+      status: "success", authorized: true, user: auth.user,
+      omad: buildMiniOmadSummary_(doc, configSheet, payload.period),
+      cafe: buildMiniCafeSummary_(doc, configSheet),
+      tasks: buildMiniTaskSummary_(doc)
+    });
+  }
+
+  if (action === 'mini_omad') {
+    return jsonOutput_({
+      status: "success", authorized: true,
+      omad: buildMiniOmadSummary_(doc, configSheet, payload.period),
+      tenants: buildMiniTenantStatus_(doc, configSheet, payload.period),
+      transactions: buildMiniRecentEntries_(doc, payload.period)
+    });
+  }
+
+  if (action === 'mini_cafe') {
+    return jsonOutput_({ status: "success", authorized: true, cafe: buildMiniCafeSummary_(doc, configSheet) });
+  }
+
+  if (action === 'mini_tasks') {
+    return jsonOutput_({
+      status: "success", authorized: true,
+      view: buildTaskViews_(doc, Date.now()),
+      config: { tasksGroupConfigured: !!getTasksGroupChatId_() }
+    });
+  }
+
+  if (action === 'mini_save_transaction') return miniSaveTransaction_(doc, configSheet, payload);
+  if (action === 'mini_tenant_paid') return miniTenantPaid_(doc, configSheet, payload);
+  if (action === 'mini_task_action') return miniTaskAction_(doc, payload, auth);
+
+  return jsonOutput_({ status: "error", message: "Unknown action" });
+}
+
+// ------------------------------------------------------------------- reading
+
+/** The month figures, the balances and the tenant debt total, for one period. */
+function buildMiniOmadSummary_(doc, configSheet, requestedPeriod) {
+  var period = isCanonicalPeriod_(requestedPeriod) ? String(requestedPeriod) : currentPeriod_();
+  var transactions = readOmadTransactions_(doc);
+  var tenants = normalizeTenantList_(safeParseJSON_(getConfig(configSheet, "Omad_Tenants"), []));
+  var rates = getOmadRates_();
+  var actuals = calculateActuals_(transactions, period);
+
+  // calculateTenantBalance_ reports a signed difference: negative is owed.
+  // Debt and surplus are derived here rather than re-deriving the rent rules.
+  var debt = 0;
+  var paidTenants = 0;
+  for (var i = 0; i < tenants.length; i++) {
+    var balance = calculateTenantBalance_(transactions, tenants[i], period);
+    if (balance.difference < 0) debt += -balance.difference;
+    else if (balance.expected > 0) paidTenants++;
+  }
+
+  var entry = getPeriodRate_(rates, period);
+  return {
+    period: period,
+    periodLabel: formatPeriodLabel_(period),
+    income: actuals.income,
+    expense: actuals.expense,
+    net: actuals.net,
+    cash: actuals.cash,
+    bank: actuals.bank,
+    total: actuals.total,
+    tenantDebt: Math.round(debt),
+    tenantCount: tenants.length,
+    tenantsSettled: paidTenants,
+    rate: { buy: entry.buy, sell: entry.sell },
+    ledgerActive: isLedgerActive_(doc)
+  };
+}
+
+/** Per-tenant expected / paid / debt for the period, smallest debt last. */
+function buildMiniTenantStatus_(doc, configSheet, requestedPeriod) {
+  var period = isCanonicalPeriod_(requestedPeriod) ? String(requestedPeriod) : currentPeriod_();
+  var transactions = readOmadTransactions_(doc);
+  var tenants = normalizeTenantList_(safeParseJSON_(getConfig(configSheet, "Omad_Tenants"), []));
+  var rates = getOmadRates_();
+
+  var rows = [];
+  for (var i = 0; i < tenants.length; i++) {
+    if (tenants[i].active === false) continue;
+    var balance = calculateTenantBalance_(transactions, tenants[i], period);
+    rows.push({
+      name: tenants[i].name,
+      expected: Math.round(balance.expected),
+      paid: Math.round(balance.paid),
+      debt: Math.round(balance.difference < 0 ? -balance.difference : 0),
+      surplus: Math.round(balance.difference > 0 ? balance.difference : 0)
+    });
+  }
+  rows.sort(function (a, b) { return b.debt - a.debt; });
+  return rows;
+}
+
+/**
+ * Recent activity as *business actions* rather than rows.
+ *
+ * The Mini App shows the same thing the history tab does: a tenant-paid pair
+ * is one entry, and the several lines of one payment are one entry with a
+ * total, so the reader is never asked to pair rows up themselves.
+ */
+function buildMiniRecentEntries_(doc, requestedPeriod) {
+  var transactions = readOmadTransactions_(doc);
+  var period = isCanonicalPeriod_(requestedPeriod) ? String(requestedPeriod) : "";
+  var rates = getOmadRates_();
+
+  var order = [];
+  var groups = {};
+  for (var i = 0; i < transactions.length; i++) {
+    var t = transactions[i];
+    if (period && transactionPeriod_(t) !== period) continue;
+    var key = String(t.groupId || "");
+    if (!groups[key]) { groups[key] = []; order.push(key); }
+    groups[key].push(t);
+  }
+
+  var entries = [];
+  for (var g = 0; g < order.length; g++) {
+    var rows = groups[order[g]];
+    var first = rows[0];
+    var total = 0;
+    for (var r = 0; r < rows.length; r++) {
+      if (rows[r].type === "Income") total += transactionUZS_(rows[r], rates);
+    }
+    var tenantPaid = isTenantPaidGroup_(rows);
+    var income = null;
+    for (var q = 0; q < rows.length; q++) if (rows[q].type === "Income") { income = rows[q]; break; }
+    var lead = tenantPaid ? (income || first) : first;
+    if (!tenantPaid) {
+      total = 0;
+      for (var s = 0; s < rows.length; s++) total += transactionUZS_(rows[s], rates);
+    }
+
+    entries.push({
+      groupId: order[g],
+      id: lead.id,
+      kind: tenantPaid ? ENTRY_KIND_TENANT_PAID : "",
+      type: lead.type,
+      tenant: lead.tenant,
+      period: transactionPeriod_(lead),
+      periodLabel: formatPeriodLabel_(transactionPeriod_(lead)),
+      date: typeof lead.date === "object" && lead.date ? formatLedgerDate_(lead.date) : String(lead.date || ""),
+      amountUZS: Math.round(total),
+      currency: lead.currency,
+      amount: lead.amount,
+      lines: rows.length,
+      comment: String(lead.comment || "").slice(0, 300)
+    });
+  }
+
+  // Newest first, by the timestamp the ids encode.
+  entries.sort(function (a, b) {
+    return (Number(String(b.id).split("_")[0]) || 0) - (Number(String(a.id).split("_")[0]) || 0);
+  });
+  return entries.slice(0, MINI_APP_RECENT_TRANSACTIONS);
+}
+
+/** Today and this month, from the café sheets. Monitoring only. */
+function buildMiniCafeSummary_(doc, configSheet) {
+  var state = readCafeState_(doc, configSheet);
+  var todayKey = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
+  var monthKey = todayKey.slice(0, 7);
+
+  var today = { revenue: 0, profit: 0, count: 0 };
+  var month = { revenue: 0, profit: 0, count: 0 };
+  var recentSales = [];
+
+  for (var i = 0; i < state.sales.length; i++) {
+    var sale = state.sales[i];
+    var key = cafeDateKey_(sale.date);
+    var revenue = Number(sale.total) || 0;
+    var profit = Number(sale.profit) || 0;
+
+    if (key.indexOf(monthKey) === 0) { month.revenue += revenue; month.profit += profit; month.count++; }
+    if (key === todayKey) { today.revenue += revenue; today.profit += profit; today.count++; }
+  }
+
+  for (var s = Math.max(0, state.sales.length - MINI_APP_RECENT_SALES); s < state.sales.length; s++) {
+    var recent = state.sales[s];
+    recentSales.push({
+      id: String(recent.id || ""),
+      date: cafeDateKey_(recent.date),
+      seller: String(recent.seller || ""),
+      total: Number(recent.total) || 0,
+      profit: Number(recent.profit) || 0,
+      items: Array.isArray(recent.items) ? recent.items.length : 0
+    });
+  }
+  recentSales.reverse();
+
+  var closings = [];
+  for (var c = Math.max(0, state.closeReports.length - MINI_APP_RECENT_CLOSINGS); c < state.closeReports.length; c++) {
+    var close = state.closeReports[c];
+    closings.push({
+      date: cafeDateKey_(close.date),
+      seller: String(close.seller || ""),
+      revenue: Number(close.totalRevenue) || 0,
+      profit: Number(close.totalProfit) || 0
+    });
+  }
+  closings.reverse();
+
+  var inventoryValue = 0;
+  var lowStock = [];
+  for (var v = 0; v < state.inventory.length; v++) {
+    var item = state.inventory[v];
+    var qty = Number(item.qty) || 0;
+    var value = Number(item.totalCost);
+    inventoryValue += isFinite(value) && value > 0 ? value : qty * (Number(item.unitCost) || 0);
+    if (item.type === "product" && qty <= 3) {
+      lowStock.push({ name: String(item.name || ""), qty: qty, unit: String(item.unit || "") });
+    }
+  }
+
+  var target = Number((state.settings || {}).dailyTarget) || 0;
+  return {
+    today: { revenue: Math.round(today.revenue), profit: Math.round(today.profit), sales: today.count },
+    month: { revenue: Math.round(month.revenue), profit: Math.round(month.profit), sales: month.count, label: monthKey },
+    target: {
+      daily: target,
+      progress: target > 0 ? Math.min(100, Math.round((today.revenue / target) * 100)) : 0
+    },
+    inventory: {
+      value: Math.round(inventoryValue),
+      items: state.inventory.length,
+      lowStock: lowStock.slice(0, 8)
+    },
+    recentSales: recentSales,
+    recentClosings: closings
+  };
+}
+
+/**
+ * The calendar day a café record belongs to.
+ *
+ * Sales carry an ISO timestamp; older rows can carry whatever the sheet made
+ * of them. Both are reduced to a yyyy-MM-dd key in the script timezone so
+ * "today" means the same thing here as it does in the POS.
+ */
+function cafeDateKey_(value) {
+  if (value && typeof value === "object" && typeof value.getFullYear === "function") {
+    return isNaN(value.getTime()) ? "" : Utilities.formatDate(value, Session.getScriptTimeZone(), "yyyy-MM-dd");
+  }
+  var text = String(value || "");
+  if (!text) return "";
+  var parsed = new Date(text);
+  if (isNaN(parsed.getTime())) return text.slice(0, 10);
+  return Utilities.formatDate(parsed, Session.getScriptTimeZone(), "yyyy-MM-dd");
+}
+
+/** Counts only — the Home tab shows how much is waiting, not what. */
+function buildMiniTaskSummary_(doc) {
+  var view = buildTaskViews_(doc, Date.now());
+  return {
+    overdue: (view.overdue || []).length,
+    today: (view.dueToday || []).length,
+    upcoming: (view.upcoming || []).length,
+    waitingProof: (view.waitingProof || []).length,
+    completedToday: (view.completedToday || []).length
+  };
+}
+
+// ------------------------------------------------------------------ writing
+
+/**
+ * One income or expense from the Mini App.
+ *
+ * Written through the same append path the /yangi bot uses, so the row shape,
+ * the idempotency and the queued group report are identical. The Mini App is
+ * a client of the accounting rules, never a second copy of them.
+ */
+function miniSaveTransaction_(doc, configSheet, payload) {
+  var type = payload.type === "Expense" ? "Expense" : "Income";
+  var amount = Number(payload.amount);
+  var period = isCanonicalPeriod_(payload.period) ? String(payload.period) : currentPeriod_();
+  var tenant = String(payload.tenant || "").trim();
+  var requestId = String(payload.requestId || "").trim();
+  var groupId = String(payload.groupId || "").trim();
+
+  if (!tenant) return jsonOutput_({ status: "error", message: "Obyekt tanlanmagan." });
+  if (!isFinite(amount) || amount <= 0) return jsonOutput_({ status: "error", message: "Summa musbat raqam bo'lishi kerak." });
+  if (amount > 1e15) return jsonOutput_({ status: "error", message: "Summa juda katta." });
+  if (payload.currency !== "UZS" && payload.currency !== "USD") return jsonOutput_({ status: "error", message: "Valyuta noto'g'ri." });
+  if (payload.method !== "Naqd" && payload.method !== "Bank") return jsonOutput_({ status: "error", message: "To'lov usuli noto'g'ri." });
+  if (!requestId || requestId.length > 128) return jsonOutput_({ status: "error", message: "requestId talab qilinadi." });
+  if (String(payload.comment || "").length > 2000) return jsonOutput_({ status: "error", message: "Izoh juda uzun." });
+  // An income has to land on a tenant; only an expense may come from a bucket.
+  if (type === "Income" && isExpenseSourceName_(tenant)) {
+    return jsonOutput_({ status: "error", message: "Kirim uchun ijarachi tanlang." });
+  }
+
+  if (isLedgerActive_(doc)) {
+    var created = createTransaction_(doc, {
+      requestId: requestId, groupId: groupId || newEntryGroupId_(), period: period,
+      tenant: tenant, type: type, amount: amount, currency: payload.currency,
+      method: payload.method, comment: String(payload.comment || ""),
+      createdBy: "miniapp", source: TX_SOURCE_TELEGRAM
+    });
+    if (created.status === "success" && !created.duplicate) {
+      queueMiniTransactionReport_(doc, created.transaction);
+    }
+    return jsonOutput_(created);
+  }
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  var transaction;
+  var duplicate = false;
+  try {
+    var existing = findTransactionByRequestId_(doc, requestId);
+    if (existing) {
+      transaction = normalizeTransaction_(existing);
+      duplicate = true;
+    } else {
+      backupOmadState_(doc, configSheet, "miniapp_entry");
+      transaction = normalizeTransaction_({
+        id: new Date().getTime() + "_0",
+        tenant: tenant, month: period, type: type, amount: amount,
+        currency: payload.currency, method: payload.method,
+        date: Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy"),
+        comment: String(payload.comment || ""), msgId: "", requestId: requestId,
+        groupId: groupId || newEntryGroupId_()
+      });
+      appendOmadTransaction_(doc, transaction);
+    }
+  } finally {
+    lock.releaseLock();
+  }
+
+  recordLastOperation_(doc, "mini_save_transaction");
+  if (!duplicate) queueMiniTransactionReport_(doc, transaction);
+  drainJobQueueQuietly_(doc, payload);
+
+  return jsonOutput_({ status: "success", duplicate: duplicate, transaction: transaction });
+}
+
+/** Queueing a report must never undo a transaction that is already stored. */
+function queueMiniTransactionReport_(doc, transaction) {
+  try {
+    enqueueJob_(doc, "omad_transaction_report", transaction.id, {
+      groupId: String(transaction.groupId || ""),
+      baseId: String(transaction.id).split("_")[0],
+      messageId: ""
+    });
+  } catch (queueError) {
+    debugLog_(doc, "report_enqueue_failed", String(queueError));
+  }
+}
+
+/** The tenant-paid pair, through exactly the same code path the web app uses. */
+function miniTenantPaid_(doc, configSheet, payload) {
+  backupOmadState_(doc, configSheet, "miniapp_tenant_paid");
+  var result = createTenantPaidExpense_(doc, {
+    requestId: payload.requestId, groupId: payload.groupId,
+    tenant: payload.tenant, period: payload.period, amount: payload.amount,
+    currency: payload.currency, method: payload.method, comment: payload.comment,
+    createdBy: "miniapp", source: TX_SOURCE_TELEGRAM
+  });
+  if (result.status !== "success") return jsonOutput_(result);
+
+  recordLastOperation_(doc, "mini_tenant_paid");
+  if (!result.duplicate) {
+    try {
+      enqueueJob_(doc, "omad_transaction_report", result.groupId, {
+        groupId: result.groupId,
+        baseId: String((result.transactions[0] || {}).id || "").split("_")[0],
+        messageId: ""
+      });
+    } catch (queueError) {
+      debugLog_(doc, "report_enqueue_failed", String(queueError));
+    }
+    drainJobQueueQuietly_(doc, payload);
+  }
+  return jsonOutput_(result);
+}
+
+/**
+ * A task mutation from the Mini App.
+ *
+ * Delegates to the same handlers the /tasks board uses — the reminder
+ * scheduling, the group cards and the occurrence bookkeeping are the existing
+ * engine's, unchanged. Only the gate differs: verified initData here, the
+ * admin key there.
+ */
+function miniTaskAction_(doc, payload, auth) {
+  var taskAction = String(payload.taskAction || "");
+  if (!isTaskMutationAction_(taskAction)) {
+    return jsonOutput_({ status: "error", message: "Unknown action" });
+  }
+  var forwarded = Object.assign({}, payload, {
+    action: taskAction,
+    // The Mini App has a verified identity, so completions are attributed to
+    // the person rather than to "admin".
+    completedById: payload.completedById || auth.userId,
+    completedByName: payload.completedByName || auth.user.firstName || auth.userId,
+    createdBy: payload.createdBy || ("tg:" + auth.userId)
+  });
+  return runTaskAction_(taskAction, forwarded, doc);
 }
 

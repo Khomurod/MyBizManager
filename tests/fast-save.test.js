@@ -39,7 +39,7 @@ function boot(options = {}) {
 
 function input(overrides = {}) {
   return {
-    action: 'create_transaction',
+    action: 'create_transaction', adminKey: ADMIN_KEY,
     requestId: 'req-1',
     period: '2026-01',
     tenant: 'Tehnopark',
@@ -188,13 +188,18 @@ test('a queue write failure does not fail the transaction', () => {
   assert.strictEqual(activeCount(gas), 1, 'the money is recorded even if reporting cannot be queued');
 });
 
-test('the queue status is visible without the admin key', () => {
+test('the queue status needs the access key, and reports the backlog with it', () => {
   const gas = boot({
     fetch: () => ({ getResponseCode: () => 502, getContentText: () => 'bad gateway' })
   });
   gas.doPost(postEvent(input({ requestId: 'r1' })));
 
-  const status = readJsonOutput(gas.doPost(postEvent({ action: 'get_job_queue_status' })));
+  // The backlog describes how much business is waiting to be reported, so it
+  // is no longer answered to an anonymous caller.
+  const anonymous = readJsonOutput(gas.doPost(postEvent({ action: 'get_job_queue_status' })));
+  assert.strictEqual(anonymous.status, 'error');
+
+  const status = readJsonOutput(gas.doPost(postEvent({ action: 'get_job_queue_status', adminKey: ADMIN_KEY })));
   assert.strictEqual(status.queue.counts.pending, 1);
   assert.strictEqual(status.queue.counts.failed, 0);
 });

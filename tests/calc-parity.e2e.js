@@ -31,6 +31,20 @@ try {
 
 const describe = chromium ? test.describe : test.describe.skip;
 
+/**
+ * The Omad read, whichever route it arrives on.
+ *
+ * The app now fetches over an authenticated POST (`get_omad_data`) rather than
+ * the anonymous GET, because a GET puts its parameters in the URL and that is
+ * where an access key must never be.
+ */
+function isOmadRead(request) {
+  if (request.method() === 'GET') return true;
+  try { return JSON.parse(request.postData() || '{}').action === 'get_omad_data'; }
+  catch (error) { return false; }
+}
+
+
 function startStaticServer() {
   const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
   const server = http.createServer((req, res) => {
@@ -160,9 +174,10 @@ describe('Frontend/backend calculation parity', () => {
     await context.addInitScript(() => {
       localStorage.setItem('omad_role', 'omad_admin');
       localStorage.setItem('omad_token', 'omad_admin_active');
+      localStorage.setItem('omad_access_key', 'e2e-access-key');
     });
     await context.route('**script.google.com/**', async route => {
-      if (route.request().method() === 'GET') {
+      if (isOmadRead(route.request())) {
         await route.fulfill({
           status: 200, contentType: 'application/json',
           body: JSON.stringify({ transactions: TRANSACTIONS, tenants: TENANTS, rates: RATES, templateExpenses: PLANNED })

@@ -12,9 +12,17 @@
 
 let systemStatus = null;
 
+/**
+ * The key the admin actions run under.
+ *
+ * The Telegram section's field wins when something is typed there, so a
+ * different key can still be tried without logging out. Otherwise the key this
+ * browser signed in with is reused, because it is the same key.
+ */
 function systemAdminKey() {
     const input = document.getElementById('tgAdminKey');
-    return input ? input.value.trim() : "";
+    const typed = input ? input.value.trim() : "";
+    return typed || (typeof accessKey === 'function' ? accessKey() : "");
 }
 
 function requireAdminKey() {

@@ -33,6 +33,14 @@ try {
 
 const describe = chromium ? test.describe : test.describe.skip;
 
+/** The café read, whichever route it arrives on. */
+function isCafeRead(request) {
+  if (request.method() === 'GET') return true;
+  try { return JSON.parse(request.postData() || '{}').action === 'get_cafe_data'; }
+  catch (error) { return false; }
+}
+
+
 function startStaticServer() {
   const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
   const server = http.createServer((req, res) => {
@@ -87,6 +95,7 @@ describe('Café POS (browser)', () => {
     await context.addInitScript(() => {
       localStorage.setItem('omad_role', 'cafe_seller');
       localStorage.setItem('omad_token', 'cafe_seller_active');
+      localStorage.setItem('omad_access_key', 'e2e-access-key');
       localStorage.setItem('omad_user', 'kassir');
     });
     await context.route('**://api.telegram.org/**', route => {
@@ -95,7 +104,7 @@ describe('Café POS (browser)', () => {
     });
     await context.route('**script.google.com/**', async route => {
       const request = route.request();
-      if (request.method() === 'GET') {
+      if (isCafeRead(request)) {
         await route.fulfill({
           status: 200,
           contentType: 'application/json',

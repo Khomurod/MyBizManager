@@ -72,6 +72,7 @@ describe('Telegram settings panel (browser)', () => {
     await context.addInitScript(() => {
       localStorage.setItem('omad_role', 'omad_admin');
       localStorage.setItem('omad_token', 'omad_admin_active');
+      localStorage.setItem('omad_access_key', 'e2e-access-key');
       localStorage.setItem('omad_user', 'tester');
     });
 
@@ -262,6 +263,7 @@ describe('Telegram settings panel (browser)', () => {
     await context.addInitScript(() => {
       localStorage.setItem('omad_role', 'cafe_seller');
       localStorage.setItem('omad_token', 'cafe_seller_active');
+      localStorage.setItem('omad_access_key', 'e2e-access-key');
       localStorage.setItem('omad_user', 'kassir');
     });
     await context.route('**://api.telegram.org/**', route => {

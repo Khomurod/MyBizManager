@@ -15,7 +15,7 @@ Documented as of the Telegram credential-hardening change. This is the
 
 | File | Role |
 |---|---|
-| `login.html` | Role selection, writes `omad_role` / `omad_token` to `localStorage` |
+| `login.html` | Role selection **and the access key**: verifies it against `verify_access`, then stores `omad_role` / `omad_token` / `omad_access_key` |
 | `omad_admin.html` | Omad-D rent admin markup: dashboard, entry, history, settings |
 | `assets/omad/*.js` | The Omad admin application, split by responsibility |
 | `cafe_admin.html` | Café inventory, recipes, categories, settings |
@@ -63,6 +63,8 @@ file for file. See [DEPLOYMENT.md](DEPLOYMENT.md).
 | `18_tasks_service.gs` | Task module: isolated Telegram namespace (`t_done:`, photo proof) |
 | `19_tasks_scheduler.gs` | Task module: reminder scheduler, queue jobs, edit reconciliation, web API |
 | `19a_tasks_wizard.gs` | Task module: the `📋 Vazifa` branch of `/yangi` — state machine, keyboards, task creation |
+| `21_miniapp_auth.gs` | Telegram Mini App: `initData` signature verification and the authorization gate |
+| `22_miniapp_api.gs` | Telegram Mini App: server-computed summaries and the write actions |
 | `20_api.gs` | `doPost` / `doGet` routing only |
 
 The task-management feature (`/tasks`) is documented separately in
@@ -256,27 +258,110 @@ Secrets and configuration that must never reach the browser.
 
 | Action | Admin key | Notes |
 |---|---|---|
-| `save_omad` / `migrate_omad` | no | **Rewrites the whole transaction list** (see limitations). Optional `telegramReport: {operation, groupId, baseId, messageId}` queues a server-composed report |
-| `tenant_paid_expense` | no | One tenant-paid expense: two linked rows, one group, one report. `replaceGroupId` edits an existing pair |
-| `get_telegram_settings` | no | Never includes the token |
+| `save_omad` / `migrate_omad` | **yes** | **Rewrites the whole transaction list** (see limitations). Optional `telegramReport: {operation, groupId, baseId, messageId}` queues a server-composed report |
+| `tenant_paid_expense` | **yes** | One tenant-paid expense: two linked rows, one group, one report. `replaceGroupId` edits an existing pair |
+| `get_telegram_settings` | **yes** | Never includes the token, but does carry the authorized user id and both chat ids |
 | `save_telegram_settings` | **yes** | Validates before accepting |
 | `test_telegram_connection` | **yes** | `getMe` |
 | `send_telegram_test_message` | **yes** | Posts to the reporting group |
 | `configure_telegram_webhook` | **yes** | `setWebhook` + `getWebhookInfo` |
-| `get_job_queue_status` | no | Pending/processing/completed/failed counts only |
+| `get_job_queue_status` | **yes** | Pending/processing/completed/failed counts only |
 | `process_jobs` | **yes** | Manually drains the retry queue |
-| `get_system_status` | no | Counts, timestamps and event names only — never secrets, amounts or message contents |
+| `get_system_status` | **yes** | Counts, timestamps and event names only — never secrets, amounts or message contents |
 | `create_backup` | **yes** | Writes an `Omad_Backups` snapshot on demand |
 | `retry_failed_jobs` | **yes** | Puts failed jobs back in the queue |
-| `save_inventory`, `save_recipe`, `save_categories`, `save_cafe_settings` | no | Café admin |
-| `save_sale`, `void_sale`, `close_day` | no | Café POS |
+| `save_inventory`, `save_recipe`, `save_categories`, `save_cafe_settings` | **yes** | Café admin |
+| `save_sale`, `void_sale`, `close_day` | **yes** | Café POS |
+| `verify_access` | **yes** | Checks a key at login and returns nothing else |
+| `get_omad_data` / `get_cafe_data` | **yes** | The authenticated replacements for the `doGet` reads |
+| `mini_home` / `mini_omad` / `mini_cafe` / `mini_tasks` | initData | Mini App reads — server-computed summaries |
+| `mini_save_transaction` / `mini_tenant_paid` / `mini_task_action` | initData | Mini App writes, through the shared implementations |
 | `audit_transaction_dates` | **yes** | Classifies every Date cell against the date its id proves. Writes nothing |
 | `fix_transaction_dates` | **yes** | Corrects only provably transposed dates. `dryRun` reports without writing |
 | `backfill_entry_group_ids` | **yes** | Writes the deterministic group id onto rows that predate the column |
 | `purge_telegram_debug_secrets` | **yes** | Copies `Telegram_Debug_Log`, then re-redacts every row in place |
 | `rotate_telegram_webhook_secret` | **yes** | New verification secret, `setWebhook`, verify, or roll back |
 
-`doGet` supports `action=get_omad` and `action=get_cafe`.
+`doGet` still supports `action=get_omad` and `action=get_cafe`, **anonymously and
+deprecated** — see below.
+
+## Who may call what
+
+The `/exec` URL is hardcoded in three pages served from a public site, so
+everyone who has seen the frontend knows it. Until the Mini App change, that was
+enough to read the whole financial ledger, the tenant list, every café sale and
+its margin — and to write all of it.
+
+There are now exactly **three** ways to be authorized, and every action belongs
+to one of them:
+
+| Gate | Proves | Used by |
+|---|---|---|
+| **Access key** (`OMAD_ADMIN_KEY`) | you signed in | the three web apps, and every admin/maintenance action |
+| **Telegram `initData`** | Telegram signed this, and you are the authorized user | the Mini App |
+| **Webhook secret** + authorized user id | Telegram delivered this update | the bot |
+
+### The access key
+
+The same key that was already typed into Sozlamalar. It is entered once on
+`login.html`, verified there against `verify_access`, kept in `localStorage`,
+and attached by `callBackend` to every request. The username and password on
+that page choose which app opens; they are in the page source and have never
+been a security boundary. The key is.
+
+Reads go over an **authenticated POST** (`get_omad_data`, `get_cafe_data`)
+rather than a GET, because a GET puts its parameters in the URL — which is
+where a key must never be. Both are compared **after** a rate limit, so the
+endpoint cannot be used to guess the key.
+
+`get_omad` / `get_cafe` still answer anonymously, deliberately, for exactly one
+release: Netlify and Apps Script deploy separately, so removing them in the same
+change could leave the live frontend calling a route that no longer exists. The
+UI already calls the authenticated routes; the anonymous ones are removed once
+that is confirmed live.
+
+### Telegram Mini App
+
+`apps-script/21_miniapp_auth.gs`. Telegram signs `initData` with a key derived
+from the bot token, so a caller without the bot token cannot produce a valid
+one — and the bot token never leaves Script Properties.
+
+```
+secret_key = HMAC_SHA256(bot_token, key = "WebAppData")
+expected   = hex(HMAC_SHA256(data_check_string, key = secret_key))
+```
+
+`data_check_string` is every field except `hash`, decoded, sorted by key, joined
+with `\n`. The comparison is constant-time.
+
+It never trusts a user id in the URL or the payload, a username, `initDataUnsafe`,
+or anything in the browser. There is **no second user database**: the verified
+numeric id is compared against `TELEGRAM_AUTHORIZED_USER_ID`, the same property
+that decides who may run `/yangi`.
+
+| Check | Refusal |
+|---|---|
+| no `initData` | `missing_init_data` |
+| no `hash` | `missing_hash` |
+| signature does not match | `bad_signature` |
+| `auth_date` more than 24h old | `stale` |
+| `auth_date` in the future | `auth_date_in_future` |
+| signed, but a different user | `not_authorized` |
+
+The 24-hour window is a session length rather than a request lifetime: Telegram
+refreshes `initData` when the Mini App is opened but not while it stays open, so
+a shorter window would break a Mini App left in the background mid-edit.
+
+**The admin key is neither sent to the Mini App nor accepted from it.** A phone
+screen is the wrong place for the key that also unlocks the settings and the
+maintenance actions.
+
+`mini_*` actions are routed before everything else, so one can never fall
+through into a handler with a different gate. They reuse the existing business
+logic rather than reimplementing it — figures from `05a_calculations.gs`, tenant
+debt from `06_tenants.gs`, tasks through `runTaskAction_` (the same code the
+`/tasks` board runs, split out from behind the admin-key check), and the
+tenant-paid pair from `08a_tenant_paid.gs`.
 
 ## Telegram reporting
 

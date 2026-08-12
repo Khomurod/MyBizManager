@@ -19,32 +19,83 @@
     <input id="username" type="text" class="w-full rounded-xl border border-slate-200 bg-white/80 p-3 text-sm outline-none mb-3" placeholder="omad_admin / cafe_admin / cafe_seller">
 
     <label class="block text-[11px] font-bold text-slate-500 mb-1">Parol</label>
-    <input id="password" type="password" class="w-full rounded-xl border border-slate-200 bg-white/80 p-3 text-sm outline-none mb-4" placeholder="••••••">
+    <input id="password" type="password" class="w-full rounded-xl border border-slate-200 bg-white/80 p-3 text-sm outline-none mb-3" placeholder="••••••">
 
-    <button onclick="login()" class="w-full rounded-2xl bg-slate-800 text-white font-bold py-3 text-sm active:scale-95 transition-transform">Kirish</button>
+    <label class="block text-[11px] font-bold text-slate-500 mb-1">Kirish kaliti</label>
+    <input id="accessKey" type="password" autocomplete="off" class="w-full rounded-xl border border-slate-200 bg-white/80 p-3 text-sm outline-none mb-1" placeholder="OMAD_ADMIN_KEY">
+    <p class="text-[10px] text-slate-400 mb-4">Ma'lumotlar faqat shu kalit bilan ochiladi. Bir marta kiritiladi.</p>
+
+    <button onclick="login()" id="loginBtn" class="w-full rounded-2xl bg-slate-800 text-white font-bold py-3 text-sm active:scale-95 transition-transform">Kirish</button>
+    <p id="loginError" class="hidden text-[11px] text-red-500 font-bold text-center mt-3"></p>
 
   </div>
 
   <script>
+    // The backend URL is repeated here deliberately: login.html loads no
+    // application script, and the key has to be checked before anything else
+    // is allowed to run.
+    const GOOGLE_APP_URL = "https://script.google.com/macros/s/AKfycbzhKyEOGZbVdtpSd7fa6aTDZf1QsqWQeOpWRxrb7bYpzWWDQxUXZID8JNzGMfDtCA2W/exec";
+    const ACCESS_KEY_STORAGE = "omad_access_key";
+
+    // The username and password choose which app to open. They have never been
+    // a security boundary -- they are in this file, in plain sight. The access
+    // key is: it is checked by the server, and every request carries it.
     const USERS = {
       omad_admin: { password: "admin123", role: "omad_admin", token: "omad_admin_active", redirect: "omad_admin.html" },
       cafe_admin: { password: "admin123", role: "cafe_admin", token: "cafe_admin_active", redirect: "cafe_admin.html" },
       cafe_seller: { password: "seller123", role: "cafe_seller", token: "cafe_seller_active", redirect: "cafe_pos.html" }
     };
 
-    function login() {
+    function showLoginError(message) {
+      const box = document.getElementById("loginError");
+      box.textContent = message;
+      box.classList.remove("hidden");
+    }
+
+    async function login() {
       const username = document.getElementById("username").value.trim().toLowerCase();
       const password = document.getElementById("password").value.trim();
+      const key = document.getElementById("accessKey").value.trim();
+      const button = document.getElementById("loginBtn");
       const user = USERS[username];
 
+      document.getElementById("loginError").classList.add("hidden");
+
       if (!user || user.password !== password) {
-        alert("Login yoki parol noto'g'ri");
+        showLoginError("Login yoki parol noto'g'ri");
         return;
+      }
+      if (!key) {
+        showLoginError("Kirish kalitini kiriting");
+        return;
+      }
+
+      button.disabled = true;
+      button.textContent = "Tekshirilmoqda...";
+      try {
+        // Verified against the server before it is stored, so a wrong key
+        // fails here rather than as a wall of errors inside the app.
+        const res = await fetch(GOOGLE_APP_URL, {
+          method: "POST",
+          body: JSON.stringify({ action: "verify_access", adminKey: key })
+        });
+        const body = await res.json();
+        if (!body || body.status !== "success") {
+          showLoginError((body && body.message) || "Kirish kaliti noto'g'ri");
+          return;
+        }
+      } catch (error) {
+        showLoginError("Serverga ulanib bo'lmadi. Qayta urinib ko'ring.");
+        return;
+      } finally {
+        button.disabled = false;
+        button.textContent = "Kirish";
       }
 
       localStorage.setItem("omad_role", user.role);
       localStorage.setItem("omad_token", user.token);
       localStorage.setItem("omad_user", username);
+      localStorage.setItem(ACCESS_KEY_STORAGE, key);
       window.location.href = user.redirect;
     }
   </script>
