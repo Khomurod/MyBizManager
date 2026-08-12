@@ -153,6 +153,15 @@ This stopped three deploys during this work, every time correctly.
   the stored receipt while ignoring a forged inventory, double-void no-op, and
   the stale-admin-save guard. The café was byte-identical after every test.
 - Tasks, Telegram bot, System Health, and that anonymous access is still shut.
+- After the Mini App hardening: the Apps Script deploy completed and System
+  Health reports the answering deployment is the one the webhook points at;
+  Omad still 226 rows, Café still 713, queue empty, ledger still V2. The
+  frontend on Cloudflare was fetched and confirmed to carry the new page — the
+  viewport meta has neither `maximum-scale` nor `user-scalable`, form controls
+  are 16px, and the three changed Mini App scripts are the new ones.
+- The Omad optimisation was checked against the **live** ledger rather than a
+  fixture: 14 tenants × 7 periods, 98 pairs, the pre-aggregated figure equal to
+  the per-tenant one in every case.
 
 ### Not verified live, and why
 

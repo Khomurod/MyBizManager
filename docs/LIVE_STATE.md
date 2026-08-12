@@ -241,8 +241,16 @@ passes is the response time. What was measured and fixed:
 | Café sale | 2 passes over the 700-row sales sheet | **1** |
 | Café void | 2 | **1** |
 | Migration verification | 2 ledger reads | **1** |
-| Mini App first screen, 16 tenants | 70 `System_Config` passes | **4** |
-| Mini App café tab | one `JSON.parse` per sale ever made | the 10 rows shown |
+| Mini App first screen | 60 `System_Config` passes | **4** |
+| Mini App café tab | 758 `JSON.parse` calls | **13** |
+| Mini App tenant-paid | 12 config + 3 ledger passes, 1 snapshot row, 1 Telegram call | **4** config, **1** ledger, **0**, **0** |
+
+The last three were measured on production's own shape — the 14 tenants and 226
+ledger rows pulled from the live sheet, and a café history of 713 sales and 40
+closings — by running one request against the previous commit and against this
+one and counting. Same responses both times; the Omad figures were checked
+tenant by tenant across all 7 periods on the live ledger, 98 pairs, no
+differences.
 
 `tests/read-efficiency.test.js` counts the passes directly rather than timing
 anything, so a regression fails the build instead of just feeling slow.
