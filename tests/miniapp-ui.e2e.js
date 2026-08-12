@@ -129,6 +129,12 @@ describe('The Telegram Mini App', () => {
       };
     }, initData);
 
+    // The page loads Telegram's WebApp SDK from telegram.org. The bridge is
+    // stubbed above, so the real script is not needed — but the request still
+    // goes out, and waiting on it made every test take as long as the network
+    // did. Blocking it keeps the suite hermetic and fast.
+    await context.route('**telegram.org/**', route => route.abort());
+
     await context.route('**script.google.com/**', async route => {
       let payload = {};
       try { payload = JSON.parse(route.request().postData() || '{}'); } catch (e) { payload = {}; }
