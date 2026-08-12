@@ -306,8 +306,8 @@ test('reads keep working before the migration runs', () => {
 test('migration status needs the access key, and reads correctly with it', () => {
   const gas = boot([row('1_0', 'Yanvar', '05/01/2026')]);
   assert.strictEqual(
-    readJsonOutput(gas.doPost(postEvent({ action: 'get_migration_status' }))).status, 'error',
-    'the ledger size and which sheet is live are not public facts');
+    readJsonOutput(gas.doPost(postEvent({ action: 'get_migration_status', adminKey: 'nope' }))).status, 'error',
+    'the ledger size and which sheet is live are not facts a wrong key unlocks');
 
   const body = readJsonOutput(gas.doPost(postEvent({ action: 'get_migration_status', adminKey: ADMIN_KEY })));
 

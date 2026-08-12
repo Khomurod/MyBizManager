@@ -201,6 +201,40 @@ function buildTelegramSettingsView_() {
 }
 
 /**
+ * Whether a client that predates the access key is still being served.
+ *
+ * The frontend and the backend deploy separately — Netlify from `main`, Apps
+ * Script from CI — so there is a window where the browser has not learned to
+ * send a key and the server has already started demanding one. In that window
+ * every save fails: no rent recorded, no café sale rung up.
+ *
+ * While this is true, the actions the *old* frontend calls accept a request
+ * that carries no key at all, exactly as they did before. A request carrying a
+ * WRONG key is still refused, and everything the old frontend never called —
+ * the Mini App, the new authenticated reads, the maintenance and migration
+ * actions — stays strict.
+ *
+ * This is a deliberate, temporary hole. Turn it off by setting this to false
+ * once <https://omad-d.netlify.app/assets/omad/06-api.js> contains
+ * `omad_access_key`; the health check reports a warning until then.
+ */
+var LEGACY_CLIENT_GRACE = true;
+
+/**
+ * The access check for an action the pre-key frontend calls.
+ *
+ * A client that has been updated always sends a key, so "no key at all" is a
+ * reliable signal of an old client rather than something an updated one can
+ * produce by accident.
+ */
+function checkAccessKeyDuringRollout_(payload) {
+  if (!LEGACY_CLIENT_GRACE) return checkAdminKey_(payload);
+  var provided = String((payload && payload.adminKey) || "");
+  if (!provided) return "";
+  return checkAdminKey_(payload);
+}
+
+/**
  * Settings mutations require an admin key stored in Script Properties.
  * Returns "" when authorized, or an error message.
  */

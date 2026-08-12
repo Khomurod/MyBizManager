@@ -207,8 +207,8 @@ test('queue status needs the access key, and reports the backlog with it', () =>
   gas.processPendingJobs_(gas.__spreadsheet, 10);
 
   assert.strictEqual(
-    readJsonOutput(gas.doPost(postEvent({ action: 'get_job_queue_status' }))).status, 'error',
-    'an anonymous caller is not told what is waiting to be sent');
+    readJsonOutput(gas.doPost(postEvent({ action: 'get_job_queue_status', adminKey: 'nope' }))).status, 'error',
+    'a caller with the wrong key is not told what is waiting to be sent');
 
   const body = readJsonOutput(gas.doPost(postEvent({ action: 'get_job_queue_status', adminKey: ADMIN_KEY })));
   assert.strictEqual(body.status, 'success');

@@ -30,7 +30,7 @@ function isCafeAction_(action) {
 function handleCafeAction_(action, payload, doc, configSheet) {
   if (!isCafeAction_(action)) return null;
 
-  var accessError = checkAdminKey_(payload);
+  var accessError = checkAccessKeyDuringRollout_(payload);
   if (accessError) return jsonOutput_({ status: "error", message: accessError });
 
   if (action === 'save_inventory') {
