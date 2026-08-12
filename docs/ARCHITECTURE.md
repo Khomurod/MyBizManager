@@ -320,6 +320,24 @@ change could leave the live frontend calling a route that no longer exists. The
 UI already calls the authenticated routes; the anonymous ones are removed once
 that is confirmed live.
 
+### The rollout grace
+
+The frontend and the backend deploy on different pipelines, and they do not
+land together. `LEGACY_CLIENT_GRACE` in `03_settings.gs` bridges the gap: while
+it is on, the actions the pre-key frontend calls accept a request carrying **no
+key at all**, exactly as they did before.
+
+| | With the grace on |
+|---|---|
+| no key, on an action the old frontend called | accepted |
+| no key, on anything else | refused |
+| **wrong** key, on anything | refused |
+| Mini App | unaffected — a signature or nothing |
+
+It is a deliberate temporary hole, the health check warns while it is open, and
+`rollout-grace.test.js` pins both what it opens and what it does not. Turning it
+off is a one-line change with nothing else to migrate.
+
 ### Telegram Mini App
 
 `apps-script/21_miniapp_auth.gs`. Telegram signs `initData` with a key derived

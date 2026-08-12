@@ -22,6 +22,45 @@ sheet. Do not run `cutover_omad_migration` without a separate, approved plan.
 
 ---
 
+## ⚠️ Netlify is not deploying `main`
+
+**Checked 2026-08-12 13:2x.** <https://omad-d.netlify.app> is serving the
+frontend from *before* PR #19 — `assets/omad/08-entry.js` is byte-identical to
+the pre-change file and contains none of the group-id work, and `login.html`
+has no access-key field. Deploy **previews** build fine
+(`deploy-preview-22--omad-d.netlify.app` serves the new pages), so the build
+works; production publishing from `main` is not happening.
+
+This matters because the two halves deploy separately. CI pushes Apps Script
+within a minute of a merge; Netlify evidently does not. When the backend
+started requiring an access key and the browser had not learned to send one,
+**every save failed** — no rent recorded, no café sale rung up.
+
+### What is holding the app up right now
+
+`LEGACY_CLIENT_GRACE` in `apps-script/03_settings.gs` is **on**. While it is,
+the actions the pre-key frontend calls accept a request that carries no key at
+all, exactly as before:
+
+`save_omad`, `migrate_omad`, the seven café mutations, `get_system_status`,
+`get_telegram_settings`, `get_migration_status`, `get_job_queue_status`.
+
+A request carrying a **wrong** key is still refused, and everything the old
+frontend never called stays strict — the Mini App, the new authenticated
+reads, and every maintenance, migration and Telegram-settings action.
+
+**This is a deliberate temporary hole and it should be closed.** The health
+check reports a warning until it is.
+
+### To close it
+
+1. Get Netlify publishing `main` again (check the site's *Build & deploy →
+   Continuous deployment* settings — auto-publishing may be stopped).
+2. Confirm with:
+   `curl -s https://omad-d.netlify.app/assets/omad/06-api.js | grep -c omad_access_key`
+   — it should print `1`, not `0`.
+3. Set `LEGACY_CLIENT_GRACE = false` and merge. Everything then requires the key.
+
 ## Signing in now needs the access key
 
 **This changes the daily workflow once.** `login.html` asks for a third field,

@@ -730,6 +730,40 @@ function buildTelegramSettingsView_() {
 }
 
 /**
+ * Whether a client that predates the access key is still being served.
+ *
+ * The frontend and the backend deploy separately — Netlify from `main`, Apps
+ * Script from CI — so there is a window where the browser has not learned to
+ * send a key and the server has already started demanding one. In that window
+ * every save fails: no rent recorded, no café sale rung up.
+ *
+ * While this is true, the actions the *old* frontend calls accept a request
+ * that carries no key at all, exactly as they did before. A request carrying a
+ * WRONG key is still refused, and everything the old frontend never called —
+ * the Mini App, the new authenticated reads, the maintenance and migration
+ * actions — stays strict.
+ *
+ * This is a deliberate, temporary hole. Turn it off by setting this to false
+ * once <https://omad-d.netlify.app/assets/omad/06-api.js> contains
+ * `omad_access_key`; the health check reports a warning until then.
+ */
+var LEGACY_CLIENT_GRACE = true;
+
+/**
+ * The access check for an action the pre-key frontend calls.
+ *
+ * A client that has been updated always sends a key, so "no key at all" is a
+ * reliable signal of an old client rather than something an updated one can
+ * produce by accident.
+ */
+function checkAccessKeyDuringRollout_(payload) {
+  if (!LEGACY_CLIENT_GRACE) return checkAdminKey_(payload);
+  var provided = String((payload && payload.adminKey) || "");
+  if (!provided) return "";
+  return checkAdminKey_(payload);
+}
+
+/**
  * Settings mutations require an admin key stored in Script Properties.
  * Returns "" when authorized, or an error message.
  */
@@ -3419,7 +3453,7 @@ function isCafeAction_(action) {
 function handleCafeAction_(action, payload, doc, configSheet) {
   if (!isCafeAction_(action)) return null;
 
-  var accessError = checkAdminKey_(payload);
+  var accessError = checkAccessKeyDuringRollout_(payload);
   if (accessError) return jsonOutput_({ status: "error", message: accessError });
 
   if (action === 'save_inventory') {
@@ -8711,7 +8745,7 @@ function doPost(e) {
     // Financial writes take the access key. They were reachable by anyone who
     // knew the /exec URL, which meant anyone could rewrite the whole ledger.
     if (action === 'migrate_omad' || action === 'save_omad') {
-      var saveAccessError = checkAdminKey_(payload);
+      var saveAccessError = checkAccessKeyDuringRollout_(payload);
       if (saveAccessError) return jsonOutput_({ status: "error", message: saveAccessError });
       return saveOmadAction_(action, payload, doc, configSheet);
     }
@@ -8731,7 +8765,7 @@ function doPost(e) {
 
     // ---- Retry queue ------------------------------------------------------
     if (action === 'get_job_queue_status') {
-      var queueAccessError = checkAdminKey_(payload);
+      var queueAccessError = checkAccessKeyDuringRollout_(payload);
       if (queueAccessError) return jsonOutput_({ status: "error", message: queueAccessError });
       return jsonOutput_({ status: "success", queue: buildJobQueueStatus_(doc) });
     }
@@ -8747,7 +8781,7 @@ function doPost(e) {
     // The view carries no secret, but it does carry the authorized user id and
     // both group chat ids -- enough to know exactly who and where to target.
     if (action === 'get_telegram_settings') {
-      var settingsAccessError = checkAdminKey_(payload);
+      var settingsAccessError = checkAccessKeyDuringRollout_(payload);
       if (settingsAccessError) return jsonOutput_({ status: "error", message: settingsAccessError });
       return jsonOutput_({ status: "success", settings: buildTelegramSettingsView_() });
     }
@@ -8760,7 +8794,7 @@ function doPost(e) {
     // Counts and event names only, but the audit tail names tasks, people and
     // operations, and the counts describe the size of the business.
     if (action === 'get_system_status') {
-      var statusAccessError = checkAdminKey_(payload);
+      var statusAccessError = checkAccessKeyDuringRollout_(payload);
       if (statusAccessError) return jsonOutput_({ status: "error", message: statusAccessError });
       return jsonOutput_({ status: "success", system: buildSystemStatus_(doc) });
     }
@@ -8782,7 +8816,7 @@ function doPost(e) {
 
     // ---- Migration --------------------------------------------------------
     if (action === 'get_migration_status') {
-      var migrationReadError = checkAdminKey_(payload);
+      var migrationReadError = checkAccessKeyDuringRollout_(payload);
       if (migrationReadError) return jsonOutput_({ status: "error", message: migrationReadError });
       return jsonOutput_({ status: "success", migration: getMigrationStatus_(doc) });
     }
