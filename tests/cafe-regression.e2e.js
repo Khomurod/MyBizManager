@@ -118,10 +118,35 @@ describe('Café POS (browser)', () => {
       let payload = {};
       try { payload = JSON.parse(request.postData() || '{}'); } catch (e) { payload = {}; }
       backendRequests.push(payload);
+
+      // The server prices the sale now, so the stub answers the way it does:
+      // with the authoritative sale and the stock after it. A stub that
+      // returned a bare success would let the till fall back to figures it is
+      // no longer allowed to compute.
+      let body = { status: 'success', reportJobId: 'job_1' };
+      if (payload.action === 'save_sale') {
+        const lines = (payload.items || []).map(i => ({
+          id: i.id, kind: i.kind, inventoryId: i.inventoryId, recipeId: i.recipeId,
+          name: i.name, qty: i.qty,
+          price: COFFEE.sellPrice,
+          baseCost: Math.round(COFFEE.unitCost * (COFFEE.gramsPerServing / 1000))
+        }));
+        const total = lines.reduce((sum, l) => sum + l.price * l.qty, 0);
+        const cost = lines.reduce((sum, l) => sum + l.baseCost * l.qty, 0);
+        const sold = lines.reduce((sum, l) => sum + l.qty, 0);
+        body = {
+          status: 'success', duplicate: false,
+          sale: {
+            id: payload.id, date: payload.date, seller: payload.seller,
+            total, cost, profit: total - cost, items: lines
+          },
+          inventory: [Object.assign({}, COFFEE, {
+            qty: COFFEE.qty - (COFFEE.gramsPerServing / 1000) * sold
+          })]
+        };
+      }
       await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ status: 'success', reportJobId: 'job_1' })
+        status: 200, contentType: 'application/json', body: JSON.stringify(body)
       });
     });
 
@@ -149,8 +174,15 @@ describe('Café POS (browser)', () => {
 
     const sales = backendRequests.filter(r => r.action === 'save_sale');
     assert.strictEqual(sales.length, 1);
-    assert.strictEqual(sales[0].total, 36000);
     assert.ok(sales[0].id, 'the sale carries an id so it can be voided');
+    assert.ok(sales[0].requestId, 'and a request id so a retry cannot duplicate it');
+
+    // What the till no longer decides. The server prices the sale from the
+    // catalogue; sending a total would be sending an opinion about money.
+    assert.strictEqual(sales[0].total, undefined, 'no total is sent');
+    assert.strictEqual(sales[0].profit, undefined, 'no profit is sent');
+    assert.deepStrictEqual(sales[0].items.map(i => i.qty), [3]);
+    assert.strictEqual(sales[0].items[0].inventoryId, 'inv_coffee');
 
     const totals = await page.evaluate(() => ({
       revenue: state.todayRevenue,
@@ -288,7 +320,12 @@ describe('Café POS (browser)', () => {
 
     const closes = backendRequests.filter(r => r.action === 'close_day');
     assert.strictEqual(closes.length, 1);
-    assert.strictEqual(closes[0].totalRevenue, 600000);
+    // Revenue and profit are totalled by the server from the sales it
+    // recorded; the till sends only what somebody counted.
+    assert.strictEqual(closes[0].totalRevenue, undefined, 'no revenue is sent');
+    assert.strictEqual(closes[0].totalProfit, undefined, 'no profit is sent');
+    assert.ok(Array.isArray(closes[0].countedInventory), 'the counted stock is sent');
+    assert.strictEqual(closes[0].countedInventory.find(i => i.id === 'inv_coffee').qty, 9);
     assert.deepStrictEqual(closes[0].soldItems, [{ name: 'Kofe', qty: 50 }]);
     assert.strictEqual(closes[0].summary[0].consumed, 1);
     assert.strictEqual(closes[0].summary[0].netProfit, 550000);
