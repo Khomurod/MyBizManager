@@ -531,6 +531,44 @@ test('a sale does not make the catalogue stale', () => {
   assert.strictEqual(saved.status, 'success', saved.message);
 });
 
+test('the revision check, the write and the bump are one locked step', () => {
+  // Reading the counter, writing the array and bumping the counter as three
+  // separate steps would let two saves that quoted the *same* revision both
+  // pass the check, after which the second whole-array write silently replaces
+  // the first -- the exact accident the counter exists to stop, arriving
+  // exactly when two people save at once. Asserted on the lock rather than by
+  // racing, because the harness runs one execution at a time.
+  const gas = boot();
+  let held = 0;
+  let maxHeld = 0;
+  const realLock = gas.LockService.getScriptLock;
+  gas.LockService.getScriptLock = function () {
+    const lock = realLock();
+    return {
+      waitLock: function (ms) { held++; maxHeld = Math.max(maxHeld, held); return lock.waitLock(ms); },
+      releaseLock: function () { held--; return lock.releaseLock(); }
+    };
+  };
+
+  let revDuringWrite = null;
+  const realBump = gas.bumpCafeCatalogueRev_;
+  gas.bumpCafeCatalogueRev_ = function (sheet) {
+    revDuringWrite = held;                       // the lock is still held here
+    return realBump(sheet);
+  };
+
+  try {
+    assert.strictEqual(post(gas, { action: 'save_recipe', recipes: [pizza()] }).status, 'success');
+  } finally {
+    gas.LockService.getScriptLock = realLock;
+    gas.bumpCafeCatalogueRev_ = realBump;
+  }
+
+  assert.strictEqual(maxHeld, 1, 'the save took the script lock');
+  assert.strictEqual(revDuringWrite, 1, 'and still held it when it bumped the revision');
+  assert.strictEqual(held, 0, 'and gave it back');
+});
+
 test('a client that quotes no revision is still allowed to save', () => {
   // Older pages, and the editor, cannot quote a counter they do not know about.
   const gas = boot();

@@ -95,6 +95,63 @@ function cafeCatalogueStale_(configSheet, expectedRev) {
   };
 }
 
+function isCafeCatalogueAction_(action) {
+  return action === 'save_recipe' || action === 'save_categories' || action === 'save_cafe_settings';
+}
+
+/**
+ * One catalogue write: check the revision, store, bump — under the script lock.
+ *
+ * The lock is what makes the revision mean anything. Reading the counter,
+ * writing the array and bumping the counter as three separate steps lets two
+ * saves that quoted the *same* revision both pass the check, and the second
+ * whole-array write then silently replaces the first — which is exactly the
+ * accident the counter exists to stop, arriving exactly when two people are
+ * saving at once.
+ *
+ * It is the same lock the till takes, and that is affordable here: a catalogue
+ * save is a handful of `System_Config` cells and happens a few times a week,
+ * where a sale happens a few times a minute. What must *not* happen is the
+ * reverse — a sale waiting on a catalogue edit — and it does not, because this
+ * holds the lock for the length of one write.
+ */
+function saveCafeCatalogue_(action, payload, configSheet) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var stale = cafeCatalogueStale_(configSheet, payload.expectedCatalogueRev);
+    if (stale) return jsonOutput_(stale);
+
+    if (action === 'save_recipe') {
+      // Every cost is recomputed here from the inventory as it is now. The
+      // browser sends which ingredient and how much of it; what that is worth
+      // is not its to decide, exactly as it is not its to decide what a sale
+      // is worth. A recipe saved when flour was cheap used to keep the cheap
+      // cost for ever.
+      var catalogue = cafeCatalogue_(configSheet);
+      var recipes = normalizeCafeRecipes_(payload.recipes, catalogue.inventory, catalogue.recipes);
+      setConfig(configSheet, "Cafe_Recipes", JSON.stringify(recipes));
+      return jsonOutput_({
+        status: "success",
+        recipes: recipes,
+        catalogueRev: bumpCafeCatalogueRev_(configSheet),
+        health: buildCafeCatalogueHealth_(catalogue.inventory, recipes,
+          safeParseJSON_(getConfig(configSheet, "Cafe_Settings"), { dailyTarget: 0 }))
+      });
+    }
+
+    if (action === 'save_categories') {
+      setConfig(configSheet, "Cafe_Categories", JSON.stringify(payload.categories));
+      return jsonOutput_({ status: "success", catalogueRev: bumpCafeCatalogueRev_(configSheet) });
+    }
+
+    setConfig(configSheet, "Cafe_Settings", JSON.stringify(payload.settings));
+    return jsonOutput_({ status: "success", catalogueRev: bumpCafeCatalogueRev_(configSheet) });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 // --------------------------------------------------------------- recipes
 
 /**

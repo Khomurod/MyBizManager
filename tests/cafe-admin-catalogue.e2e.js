@@ -281,6 +281,83 @@ describe('Café Admin catalogue (browser)', () => {
     await context.close();
   });
 
+  test('a retried movement carries the id the first attempt used', async () => {
+    // A lost *response* is the dangerous case: the server applied the movement,
+    // the browser saw an error, and an obvious retry under a fresh id would
+    // take the stock a second time.
+    let attempts = 0;
+    const { page, context, sent, dialogs } = await openAdmin({
+      adjust_cafe_stock: () => {
+        attempts++;
+        if (attempts === 1) return { status: 'error', message: "Aloqa yo'q" };
+        return {
+          status: 'success', duplicate: true,
+          inventory: [FLOUR, CHEESE], inventoryRev: 5
+        };
+      }
+    });
+
+    const spill = async () => {
+      await page.evaluate(() => openRemoveStockModal('cheese'));
+      await page.fill('#removeStockQty', '0.5');
+      await page.fill('#removeStockNote', "to'kildi");
+      await page.selectOption('#removeStockReason', 'waste');
+      await page.click('#removeStockModal button.bg-red-600');
+    };
+
+    await spill();
+    await waitForCall(sent, 'adjust_cafe_stock', 1);
+    await spill();
+    await waitForCall(sent, 'adjust_cafe_stock', 2);
+
+    const moves = sent.filter(p => p.action === 'adjust_cafe_stock');
+    assert.strictEqual(moves.length, 2);
+    assert.strictEqual(moves[0].requestId, moves[1].requestId,
+      'the retry is the same request, so the server can recognise it');
+    // The notice is raised once the *answer* has been handled, which is a beat
+    // after the request went out.
+    const deadline = Date.now() + 10000;
+    while (!dialogs.some(d => /allaqachon yozilgan/.test(d)) && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    assert.ok(dialogs.some(d => /allaqachon yozilgan/.test(d)),
+      'and a duplicate answer is said out loud rather than read as a fresh success');
+
+    // Once it is confirmed, a genuinely new movement gets a new id.
+    await page.evaluate(() => openRemoveStockModal('cheese'));
+    await page.fill('#removeStockQty', '0.25');
+    await page.fill('#removeStockNote', 'yana');
+    await page.click('#removeStockModal button.bg-red-600');
+    await waitForCall(sent, 'adjust_cafe_stock', 3);
+
+    const third = sent.filter(p => p.action === 'adjust_cafe_stock')[2];
+    assert.notStrictEqual(third.requestId, moves[0].requestId);
+
+    await context.close();
+  });
+
+  test('a recipe save repaints from the answer, not from what was sent', async () => {
+    // The cost is the server's to compute, so the screen has to show what came
+    // back rather than what it optimistically drew before asking.
+    const { page, context } = await openAdmin({
+      save_recipe: () => ({
+        status: 'success', catalogueRev: 8,
+        recipes: [Object.assign({}, PIZZA, { baseCost: 99000, sellPrice: 30000 })],
+        health: { missingIngredients: [], duplicates: [], incomplete: [], belowCost: [], extremePrice: [], noPrice: [], lowStock: [], warnings: 0 }
+      })
+    });
+
+    await page.evaluate(() => editRecipe('rec_1'));
+    await page.click('#recipeSaveBtn');
+    await page.waitForFunction(() => state.recipes[0] && state.recipes[0].baseCost === 99000);
+
+    assert.match(await page.textContent('#recipeList'), /99[\s ,]?000/,
+      'the recomputed cost is on screen without waiting for a later refresh');
+    assert.strictEqual(await page.evaluate(() => state.catalogueRev), 8);
+
+    await context.close();
+  });
+
   test('an intake is a movement too', async () => {
     const { page, context, sent } = await openAdmin({
       adjust_cafe_stock: () => ({ status: 'success', inventory: [FLOUR, CHEESE], inventoryRev: 5 })

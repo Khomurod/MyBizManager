@@ -594,18 +594,65 @@
       await submitStockMovement({ inventoryId: id, direction: "out", reason, qty, note });
     }
 
+    /** Where the id of a movement that has not been confirmed yet is kept. */
+    const PENDING_MOVEMENT_KEY = "cafe_pending_movement";
+
+    /**
+     * A stable id for one stock movement, kept until the server confirms it.
+     *
+     * Minting a fresh id per attempt is what makes a lost *response* dangerous:
+     * the server applied the movement, the browser saw a network error, and the
+     * obvious retry arrives under a new id and takes the stock a second time.
+     * The id is therefore tied to what the movement *is* — the same item, the
+     * same direction, the same reason, the same quantity and note — so a retry
+     * carries the id the first attempt used and the server recognises it. Any
+     * change to the movement is a different movement and gets its own.
+     *
+     * It is cleared only when the server has answered, which is also what makes
+     * a *deliberate* second identical movement possible: by then there is no
+     * pending id to reuse.
+     */
+    function stockMovementRequestId(movement) {
+      const fingerprint = [
+        movement.inventoryId, movement.direction, movement.reason,
+        movement.qty, movement.note || "", movement.cost || ""
+      ].join("|");
+
+      let stored = null;
+      try { stored = JSON.parse(sessionStorage.getItem(PENDING_MOVEMENT_KEY) || "null"); }
+      catch (e) { stored = null; }
+      if (stored && stored.fingerprint === fingerprint && stored.id) return stored.id;
+
+      const id = `stock_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      try {
+        sessionStorage.setItem(PENDING_MOVEMENT_KEY, JSON.stringify({ fingerprint, id }));
+      } catch (e) { /* private mode: the id lives for this attempt only */ }
+      return id;
+    }
+
+    function clearStockMovementRequestId() {
+      try { sessionStorage.removeItem(PENDING_MOVEMENT_KEY); } catch (e) {}
+    }
+
     /**
      * One stock movement, applied by the server.
      *
-     * `requestId` is minted per submission and reused on a retry, so a dropped
-     * connection costs a spinner rather than a second withdrawal.
+     * A failure leaves the pending id in place, so pressing the same button
+     * again resolves to the movement the first attempt made rather than making
+     * a second one.
      */
     async function submitStockMovement(movement) {
       const answer = await sendToApi("adjust_cafe_stock", {
         ...movement,
-        requestId: `stock_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
+        requestId: stockMovementRequestId(movement)
       });
       if (!answer || answer.status !== "success") return;
+
+      clearStockMovementRequestId();
+      // `duplicate` means the server had already recorded this movement — a
+      // retry after a lost answer. Saying so is better than a success message
+      // for something that did not just happen.
+      if (answer.duplicate) alert("Bu harakat allaqachon yozilgan edi.");
       if (Array.isArray(answer.inventory)) state.inventory = answer.inventory;
       renderInventory();
       hydrateIngredientSelect();
@@ -1306,9 +1353,17 @@
         }
         // A recipe save answers with the catalogue as the *server* normalised
         // it — every cost recomputed from today's stock — so the screen shows
-        // what was stored rather than what it sent.
-        if (answer && Array.isArray(answer.recipes)) state.recipes = answer.recipes;
-        if (answer && answer.health) state.health = answer.health;
+        // what was stored rather than what it sent. Repainted here rather than
+        // left for the next full refresh: the optimistic render happened before
+        // the request, so without this a new recipe keeps showing a zero cost
+        // and an edited one keeps showing the cost it used to have.
+        if (answer && Array.isArray(answer.recipes)) {
+          state.recipes = answer.recipes;
+          if (answer.health) state.health = answer.health;
+          renderRecipes();
+        } else if (answer && answer.health) {
+          state.health = answer.health;
+        }
         return answer;
       } catch (e) {
         if (e && e.isAuthFailure) { signOut(); return null; }

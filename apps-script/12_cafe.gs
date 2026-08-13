@@ -93,37 +93,8 @@ function handleCafeAction_(action, payload, doc, configSheet) {
   // Recipes, categories and settings are the *catalogue*, and it has a
   // revision of its own. Two admin sessions used to overwrite each other
   // silently — the second save simply replaced whatever the first had stored.
-  // The counter is deliberately not the inventory one: reusing that would mean
-  // an ordinary sale, which bumps it, stopped the manager saving a recipe.
-  if (action === 'save_recipe' || action === 'save_categories' || action === 'save_cafe_settings') {
-    var stale = cafeCatalogueStale_(configSheet, payload.expectedCatalogueRev);
-    if (stale) return jsonOutput_(stale);
-  }
-
-  if (action === 'save_recipe') {
-    // Every cost is recomputed here from the inventory as it is now. The
-    // browser sends which ingredient and how much of it; what that is worth is
-    // not its to decide, exactly as it is not its to decide what a sale is
-    // worth. A recipe saved when flour was cheap used to keep the cheap cost
-    // for ever.
-    var catalogue = cafeCatalogue_(configSheet);
-    var normalizedRecipes = normalizeCafeRecipes_(payload.recipes, catalogue.inventory, catalogue.recipes);
-    setConfig(configSheet, "Cafe_Recipes", JSON.stringify(normalizedRecipes));
-    return jsonOutput_({
-      status: "success",
-      recipes: normalizedRecipes,
-      catalogueRev: bumpCafeCatalogueRev_(configSheet),
-      health: buildCafeCatalogueHealth_(catalogue.inventory, normalizedRecipes,
-        safeParseJSON_(getConfig(configSheet, "Cafe_Settings"), { dailyTarget: 0 }))
-    });
-  }
-  if (action === 'save_categories') {
-    setConfig(configSheet, "Cafe_Categories", JSON.stringify(payload.categories));
-    return jsonOutput_({ status: "success", catalogueRev: bumpCafeCatalogueRev_(configSheet) });
-  }
-  if (action === 'save_cafe_settings') {
-    setConfig(configSheet, "Cafe_Settings", JSON.stringify(payload.settings));
-    return jsonOutput_({ status: "success", catalogueRev: bumpCafeCatalogueRev_(configSheet) });
+  if (isCafeCatalogueAction_(action)) {
+    return saveCafeCatalogue_(action, payload, configSheet);
   }
   if (action === 'adjust_cafe_stock') {
     return adjustCafeStock_(doc, configSheet, payload, auth.username);
