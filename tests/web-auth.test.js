@@ -341,6 +341,55 @@ test('repeated wrong passwords for one account are throttled', () => {
     'success');
 });
 
+test('a correct password costs nothing from the login allowance', () => {
+  const { gas } = bootProvisioned();
+
+  // The attempt is charged before the password is checked - otherwise a burst
+  // of parallel guesses could all read the counter before any of them wrote to
+  // it - and given back when it turns out to be right. Signing in repeatedly
+  // must therefore not fill the bucket that wrong guesses fill.
+  for (let i = 0; i < 20; i++) {
+    assert.strictEqual(post(gas, { action: 'login', username: 'cafe_seller', password: SELLER_PASSWORD }).status,
+      'success', `sign-in ${i} was refused`);
+  }
+
+  // The full failure allowance is still there afterwards.
+  for (let i = 0; i < gas.LOGIN_FAILURE_LIMIT_PER_USER; i++) {
+    assert.strictEqual(post(gas, { action: 'login', username: 'cafe_seller', password: `guess-${i}` }).code,
+      'invalid_credentials', `guess ${i} was throttled too early`);
+  }
+  assert.strictEqual(post(gas, { action: 'login', username: 'cafe_seller', password: 'one-too-many' }).code,
+    'throttled');
+});
+
+test('every wrong password is counted, not just the ones that finish first', () => {
+  const { gas } = bootProvisioned();
+  const counterKey = () => Object.keys(gas.__cache).find(k => k.indexOf('rl_login_u_cafe_seller_') === 0);
+
+  for (let i = 0; i < 3; i++) post(gas, { action: 'login', username: 'cafe_seller', password: `guess-${i}` });
+
+  // Charged up front, so the count is the number of attempts rather than the
+  // number that happened to read the counter last.
+  assert.strictEqual(Number(gas.__cache[counterKey()]), 3);
+});
+
+test('a global login flood does not also fill one account\'s own allowance', () => {
+  const { gas } = bootProvisioned();
+
+  // Fill the global bucket with guesses against other names...
+  for (let i = 0; i < gas.LOGIN_FAILURE_LIMIT_GLOBAL + 2; i++) {
+    post(gas, { action: 'login', username: `stranger_${i % 40}`, password: 'guess' });
+  }
+  assert.strictEqual(post(gas, { action: 'login', username: 'cafe_seller', password: SELLER_PASSWORD }).code,
+    'throttled', 'a flood does hold everyone up for the minute');
+
+  // ...but it must not have spent this account's own eight, or one flood would
+  // lock the account out for far longer than the flood lasted.
+  const counterKey = Object.keys(gas.__cache).find(k => k.indexOf('rl_login_u_cafe_seller_') === 0);
+  assert.ok(!counterKey || Number(gas.__cache[counterKey]) === 0,
+    'the per-account bucket is untouched by other accounts failing');
+});
+
 test('a signed-in user is never throttled by somebody else failing', () => {
   const { gas, tokens } = bootProvisioned();
 

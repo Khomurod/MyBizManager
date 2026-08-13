@@ -351,6 +351,34 @@ describe('Café screens under failure (browser)', () => {
     await context.close();
   });
 
+  test('the catalogue cannot be saved from a snapshot the server never confirmed', async () => {
+    const { page, context } = await openCafe('cafe_admin.html', 'cafe_admin', ['abort']);
+    await page.evaluate(payload => {
+      localStorage.setItem('omad_snapshot_cafe_admin_kassir',
+        JSON.stringify({ savedAt: Date.now(), value: payload }));
+    }, adminPayload());
+    await page.evaluate(() => { state.loaded = false; });
+    await page.evaluate(() => syncData());
+    await page.waitForFunction(() => state.snapshotAt > 0);
+
+    // Recipes, categories and settings save as whole arrays with no version
+    // check, so an edit against a day-old copy would overwrite whatever the
+    // café manager changed in the meantime.
+    const refused = await page.evaluate(async () => {
+      const messages = [];
+      const realAlert = window.alert;
+      window.alert = message => messages.push(String(message));
+      const answer = await sendToApi('save_categories', { categories: ['Yangi'] });
+      window.alert = realAlert;
+      return { messages, answer };
+    });
+
+    assert.strictEqual(refused.answer, null, 'nothing was sent');
+    assert.ok(refused.messages.some(m => /yangilanmagan/.test(m)), 'and it says why');
+    assert.match(await page.textContent('#cafeBanner'), /Saqlash vaqtincha o'chirilgan/);
+    await context.close();
+  });
+
   test('the café dashboard is never handed the sales history', async () => {
     const { page, context } = await openCafe('cafe_admin.html', 'cafe_admin', [adminPayload()]);
     await page.waitForFunction(() => state.inventory.length > 0);

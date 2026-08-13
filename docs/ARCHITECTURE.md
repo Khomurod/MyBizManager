@@ -385,6 +385,10 @@ A refusal is a shape, not a sentence, because the client has to act on it:
 | `code: "throttled"` | rate limited | keep the screen, show Retry |
 | anything else | an ordinary refusal | show the message |
 
+`code: "stale_client"` is the one refusal the *browser* produces without asking:
+a write attempted while the screen is showing a snapshot the server has not
+confirmed this session. See [APP_BRIEF.md §11](APP_BRIEF.md#11-decisions-that-must-be-preserved).
+
 **Only `authExpired` signs anybody out.** Treating a throttle as an expiry is
 what emptied the café till mid-shift.
 

@@ -51,30 +51,24 @@ function enforceRateLimit_(bucketKey, maxCalls, windowSeconds) {
 }
 
 /**
- * Whether a bucket is already exhausted, without consuming from it.
+ * Gives one unit back to a bucket.
  *
- * Splitting the check from the increment is what lets a failure allowance be
- * charged only to failures. Checking and consuming together would mean every
- * legitimate sign-in spent from the same budget as every wrong guess, which is
- * how a shared bucket ends up locking out the people it is protecting.
+ * The counterpart to reserving an attempt before doing the expensive work:
+ * a login charges its allowance up front and refunds it if the password turns
+ * out to be right, so a correct password costs nothing and a wrong one is
+ * already counted before the answer is known.
+ *
+ * A lost refund - the same read-modify-write race the counters have
+ * everywhere - can only make the limit stricter for the rest of the minute,
+ * never looser, which is the direction to be wrong in.
  */
-function peekRateLimit_(bucketKey, maxCalls) {
-  try {
-    var used = Number(CacheService.getScriptCache().get(
-      rateLimitKey_(bucketKey, TELEGRAM_RATE_WINDOW_SECONDS))) || 0;
-    return used >= maxCalls ? RATE_LIMIT_MESSAGE : "";
-  } catch (error) {
-    return "";
-  }
-}
-
-/** Charges one unit to a bucket. Used on failure paths only. */
-function consumeRateLimit_(bucketKey) {
+function releaseRateLimit_(bucketKey) {
   try {
     var cache = CacheService.getScriptCache();
     var key = rateLimitKey_(bucketKey, TELEGRAM_RATE_WINDOW_SECONDS);
     var used = Number(cache.get(key)) || 0;
-    cache.put(key, String(used + 1), TELEGRAM_RATE_WINDOW_SECONDS + 5);
+    if (used <= 0) return;
+    cache.put(key, String(used - 1), TELEGRAM_RATE_WINDOW_SECONDS + 5);
   } catch (error) {}
 }
 

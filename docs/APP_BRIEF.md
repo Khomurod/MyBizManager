@@ -567,6 +567,14 @@ composes the message from data it already stored.
     `authExpired: true` — the server saying the session is over — returns anyone
     to the login page. The café till once cleared its stored key and reset its
     stock, categories and daily target on a *throttled* read, mid-shift.
+    **A snapshot is readable, never writable.** Until a live read has succeeded
+    in this session, every write is refused in the browser and the banner says
+    so: `save_omad` submits the whole tenant list, rate table and expense
+    templates (and the whole ledger before cutover), the café catalogue saves
+    recipes, categories and settings as whole arrays with no version check, and
+    close-day writes a counted inventory back wholesale. Any of those from a
+    day-old copy overwrites everything changed since. Reads stay open, so Retry
+    can recover.
 13. **The cache never answers an authoritative question.** Prices, stock checks,
     the ledger, task state and every write path read the sheets. If deleting
     every cache entry would change an answer, that answer must not be cached.

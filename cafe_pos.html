@@ -473,15 +473,17 @@
       if (!banner) return;
 
       if (state.loadError) {
+        const closeOff = state.snapshotAt ? " Kun yakunlash vaqtincha o'chirilgan." : "";
         banner.className = "glass rounded-2xl p-3 mb-3 text-xs font-bold text-amber-700 flex items-center justify-between gap-2";
-        banner.innerHTML = `<span>${escapeHtmlText(state.loadError)}</span>
+        banner.innerHTML = `<span>${escapeHtmlText(state.loadError + closeOff)}</span>
           <button onclick="syncMenu()" class="rounded-xl bg-amber-500 text-white px-3 py-2 text-[11px] font-bold active:scale-95">Qayta urinish</button>`;
         banner.classList.remove("hidden");
         return;
       }
       if (state.snapshotAt) {
         banner.className = "glass rounded-2xl p-3 mb-3 text-xs font-bold text-slate-500";
-        banner.textContent = "Saqlangan ro'yxat ko'rsatilmoqda, yangilanmoqda...";
+        banner.textContent =
+          "Saqlangan ro'yxat ko'rsatilmoqda, yangilanmoqda... Kun yakunlash vaqtincha o'chirilgan.";
         banner.classList.remove("hidden");
         return;
       }

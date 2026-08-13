@@ -28,15 +28,23 @@ function renderSyncBanner() {
     if (!banner) return;
 
     if (app.loadError) {
+        // The commonest way to end up on a snapshot is a load that just failed,
+        // so this branch has to carry the "saving is off" note too - otherwise
+        // it is only ever shown in the case nobody is in.
+        const savingOff = app.snapshotAt ? " Saqlash vaqtincha o'chirilgan." : '';
         banner.className = 'card border-amber-300 bg-amber-50 text-amber-800 text-xs font-bold';
-        banner.innerHTML = `Ma'lumot yangilanmadi: ${escapeHtmlText(app.loadError)}
+        banner.innerHTML = `Ma'lumot yangilanmadi: ${escapeHtmlText(app.loadError + savingOff)}
             <button onclick="syncData()" class="ml-2 underline">Qayta urinish</button>`;
         banner.classList.remove('hidden');
         return;
     }
     if (app.snapshotAt) {
+        // Saying that saving is off matters as much as saying the figures are
+        // old: the screen looks ordinary, and somebody would otherwise find out
+        // by pressing Save.
         banner.className = 'card border-slate-200 bg-slate-50 text-slate-500 text-xs font-bold';
-        banner.textContent = "Saqlangan ma'lumot ko'rsatilmoqda, yangilanmoqda...";
+        banner.textContent =
+            "Saqlangan ma'lumot ko'rsatilmoqda, yangilanmoqda... Saqlash vaqtincha o'chirilgan.";
         banner.classList.remove('hidden');
         return;
     }

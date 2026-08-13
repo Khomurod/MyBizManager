@@ -21,6 +21,30 @@ function requireAccess() {
 }
 
 /**
+ * Actions that change stored state.
+ *
+ * Listed so `callBackend` can refuse them while the screen is showing an
+ * unconfirmed snapshot. Naming the writes rather than the reads is deliberate:
+ * a new *read* that is forgotten here still works, and a new *write* that is
+ * forgotten is refused until somebody adds it - the safe direction for a list
+ * whose whole job is to stop a stale copy being saved.
+ */
+const OMAD_WRITE_ACTIONS = new Set([
+    'save_omad', 'migrate_omad', 'tenant_paid_expense',
+    'create_transaction', 'correct_transaction', 'cancel_transaction',
+    'save_telegram_settings', 'configure_telegram_webhook', 'configure_mini_app',
+    'create_backup', 'process_jobs', 'retry_failed_jobs', 'set_user_password',
+    'change_password', 'audit_transaction_dates', 'fix_transaction_dates',
+    'backfill_entry_group_ids', 'purge_telegram_debug_secrets',
+    'rotate_telegram_webhook_secret', 'apply_omad_migration',
+    'cutover_omad_migration', 'rollback_omad_migration'
+]);
+
+/** What a write is told when the screen has not been refreshed from the server. */
+const STALE_WRITE_MESSAGE =
+    "Ma'lumot serverdan yangilanmagan. Avval 'Qayta urinish' tugmasini bosing.";
+
+/**
  * One request to Apps Script, returning the parsed JSON body.
  *
  * The same transport every other screen uses (`callApi`), with one difference
@@ -34,6 +58,17 @@ function requireAccess() {
  * so a key can still be tried without signing out.
  */
 async function callBackend(payload) {
+    // A snapshot is display only, and this is what makes that true rather than
+    // merely intended. Until a live read has succeeded this session, `app` is a
+    // copy of what the server said up to a week ago -- and `save_omad` submits
+    // the *whole* tenant list, rate table and expense-template list (and, on
+    // the legacy sheet, the whole ledger), so saving from that copy would
+    // overwrite everything changed since. Reads stay open, so Retry can
+    // recover; writes wait for it.
+    if (app.snapshotAt && OMAD_WRITE_ACTIONS.has(String((payload || {}).action || ''))) {
+        return { status: 'error', code: 'stale_client', message: STALE_WRITE_MESSAGE };
+    }
+
     try {
         return await callApi(GOOGLE_APP_URL, payload);
     } catch (error) {

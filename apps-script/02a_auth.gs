@@ -306,24 +306,44 @@ function verifySessionToken_(token, nowMs) {
 
 // --------------------------------------------------------------------- login
 
+var LOGIN_THROTTLED_MESSAGE = "Juda ko'p urinish. Bir daqiqa kutib qayta urinib ko'ring.";
+
 /**
- * Throttles a login attempt before the password is checked.
+ * Charges one attempt to the login buckets, before the password is checked.
  *
- * Both buckets are consumed only by `recordLoginFailure_`, so somebody typing
- * their own password correctly is never held back by their own history, and a
- * signed-in user is never affected at all.
+ * Reserve-then-refund, rather than check-then-charge. Checking first and
+ * charging afterwards leaves the whole password hash — a couple of hundred HMAC
+ * rounds — between reading the counter and writing it, so a burst of parallel
+ * guesses could all read zero and collapse into one increment. Charging first
+ * closes that window to the width of one cache round trip, and
+ * `refundLoginAttempt_` gives the unit back when the password turns out to be
+ * right, which is what keeps a correct sign-in free.
+ *
+ * The counter is still a cache read-modify-write, because Apps Script has no
+ * atomic increment. Serialising it on the script lock was considered and
+ * rejected: that is the same lock the financial writes take, so it would let
+ * anyone with the /exec URL queue behind the ledger.
  */
-function loginThrottleMessage_(username) {
-  var perUser = peekRateLimit_("login_u_" + username, LOGIN_FAILURE_LIMIT_PER_USER);
-  if (perUser) return "Juda ko'p urinish. Bir daqiqa kutib qayta urinib ko'ring.";
-  var global = peekRateLimit_("login_all", LOGIN_FAILURE_LIMIT_GLOBAL);
-  if (global) return "Juda ko'p urinish. Bir daqiqa kutib qayta urinib ko'ring.";
+function reserveLoginAttempt_(username) {
+  var perUser = enforceRateLimit_(
+    "login_u_" + username, LOGIN_FAILURE_LIMIT_PER_USER, TELEGRAM_RATE_WINDOW_SECONDS);
+  if (perUser) return LOGIN_THROTTLED_MESSAGE;
+
+  var global = enforceRateLimit_(
+    "login_all", LOGIN_FAILURE_LIMIT_GLOBAL, TELEGRAM_RATE_WINDOW_SECONDS);
+  if (global) {
+    // The per-user unit was already taken; give it back so a global flood
+    // caused by somebody else does not also fill this account's allowance.
+    releaseRateLimit_("login_u_" + username);
+    return LOGIN_THROTTLED_MESSAGE;
+  }
   return "";
 }
 
-function recordLoginFailure_(username) {
-  consumeRateLimit_("login_u_" + username);
-  consumeRateLimit_("login_all");
+/** Returns the reserved attempt. Called only when the password was correct. */
+function refundLoginAttempt_(username) {
+  releaseRateLimit_("login_u_" + username);
+  releaseRateLimit_("login_all");
 }
 
 /**
@@ -344,7 +364,7 @@ function loginAction_(payload) {
     return { status: "error", code: "invalid_credentials", message: "Login yoki parol noto'g'ri." };
   }
 
-  var throttled = loginThrottleMessage_(username);
+  var throttled = reserveLoginAttempt_(username);
   if (throttled) return { status: "error", code: "throttled", message: throttled };
 
   var verified = verifyUserPassword_(username, password);
@@ -363,9 +383,11 @@ function loginAction_(payload) {
   }
 
   if (!verified.ok) {
-    recordLoginFailure_(username);
+    // The attempt is already charged; a wrong password simply does not get it
+    // back.
     return { status: "error", code: "invalid_credentials", message: "Login yoki parol noto'g'ri." };
   }
+  refundLoginAttempt_(username);
 
   var issued = issueSessionToken_(verified.username, verified.role, verified.pwv);
   return {
@@ -393,14 +415,14 @@ function changePasswordAction_(auth, payload) {
     return { status: "success", token: firstToken.token, expiresAt: firstToken.expiresAt, role: created.role };
   }
 
-  var throttled = loginThrottleMessage_(auth.username);
+  var throttled = reserveLoginAttempt_(auth.username);
   if (throttled) return { status: "error", code: "throttled", message: throttled };
 
   var verified = verifyUserPassword_(auth.username, current);
   if (!verified.ok) {
-    recordLoginFailure_(auth.username);
     return { status: "error", code: "invalid_credentials", message: "Joriy parol noto'g'ri." };
   }
+  refundLoginAttempt_(auth.username);
 
   var result = setUserCredential_(auth.username, next, verified.role);
   if (result.status !== "success") return result;

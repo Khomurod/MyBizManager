@@ -423,4 +423,33 @@ describe('Sozlamalar (browser)', () => {
     assert.strictEqual(await page.getAttribute('#tgBotToken', 'type'), 'password');
     await context.close();
   });
+  test('nothing is saved while the screen is showing an unconfirmed snapshot', async () => {
+    const { page, context, requests } = await openSettings();
+    await page.waitForFunction(() => app.transactions !== undefined);
+
+    // `save_omad` submits the whole tenant list, rate table and expense
+    // templates - and on the legacy sheet the whole ledger - so saving from a
+    // copy the server has not confirmed this session would overwrite whatever
+    // changed since it was stored.
+    const refused = await page.evaluate(async () => {
+      app.snapshotAt = Date.now() - 60000;
+      const answer = await callBackend({ action: 'save_omad', transactions: [], tenants: [], rates: {} });
+      return { status: answer.status, code: answer.code, message: answer.message };
+    });
+
+    assert.strictEqual(refused.status, 'error');
+    assert.strictEqual(refused.code, 'stale_client');
+    assert.match(refused.message, /yangilanmagan/);
+    assert.deepStrictEqual(requests.filter(r => r.action === 'save_omad'), [],
+      'the request never left the browser');
+
+    // Reads stay open, so Retry can recover.
+    const readAllowed = await page.evaluate(async () => {
+      const answer = await callBackend({ action: 'get_omad_data' });
+      return answer && answer.status;
+    });
+    assert.notStrictEqual(readAllowed, 'error', 'a read is still allowed, so Retry works');
+    await context.close();
+  });
+
 });
