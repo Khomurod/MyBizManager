@@ -657,28 +657,48 @@ so the app shows correct years **before** the sheet is migrated.
 
 The migration ran and cut over on 2026-08-12. These actions stay live because
 rollback has to stay one button, which also means the sequence can be needed
-again. If it ever is, the order and the safety rules are:
+again.
 
-1. **Back up three ways first** — `create_backup` (in-sheet JSON snapshot,
-   verify the row appears), Drive **File → Make a copy**, and an off-Drive
-   `.xlsx` export. They fail in different ways.
-2. **Preview.** Writes nothing. Duplicate ids must be empty; unresolved rows
+> ### ⛔ `apply_omad_migration` destroys the live ledger if V2 is active
+>
+> It **rebuilds `Omad_Transactions_V2` from scratch** — `clearSheetRows_` on the
+> target, then repopulate **exclusively from the legacy `Omad_Transactions`** —
+> and there is **no backend guard** refusing to run while V2 is the active
+> sheet. Every row written since the cutover exists only in V2 and is not on
+> the legacy sheet, so running apply today would delete all of it.
+>
+> **Never run apply while the migration state is `cutover`.** The whole
+> sequence below is a *re-run after a rollback*, never something to start from
+> the live ledger.
+
+If it is ever needed again, in this order:
+
+1. **Roll back first.** `rollback_omad_migration` points reads and writes back
+   at `Omad_Transactions` and restores the pre-migration rate map. It deletes
+   nothing, so the V2 rows are still there to be recovered in step 2.
+2. **Reconcile the V2-only rows.** Every transaction created after the last
+   cutover lives only in `Omad_Transactions_V2`. Copy those rows into
+   `Omad_Transactions` by hand now — apply reads the legacy sheet and nothing
+   else, so anything left behind is gone at step 4.
+3. **Back up three ways** — `create_backup` (in-sheet JSON snapshot, verify the
+   row appears), Drive **File → Make a copy**, and an off-Drive `.xlsx` export.
+   They fail in different ways.
+4. **Preview.** Writes nothing. Duplicate ids must be empty; unresolved rows
    are better fixed in the sheet than covered by a fallback year, because then
    the year comes from the record itself.
-3. **Apply.** Rebuilds `Omad_Transactions_V2` from scratch — safe to re-run
-   after an interruption — and **never touches the legacy sheet**, which is
-   what makes everything up to cutover cheap to undo.
-4. **Verify.** Field-by-field, including each frozen `Amount_UZS` against the
+5. **Apply.** Rebuilds the target from scratch, so an apply interrupted *within
+   this same procedure* is recovered by running it again. It **never touches
+   the legacy sheet**, which is what makes everything up to cutover cheap to
+   undo.
+6. **Verify.** Field-by-field, including each frozen `Amount_UZS` against the
    rate recorded on that same row. **Never cut over on matching totals alone**
    — an earlier version compared ten fields, none of them `Entry_Group_ID`,
    `Entry_Kind` or `Comment`, and would have let every tenant-paid pair arrive
    as two unrelated rows.
-5. **Cut over.** Refuses unless verification passed.
+7. **Cut over.** Refuses unless verification passed.
 
-Rows created after a cutover live in `Omad_Transactions_V2`; a rollback leaves
-them there, so copy them across by hand first if they must appear on the legacy
-sheet. **Never delete `Omad_Transactions`** — it costs nothing to keep and it
-is the last line of defence.
+**Never delete `Omad_Transactions`** — it costs nothing to keep and it is the
+last line of defence.
 
 ## Append-only ledger (`Omad_Transactions_V2`, schema version 2)
 

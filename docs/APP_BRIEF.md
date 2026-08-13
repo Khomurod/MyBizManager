@@ -442,7 +442,11 @@ composes the message from data it already stored.
 2. **Migration never destroys the source.** `apply_omad_migration` rebuilds
    `Omad_Transactions_V2` from scratch and never touches the legacy sheet;
    `rollback_omad_migration` points reads back and restores the pre-migration
-   rate map without deleting migrated data.
+   rate map without deleting migrated data. **It does destroy the *target*:**
+   apply clears V2 and repopulates it from the legacy sheet alone, and no guard
+   stops it running while V2 is live — so it must never be run while the
+   migration state is `cutover`. The full precondition chain is in
+   [`ARCHITECTURE.md`](ARCHITECTURE.md#migration-and-cutover).
 3. **Tasks never touch financial data — one-way isolation.** The `/yangi`
    conversation may *create* a task; nothing in the task module reads or writes
    a transaction, tenant, rate or backup. `19a_tasks_wizard.gs` is never handed
