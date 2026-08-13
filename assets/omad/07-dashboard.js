@@ -32,12 +32,15 @@ function renderDashboard() {
     document.getElementById('headerMonth').innerText = periodShortLabel(period);
     document.getElementById('headerRate').innerText = `Buy ${formatUZS(monthRate.buy)} | Sell ${formatUZS(monthRate.sell)}`;
 
-    const countable = countableTransactions();
     renderProjection(period);
 
     // Income/expense are scoped to the period; cash, bank and total are
     // all-time - money in the safe does not reset when you change the month.
-    const actuals = calculateActuals(countable, period);
+    //
+    // From the server's summary when there is one, from the loaded rows when
+    // there is not. Switching months stays instant either way: the summary
+    // carries every period, so no round trip is needed to change the selector.
+    const actuals = periodActuals(period);
     document.getElementById('dash-income').innerText = actuals.income.toLocaleString();
     document.getElementById('dash-expense').innerText = actuals.expense.toLocaleString();
     document.getElementById('dash-cash-total').innerText = actuals.cash.toLocaleString();
@@ -61,7 +64,7 @@ function renderDashboard() {
 
         // Paid and expected both use the sell rate, so a tenant who paid
         // exactly their rent shows zero rather than the spread.
-        const balance = calculateTenantBalance(countable, tenant, period);
+        const balance = tenantBalanceFor(tenant, period);
         const paidUZS = balance.paid;
         const rentUZS = isAllTime ? 0 : balance.expected;
 
@@ -119,12 +122,54 @@ function renderDashboard() {
     if(!isAllTime) {
         document.getElementById('dash-total-debt').innerText = totalPeriodDebt.toLocaleString() + " UZS";
     }
+
+    renderRecentActivity();
+}
+
+/**
+ * The last few business actions, as they arrived with the dashboard.
+ *
+ * A *business action*, not a row: a tenant-paid pair is one line and a payment
+ * made of several amounts is one line with a total, exactly as Tarix and the
+ * Mini App show them, because they all read the same server-built list. It is
+ * deliberately short and read-only — editing lives in Tarix, which loads the
+ * rows it is going to change.
+ */
+function renderRecentActivity() {
+    const card = document.getElementById('recentCard');
+    const list = document.getElementById('recentList');
+    if (!card || !list) return;
+
+    const entries = Array.isArray(app.recent) ? app.recent : [];
+    if (!entries.length) {
+        card.classList.add('hidden');
+        return;
+    }
+    card.classList.remove('hidden');
+
+    list.innerHTML = entries.slice(0, 6).map(entry => {
+        const income = entry.type !== 'Expense';
+        const pair = entry.kind === 'tenant_paid_expense';
+        return `
+        <div class="bg-white p-3 rounded-lg border border-slate-100 shadow-sm flex justify-between items-center gap-2">
+            <div class="flex items-center gap-3 min-w-0">
+                <div class="w-1 h-8 rounded-full ${pair ? 'bg-amber-400' : (income ? 'bg-green-400' : 'bg-red-400')}"></div>
+                <div class="min-w-0">
+                    <p class="font-bold text-slate-700 text-sm truncate">${pair ? '🏢 ' : ''}${escapeHtmlText(entry.tenant)}</p>
+                    <p class="text-[10px] text-slate-400 truncate">${escapeHtmlText(entry.date)} • ${escapeHtmlText(entry.periodLabel)}${entry.lines > 1 ? ' • ' + entry.lines + ' qator' : ''}</p>
+                </div>
+            </div>
+            <div class="text-right shrink-0">
+                <p class="font-bold text-slate-700 text-sm">${Math.round(Number(entry.amountUZS) || 0).toLocaleString()} UZS</p>
+                <p class="text-[10px] text-slate-400">${pair ? "kassaga 0" : (income ? 'Kirim' : 'Chiqim')}</p>
+            </div>
+        </div>`;
+    }).join('');
 }
 
 // --- DEBT LIST MODAL ---
 function openDebtListModal() {
     const period = document.getElementById('dashMonthSelect').value;
-    const countable = countableTransactions();
 
     let debtors = [];
     let totalDebt = 0;
@@ -132,7 +177,7 @@ function openDebtListModal() {
     app.tenants.forEach(tenant => {
         if(isTenantDisabledForPeriod(tenant, period)) return;
 
-        const balance = calculateTenantBalance(countable, tenant, period);
+        const balance = tenantBalanceFor(tenant, period);
         if (balance.difference < -1000) {
             debtors.push({ name: tenant.name, debt: Math.abs(balance.difference), rent: balance.expected });
             totalDebt += Math.abs(balance.difference);
@@ -181,24 +226,55 @@ function openDebtListModal() {
     document.getElementById('detailModal').classList.remove('hidden');
 }
 
-// --- TENANT DETAIL MODAL ---
-function openTenantModal(tenantName, period, rentAmount, rentCurr, monthRate) {
-    const isAllTime = period === ALL_PERIODS;
+/**
+ * The payment rows behind one tenant's figure.
+ *
+ * The dashboard no longer holds the ledger, so the rows for the tenant somebody
+ * has just tapped are fetched for that tenant and that period alone — a few
+ * rows instead of all of them. When the whole list *is* loaded (before cutover,
+ * or once Tarix has been opened) it is filtered in place and nothing is
+ * requested.
+ */
+async function tenantPaymentRows(tenantName, period) {
     const tenantKey = normalizeTenantName(tenantName);
-    const countable = countableTransactions();
-    const txs = countable.filter(t =>
+    const isAllTime = period === ALL_PERIODS;
+    const localMatches = countableTransactions().filter(t =>
         normalizeTenantName(t.tenant) === tenantKey &&
         (isAllTime || recordPeriod(t) === period) &&
         t.type === 'Income');
+
+    if (app.historyMode !== 'paged') return localMatches;
+
+    try {
+        const body = await callBackend({
+            action: 'list_transactions',
+            tenant: tenantName,
+            period: isAllTime ? '' : period,
+            type: 'Income'
+        });
+        if (!isSuccessResponse(body)) return localMatches;
+        return (body.transactions || []).filter(isCountableTransaction);
+    } catch (error) {
+        // A failed read never empties a screen: what is already in hand is
+        // shown, and the figures above the list come from the summary anyway.
+        console.error('tenant payments', error);
+        return localMatches;
+    }
+}
+
+// --- TENANT DETAIL MODAL ---
+async function openTenantModal(tenantName, period, rentAmount, rentCurr, monthRate) {
+    const isAllTime = period === ALL_PERIODS;
+    const tenantKey = normalizeTenantName(tenantName);
     const selectedMonthRates = normalizeRateEntry(monthRate, DEFAULT_RATE);
 
     // The stored tenant, so the modal resolves the same schedule the dashboard
     // did. A synthetic {name, rent} carries no exceptions or rent changes, so
     // it could disagree with the card it was opened from.
     const storedTenant = (app.tenants || []).find(t => normalizeTenantName(t.name) === tenantKey);
-    const balance = calculateTenantBalance(countable,
+    const balance = tenantBalanceFor(
         storedTenant || { name: tenantName, rent: rentAmount, currency: rentCurr }, period);
-    const totalPaidUZS = calculateTenantPaid(countable, tenantName, isAllTime ? ALL_PERIODS : period);
+    const totalPaidUZS = tenantPaidFor(tenantName, isAllTime ? ALL_PERIODS : period);
     const expectedRentUZS = isAllTime ? 0 : balance.expected;
 
     // Configure Modal UI
@@ -237,6 +313,10 @@ function openTenantModal(tenantName, period, rentAmount, rentCurr, monthRate) {
     document.getElementById('modalPaid').innerText = `${Math.round(totalPaidUZS).toLocaleString()} UZS`;
 
     const list = document.getElementById('modalContent');
+    list.innerHTML = `<p class="text-center text-slate-400 text-sm py-4">Yuklanmoqda...</p>`;
+    document.getElementById('detailModal').classList.remove('hidden');
+
+    const txs = await tenantPaymentRows(tenantName, period);
     list.innerHTML = "";
 
     if(txs.length === 0) {
@@ -269,7 +349,6 @@ function openTenantModal(tenantName, period, rentAmount, rentCurr, monthRate) {
             list.appendChild(row);
         });
     }
-    document.getElementById('detailModal').classList.remove('hidden');
 }
 
 function closeModal() {

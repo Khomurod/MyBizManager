@@ -57,6 +57,9 @@ function switchTab(t) {
     document.querySelectorAll('.nav-item').forEach(e => e.classList.remove('active'));
     document.getElementById('tab-'+t).classList.add('active');
     document.getElementById('nav-'+t).classList.add('active');
+    // The ledger is not downloaded with the dashboard any more; the first page
+    // of it is fetched when somebody actually opens Tarix.
+    if (t === 'history') ensureHistoryLoaded();
     if (t === 'settings') {
         showSettingsSection(activeSettingsSection);
         loadTelegramSettings();

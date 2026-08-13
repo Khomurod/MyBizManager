@@ -132,7 +132,8 @@ function miniOmadSnapshot_(doc, configSheet, requestedPeriod) {
         status: "success", authorized: true,
         omad: buildMiniOmadSummary_(ctx),
         tenants: buildMiniTenantStatus_(ctx),
-        transactions: buildMiniRecentEntries_(ctx)
+        transactions: omadRecentForPeriod_(doc, ctx.model, requestedPeriod, MINI_APP_RECENT_TRANSACTIONS),
+        readModelAt: String(ctx.model.builtAt || "")
       };
     });
 }
@@ -142,26 +143,30 @@ function miniOmadSnapshot_(doc, configSheet, requestedPeriod) {
  *
  * The three builders below each used to call `readOmadTransactions_` for
  * themselves, so answering one Mini App request read the whole ledger three
- * times over — and the tenant list and the rate table with it. They are the
- * same rows every time inside a single request, so they are read once here and
- * passed down.
+ * times over. Then it read it once. Now it usually reads it not at all: the
+ * period figures and what each tenant paid come from the materialised read
+ * model (`01d_read_model.gs`), which is the same arithmetic stored against the
+ * ledger's own revision. Opening the app between two entries costs no ledger
+ * pass whatsoever; the first open after an entry rebuilds the model.
  */
 function miniOmadContext_(doc, configSheet, requestedPeriod) {
   var period = isCanonicalPeriod_(requestedPeriod) ? String(requestedPeriod) : currentPeriod_();
-  var transactions = readOmadTransactions_(doc);
+  var model = omadReadModel_(doc, configSheet);
+  var figures = omadPeriodFigures_(model, period);
   return {
     doc: doc,
     // Resolved once here so the summary, the tenant list and the pre-aggregated
     // totals cannot end up describing different months.
     period: period,
     requestedPeriod: requestedPeriod,
-    transactions: transactions,
-    tenants: normalizeTenantList_(safeParseJSON_(getConfig(configSheet, "Omad_Tenants"), [])),
+    model: model,
+    figures: figures,
+    tenants: normalizeTenantList_(safeParseJSON_(getConfigOnce_(configSheet, "Omad_Tenants"), [])),
     rates: getOmadRates_(),
-    // The summary and the per-tenant list both need what each tenant paid, and
-    // each was walking the ledger once per tenant to find out. One pass here
-    // serves both.
-    paidTotals: tenantPaidTotals_(transactions, period),
+    // The summary and the per-tenant list both need what each tenant paid; the
+    // model already holds it, bucketed by the same `tenantPaidTotals_` the
+    // full-ledger path uses.
+    paidTotals: figures.paid,
     ledgerActive: isLedgerActive_(doc)
   };
 }
@@ -169,17 +174,17 @@ function miniOmadContext_(doc, configSheet, requestedPeriod) {
 /** The month figures, the balances and the tenant debt total, for one period. */
 function buildMiniOmadSummary_(ctx) {
   var period = ctx.period;
-  var transactions = ctx.transactions;
   var tenants = ctx.tenants;
   var rates = ctx.rates;
-  var actuals = calculateActuals_(transactions, period);
+  var actuals = ctx.figures;
 
   // calculateTenantBalance_ reports a signed difference: negative is owed.
   // Debt and surplus are derived here rather than re-deriving the rent rules.
+  // The pre-aggregated totals are supplied, so no row list is needed.
   var debt = 0;
   var paidTenants = 0;
   for (var i = 0; i < tenants.length; i++) {
-    var balance = calculateTenantBalance_(transactions, tenants[i], period, ctx.paidTotals);
+    var balance = calculateTenantBalance_(null, tenants[i], period, ctx.paidTotals);
     if (balance.difference < 0) debt += -balance.difference;
     else if (balance.expected > 0) paidTenants++;
   }
@@ -205,13 +210,12 @@ function buildMiniOmadSummary_(ctx) {
 /** Per-tenant expected / paid / debt for the period, smallest debt last. */
 function buildMiniTenantStatus_(ctx) {
   var period = ctx.period;
-  var transactions = ctx.transactions;
   var tenants = ctx.tenants;
 
   var rows = [];
   for (var i = 0; i < tenants.length; i++) {
     if (tenants[i].active === false) continue;
-    var balance = calculateTenantBalance_(transactions, tenants[i], period, ctx.paidTotals);
+    var balance = calculateTenantBalance_(null, tenants[i], period, ctx.paidTotals);
     rows.push({
       name: tenants[i].name,
       expected: Math.round(balance.expected),
@@ -222,71 +226,6 @@ function buildMiniTenantStatus_(ctx) {
   }
   rows.sort(function (a, b) { return b.debt - a.debt; });
   return rows;
-}
-
-/**
- * Recent activity as *business actions* rather than rows.
- *
- * The Mini App shows the same thing the history tab does: a tenant-paid pair
- * is one entry, and the several lines of one payment are one entry with a
- * total, so the reader is never asked to pair rows up themselves.
- */
-function buildMiniRecentEntries_(ctx) {
-  var transactions = ctx.transactions;
-  // Unlike the summary, an unrecognised period here means "no filter" rather
-  // than "this month", so the list is never silently empty.
-  var period = isCanonicalPeriod_(ctx.requestedPeriod) ? String(ctx.requestedPeriod) : "";
-  var rates = ctx.rates;
-
-  var order = [];
-  var groups = {};
-  for (var i = 0; i < transactions.length; i++) {
-    var t = transactions[i];
-    if (period && transactionPeriod_(t) !== period) continue;
-    var key = String(t.groupId || "");
-    if (!groups[key]) { groups[key] = []; order.push(key); }
-    groups[key].push(t);
-  }
-
-  var entries = [];
-  for (var g = 0; g < order.length; g++) {
-    var rows = groups[order[g]];
-    var first = rows[0];
-    var total = 0;
-    for (var r = 0; r < rows.length; r++) {
-      if (rows[r].type === "Income") total += transactionUZS_(rows[r], rates);
-    }
-    var tenantPaid = isTenantPaidGroup_(rows);
-    var income = null;
-    for (var q = 0; q < rows.length; q++) if (rows[q].type === "Income") { income = rows[q]; break; }
-    var lead = tenantPaid ? (income || first) : first;
-    if (!tenantPaid) {
-      total = 0;
-      for (var s = 0; s < rows.length; s++) total += transactionUZS_(rows[s], rates);
-    }
-
-    entries.push({
-      groupId: order[g],
-      id: lead.id,
-      kind: tenantPaid ? ENTRY_KIND_TENANT_PAID : "",
-      type: lead.type,
-      tenant: lead.tenant,
-      period: transactionPeriod_(lead),
-      periodLabel: formatPeriodLabel_(transactionPeriod_(lead)),
-      date: typeof lead.date === "object" && lead.date ? formatLedgerDate_(lead.date) : String(lead.date || ""),
-      amountUZS: Math.round(total),
-      currency: lead.currency,
-      amount: lead.amount,
-      lines: rows.length,
-      comment: String(lead.comment || "").slice(0, 300)
-    });
-  }
-
-  // Newest first, by the timestamp the ids encode.
-  entries.sort(function (a, b) {
-    return (Number(String(b.id).split("_")[0]) || 0) - (Number(String(a.id).split("_")[0]) || 0);
-  });
-  return entries.slice(0, MINI_APP_RECENT_TRANSACTIONS);
 }
 
 /**

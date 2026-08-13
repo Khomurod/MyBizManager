@@ -193,7 +193,13 @@ test('the tenant list does not multiply the config reads', () => {
   // Measured on the code before this change: 70 full passes over
   // System_Config to answer one request, because the rate table was fetched
   // again for every tenant's rent and again for every tenant's payments.
-  assert.ok(counts.System_Config <= 4,
+  //
+  // Six rather than four because this is the request that *builds* the read
+  // model: reading the stored one, and then storing the rebuilt one, are two
+  // more passes over a fifteen-row sheet — bought in exchange for the ledger
+  // pass that every subsequent request no longer makes. See the read-model
+  // tests below for the second request, which makes none of them.
+  assert.ok(counts.System_Config <= 7,
     `System_Config read ${counts.System_Config} times; the rate table is fetched once per request`);
   assert.strictEqual(counts.Omad_Transactions, 1);
 });

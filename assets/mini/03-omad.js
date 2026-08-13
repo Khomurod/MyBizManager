@@ -15,6 +15,7 @@ function renderOmad() {
 
     const o = state.omad;
     host.innerHTML = `
+        ${staleBanner()}
         ${periodSwitcher(o)}
 
         <div class="card hero">
@@ -59,6 +60,35 @@ function renderOmad() {
         <h2>Oxirgi amallar</h2>
         <div class="card list" id="miniEntryList">${entryRows()}</div>
     `;
+}
+
+/**
+ * Says, above the figures, that they are the stored ones.
+ *
+ * Shown rather than hidden: the alternative to a stored figure with a warning
+ * is a blank screen, and a zero on an accounting screen is a statement about
+ * money. It disappears the moment the live answer lands.
+ */
+function staleBanner() {
+    if (!state.snapshotAt) return '';
+    const failed = state.loadError
+        ? ` ${escapeHtml(state.loadError)}`
+        : ' Yangilanmoqda...';
+    return `
+        <div class="card" style="border-color:var(--warning);margin-bottom:10px">
+            <p class="tiny" style="font-weight:700">
+                Saqlangan ma'lumot (${escapeHtml(shortStamp(state.snapshotAt))}).${failed}
+            </p>
+            ${state.loadError ? '<button class="btn-sm" style="margin-top:8px" onclick="loadOmad()">Qayta urinish</button>' : ''}
+        </div>`;
+}
+
+/** "13.08 21:40" from an epoch ms, in the phone's own clock. */
+function shortStamp(ms) {
+    const when = new Date(Number(ms) || 0);
+    if (isNaN(when.getTime())) return '';
+    const pad = n => String(n).padStart(2, '0');
+    return `${pad(when.getDate())}.${pad(when.getMonth() + 1)} ${pad(when.getHours())}:${pad(when.getMinutes())}`;
 }
 
 function periodSwitcher(o) {
@@ -241,6 +271,18 @@ async function loadOmad() {
         state.period = body.omad.period;
         state.tenants = body.tenants || [];
         state.entries = body.transactions || [];
+        state.snapshotAt = 0;
+        state.loadError = '';
+        // Only the period the app opens on is worth storing: the snapshot
+        // exists to make the *first* paint instant, and keeping a copy per
+        // month someone browsed through would fill storage with figures nobody
+        // is coming back to.
+        if (state.user && body.omad.period === currentPeriod()) {
+            writeMiniSnapshot(state.user.id, {
+                user: state.user, omad: state.omad,
+                tenants: state.tenants, entries: state.entries
+            });
+        }
         renderOmad();
     } catch (error) {
         if (error.unauthorized) return failAuth(error);

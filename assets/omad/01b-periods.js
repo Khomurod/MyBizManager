@@ -126,6 +126,12 @@ function availablePeriods() {
         const period = isPeriod(value) ? value : "";
         if (period) years.add(periodYear(period));
     };
+    // Since the dashboard stopped downloading the ledger, the set of periods
+    // that has data comes from the server's summary. `app.transactions` is
+    // whatever page of history is loaded, and is still collected so a
+    // pre-cutover load — which carries the whole list and no summary — offers
+    // exactly the same years it always did.
+    summaryPeriods().forEach(collect);
     (app.transactions || []).forEach(t => collect(recordPeriod(t)));
     (app.templateExpenses || []).forEach(e => collect(recordPeriod(e)));
     Object.keys(app.rates || {}).forEach(collect);

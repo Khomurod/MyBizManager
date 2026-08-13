@@ -11,6 +11,7 @@
     "test:e2e": "node --test tests/*.e2e.js",
     "test:all": "npm test && npm run test:e2e",
     "lint": "node --test tests/static-analysis.test.js",
+    "bench": "node scripts/bench-reads.js",
     "scan:secrets": "node scripts/scan-secrets.js",
     "scan:secrets:history": "node scripts/scan-secrets.js --history"
   },

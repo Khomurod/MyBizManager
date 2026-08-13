@@ -251,7 +251,12 @@ const RETIRED_FUNCTIONS = {
   // One function answering verify_access, get_omad_data and get_cafe_data meant
   // one permission level for all three, which is exactly what a café seller
   // must not have.
-  'authenticatedReadAction_': 'replaced by per-action role gates in doPost'
+  'authenticatedReadAction_': 'replaced by per-action role gates in doPost',
+  // Folded into omadRecentEntries_ in 01d_read_model.gs, which the read model
+  // stores and both the Mini App and the Omad dashboard now read. Keeping a
+  // Mini-App-only copy of the grouping rules would have been a second
+  // implementation of "what counts as one business action".
+  'buildMiniRecentEntries_': 'replaced by omadRecentEntries_ in the read model'
 };
 
 /**

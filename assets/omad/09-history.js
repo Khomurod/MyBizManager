@@ -66,20 +66,81 @@ function ordinaryRowMarkup(t) {
 }
 
 /**
- * How many business actions the Tarix tab renders at once.
+ * How many business actions one page of Tarix holds.
  *
- * The whole ledger used to be built into the DOM on every render, and a render
- * happens after every save — so entering a payment rebuilt a card for every
- * transaction the business had ever recorded, none of which had changed. The
- * newest entries are the ones anybody is looking at; the rest arrive on
- * request. Nothing is filtered out of the *data*, only out of the first paint.
+ * The whole ledger used to arrive with the dashboard and be built into the DOM
+ * on every render — so entering a payment rebuilt a card for every transaction
+ * the business had ever recorded, none of which had changed. Now the dashboard
+ * downloads no history at all and this tab asks for a page when it is opened.
+ * Nothing is filtered out of the *data*: the pages together are the ledger, and
+ * the button says how many actions are still behind it.
  */
 const HISTORY_PAGE_SIZE = 40;
 
+/** How many groups of an already-loaded whole list are painted at once. */
 let historyVisibleGroups = HISTORY_PAGE_SIZE;
 
-/** Shows the next page. Called from the button renderHistory appends. */
+/**
+ * Fetches the next page of history and appends it.
+ *
+ * `reset` starts again from the newest action, which is what a refresh after a
+ * save needs: the rows on screen were built from a ledger the save has moved.
+ */
+async function loadHistoryPage(reset) {
+    if (app.historyMode !== 'paged') { app.historyLoaded = true; return; }
+    if (app.historyLoading) return;
+
+    app.historyLoading = true;
+    if (reset) {
+        app.transactions = [];
+        app.historyOffset = 0;
+        app.historyLoaded = false;
+    }
+    renderHistory();
+
+    try {
+        const body = await callBackend({
+            action: 'get_omad_history',
+            offset: app.historyOffset,
+            limit: HISTORY_PAGE_SIZE
+        });
+        if (isAuthExpiredResponse(body)) return requireAccess();
+        if (!isSuccessResponse(body)) throw new Error((body && body.message) || SAVE_FAILED_MESSAGE);
+
+        const rows = Array.isArray(body.transactions) ? body.transactions : [];
+        // Appended rather than replaced, and de-duplicated by id so a repeated
+        // page — a double tap, a retry — cannot show an entry twice or, worse,
+        // count it twice anywhere that later reads this list.
+        const seen = new Set(app.transactions.map(t => String(t.id)));
+        rows.forEach(row => { if (!seen.has(String(row.id))) app.transactions.push(row); });
+
+        app.historyOffset += Number(body.groupCount) || 0;
+        app.historyTotal = Number(body.groupTotal) || 0;
+        app.historyHasMore = !!body.hasMore;
+        app.historyLoaded = true;
+        app.historyError = '';
+    } catch (error) {
+        // Whatever has already been loaded stays on screen; the banner offers
+        // another try. Emptying the list would read as "the entries are gone".
+        console.error('history page', error);
+        app.historyError = (error && error.message) || SAVE_FAILED_MESSAGE;
+    } finally {
+        app.historyLoading = false;
+        renderHistory();
+        if (expenseModalOpen) renderExpenseModal();
+    }
+}
+
+/** Loads the first page the first time Tarix is opened. */
+function ensureHistoryLoaded() {
+    if (app.historyMode !== 'paged') return;
+    if (app.historyLoaded || app.historyLoading) return;
+    loadHistoryPage(true);
+}
+
+/** Shows the next page: another request when paged, more of the list when not. */
 function showMoreHistory() {
+    if (app.historyMode === 'paged') return loadHistoryPage(false);
     historyVisibleGroups += HISTORY_PAGE_SIZE;
     renderHistory();
 }
@@ -88,8 +149,19 @@ function renderHistory() {
     const list = document.getElementById('historyList');
     list.innerHTML = "";
 
+    const paged = app.historyMode === 'paged';
+
+    if (paged && !app.historyLoaded && !app.historyLoading) {
+        const hint = document.createElement('button');
+        hint.className = "w-full bg-white border border-slate-200 rounded-lg py-3 text-xs font-bold text-slate-500";
+        hint.textContent = "Tarixni yuklash";
+        hint.onclick = () => loadHistoryPage(true);
+        list.appendChild(hint);
+        return;
+    }
+
     const groups = historyGroups();
-    const shown = groups.slice(0, historyVisibleGroups);
+    const shown = paged ? groups : groups.slice(0, historyVisibleGroups);
 
     shown.forEach(rows => {
         const tenantPaid = rows.length > 0 && rows.every(isTenantPaidRow);
@@ -102,11 +174,33 @@ function renderHistory() {
         });
     });
 
-    if (groups.length > shown.length) {
+    if (app.historyError) {
+        const problem = document.createElement('div');
+        problem.className = "card border-amber-300 bg-amber-50 text-amber-800 text-xs font-bold";
+        problem.textContent = app.historyError;
+        list.appendChild(problem);
+    }
+
+    if (app.historyLoading) {
+        const busy = document.createElement('p');
+        busy.className = "text-center text-xs font-bold text-slate-400 py-4";
+        busy.textContent = "Yuklanmoqda...";
+        list.appendChild(busy);
+        return;
+    }
+
+    const remaining = paged
+        ? Math.max(0, app.historyTotal - app.historyOffset)
+        : groups.length - shown.length;
+    const hasMore = paged ? app.historyHasMore : groups.length > shown.length;
+
+    if (hasMore || app.historyError) {
         const more = document.createElement('button');
         more.className = "w-full mt-2 bg-white border border-slate-200 rounded-lg py-3 text-xs font-bold text-slate-500";
-        more.textContent = `Yana ko'rsatish (${groups.length - shown.length} ta qoldi)`;
-        more.onclick = showMoreHistory;
+        more.textContent = app.historyError
+            ? "Qayta urinish"
+            : `Yana ko'rsatish (${remaining} ta qoldi)`;
+        more.onclick = () => showMoreHistory();
         list.appendChild(more);
     }
 }
@@ -115,6 +209,8 @@ function openExpenseModal() {
     expenseModalOpen = true;
     document.getElementById('expenseMonthFilter').innerHTML = periodOptions(ALL_PERIODS, { includeAll: true });
     document.getElementById('expenseModal').classList.remove('hidden');
+    // The list is built out of loaded rows, so it needs them.
+    ensureHistoryLoaded();
     renderExpenseModal();
 }
 
@@ -131,12 +227,23 @@ function renderExpenseModal() {
         .slice()
         .reverse();
 
+    // This modal reads the rows that are loaded, and since history is paged
+    // that may not be all of them. Saying so — with the button that fixes it —
+    // is the difference between a partial list and a wrong one.
+    const partial = app.historyMode === 'paged' && app.historyHasMore
+        ? `<button onclick="loadHistoryPage(false)"
+                class="w-full mb-2 bg-white border border-slate-200 rounded-lg py-2 text-[11px] font-bold text-slate-500">
+                Yana ${Math.max(0, app.historyTotal - app.historyOffset)} ta amal yuklanmagan — yuklash
+           </button>`
+        : '';
+
     if (!expenses.length) {
-        list.innerHTML = `<div class="text-center text-xs font-bold text-slate-400 py-8">Chiqimlar topilmadi</div>`;
+        list.innerHTML = partial +
+            `<div class="text-center text-xs font-bold text-slate-400 py-8">Chiqimlar topilmadi</div>`;
         return;
     }
 
-    list.innerHTML = expenses.map(t => `
+    list.innerHTML = partial + expenses.map(t => `
         <div class="bg-slate-50 border border-slate-200 rounded-xl p-3">
             <div class="flex justify-between items-start gap-2">
                 <div>
