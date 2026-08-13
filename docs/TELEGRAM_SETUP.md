@@ -1,17 +1,21 @@
 # Telegram sozlash va tokenni almashtirish
 
-> **Live status (2026-08-11).** The webhook points at the active deployment
-> (id ending `…DtCA2W`) and the `processPendingTelegramJobs` trigger runs every
-> 5 minutes — now performing the task scan as well as the queue drain, so it is
-> the only trigger needed. Debug logging no longer records request bodies, so
-> the webhook secret can no longer reach `Telegram_Debug_Log` — but rows written
-> *before* that change may still contain the old secret, and rotating it is
-> still outstanding. See [LIVE_STATE.md](LIVE_STATE.md).
+> Operator guide. For the system's rules and gates read
+> [APP_BRIEF.md](APP_BRIEF.md); for deployment identity,
+> [DEPLOYMENT.md](DEPLOYMENT.md).
 >
-> **Backend deployments no longer change any of this.** CI pushes code into the
+> **Backend deployments do not change any of this.** CI pushes code into the
 > same Apps Script project and redeploys the same deployment id, so the webhook
 > URL, the verification secret and every Script Property below stay exactly as
-> they are and never need re-entering. See [DEPLOYMENT.md](DEPLOYMENT.md).
+> they are and never need re-entering.
+>
+> `processPendingTelegramJobs` runs every 5 minutes and performs the task scan
+> as well as the queue drain — it is **the only trigger this project needs**.
+>
+> Debug logging no longer records request bodies, so the webhook secret can no
+> longer reach `Telegram_Debug_Log`. Rows written *before* that change may
+> still contain the old secret; **Loglarni Tozalash** then **Webhook Kalitini
+> Almashtirish** is the fix, in that order.
 
 > **⚠️ MUHIM — eski token buzilgan deb hisoblanadi.**
 > `7752185432` bot ID'siga tegishli **ikkita** token ochiq holda GitHub'ga

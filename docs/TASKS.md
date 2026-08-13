@@ -17,9 +17,9 @@ source-level guard in `tests/static-analysis.test.js` enforce that. What the
 private bot *may* do is file a new task, through the
 [`📋 Vazifa` wizard](#creating-a-task-from-the-bot).
 
-Live URL: **<https://mybizmanager.pages.dev/tasks>**, served from
-`tasks.html`. Netlify needed a `netlify.toml` rewrite for that clean path;
-Cloudflare Pages serves it with no configuration at all, so that file is gone.
+Live URL: **<https://mybizmanager.pages.dev/tasks>**, served from `tasks.html`.
+Cloudflare Pages serves that clean path with no configuration, so the
+repository carries no rewrite file.
 
 ## What it does
 
@@ -453,7 +453,8 @@ endpoint cannot be used to guess it.
 
 `get_tasks` over **GET returns an error by design**: a GET carries its
 parameters in the URL, which is the one place an admin key must never travel.
-The accounting reads (`get_omad`, `get_cafe`) are deliberately unchanged.
+The accounting reads follow the same rule — `doGet` is inert and the
+authenticated replacements are `get_omad_data` / `get_cafe_data` over POST.
 
 ## Frontend
 
