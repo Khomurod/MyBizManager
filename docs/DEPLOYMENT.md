@@ -31,6 +31,13 @@ Cloudflare Pages serves `mini.html` and `tasks.html` at the clean `/mini` and
 rewrite file. To roll the frontend back, pick an earlier deployment in the
 Cloudflare dashboard — every one is kept.
 
+> **Netlify is retired but still connected.** `omad-d.netlify.app` is *not*
+> production: it serves a build from before the access key existed and can no
+> longer sign in. The integration still posts deploy-preview checks and
+> comments on pull requests, so ignore them — a green Netlify preview says
+> nothing about this application. Deleting the Netlify site is a manual step
+> nobody has taken; nothing here depends on it.
+
 ---
 
 ## What happens on a merge
