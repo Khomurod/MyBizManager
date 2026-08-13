@@ -243,6 +243,7 @@ half readable a year later.
 | `Telegram_Debug_Log` | `[Timestamp, Event, Details]` — secrets redacted on write |
 | `Cafe_Sales` | `[Sana, Sotuvchi, Jami_Tushum, Sof_Foyda, Chek_Tafsilotlari, ID]` |
 | `Cafe_Kun_Yakuni` | `[Sana, Sotuvchi, Jami_Tushum, Sof_Foyda, Tafsilotlar_JSON]` |
+| `Cafe_Stock_Movements` | `[Sana, Yo'nalish, Sabab, Mahsulot_ID, Nomi, Miqdor, Birlik, Tannarx, Qoldiq, Izoh, Kim, Request_ID]` — every stock change that is not a sale |
 | `Omad_Transactions_V2` | **append-only ledger** (schema V2) — written by the migration, read after cutover |
 | `Omad_Job_Queue` | retry queue — `[Job_ID, Related_ID, Type, Payload_JSON, Status, Attempts, Next_Attempt_At, Last_Error, Created_At, Completed_At]` |
 
@@ -285,10 +286,13 @@ action is matched last. Check it before adding an action name.
 | `get_system_status` | **yes** | Counts, timestamps and event names only — never secrets, amounts or message contents |
 | `create_backup` | **yes** | Writes an `Omad_Backups` snapshot on demand |
 | `retry_failed_jobs` | **yes** | Puts failed jobs back in the queue |
-| `save_inventory`, `save_recipe`, `save_categories`, `save_cafe_settings` | **yes** | Café admin |
+| `save_inventory`, `save_recipe`, `save_categories`, `save_cafe_settings` | **yes** | Café admin. The last three quote `expectedCatalogueRev`; `save_recipe` recomputes every cost from the inventory and answers with the catalogue as it stored it |
+| `adjust_cafe_stock` | **yes** | One stock movement outside a sale — `{inventoryId, direction, reason, qty, note, cost?, requestId}` — applied under the script lock and written to `Cafe_Stock_Movements` |
 | `save_sale`, `void_sale`, `close_day` | **yes** | Café POS |
 | `verify_access` | **yes** | Checks a key at login and returns nothing else |
-| `get_omad_data` / `get_cafe_data` | **yes** | The authenticated replacements for the `doGet` reads |
+| `get_omad_data` / `get_cafe_data` | **yes** | The authenticated replacements for the `doGet` reads. `get_omad_data` takes `scope: "dashboard"`, which answers with the read model's figures and a short recent list instead of the ledger (and with the whole list before cutover, because the legacy save submits it back) |
+| `get_omad_history` | **yes** | One page of history as whole business actions — `{period?, offset, limit}` — newest first, every row of each group on the page |
+| `verify_omad_read_model` / `rebuild_omad_read_model` | **yes** | Compare the stored summary against a fresh full-ledger build, and store a fresh one |
 | `get_health` | **yes** | The sixteen-check system health report |
 | `configure_mini_app` | **yes** | Installs and verifies the bot's Mini App menu button |
 | `get_migration_status` | **yes** | Which sheet is live; the frontend picks its entry path from this |
@@ -355,7 +359,7 @@ lists in `20_api.gs`:
 | Role | May do |
 |---|---|
 | `omad_admin` | everything |
-| `cafe_admin` | read the café; save inventory, recipes, categories, café settings |
+| `cafe_admin` | read the café; save inventory, recipes, categories, café settings; move stock (`adjust_cafe_stock`) |
 | `cafe_seller` | read the café; `save_sale`, `void_sale`, `close_day` |
 
 `OMAD_ADMIN_KEY` is still accepted, as `omad_admin`, so maintenance and
