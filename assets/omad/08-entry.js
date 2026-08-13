@@ -428,8 +428,19 @@ async function submitTenantPaid() {
     }
 }
 
-/** The group id of the entry currently being edited. */
+/**
+ * The group id of the entry currently being edited.
+ *
+ * The remembered rows answer first, for the same reason `entryGroupRows` reads
+ * them: `app.transactions` is a page of history and a refresh empties it. The
+ * fallback derivation — `grp_legacy_<baseId>` — is right only for rows written
+ * before the column existed, so reaching it for a modern entry names a group
+ * nothing belongs to, and the correction that should have followed becomes a
+ * second entry instead.
+ */
 function editingGroupId(editId) {
+    const remembered = editingGroupRows.rows.some(t => String(t.id) === String(editId));
+    if (remembered) return editingGroupRows.groupId;
     const tx = app.transactions.find(t => String(t.id) === String(editId));
     return tx ? txGroupId(tx) : `grp_legacy_${getTxBaseId(editId)}`;
 }
@@ -497,8 +508,7 @@ async function submitViaWholeListSave() {
 }
 
 function editTx(id) {
-    const target = app.transactions.find(t => String(t.id) === String(id));
-    const groupId = target ? txGroupId(target) : `grp_legacy_${getTxBaseId(id)}`;
+    const groupId = editingGroupId(id);
     const grouped = entryGroupRows(groupId);
 
     const tx = grouped[0];
@@ -534,8 +544,9 @@ function editTx(id) {
  * live the rows stay put with status Cancelled and remain in the audit trail.
  */
 async function deleteTx(id) {
-    const target = app.transactions.find(t => String(t.id) === String(id));
-    const groupId = target ? txGroupId(target) : `grp_legacy_${getTxBaseId(id)}`;
+    // Through the same resolver an edit uses, so cancelling from a page of
+    // history that has since been refreshed still names the real group.
+    const groupId = editingGroupId(id);
 
     // Both halves of a tenant-paid expense go together. Removing one would
     // leave a tenant credited for a bill nobody paid, or an expense with no
