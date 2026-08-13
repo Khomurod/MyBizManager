@@ -289,16 +289,17 @@ function buildMiniCafeSummary_(doc, configSheet) {
   closings.reverse();
 
   var inventoryValue = 0;
-  var lowStock = [];
   for (var v = 0; v < inventory.length; v++) {
     var item = inventory[v];
     var qty = Number(item.qty) || 0;
     var value = Number(item.totalCost);
     inventoryValue += isFinite(value) && value > 0 ? value : qty * (Number(item.unitCost) || 0);
-    if (item.type === "product" && qty <= 3) {
-      lowStock.push({ name: String(item.name || ""), qty: qty, unit: String(item.unit || "") });
-    }
   }
+  // The same rule the admin screen shows, from the same function: the item's
+  // own threshold, then the café's setting, then the default. This used to be a
+  // hardcoded `qty <= 3` on products only, so the phone and the manager's
+  // screen could disagree about what "running out" meant.
+  var lowStock = buildCafeLowStock_(inventory, settings);
 
   var target = Number((settings || {}).dailyTarget) || 0;
   return {

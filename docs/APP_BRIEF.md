@@ -112,6 +112,7 @@ Cloudflare Pages (static HTML/JS)         Google Apps Script web app        Goog
 | `01_shared_utils.gs` | JSON/HTML/date helpers, `getConfig`/`setConfig`, the per-request config memo |
 | `01a_periods.gs` | Canonical `YYYY-MM` periods, Uzbek labels, legacy period resolution |
 | `01c_cache.gs` | Revision counters and the read-only summary cache |
+| `01d_read_model.gs` | The materialised Omad summary: build, verify, rebuild |
 | `02_validation.gs` | Rate limiting, length limits, input validators |
 | `02a_auth.gs` | Users, password hashes, session tokens, roles, login throttling |
 | `03_settings.gs` | Script Properties, secrets, `checkAdminKey_`, Telegram settings actions |
@@ -126,6 +127,7 @@ Cloudflare Pages (static HTML/JS)         Google Apps Script web app        Goog
 | `10_retry_queue.gs` | `Omad_Job_Queue` worker |
 | `11_report_jobs.gs` | Server-composed business reports |
 | `12_cafe.gs` | Café catalogue, pricing, sales, voids, close-day |
+| `12a_cafe_catalogue.gs` | Recipe costing, catalogue revision, health warnings, stock movements |
 | `13_migration.gs` | Legacy→V2 migration: preview / apply / verify / cutover / rollback |
 | `14_ledger.gs` | Append-only ledger: create / correct / cancel / read / audit |
 | `15_system_status.gs` | Safe diagnostics for the Sozlamalar → Tizim panel |
@@ -144,12 +146,18 @@ Cloudflare Pages (static HTML/JS)         Google Apps Script web app        Goog
 
 ### Omad (rent & cash accounting)
 - **Dashboard** — period income/expense/net, all-time cash/bank/total, tenant
-  debt, plan-vs-actual.
+  debt, plan-vs-actual, and a short recent-activity list. It downloads **no
+  transaction history**: the figures come from the read model (see
+  [§9](#9-automatic-and-background-behaviour)) and switching months repaints
+  from them without a round trip.
 - **Entry (`Yangi`)** — a cart of lines (amount + currency + method) saved as
   one business action. Three shapes: ordinary income, ordinary expense, and the
   **tenant-paid expense pair**.
 - **History (`Tarix`)** — entries grouped by `Entry_Group_ID`, editable and
-  cancellable **as a group**.
+  cancellable **as a group**. Fetched a page of 40 business actions at a time
+  (`get_omad_history`) when the tab is opened, never with the dashboard. A page
+  always carries *every* row of each group on it, so an edit and a cancellation
+  still see the whole business action.
 - **Sozlamalar** — five sections: 💱 Kurslar (rates), 🏢 Ijarachilar (tenants),
   🧾 Rejali Chiqim (planned expenses), 📨 Telegram, 🗄️ Tizim (backups, migration,
   job queue, health, Mini App setup, data repairs).
@@ -160,7 +168,10 @@ Cloudflare Pages (static HTML/JS)         Google Apps Script web app        Goog
 - **Void** restores stock from the stored receipt.
 - **Close day** totals revenue and profit from recorded sales and accepts only
   the operator's **counted** stock level.
-- **Admin** edits inventory, recipes, categories and the daily target.
+- **Admin** edits inventory, recipes, categories and the daily target, moves
+  stock for reasons that are not sales (spoilage / waste / internal use /
+  correction), and reads the warning layer: broken or duplicated recipes,
+  low stock, and prices that look wrong.
 
 ### Tasks (`/tasks` and Telegram)
 - Task types: `once`, `routine` (daily / weekdays / weekly interval / monthly
@@ -179,7 +190,7 @@ button — creation of a task. Wizard callbacks use the `bot_vz` prefix.
 ### Telegram Mini App (`/mini`)
 Phone-first, three tabs: 💰 Omad (figures, tenant debt, recent entries, and the
 three entry forms), ☕ Kafe (monitoring only), ✅ Vazifalar (the same task
-engine). Rates, tenant schedules, planned expenses, migration and maintenance
+engine, including reminder times, the daily-repeat choice and editing). Rates, tenant schedules, planned expenses, migration and maintenance
 are **deliberately not** in the Mini App.
 
 ## 5. Permissions and access rules
@@ -350,7 +361,31 @@ bills and it comes off what they owe:
   `Cafe_Inventory_Rev`. The admin screen must quote the revision it loaded
   (`expectedRev`); a mismatch is refused. A **counted** stock level at close-day
   is deliberately *not* version-checked — a physical count is a measurement, not
-  an edit of a stale copy.
+  an edit of a stale copy — but it does leave a `recount` movement behind.
+- **The catalogue has its own revision**, `Cafe_Catalogue_Rev`, bumped by every
+  recipe, category and settings write and by nothing else. It is deliberately
+  *not* the inventory counter: a sale bumps that one, and a busy till must never
+  stop the manager editing a recipe. The check is opt-in — a caller that names
+  `expectedCatalogueRev` is held to it exactly, and one that names none is an
+  older client that could not quote it however strict the rule was.
+- **A recipe's cost is derived, never sent.** `save_recipe` recomputes every
+  ingredient line and the `baseCost` from the inventory as it is now, so a
+  recipe cannot price a sale at one cost and the stock movement at another. An
+  edit **keeps the recipe's id**, because sales reference recipes by id.
+- **A recipe is retired, not deleted** (`active: false`). It leaves the POS
+  menu and `resolveCafeSaleLines_` refuses it; every sale that already named it
+  keeps its stored receipt and keeps counting.
+- **Stock leaves for reasons that are not sales.** `adjust_cafe_stock` applies
+  one movement under the script lock, keyed by `requestId`, and writes a row to
+  `Cafe_Stock_Movements` saying which reason (`purchase`, `spoilage`, `waste`,
+  `internal`, `correction`, `recount`) and why. A withdrawal larger than the
+  shelf is refused — except `correction`, which is the admin saying the *count*
+  was wrong.
+- **Close-day refuses two accidents once each**, and neither is blocked: a
+  second report for a day that already has one (`duplicate_close`) and a report
+  for a day with no recorded sales (`empty_close`). Each is re-sent with
+  `confirmDuplicate` / `confirmEmpty` when the operator says yes, so a genuine
+  correction or a genuinely shut day still goes through — deliberately.
 
 **Tasks**
 
@@ -361,6 +396,22 @@ bills and it comes off what they owe:
 - `Remind_Daily` means "every Tashkent day the occurrence stays open, and not
   one day more" — including past the deadline — stopping the moment it is
   completed, cancelled or skipped.
+- **Reminders on a one-time task with no deadline are daily, and the engine
+  decides that, not the form.** There is no deadline day to hang a single
+  reminder on, so `remindDaily: false` there would mean reminders that never
+  fire. `normalizeTaskInput_` forces it. The three clients that build the
+  payload — the `/tasks` board, the Mini App and the `/yangi` wizard — all show
+  the choice as locked, but none of them is what makes it true.
+- **`reminderTimes` is a list of Asia/Tashkent `HH:mm` strings**, deduplicated
+  and sorted on save. Several times a day is one card each: the sent-marker is
+  `"<dateKey> <HH:mm>"`, so a scheduler pass that runs twice inside one slot
+  cannot send twice. Nothing about the phone's or the browser's timezone enters
+  it — both editors say so on the field.
+- **An edit that does not mention a field leaves it alone**, which is what lets
+  the Mini App's small sheet be safe: editing a title or a reminder there keeps
+  the cadence, the start date, the end date, the due time and the photo rule.
+  `reminderTimes` is therefore always sent explicitly, empty included — an
+  absent list would make reminders impossible to switch off.
 - **Pausing a routine stops everything**, including days already materialised;
   unseen future days are removed. Completed, skipped and already-announced days
   survive as history.
@@ -384,8 +435,13 @@ the request id so the entry can be retried without duplicating.
 **`System_Config`** is a key/value sheet (column A key, column B a JSON string):
 `Omad_Tenants`, `Omad_Rates`, `Omad_Rates_V1_Backup`, `Omad_Template_Expenses`,
 `Omad_Active_Transactions_Sheet`, `Omad_Migration_Status`,
-`Omad_Migration_Fallback_Year`, `Cafe_Inventory`, `Cafe_Inventory_Rev`,
-`Cafe_Recipes`, `Cafe_Categories`, `Cafe_Settings`.
+`Omad_Migration_Fallback_Year`, `Omad_Read_Model`, `Cafe_Inventory`,
+`Cafe_Inventory_Rev`, `Cafe_Recipes`, `Cafe_Categories`, `Cafe_Catalogue_Rev`,
+`Cafe_Settings`.
+
+`Omad_Read_Model` is the one **derived** entry: it is a summary of the ledger,
+not a fact about it, and `CACHE_DERIVED_CONFIG_KEYS` keeps writing it from
+bumping the revision it is keyed by. Deleting the row costs one rebuild.
 
 **`Omad_Transactions_V2`** — the live append-only ledger (schema version 2, 23
 columns): `ID, Request_ID, Created_At, Updated_At, Created_By, Source, Period,
@@ -398,8 +454,8 @@ Schema_Version, Entry_Group_ID`.
 happens.
 
 Other sheets: `Omad_Backups`, `Omad_Transaction_Archive`, `Omad_Audit_Log`,
-`Telegram_Debug_Log`, `Cafe_Sales`, `Cafe_Kun_Yakuni`, `Tasks`,
-`Task_Occurrences`, `Omad_Job_Queue`.
+`Telegram_Debug_Log`, `Cafe_Sales`, `Cafe_Kun_Yakuni`, `Cafe_Stock_Movements`,
+`Tasks`, `Task_Occurrences`, `Omad_Job_Queue`.
 
 **Two identifiers everything else hangs off:**
 
@@ -431,6 +487,13 @@ deploy never touches them.
 | **Google Apps Script** web app `/exec` | the entire backend; one deployment id, never recreated |
 | **Telegram Bot API** | `/yangi` entry, task cards and reminders, group reports, the Mini App menu button and its `initData` signature |
 | **Cloudflare Pages** (`mybizmanager.pages.dev`) | serves the static frontend from `main`, no build step; serves `/mini` and `/tasks` as clean paths with no config |
+
+**Netlify is not one of them.** The repository carries no Netlify
+configuration and `tests/static-analysis.test.js` keeps it that way. The old
+`omad-d` project is still linked to this repository on GitHub's side and still
+posts three neutral preview checks per pull request; they mean nothing about
+this application. Removing it is a browser step — `docs/DEPLOYMENT.md` names
+exactly which.
 | **GitHub Actions + clasp** | the backend deployment pipeline |
 
 **The `/exec` URL is hardcoded in five places, which must always agree:**
@@ -491,6 +554,31 @@ composes the message from data it already stored.
     by emptying and then poisoning the cache.
   Cached today: the Mini App Omad tab and café tab, the café POS payload, the
   café dashboard summary, and the task board view.
+- **The Omad read model is a materialised summary that outlives the cache**
+  (`01d_read_model.gs`). It lives in `System_Config` under `Omad_Read_Model` and
+  holds, for the whole ledger: the all-time cash/bank/total balances, and per
+  period the income, the expense, the net and what each tenant paid — plus the
+  newest 30 business actions. The dashboard, `get_omad_dashboard`'s payload and
+  the Mini App's Omad tab are all answered from it, so **between two ledger
+  writes neither screen touches the ledger sheet at all**.
+  - **It is not a second truth.** Every figure in it is produced by
+    `calculateActuals_` and `tenantPaidTotals_` over the rows
+    `readOmadTransactions_` returns. There is no second implementation of any
+    monetary rule.
+  - **It is keyed by the accounting revision and the active sheet name.** A
+    create, a correction and a cancellation all bump the revision, which makes
+    the stored model unusable rather than merely old. Writing the model
+    deliberately does *not* bump it — `CACHE_DERIVED_CONFIG_KEYS` in
+    `01c_cache.gs` is what stops the summary invalidating itself for ever.
+  - **Every failure ends at the ledger.** Missing, unparsable, wrong version,
+    wrong sheet, or unstorable — all of them compute the answer from the ledger,
+    which is the behaviour that existed before it.
+  - `verify_omad_read_model` rebuilds it from scratch and reports every field
+    that disagrees; `rebuild_omad_read_model` stores a fresh one. Both are
+    `omad_admin` only.
+  - An *older* period's recent list is the one thing the stored window cannot
+    always answer, and it falls back to a ledger pass rather than answering
+    short.
 
 ## 10. Relationships — where one change breaks another
 
@@ -509,6 +597,9 @@ composes the message from data it already stored.
 | the task sheets | columns are positional — append only |
 | a new gated action | give it a role list from `AUTH_ROLES_*` in `20_api.gs`; there is no default |
 | a new sheet write path | bump the matching `CACHE_SCOPE_*` revision, or a summary goes stale for its TTL |
+| a ledger write path | the Omad read model is keyed by `CACHE_SCOPE_OMAD`; bumping it is what makes the dashboard see the write |
+| a recipe / category / café setting write | bump `Cafe_Catalogue_Rev` via `bumpCafeCatalogueRev_`, or two stale sessions overwrite each other |
+| a café stock write outside a sale | it must go through `adjust_cafe_stock`, or the movement history stops explaining the quantity |
 | a Tailwind class on any page | run `npm run build:css` and commit `assets/css/app.css` |
 | anything a web page loads | it must come after `assets/session.js`, which owns the session and the transport |
 
@@ -578,6 +669,16 @@ composes the message from data it already stored.
 13. **The cache never answers an authoritative question.** Prices, stock checks,
     the ledger, task state and every write path read the sheets. If deleting
     every cache entry would change an answer, that answer must not be cached.
+14. **The read model is a copy of an answer, never the answer.** It is built by
+    the same functions the full-ledger path uses, keyed by the accounting
+    revision, and every failure mode ends in "compute it from the ledger".
+    No write, price or decision may read from it. `verify_omad_read_model`
+    exists so the claim is checkable against live data, not only in tests.
+15. **A café recipe is retired, not deleted, and its cost is derived, not sent.**
+    Sales reference recipes by id and their receipts have to keep reading, so an
+    edit keeps the id and "delete" means `active: false`. The cost is
+    recomputed from the inventory on every save, for the same reason the server
+    prices a sale: the browser does not get to decide what something costs us.
 
 ## 12. Known limitations and intentional exceptions
 
@@ -593,13 +694,18 @@ composes the message from data it already stored.
   scopes omit `script.scriptapp`, so the health check reports the trigger as
   unreadable. The trigger itself works. Fixing it needs a manifest scope change
   and a re-authorisation of the deployment.
-- **`cafe_admin.html` recipes, categories and settings still save wholesale with
-  no version check.** Only inventory is guarded, because only inventory is also
-  written by the server.
-- **The Mini App deliberately has no client-side snapshot.** The web screens
-  paint their last successful answer while they refresh; the Mini App renders
-  nothing and requests nothing until the backend has verified the signature,
-  and showing figures before that would weaken the one gate it has.
+- **`cafe_admin.html` recipes, categories and settings still save wholesale**,
+  but no longer unguarded: each quotes `Cafe_Catalogue_Rev` and a mismatch is
+  refused. The guard is opt-in, so a client old enough not to send the
+  revision can still overwrite — it could not quote a counter it has never
+  heard of, and refusing it would break saving without protecting anything.
+- **The Mini App paints a snapshot, under three conditions.** It shows the
+  last answer the backend *verified* on this device, keyed by the Telegram id
+  in that verified answer (never `initDataUnsafe`), discarded after a day, and
+  labelled as stored for as long as it is on screen. A refused signature
+  deletes it. Nothing is ever submitted from it, and the live answer replaces
+  every field. Before this it rendered nothing until the round trip returned,
+  which was a blank screen on every open.
 - **`assets/css/app.css` is generated but not verified in CI.** `npm run
   build:css` regenerates it from the pages; CI does not run it, because making
   the deploy depend on a CSS toolchain is a worse failure mode than the one it
@@ -638,8 +744,14 @@ npm test                 # unit/integration tests (node --test)
 npm run test:e2e         # Playwright/Chromium browser flows
 npm run scan:secrets     # working tree
 npm run scan:secrets:history   # every committed blob
+npm run bench            # sheet passes / bytes / ms per screen (see below)
 ```
 
+- `npm run bench [rows]` opens each screen against a synthetic ledger and
+  prints, per request, the number of whole-sheet passes, the payload size and
+  the arithmetic time. Sheet passes are the figure that matters: each one is a
+  round trip to the Sheets backend and dominates everything measured in
+  milliseconds. It is a comparison tool, not an absolute one.
 - `tests/gas-harness.js` loads `script.gs` into a Node VM with `SpreadsheetApp`,
   `PropertiesService`, `CacheService`, `LockService`, `UrlFetchApp`,
   `Utilities`, `Session`, `ContentService` and `HtmlService` mocked, so backend

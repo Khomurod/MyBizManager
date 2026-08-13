@@ -252,6 +252,11 @@ test('close_day stores the record and queues its report', () => {
 
   const body = readJsonOutput(gas.doPost(postEvent({
     action: 'close_day', adminKey: ADMIN_KEY,
+    // No sale is recorded on this fixture's sales sheet, and a close-day with
+    // nothing on it is now refused once and confirmed deliberately -- see
+    // tests/cafe-close-day.test.js. This suite is about the report job, so it
+    // answers the question and carries on.
+    confirmEmpty: true,
     date: '2026-02-01T09:00:00.000Z',
     seller: 'Kassir',
     inventory: [],
@@ -273,6 +278,11 @@ test('close_day still succeeds when Telegram is unavailable', () => {
 
   const body = readJsonOutput(gas.doPost(postEvent({
     action: 'close_day', adminKey: ADMIN_KEY,
+    // No sale is recorded on this fixture's sales sheet, and a close-day with
+    // nothing on it is now refused once and confirmed deliberately -- see
+    // tests/cafe-close-day.test.js. This suite is about the report job, so it
+    // answers the question and carries on.
+    confirmEmpty: true,
     date: '2026-02-01T09:00:00.000Z',
     seller: 'Kassir',
     inventory: [],
