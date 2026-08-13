@@ -6,6 +6,7 @@
   "scripts": {
     "build": "node scripts/build-apps-script.js",
     "build:check": "node scripts/build-apps-script.js --check",
+    "build:css": "tailwindcss -c tailwind.config.js -i assets/css/tailwind.src.css -o assets/css/app.css --minify",
     "test": "node --test tests/*.test.js",
     "test:e2e": "node --test tests/*.e2e.js",
     "test:all": "npm test && npm run test:e2e",
@@ -14,7 +15,8 @@
     "scan:secrets:history": "node scripts/scan-secrets.js --history"
   },
   "devDependencies": {
-    "playwright": "^1.56.1"
+    "playwright": "^1.56.1",
+    "tailwindcss": "^3.4.17"
   },
   "engines": {
     "node": ">=20"

@@ -225,6 +225,67 @@ test('script.gs reads the bot token only from Script Properties', () => {
   );
 });
 
+// ------------------------------------------------- frontend delivery & session
+
+/** The pages that are the signed-in web application. mini.html is not one. */
+const WEB_APP_PAGES = ['omad_admin.html', 'cafe_admin.html', 'cafe_pos.html', 'tasks.html'];
+
+test('no page compiles its stylesheet in the browser', () => {
+  // cdn.tailwindcss.com is the Play CDN: it ships a compiler, scans the DOM and
+  // generates the stylesheet on every load, on the cashier's phone. Tailwind's
+  // own documentation says it is for development only, and it made the app
+  // unstyled whenever the CDN was slow or blocked.
+  const offenders = [];
+  for (const file of walk(ROOT)) {
+    if (path.extname(file) !== '.html') continue;
+    if (fs.readFileSync(file, 'utf8').includes('cdn.tailwindcss.com')) offenders.push(relative(file));
+  }
+  assert.deepStrictEqual(offenders, [],
+    `the Tailwind Play CDN is back in: ${offenders.join(', ')}`);
+});
+
+test('every page that uses Tailwind classes links the generated stylesheet', () => {
+  const css = fs.readFileSync(path.join(ROOT, 'assets', 'css', 'app.css'), 'utf8');
+  assert.ok(css.length > 5000, 'the generated stylesheet is not a stub');
+
+  // A handful the layouts cannot survive without. Not a substitute for looking
+  // at the pages, but it catches a stylesheet regenerated from the wrong
+  // content globs, which would otherwise be silently almost-empty.
+  for (const utility of ['.hidden', '.flex', '.grid', '.font-bold', '.rounded-2xl']) {
+    assert.ok(css.includes(utility + '{') || css.includes(utility + ','),
+      `${utility} is missing from assets/css/app.css — run npm run build:css`);
+  }
+
+  for (const page of WEB_APP_PAGES.concat(['login.html'])) {
+    const source = fs.readFileSync(path.join(ROOT, page), 'utf8');
+    assert.ok(source.includes('assets/css/app.css'), `${page} does not link the stylesheet`);
+  }
+});
+
+test('every signed-in page loads the shared session module first', () => {
+  // The session, the transport and what a failed request means live in one
+  // file precisely so four screens cannot disagree about them. A page that
+  // loads its own script first would be running before the guard.
+  for (const page of WEB_APP_PAGES) {
+    const blocks = pageScripts(path.join(ROOT, page));
+    assert.ok(blocks.length > 0, `${page} runs no script at all`);
+    assert.strictEqual(blocks[0].name, 'assets/session.js',
+      `${page} runs ${blocks[0].name} before the session guard`);
+  }
+});
+
+test('no signed-in page decides a permission for itself', () => {
+  // The role in localStorage chooses which page renders and nothing else. A
+  // page that branched on it for anything beyond that would be inviting the
+  // reader to believe it is a permission, which it is not: the server checks
+  // the role inside the signed token.
+  for (const page of WEB_APP_PAGES) {
+    const source = fs.readFileSync(path.join(ROOT, page), 'utf8');
+    assert.ok(!/omad_access_key/.test(source),
+      `${page} still reads the stored admin key`);
+  }
+});
+
 // ------------------------------------------------------------- syntax checks
 
 test('script.gs parses as valid JavaScript', () => {

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Kafel Boshqaruv</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="assets/css/app.css">
   <style>
     body { background: #eef2f7; font-family: sans-serif; }
     .glass { background: rgba(255,255,255,0.65); backdrop-filter: blur(15px); border: 1px solid rgba(255,255,255,0.8); box-shadow: 0 6px 26px rgba(15,23,42,0.10); }
@@ -14,49 +14,46 @@
   </style>
 </head>
 <body class="pb-24 text-slate-800">
+  <script src="assets/session.js"></script>
   <script>
     const GOOGLE_APP_URL = "https://script.google.com/macros/s/AKfycbzhKyEOGZbVdtpSd7fa6aTDZf1QsqWQeOpWRxrb7bYpzWWDQxUXZID8JNzGMfDtCA2W/exec";
 
     // ------------------------------------------------------------------
-    // Access key
+    // Session
     // ------------------------------------------------------------------
     // The café's inventory, prices, sales and margins are private business
-    // data, and every mutation here rewrites stock or files a sale. Both were
-    // reachable by anyone who knew the /exec URL. The key is verified once at
-    // login and rides on every request from here on.
-    const ACCESS_KEY_STORAGE = "omad_access_key";
-
-    function accessKey() {
-      try { return localStorage.getItem(ACCESS_KEY_STORAGE) || ""; } catch (e) { return ""; }
-    }
-
-    function requireAccess() {
-      try { localStorage.removeItem(ACCESS_KEY_STORAGE); } catch (e) {}
-      window.location.href = "login.html";
-    }
+    // data, and every mutation here rewrites the catalogue. The screen holds a
+    // signed session token with the cafe_admin role in it, and the server
+    // checks that role on every request. This guard only decides whether there
+    // is any point rendering the page.
+    requireSessionRole('cafe_admin');
 
     /** One authenticated POST, returning the parsed body. */
-    async function callCafeApi(payload) {
-      const res = await fetch(GOOGLE_APP_URL, {
-        method: "POST",
-        body: JSON.stringify(Object.assign({ adminKey: accessKey() }, payload))
+    function callCafeApi(payload) {
+      return callApi(GOOGLE_APP_URL, payload);
+    }
+
+    /**
+     * The café state the *manager* needs: the catalogue, the period totals and
+     * the recent close-day records.
+     *
+     * The dashboard used to be handed every sale ever recorded and total it in
+     * the browser to show four numbers. The totals are computed once on the
+     * server now; the day boundaries travel with the request so "bugun" still
+     * means the day the person looking at the screen is having.
+     */
+    function loadCafeState() {
+      const now = new Date();
+      const yesterday = new Date(now);
+      yesterday.setDate(now.getDate() - 1);
+      return callCafeApi({
+        action: "get_cafe_data",
+        scope: "admin",
+        todayKey: getDateKey(now),
+        yesterdayKey: getDateKey(yesterday),
+        monthKey: getDateKey(now).slice(0, 7),
+        closingsLimit
       });
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      const text = await res.text();
-      try { return JSON.parse(text); } catch (e) { throw new Error("Server javobi tushunarsiz"); }
-    }
-
-    /** The café state, over an authenticated POST rather than a public GET. */
-    async function loadCafeState() {
-      const data = await callCafeApi({ action: "get_cafe_data" });
-      if (data && data.status === "error") { requireAccess(); throw new Error(data.message || "Ruxsat yo'q"); }
-      return data;
-    }
-
-    if (localStorage.getItem("omad_role") !== "cafe_admin" ||
-        localStorage.getItem("omad_token") !== "cafe_admin_active" ||
-        !localStorage.getItem("omad_access_key")) {
-      window.location.href = "login.html";
     }
   </script>
 
@@ -68,6 +65,7 @@
   </header>
 
   <main class="p-4 space-y-3">
+    <div id="cafeBanner" class="hidden glass rounded-2xl p-3 text-xs font-bold"></div>
     <div class="glass rounded-2xl p-1 grid grid-cols-6 gap-1">
       <button class="tab active rounded-xl py-2 text-[11px] font-bold border border-transparent" onclick="switchTab('dash', this)">Kassa</button>
       <button class="tab rounded-xl py-2 text-[11px] font-bold border border-transparent" onclick="switchTab('inventory', this)">Ombor</button>
@@ -252,15 +250,45 @@
   <script>
     const DEFAULT_CATEGORIES = ["Ichimliklar", "Fast-Food", "Muzqaymoq"];
     const DEFAULT_SETTINGS = { dailyTarget: 0 };
+    const EMPTY_SUMMARY = { revenue: 0, profit: 0, count: 0, top: "" };
     const state = {
       inventory: [],
+      inventoryRev: 0,
       recipes: [],
       categories: [],
-      sales: [],
+      // Period totals computed on the server, keyed by the dashboard filter.
+      // The browser no longer holds the sales history it used to add up.
+      summary: {},
       closeReports: [],
+      closeReportsTotal: 0,
       settings: { ...DEFAULT_SETTINGS },
-      recipeDraft: []
+      recipeDraft: [],
+      // Display state only: whether anything has loaded, why the last refresh
+      // failed, and whether what is on screen came from the stored snapshot.
+      loaded: false,
+      loadError: '',
+      snapshotAt: 0,
+      refreshing: false
     };
+
+    /** How old a stored catalogue snapshot may be before it is not shown. */
+    const CAFE_ADMIN_SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+    /**
+     * How many close-day reports to fetch at a time.
+     *
+     * The server used to send every one ever filed, with its per-item summary
+     * parsed, to a screen that shows the newest first. It sends a page now, and
+     * says how many there are, so "Yana ko'rsatish" is an honest offer rather
+     * than a silent cap.
+     */
+    const CLOSINGS_PAGE_SIZE = 30;
+    let closingsLimit = CLOSINGS_PAGE_SIZE;
+
+    function showMoreClosings() {
+      closingsLimit += CLOSINGS_PAGE_SIZE;
+      syncData();
+    }
 
     function escapeHtml(value) {
       return String(value ?? "")
@@ -300,33 +328,8 @@
       return `${year}-${month}-${day}`;
     }
 
-    function getDashboardFilterMeta() {
-      const filter = document.getElementById("dashFilter")?.value || "today";
-      const now = new Date();
-      const todayKey = getDateKey(now);
-      const yesterday = new Date(now);
-      yesterday.setDate(now.getDate() - 1);
-      const yesterdayKey = getDateKey(yesterday);
-      return {
-        filter,
-        todayKey,
-        yesterdayKey,
-        year: now.getFullYear(),
-        month: now.getMonth()
-      };
-    }
-
-    function getFilteredSales() {
-      const { filter, todayKey, yesterdayKey, year, month } = getDashboardFilterMeta();
-      return state.sales.filter(sale => {
-        const saleDate = sale?.date ? new Date(sale.date) : null;
-        if (!saleDate || Number.isNaN(saleDate.getTime())) return false;
-        const saleKey = getDateKey(saleDate);
-        if (filter === "today") return saleKey === todayKey;
-        if (filter === "yesterday") return saleKey === yesterdayKey;
-        if (filter === "month") return saleDate.getFullYear() === year && saleDate.getMonth() === month;
-        return true;
-      });
+    function dashboardFilter() {
+      return document.getElementById("dashFilter")?.value || "today";
     }
 
     function switchTab(tab, btn) {
@@ -679,33 +682,58 @@
       state.settings.dailyTarget = dailyTarget;
       if (input) input.value = dailyTarget > 0 ? String(dailyTarget) : "";
 
-      try {
-        await callCafeApi({ action: "save_cafe_settings", settings: { ...state.settings } });
-        alert("Sozlamalar saqlandi.");
-      } catch (e) {
-        console.error("Sozlamalarni saqlashda xatolik:", e);
-        alert("Sozlamalarni saqlashda xatolik yuz berdi.");
-      }
+      const answer = await sendToApi("save_cafe_settings", { settings: { ...state.settings } });
+      if (answer && answer.status === "success") alert("Sozlamalar saqlandi.");
     }
 
+    /**
+     * The four period figures, as the server computed them.
+     *
+     * This used to filter the whole sales history in the browser and add it
+     * up. The arithmetic is identical - revenue is the sum of `total`, profit
+     * the sum of `profit`, and the top product the most-sold line - it simply
+     * happens once, next to the data, instead of in every browser that opens
+     * the page.
+     */
     function renderDashboard() {
-      const sales = getFilteredSales();
       const labelMap = {
         today: "Bugungi tushum",
         yesterday: "Kechagi tushum",
         month: "Shu oydagi tushum",
         all: "Jami davr tushumi"
       };
-      const filter = document.getElementById("dashFilter")?.value || "today";
-      const revenue = sales.reduce((s, t) => s + (t.total || 0), 0);
-      const profit = sales.reduce((s, t) => s + (t.profit || 0), 0);
-      const counter = {};
-      sales.forEach(sale => (sale.items || []).forEach(i => counter[i.name] = (counter[i.name] || 0) + i.qty));
-      const top = Object.keys(counter).sort((a, b) => counter[b] - counter[a])[0] || "-";
+      const filter = dashboardFilter();
+      const figures = state.summary[filter] || EMPTY_SUMMARY;
+
       document.getElementById("dashRevenueLabel").innerText = labelMap[filter] || labelMap.today;
-      document.getElementById("dashRevenue").innerText = `${revenue.toLocaleString()} UZS`;
-      document.getElementById("dashProfit").innerText = `${profit.toLocaleString()} UZS`;
-      document.getElementById("dashTop").innerText = top;
+      document.getElementById("dashRevenue").innerText = `${Number(figures.revenue || 0).toLocaleString()} UZS`;
+      document.getElementById("dashProfit").innerText = `${Number(figures.profit || 0).toLocaleString()} UZS`;
+      document.getElementById("dashTop").innerText = figures.top || "-";
+    }
+
+    function renderCafeBanner() {
+      const banner = document.getElementById("cafeBanner");
+      if (!banner) return;
+
+      if (state.loadError) {
+        // The commonest way to end up on a snapshot is a load that just failed,
+        // so this branch has to carry the "saving is off" note too - otherwise
+        // it is only ever shown in the case nobody is in.
+        const savingOff = state.snapshotAt ? " Saqlash vaqtincha o'chirilgan." : "";
+        banner.className = "glass rounded-2xl p-3 text-xs font-bold text-amber-700 flex items-center justify-between gap-2";
+        banner.innerHTML = `<span>${escapeHtmlText(state.loadError + savingOff)}</span>
+          <button onclick="syncData()" class="rounded-xl bg-amber-500 text-white px-3 py-2 text-[11px] font-bold active:scale-95">Qayta urinish</button>`;
+        banner.classList.remove("hidden");
+        return;
+      }
+      if (state.snapshotAt) {
+        banner.className = "glass rounded-2xl p-3 text-xs font-bold text-slate-500";
+        banner.textContent =
+          "Saqlangan ma'lumot ko'rsatilmoqda, yangilanmoqda... Saqlash vaqtincha o'chirilgan.";
+        banner.classList.remove("hidden");
+        return;
+      }
+      banner.classList.add("hidden");
     }
 
     function renderReports() {
@@ -718,6 +746,12 @@
         box.innerHTML = `<div class="glass rounded-2xl p-3 text-center text-xs font-bold text-slate-500">Hisobotlar hali yo'q</div>`;
         return;
       }
+
+      const more = state.closeReportsTotal > orderedReports.length
+        ? `<button onclick="showMoreClosings()" class="glass w-full rounded-2xl p-3 text-center text-xs font-bold text-slate-500">
+             Yana ko'rsatish (${state.closeReportsTotal - orderedReports.length} ta qoldi)
+           </button>`
+        : "";
 
       box.innerHTML = orderedReports.map(({ report, index }) => `
         <button onclick="openReportModal(${index})" class="glass w-full rounded-2xl p-4 text-left active:scale-[0.99] transition-transform">
@@ -739,7 +773,7 @@
             </div>
           </div>
         </button>
-      `).join("");
+      `).join("") + more;
     }
 
     function openReportModal(index) {
@@ -773,83 +807,150 @@
       document.getElementById("reportDetailModal").classList.add("hidden");
     }
 
+    /** Puts one café payload on screen. */
+    function applyCafeState(payload) {
+      state.inventory = (Array.isArray(payload.inventory) ? payload.inventory : []).map(i => ({
+        type: i.type || (i.sellPrice ? "product" : "ingredient"),
+        ...i
+      }));
+      // The version of the stock this screen is looking at. Every save quotes
+      // it back so the server can refuse a copy that has gone stale -- the till
+      // depletes stock on the server, and an admin page opened this morning
+      // would otherwise put the whole day back.
+      state.inventoryRev = Number(payload.inventoryRev) || 0;
+      state.recipes = Array.isArray(payload.recipes) ? payload.recipes : [];
+      state.summary = payload.summary && typeof payload.summary === "object" ? payload.summary : {};
+      state.closeReports = Array.isArray(payload.closeReports) ? payload.closeReports : [];
+      state.closeReportsTotal = Number(payload.closeReportsTotal) || state.closeReports.length;
+      state.categories = Array.isArray(payload.categories) && payload.categories.length
+        ? payload.categories
+        : [...DEFAULT_CATEGORIES];
+      const incomingSettings = payload.settings && typeof payload.settings === "object" ? payload.settings : {};
+      state.settings = {
+        ...DEFAULT_SETTINGS,
+        ...incomingSettings,
+        dailyTarget: normalizeDailyTarget(incomingSettings.dailyTarget ?? payload.dailyTarget ?? 0)
+      };
+      state.loaded = true;
+    }
+
+    function renderCafeAdmin() {
+      renderInventory();
+      renderRecipes();
+      renderCategories();
+      renderSettings();
+      renderReports();
+      hydrateIngredientSelect();
+      hydrateRecipeCategorySelect();
+      hydrateInvCategorySelect(document.getElementById("invCategory"));
+      toggleInventoryForm();
+      renderDashboard();
+      renderCafeBanner();
+    }
+
+    /**
+     * Shows the last catalogue that loaded while the refresh runs.
+     *
+     * Catalogue only: the period totals are deliberately left out, because a
+     * revenue figure from yesterday displayed under "Bugungi tushum" is not a
+     * slower truth, it is a wrong one. The stock revision is not restored
+     * either, so a save cannot be attempted against a version this screen has
+     * not actually confirmed with the server.
+     */
+    function hydrateFromSnapshot() {
+      const snapshot = readSnapshot("cafe_admin", CAFE_ADMIN_SNAPSHOT_MAX_AGE_MS);
+      if (!snapshot || !snapshot.value) return false;
+      applyCafeState({ ...snapshot.value, summary: {}, inventoryRev: 0 });
+      state.snapshotAt = snapshot.savedAt;
+      renderCafeAdmin();
+      return true;
+    }
+
+    /**
+     * Loads the café state without ever destroying what is already on screen.
+     *
+     * A rate limit, a dropped connection or an unparsable answer used to empty
+     * the catalogue and reset the settings, which reads as "everything has been
+     * deleted". Only the server saying the session has expired sends anybody
+     * back to the login page; everything else keeps the screen and offers Retry.
+     */
     async function syncData() {
-      const inventoryList = document.getElementById("inventoryList");
-      const recipeList = document.getElementById("recipeList");
-      const categoryList = document.getElementById("categoryList");
-      inventoryList.innerHTML = `<div class="glass rounded-2xl p-3 text-xs font-bold text-slate-500">Yuklanmoqda...</div>`;
-      recipeList.innerHTML = `<div class="glass rounded-2xl p-3 text-xs font-bold text-slate-500">Yuklanmoqda...</div>`;
-      categoryList.innerHTML = `<div class="glass rounded-2xl p-3 text-xs font-bold text-slate-500">Yuklanmoqda...</div>`;
+      if (state.refreshing) return;
+      state.refreshing = true;
+
+      if (!state.loaded) {
+        ["inventoryList", "recipeList", "categoryList"].forEach(id => {
+          const box = document.getElementById(id);
+          if (box) box.innerHTML = `<div class="glass rounded-2xl p-3 text-xs font-bold text-slate-500">Yuklanmoqda...</div>`;
+        });
+      }
 
       try {
         const data = await loadCafeState();
         const payload = data.data || data.payload || data;
-        state.inventory = (Array.isArray(payload.inventory) ? payload.inventory : []).map(i => ({
-          type: i.type || (i.sellPrice ? "product" : "ingredient"),
-          ...i
-        }));
-        // The version of the stock this screen is looking at. Every save
-        // quotes it back so the server can refuse a copy that has gone stale
-        // -- the till depletes stock on the server now, and an admin page
-        // opened this morning would otherwise put the whole day back.
-        state.inventoryRev = Number(payload.inventoryRev) || 0;
-        state.recipes = Array.isArray(payload.recipes) ? payload.recipes : [];
-        state.sales = Array.isArray(payload.sales) ? payload.sales : [];
-        state.closeReports = Array.isArray(payload.closeReports) ? payload.closeReports : [];
-        state.categories = Array.isArray(payload.categories) && payload.categories.length
-          ? payload.categories
-          : [...DEFAULT_CATEGORIES];
-        const incomingSettings = payload.settings && typeof payload.settings === "object" ? payload.settings : {};
-        state.settings = {
-          ...DEFAULT_SETTINGS,
-          ...incomingSettings,
-          dailyTarget: normalizeDailyTarget(incomingSettings.dailyTarget ?? payload.dailyTarget ?? 0)
-        };
+        applyCafeState(payload);
+        state.loadError = "";
+        state.snapshotAt = 0;
+        writeSnapshot("cafe_admin", {
+          inventory: payload.inventory, recipes: payload.recipes,
+          categories: payload.categories, settings: payload.settings
+        });
       } catch (e) {
+        if (e && e.isAuthFailure) { signOut(); return; }
         console.error("Kafe ma'lumotlarini yuklashda xatolik:", e);
-        state.inventory = [];
-        state.recipes = [];
-        state.sales = [];
-        state.closeReports = [];
-        state.categories = [...DEFAULT_CATEGORIES];
-        state.settings = { ...DEFAULT_SETTINGS };
+        state.loadError = (e && e.message) || "Ma'lumot yuklanmadi.";
+        if (!state.loaded) hydrateFromSnapshot();
       } finally {
-        renderInventory();
-        renderRecipes();
-        renderCategories();
-        renderSettings();
-        renderReports();
-        hydrateIngredientSelect();
-        hydrateRecipeCategorySelect();
-        hydrateInvCategorySelect(document.getElementById("invCategory"));
-        toggleInventoryForm();
-        renderDashboard();
+        state.refreshing = false;
+        renderCafeAdmin();
       }
     }
 
+    /**
+     * Refuses a catalogue save while the screen is showing an unconfirmed
+     * snapshot.
+     *
+     * Recipes, categories and settings save as whole arrays with no version
+     * check - only inventory carries one - so an edit made against a snapshot
+     * that may be a day old would overwrite everything changed since. The
+     * snapshot exists to make the screen usable while it refreshes, not to make
+     * it writable before it has.
+     */
+    function catalogueWritesAllowed() {
+      if (!state.snapshotAt) return true;
+      alert("Ma'lumot serverdan yangilanmagan. Avval 'Qayta urinish' tugmasini bosing.");
+      return false;
+    }
+
+    /**
+     * One catalogue save.
+     *
+     * A stale-inventory refusal is a refusal, so it arrives as an error - but
+     * it carries the current revision, and it must not pass quietly: the screen
+     * is holding stock levels that are already wrong, and saving again would
+     * put back whatever the till has sold since it loaded.
+     */
     async function sendToApi(action, payload) {
-      let answer = null;
+      if (!catalogueWritesAllowed()) return null;
       try {
-        answer = await callCafeApi({ action, ...payload });
+        const answer = await callCafeApi({ action, ...payload });
+        if (answer && answer.inventoryRev !== undefined) {
+          state.inventoryRev = Number(answer.inventoryRev) || 0;
+        }
+        return answer;
       } catch (e) {
+        if (e && e.isAuthFailure) { signOut(); return null; }
+        const body = (e && e.body) || null;
+        if (body && body.stale) {
+          if (body.inventoryRev !== undefined) state.inventoryRev = Number(body.inventoryRev) || 0;
+          alert(body.message || "Ombor boshqa joyda o'zgardi. Sahifa yangilanadi.");
+          await syncData();
+          return body;
+        }
         console.error("API xatolik:", e);
+        alert((e && e.message) || "Saqlashda xatolik yuz berdi.");
         return null;
       }
-
-      // callCafeApi returns the body rather than throwing on a refusal, so a
-      // stale save arrives here as data. It must not pass quietly: the screen
-      // is holding stock levels that are already wrong, and saving again would
-      // put back whatever the till has sold since it loaded.
-      if (answer && answer.stale) {
-        if (answer.inventoryRev !== undefined) state.inventoryRev = Number(answer.inventoryRev) || 0;
-        alert(answer.message || "Ombor boshqa joyda o'zgardi. Sahifa yangilanadi.");
-        await syncData();
-        return answer;
-      }
-      if (answer && answer.inventoryRev !== undefined) {
-        state.inventoryRev = Number(answer.inventoryRev) || 0;
-      }
-      return answer;
     }
 
     /** Inventory saves carry the version the screen was showing. */
@@ -861,15 +962,12 @@
     }
 
     function logout() {
-      localStorage.removeItem("omad_role");
-      localStorage.removeItem("omad_token");
-      localStorage.removeItem("omad_access_key");
-      localStorage.removeItem("omad_user");
-      window.location.href = "login.html";
+      signOut();
     }
 
     window.onload = () => {
       renderDashboard();
+      hydrateFromSnapshot();
       syncData();
     };
   </script>

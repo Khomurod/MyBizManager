@@ -352,9 +352,13 @@ function processTaskSchedules() {
 
 // ---------------------------------------------------------------- web API
 
-// The panel does one read per load and one per mutation, so this is generous
-// for the admin and mean to anyone guessing keys.
+// The panel does one read per load and one per mutation. Signed-in traffic is
+// bounded by AUTHENTICATED_REQUEST_LIMIT, per user; this remains as the
+// documented shape of the board's own load.
 var TASK_READ_RATE_LIMIT = 30;
+
+/** A task view may be reused for this long; the key also carries the minute. */
+var TASK_VIEW_TTL_SECONDS = 90;
 
 function isTaskReadAction_(action) {
   return action === "get_tasks";
@@ -372,26 +376,40 @@ function isTaskAction_(action) {
 }
 
 function handleTaskAction_(action, payload, doc) {
+  // The task board is internal company information: who is responsible for
+  // what, when it is due, and who has been missing deadlines. Reads are gated
+  // exactly like mutations, and both are omad_admin only. A failed attempt is
+  // throttled inside the gate; a signed-in one is not, so a stranger hammering
+  // the endpoint can no longer close the board for the person using it.
+  var auth = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+  if (!auth.ok) return authRefusal_(auth);
+
   if (isTaskReadAction_(action)) {
-    // The task board is internal company information: who is responsible for
-    // what, when it is due, and who has been missing deadlines. It is gated
-    // like a mutation, and throttled before the key is compared so the
-    // endpoint cannot be used to guess it.
-    var throttled = enforceRateLimit_("tasks_read", TASK_READ_RATE_LIMIT, TELEGRAM_RATE_WINDOW_SECONDS);
-    if (throttled) return jsonOutput_({ status: "error", message: throttled });
-    var readError = checkAdminKey_(payload);
-    if (readError) return jsonOutput_({ status: "error", message: readError });
     return jsonOutput_({
       status: "success",
-      view: buildTaskViews_(doc, Date.now()),
+      view: cachedTaskView_(doc),
       config: { tasksGroupConfigured: !!getTasksGroupChatId_() }
     });
   }
 
-  var adminError = checkAdminKey_(payload);
-  if (adminError) return jsonOutput_({ status: "error", message: adminError });
-
   return runTaskAction_(action, payload, doc);
+}
+
+/**
+ * The board view, reused within the minute it was built for.
+ *
+ * `Overdue` is derived on read from the current time, so the cache key carries
+ * the minute as well as the task revision: an entry can be a few seconds stale
+ * about the clock and never more, and any write to a task or an occurrence
+ * makes it unreachable immediately. The view is rebuilt from the sheets on a
+ * miss, so losing the cache costs a sheet pass and nothing else.
+ */
+function cachedTaskView_(doc) {
+  var now = Date.now();
+  var minute = Math.floor(now / 60000);
+  return cachedSummary_("task_view_" + minute, CACHE_SCOPE_TASKS, TASK_VIEW_TTL_SECONDS, function () {
+    return buildTaskViews_(doc, now);
+  });
 }
 
 /**

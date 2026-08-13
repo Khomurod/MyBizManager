@@ -13,25 +13,104 @@
 let systemStatus = null;
 
 /**
- * The key the admin actions run under.
+ * The optional maintenance key.
  *
- * The Telegram section's field wins when something is typed there, so a
- * different key can still be tried without logging out. Otherwise the key this
- * browser signed in with is reused, because it is the same key.
+ * Nothing here needs one any more: the session token carries the omad_admin
+ * role and the server checks it. The Telegram section's field remains for the
+ * break-glass case - running a maintenance action against a project whose user
+ * store is not set up yet - and when it is empty the request simply goes out
+ * on the session, as every other request does.
  */
 function systemAdminKey() {
     const input = document.getElementById('tgAdminKey');
-    const typed = input ? input.value.trim() : "";
-    return typed || (typeof accessKey === 'function' ? accessKey() : "");
+    return input ? input.value.trim() : "";
 }
 
-function requireAdminKey() {
+/**
+ * The payload additions an admin action needs.
+ *
+ * Returns an empty object when the session alone is the credential, which is
+ * the normal case. It used to return "" and abort when no key had been typed,
+ * which is why every maintenance button asked for a key that the browser was
+ * already holding.
+ */
+function adminCredentials() {
     const key = systemAdminKey();
-    if (!key) {
-        alert("Admin kalitini kiriting (Telegram bo'limida).");
-        return "";
+    return key ? { adminKey: key } : {};
+}
+
+// -------------------------------------------------------------- user accounts
+
+/**
+ * The accounts that can sign in, and what they may do.
+ *
+ * Passwords are hashed on the server and never leave it, so this lists who
+ * exists and sets new passwords; it can never show one.
+ */
+async function loadUserAccounts() {
+    const box = document.getElementById('userList');
+    if (!box) return;
+    try {
+        const data = await callBackend(Object.assign({ action: 'list_users' }, adminCredentials()));
+        if (!data || data.status !== 'success') {
+            box.innerHTML = `<p class="text-amber-600 font-bold">${escapeHtmlText((data && data.message) || "Ro'yxatni o'qib bo'lmadi.")}</p>`;
+            return;
+        }
+        if (!data.users.length) {
+            box.innerHTML = `<p class="text-amber-600 font-bold">Hali birorta parol o'rnatilmagan. Quyida o'rnating.</p>`;
+            return;
+        }
+        box.innerHTML = data.users.map(user => statusRow(
+            escapeHtmlText(user.username),
+            escapeHtmlText(user.role) + (user.updatedAt ? ` · ${formatStamp(user.updatedAt)}` : '')
+        )).join('');
+    } catch (e) {
+        box.innerHTML = `<p class="text-slate-400">Server bilan bog'lanib bo'lmadi.</p>`;
     }
-    return key;
+}
+
+function showUserMessage(text, isError) {
+    const box = document.getElementById('userMessage');
+    if (!box) return;
+    box.textContent = text;
+    box.className = `text-[11px] font-bold mt-2 ${isError ? 'text-red-500' : 'text-emerald-600'}`;
+    box.classList.remove('hidden');
+}
+
+async function saveUserPassword() {
+    const username = document.getElementById('userAccount').value;
+    const password = document.getElementById('userPassword').value;
+    const repeat = document.getElementById('userPasswordRepeat').value;
+
+    if (password.length < 8) return showUserMessage("Parol kamida 8 ta belgidan iborat bo'lishi kerak.", true);
+    if (password !== repeat) return showUserMessage("Parollar mos kelmadi.", true);
+
+    showLoader(true);
+    try {
+        const data = await callBackend(Object.assign({
+            action: 'set_user_password', username, password, role: username
+        }, adminCredentials()));
+        if (!data || data.status !== 'success') {
+            showUserMessage((data && data.message) || "Saqlanmadi.", true);
+            return;
+        }
+        document.getElementById('userPassword').value = '';
+        document.getElementById('userPasswordRepeat').value = '';
+        showUserMessage(`${data.username} paroli o'rnatildi.`, false);
+        await loadUserAccounts();
+        // Changing your own password invalidates the token this page is
+        // holding, so it has to be replaced rather than discovered later as a
+        // sudden trip to the login screen.
+        if (data.username === sessionUser()) {
+            const relogin = await callBackend({ action: 'login', username: data.username, password });
+            if (relogin && relogin.status === 'success') storeSession(relogin.token, relogin.expiresAt);
+            else signOut();
+        }
+    } catch (e) {
+        showUserMessage("Server bilan bog'lanib bo'lmadi.", true);
+    } finally {
+        showLoader(false);
+    }
 }
 
 function formatStamp(value) {
@@ -55,6 +134,7 @@ async function loadSystemStatus() {
         systemStatus = null;
     }
     renderSystemPanel();
+    loadUserAccounts();
 }
 
 function renderSystemPanel() {
@@ -148,12 +228,9 @@ function renderAuditList() {
 // ------------------------------------------------------------------ actions
 
 async function createBackup() {
-    const adminKey = requireAdminKey();
-    if (!adminKey) return;
-
     showLoader(true);
     try {
-        const data = await callBackend({ action: 'create_backup', adminKey });
+        const data = await callBackend(Object.assign({ action: 'create_backup' }, adminCredentials()));
         if (data && data.status === 'success') {
             systemStatus = data.system || systemStatus;
             renderSystemPanel();
@@ -169,12 +246,9 @@ async function createBackup() {
 }
 
 async function processPendingJobs() {
-    const adminKey = requireAdminKey();
-    if (!adminKey) return;
-
     showLoader(true);
     try {
-        const data = await callBackend({ action: 'process_jobs', adminKey });
+        const data = await callBackend(Object.assign({ action: 'process_jobs' }, adminCredentials()));
         if (data && data.status === 'success') {
             alert(`${data.processed || 0} ta vazifa bajarildi.`);
             await loadSystemStatus();
@@ -189,12 +263,9 @@ async function processPendingJobs() {
 }
 
 async function retryFailedJobs() {
-    const adminKey = requireAdminKey();
-    if (!adminKey) return;
-
     showLoader(true);
     try {
-        const data = await callBackend({ action: 'retry_failed_jobs', adminKey });
+        const data = await callBackend(Object.assign({ action: 'retry_failed_jobs' }, adminCredentials()));
         if (data && data.status === 'success') {
             systemStatus = data.system || systemStatus;
             renderSystemPanel();
@@ -260,13 +331,11 @@ function selectedFallbackYear() {
 }
 
 async function migrationAction(action, confirmText) {
-    const adminKey = requireAdminKey();
-    if (!adminKey) return null;
     if (confirmText && !confirm(confirmText)) return null;
 
     showLoader(true);
     try {
-        return await callBackend({ action, adminKey, fallbackYear: selectedFallbackYear() });
+        return await callBackend(Object.assign({ action, fallbackYear: selectedFallbackYear() }, adminCredentials()));
     } catch (e) {
         alert("Server bilan bog'lanib bo'lmadi.");
         return null;
@@ -378,13 +447,11 @@ function describeDateAudit(audit) {
 }
 
 async function maintenanceCall(payload, confirmText) {
-    const adminKey = requireAdminKey();
-    if (!adminKey) return null;
     if (confirmText && !confirm(confirmText)) return null;
 
     showLoader(true);
     try {
-        return await callBackend({ ...payload, adminKey });
+        return await callBackend(Object.assign({}, payload, adminCredentials()));
     } finally {
         showLoader(false);
     }

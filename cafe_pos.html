@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Sotuvchi Oynasi</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="assets/css/app.css">
   <style>
     body { background: #edf2f7; font-family: sans-serif; }
     .glass { background: rgba(255,255,255,0.7); backdrop-filter: blur(15px); border: 1px solid rgba(255,255,255,0.8); box-shadow: 0 6px 22px rgba(15,23,42,0.10); }
@@ -60,51 +60,44 @@
   </style>
 </head>
 <body class="pb-32 text-slate-800">
+  <script src="assets/session.js"></script>
   <script>
     const GOOGLE_APP_URL = "https://script.google.com/macros/s/AKfycbzhKyEOGZbVdtpSd7fa6aTDZf1QsqWQeOpWRxrb7bYpzWWDQxUXZID8JNzGMfDtCA2W/exec";
 
     // ------------------------------------------------------------------
-    // Access key
+    // Session
     // ------------------------------------------------------------------
     // The café's inventory, prices, sales and margins are private business
-    // data, and every mutation here rewrites stock or files a sale. Both were
-    // reachable by anyone who knew the /exec URL. The key is verified once at
-    // login and rides on every request from here on.
-    const ACCESS_KEY_STORAGE = "omad_access_key";
-
-    function accessKey() {
-      try { return localStorage.getItem(ACCESS_KEY_STORAGE) || ""; } catch (e) { return ""; }
-    }
-
-    function requireAccess() {
-      try { localStorage.removeItem(ACCESS_KEY_STORAGE); } catch (e) {}
-      window.location.href = "login.html";
-    }
-
-    /** One authenticated POST, returning the parsed body. */
-    async function callCafeApi(payload) {
-      const res = await fetch(GOOGLE_APP_URL, {
-        method: "POST",
-        body: JSON.stringify(Object.assign({ adminKey: accessKey() }, payload))
-      });
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      const text = await res.text();
-      try { return JSON.parse(text); } catch (e) { throw new Error("Server javobi tushunarsiz"); }
-    }
-
-    /** The café state, over an authenticated POST rather than a public GET. */
-    async function loadCafeState() {
-      const data = await callCafeApi({ action: "get_cafe_data" });
-      if (data && data.status === "error") { requireAccess(); throw new Error(data.message || "Ruxsat yo'q"); }
-      return data;
-    }
-
+    // data, and every mutation here rewrites stock or files a sale. The till
+    // holds a signed session token with the cafe_seller role in it; the server
+    // checks that role on every request, so this guard only decides whether
+    // there is any point rendering the page.
+    //
     // Telegram credentials are held server-side in Apps Script Script
     // Properties. The POS never sees a bot token.
-    if (localStorage.getItem("omad_role") !== "cafe_seller" ||
-        localStorage.getItem("omad_token") !== "cafe_seller_active" ||
-        !localStorage.getItem("omad_access_key")) {
-      window.location.href = "login.html";
+    requireSessionRole('cafe_seller');
+
+    /** One authenticated POST, returning the parsed body. */
+    function callCafeApi(payload) {
+      return callApi(GOOGLE_APP_URL, payload);
+    }
+
+    /**
+     * The café state the *till* needs: the catalogue, and today's receipts for
+     * this cashier.
+     *
+     * It used to be every sale the business had ever made, with each receipt
+     * parsed, so the response grew for ever and the phone re-derived four
+     * figures from all of it. The day and the cashier are sent because "today"
+     * has to mean the day the person at the till is having.
+     */
+    function loadCafeState() {
+      return callCafeApi({
+        action: "get_cafe_data",
+        scope: "pos",
+        dateKey: getDateKey(new Date()),
+        seller: getCurrentCashier()
+      });
     }
   </script>
 
@@ -119,6 +112,7 @@
   </header>
 
   <main class="p-4">
+    <div id="posBanner" class="hidden glass rounded-2xl p-3 mb-3 text-xs font-bold"></div>
     <div id="dailyProgressCard" class="progress-wrap glass rounded-2xl p-3 mb-3">
       <div class="progress-confetti" aria-hidden="true">
         <span></span><span></span><span></span><span></span><span></span>
@@ -200,8 +194,19 @@
       sessionSales: [],
       openingInventory: [],
       settings: { ...DEFAULT_SETTINGS },
-      progressCelebrated: false
+      progressCelebrated: false,
+      // Whether anything has ever been loaded into this screen, why the last
+      // refresh failed, and when the figures on screen were fetched. All three
+      // are display state: none of them decides a price, a stock level or a
+      // sale, which the server owns.
+      loaded: false,
+      loadError: '',
+      snapshotAt: 0,
+      refreshing: false
     };
+
+    /** How old a stored till snapshot may be before it is not shown at all. */
+    const POS_SNAPSHOT_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 
     function cloneInventory(items) {
       return (items || []).map(item => ({ ...item }));
@@ -425,61 +430,136 @@
       }).join("");
     }
 
+    /**
+     * Puts one café payload on screen.
+     *
+     * `keepSales` is false when the payload is a snapshot from a different
+     * calendar day: the catalogue is still worth showing immediately, but
+     * yesterday's receipts are not today's, and the progress bar would be
+     * counting the wrong day's takings.
+     */
+    function applyCafeState(payload, keepSales) {
+      state.inventory = Array.isArray(payload.inventory) ? payload.inventory : [];
+      state.openingInventory = cloneInventory(state.inventory);
+      state.recipes = Array.isArray(payload.recipes) ? payload.recipes : [];
+      state.sales = keepSales && Array.isArray(payload.sales) ? payload.sales : [];
+      state.categories = Array.isArray(payload.categories) && payload.categories.length
+        ? payload.categories
+        : [];
+      const incomingSettings = payload.settings && typeof payload.settings === "object" ? payload.settings : {};
+      state.settings = {
+        ...DEFAULT_SETTINGS,
+        ...incomingSettings,
+        dailyTarget: normalizeDailyTarget(incomingSettings.dailyTarget ?? payload.dailyTarget ?? 0)
+      };
+
+      const todaySales = getTodaySalesForCurrentCashier();
+      state.sessionSales = [...todaySales].sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+      state.todayRevenue = todaySales.reduce((sum, sale) => sum + Number(sale.total || 0), 0);
+      state.todayProfit = todaySales.reduce((sum, sale) => sum + Number(sale.profit || 0), 0);
+      state.todaySold = {};
+      todaySales.forEach(sale => {
+        (sale.items || []).forEach(item => {
+          state.todaySold[item.id] = (state.todaySold[item.id] || 0) + Number(item.qty || 0);
+        });
+      });
+
+      buildMenu();
+      state.loaded = true;
+    }
+
+    function renderPosBanner() {
+      const banner = document.getElementById("posBanner");
+      if (!banner) return;
+
+      if (state.loadError) {
+        const closeOff = state.snapshotAt ? " Kun yakunlash vaqtincha o'chirilgan." : "";
+        banner.className = "glass rounded-2xl p-3 mb-3 text-xs font-bold text-amber-700 flex items-center justify-between gap-2";
+        banner.innerHTML = `<span>${escapeHtmlText(state.loadError + closeOff)}</span>
+          <button onclick="syncMenu()" class="rounded-xl bg-amber-500 text-white px-3 py-2 text-[11px] font-bold active:scale-95">Qayta urinish</button>`;
+        banner.classList.remove("hidden");
+        return;
+      }
+      if (state.snapshotAt) {
+        banner.className = "glass rounded-2xl p-3 mb-3 text-xs font-bold text-slate-500";
+        banner.textContent =
+          "Saqlangan ro'yxat ko'rsatilmoqda, yangilanmoqda... Kun yakunlash vaqtincha o'chirilgan.";
+        banner.classList.remove("hidden");
+        return;
+      }
+      banner.classList.add("hidden");
+    }
+
+    function renderPos() {
+      renderCategories();
+      renderItems();
+      renderSessionSales();
+      updateProgressBar();
+      renderPosBanner();
+    }
+
+    /**
+     * Shows the last catalogue that loaded, so the till is usable while the
+     * refresh runs instead of blank for the length of an Apps Script round
+     * trip. Nothing is decided from it: the server prices every sale and
+     * checks every stock movement against what the sheet actually holds.
+     */
+    function hydrateFromSnapshot() {
+      const snapshot = readSnapshot("cafe_pos", POS_SNAPSHOT_MAX_AGE_MS);
+      if (!snapshot || !snapshot.value) return false;
+      applyCafeState(snapshot.value, snapshot.value.dateKey === getDateKey(new Date()));
+      state.snapshotAt = snapshot.savedAt;
+      renderPos();
+      return true;
+    }
+
+    /**
+     * Loads the café state, and — this is the point of the whole function —
+     * fails without destroying anything.
+     *
+     * The version this replaces treated every failure the same way. A rate
+     * limit, a dropped connection or an Apps Script hiccup cleared the stored
+     * key, sent the cashier to the login page and left `state` empty, so the
+     * till showed no products, no categories and a zeroed target in the middle
+     * of a shift. Only the server saying the session has expired means that
+     * now; everything else keeps what is on screen and offers Retry.
+     */
     async function syncMenu() {
-      const categoriesEl = document.getElementById("categories");
-      const itemsEl = document.getElementById("itemsGrid");
-      categoriesEl.innerHTML = `<div class="glass rounded-full px-4 py-2 text-xs font-bold text-slate-500">Yuklanmoqda...</div>`;
-      itemsEl.innerHTML = `<div class="col-span-2 glass rounded-2xl p-4 text-center text-xs font-bold text-slate-500">Menyu yuklanmoqda...</div>`;
+      if (state.refreshing) return;
+      state.refreshing = true;
+
+      if (!state.loaded) {
+        document.getElementById("categories").innerHTML =
+          `<div class="glass rounded-full px-4 py-2 text-xs font-bold text-slate-500">Yuklanmoqda...</div>`;
+        document.getElementById("itemsGrid").innerHTML =
+          `<div class="col-span-2 glass rounded-2xl p-4 text-center text-xs font-bold text-slate-500">Menyu yuklanmoqda...</div>`;
+      }
 
       try {
         const data = await loadCafeState();
-        console.log("[POS] get_cafe javobi:", data);
         const payload = data.data || data.payload || data;
-        state.inventory = Array.isArray(payload.inventory) ? payload.inventory : [];
-        state.openingInventory = cloneInventory(state.inventory);
-        state.recipes = Array.isArray(payload.recipes) ? payload.recipes : [];
-        state.sales = Array.isArray(payload.sales) ? payload.sales : [];
-        state.categories = Array.isArray(payload.categories) && payload.categories.length
-          ? payload.categories
-          : [];
-        const incomingSettings = payload.settings && typeof payload.settings === "object" ? payload.settings : {};
-        state.settings = {
-          ...DEFAULT_SETTINGS,
-          ...incomingSettings,
-          dailyTarget: normalizeDailyTarget(incomingSettings.dailyTarget ?? payload.dailyTarget ?? 0)
-        };
-
-        const todaySales = getTodaySalesForCurrentCashier();
-        state.sessionSales = [...todaySales].sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
-        state.todayRevenue = todaySales.reduce((sum, sale) => sum + Number(sale.total || 0), 0);
-        state.todayProfit = todaySales.reduce((sum, sale) => sum + Number(sale.profit || 0), 0);
-        state.todaySold = {};
-        todaySales.forEach(sale => {
-          (sale.items || []).forEach(item => {
-            state.todaySold[item.id] = (state.todaySold[item.id] || 0) + Number(item.qty || 0);
-          });
+        applyCafeState(payload, true);
+        state.loadError = "";
+        state.snapshotAt = 0;
+        writeSnapshot("cafe_pos", {
+          dateKey: payload.dateKey || getDateKey(new Date()),
+          inventory: payload.inventory, recipes: payload.recipes,
+          categories: payload.categories, settings: payload.settings, sales: payload.sales
         });
-
-        buildMenu();
-        console.log(`[POS] ${state.menu.length} ta mahsulot yuklandi, ${state.categories.length} ta kategoriya.`);
       } catch (e) {
+        // The one failure that ends a session, and only because the server
+        // said so in as many words.
+        if (e && e.isAuthFailure) { signOut(); return; }
+
         console.error("Menyuni yuklashda xatolik:", e);
-        state.inventory = [];
-        state.openingInventory = [];
-        state.recipes = [];
-        state.sales = [];
-        state.categories = [];
-        state.menu = [];
-        state.settings = { ...DEFAULT_SETTINGS };
-        state.todaySold = {};
-        state.todayRevenue = 0;
-        state.todayProfit = 0;
-        state.sessionSales = [];
+        state.loadError = (e && e.message) || "Ma'lumot yuklanmadi.";
+        // Nothing has ever loaded, so there is nothing to preserve - the last
+        // successful answer from a previous session is better than an empty
+        // till, and clearly labelled as what it is.
+        if (!state.loaded) hydrateFromSnapshot();
       } finally {
-        renderCategories();
-        renderItems();
-        renderSessionSales();
-        updateProgressBar();
+        state.refreshing = false;
+        renderPos();
       }
     }
 
@@ -721,7 +801,30 @@
       return total;
     }
 
+    /**
+     * Close-day is the one thing a stale till must not do.
+     *
+     * It sends a *counted* stock level, and the server accepts that wholesale
+     * — deliberately, because a physical count is a measurement rather than an
+     * edit of a stale copy. Every row the operator does not fill in is carried
+     * over from `state.inventory`, so closing the day from a snapshot that was
+     * never refreshed would write yesterday's stock back over today's. Selling
+     * is safe on stale data (the server prices and checks it); this is not.
+     */
+    function closeDayIsSafe() {
+      if (!state.loaded) {
+        alert("Ma'lumot hali yuklanmadi. Avval yangilang.");
+        return false;
+      }
+      if (state.snapshotAt) {
+        alert("Ombor ma'lumoti serverdan yangilanmagan. Kun yakunlashdan oldin 'Qayta urinish' tugmasini bosing.");
+        return false;
+      }
+      return true;
+    }
+
     function openCloseDayModal() {
+      if (!closeDayIsSafe()) return;
       renderCloseDayList();
       document.getElementById("closeDayModal").classList.remove("hidden");
     }
@@ -765,6 +868,7 @@
     }
 
     async function submitCloseDay() {
+      if (!closeDayIsSafe()) return;
       const rows = document.querySelectorAll("#closeDayList > div[data-inventory-id]");
       const updatedInventory = state.inventory.map(i => ({ ...i }));
       const summary = [];
@@ -894,15 +998,13 @@
     }
 
     function logout() {
-      localStorage.removeItem("omad_role");
-      localStorage.removeItem("omad_token");
-      localStorage.removeItem("omad_access_key");
-      localStorage.removeItem("omad_user");
-      window.location.href = "login.html";
+      signOut();
     }
 
     window.onload = () => {
       renderCart();
+      // Paint from the last catalogue that loaded, then refresh over it.
+      hydrateFromSnapshot();
       syncMenu();
     };
   </script>

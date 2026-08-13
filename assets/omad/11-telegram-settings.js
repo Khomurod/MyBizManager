@@ -89,16 +89,13 @@ function tgAdminKey() {
 }
 
 async function tgAdminAction(payload, successText) {
-    // Falls back to the key this browser signed in with, so the field only has
-    // to be filled in when a *different* key is being tried.
-    const adminKey = tgAdminKey() || accessKey();
-    if (!adminKey) {
-        tgShowMessage("Admin kalitini kiriting.", true);
-        return null;
-    }
+    // The session is the credential. The field beside these buttons is the
+    // break-glass maintenance key and is only sent when something is typed in
+    // it, so the normal path carries no key at all.
     tgShowMessage("Bajarilmoqda...", false);
     try {
-        const data = await callBackend({ ...payload, adminKey });
+        const key = tgAdminKey();
+        const data = await callBackend(key ? { ...payload, adminKey: key } : { ...payload });
         if (data && data.settings) renderTelegramSettings(data.settings, data.bot);
         if (!data || data.status !== 'success') {
             tgShowMessage((data && data.message) || "Xatolik yuz berdi.", true);

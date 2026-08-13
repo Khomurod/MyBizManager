@@ -18,10 +18,17 @@ let app = {
     tenants: [], 
     transactions: [],
     templateExpenses: [],
-    // Filled in from get_migration_status; decides whether entry uses the
-    // append-only ledger operations or the legacy whole-list save.
+    // Filled in from get_omad_data (or get_migration_status against an older
+    // backend); decides whether entry uses the append-only ledger operations
+    // or the legacy whole-list save.
     migration: null,
-    ledgerActive: false
+    ledgerActive: false,
+    // When the figures on screen came from the stored snapshot rather than
+    // from the server, and why the refresh that should have replaced them did
+    // not. Both are display state: they change what the banner says and
+    // nothing else.
+    snapshotAt: 0,
+    loadError: ''
 };
 
 let cart = [];

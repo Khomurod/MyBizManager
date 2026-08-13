@@ -82,6 +82,11 @@ function setConfig(sheet, key, value) {
   // Hooking the single writer means a memo cannot be added elsewhere and then
   // forgotten here.
   invalidateConfigMemo_(key);
+  // ...and the same argument applies to the cross-request summary cache: every
+  // stored Omad_*/Cafe_* value reaches the sheet through here, so bumping the
+  // revision here is what makes "a write invalidates the summaries derived
+  // from it" a property of the code rather than of remembering.
+  bumpScopeForConfigKey_(key);
 
   var data = sheet.getDataRange().getValues();
   for (var i = 0; i < data.length; i++) {
@@ -441,6 +446,145 @@ function normalizePeriodValue_(value, fallbackYear) {
   return "";
 }
 
+// ----- apps-script/01c_cache.gs ------------------------------------------------
+
+// ============================================================
+// Revision counters and the summary cache
+// ------------------------------------------------------------
+// Google Sheets stays the only source of truth. Nothing here decides anything:
+// it stores a copy of an answer that was already derived from the sheets, and
+// throws that copy away the moment the underlying data is written.
+//
+// Two rules make this safe to reason about:
+//
+//   1. **Only read-only display summaries are cached.** Pricing, stock checks,
+//      the ledger, task state and every write path read the sheets directly.
+//      A stale cache entry can make a *screen* a minute out of date; it can
+//      never make a sale, a balance or an occurrence wrong.
+//   2. **Every entry is keyed by a revision counter.** A write bumps the
+//      counter, which changes the key, which means the old entry is
+//      unreachable rather than merely expiring later. The TTL is the backstop
+//      for a write path that forgets to bump, not the primary mechanism.
+//
+// If the cache disappears entirely — eviction, a quota, an Apps Script
+// incident — every caller falls back to computing the answer from the sheets.
+// That is the normal path with an extra sheet read, never an error.
+// ============================================================
+
+/** Script Property prefix for the revision counters. */
+var CACHE_REV_PROP_PREFIX = "OMAD_REV_";
+
+/** Accounting data: transactions, tenants, rates, planned expenses. */
+var CACHE_SCOPE_OMAD = "OMAD";
+
+/** Café data: inventory, recipes, categories, settings, sales, closings. */
+var CACHE_SCOPE_CAFE = "CAFE";
+
+/** Tasks and occurrences. */
+var CACHE_SCOPE_TASKS = "TASKS";
+
+/**
+ * Apps Script refuses a cache value over 100 KB. Anything near that is not a
+ * summary any more, so it is simply not stored rather than throwing.
+ */
+var CACHE_MAX_VALUE_LENGTH = 90000;
+
+/** Which System_Config keys belong to which scope, matched by prefix. */
+var CACHE_CONFIG_KEY_SCOPES = [
+  { prefix: "Omad_", scope: CACHE_SCOPE_OMAD },
+  { prefix: "Cafe_", scope: CACHE_SCOPE_CAFE }
+];
+
+/**
+ * The current revision of one scope.
+ *
+ * A Script Property read, not a sheet pass — this is consulted on every cached
+ * read, so it has to be cheaper than the work it is avoiding.
+ */
+function dataRevision_(scope) {
+  try {
+    return String(scriptProperties_().getProperty(CACHE_REV_PROP_PREFIX + scope) || "0");
+  } catch (error) {
+    // No properties service means no cache key we can trust. "" makes every
+    // lookup miss, which degrades to computing the answer.
+    return "";
+  }
+}
+
+/**
+ * Marks a scope as changed, so every cached summary derived from it becomes
+ * unreachable on the next request.
+ *
+ * Wrapped: a write that has already stored a financial record must never fail
+ * because a counter could not be bumped. A missed bump costs at most the TTL.
+ */
+function bumpDataRevision_(scope) {
+  try {
+    var current = Number(dataRevision_(scope)) || 0;
+    scriptProperties_().setProperty(CACHE_REV_PROP_PREFIX + scope, String(current + 1));
+  } catch (error) {}
+}
+
+// The read-modify-write above is deliberately not locked. Two writes landing
+// together can produce the same next value, which leaves one stale summary
+// readable until its TTL. Taking the script lock for a counter would put every
+// write behind the same lock the *financial* writes use, to protect a cache —
+// a much worse trade than a minute of staleness on a display figure.
+
+/** Bumps whichever scope a System_Config key belongs to, if any. */
+function bumpScopeForConfigKey_(key) {
+  var name = String(key || "");
+  for (var i = 0; i < CACHE_CONFIG_KEY_SCOPES.length; i++) {
+    if (name.indexOf(CACHE_CONFIG_KEY_SCOPES[i].prefix) === 0) {
+      bumpDataRevision_(CACHE_CONFIG_KEY_SCOPES[i].scope);
+      return;
+    }
+  }
+}
+
+/**
+ * A cached read-only summary.
+ *
+ * `producer` is called on a miss and its result is stored under a key that
+ * includes the scope's current revision. Every failure mode — no cache, a
+ * corrupt entry, a value too large to store — falls through to `producer`.
+ *
+ * The returned object is whatever `producer` returned or a JSON round trip of
+ * it, so callers must not rely on object identity or on mutating it.
+ */
+function cachedSummary_(name, scope, ttlSeconds, producer) {
+  var revision = dataRevision_(scope);
+  if (!revision) return producer();
+
+  var key = "sum_" + name + "_" + scope + "_" + revision;
+  var cache = null;
+  try {
+    cache = CacheService.getScriptCache();
+  } catch (error) {
+    cache = null;
+  }
+
+  if (cache) {
+    var stored = null;
+    try { stored = cache.get(key); } catch (error) { stored = null; }
+    if (stored) {
+      var parsed = safeParseJSON_(stored, null);
+      if (parsed !== null) return parsed;
+    }
+  }
+
+  var fresh = producer();
+  if (cache && fresh !== null && fresh !== undefined) {
+    try {
+      var body = JSON.stringify(fresh);
+      if (body.length <= CACHE_MAX_VALUE_LENGTH) cache.put(key, body, ttlSeconds);
+    } catch (error) {
+      // An unstorable summary is still a correct summary.
+    }
+  }
+  return fresh;
+}
+
 // ----- apps-script/02_validation.gs --------------------------------------------
 
 // ============================================================
@@ -459,40 +603,62 @@ var TELEGRAM_RATE_WINDOW_SECONDS = 60;
 
 var TELEGRAM_ADMIN_RATE_LIMIT = 10;
 
-// Normal authenticated page loads share the read_auth bucket. Keep that
-// protection, but give regular app usage enough room that a few tabs/devices
-// cannot temporarily lock every legitimate user out of reads.
-var AUTHENTICATED_READ_RATE_LIMIT = 40;
-
 var TELEGRAM_WEBHOOK_RATE_LIMIT = 120;
 
 var TELEGRAM_MAX_TEXT_LENGTH = 3500;
 
 var TELEGRAM_MAX_FIELD_LENGTH = 512;
 
+var RATE_LIMIT_MESSAGE = "Juda ko'p so'rov yuborildi. Iltimos, biroz kutib qayta urinib ko'ring.";
+
+/** The fixed one-minute window a bucket is currently counting in. */
+function rateLimitKey_(bucketKey, windowSeconds) {
+  return "rl_" + bucketKey + "_" + Math.floor(new Date().getTime() / (windowSeconds * 1000));
+}
+
 /**
  * Fixed-window counter in the script cache. Returns "" when the call is
  * allowed, or a user-facing error message when the window is exhausted.
  * Cache failures fail open on purpose - throttling must never take the app
  * down, it only has to blunt abuse.
+ *
+ * `bucketKey` must never contain a credential: cache keys are not a place to
+ * put a secret, and one is never needed - an identity (a username) or the name
+ * of the gate is what a bucket is actually about.
  */
 function enforceRateLimit_(bucketKey, maxCalls, windowSeconds) {
   try {
     var cache = CacheService.getScriptCache();
-    var window = Math.floor(new Date().getTime() / (windowSeconds * 1000));
-    var key = "rl_" + bucketKey + "_" + window;
+    var key = rateLimitKey_(bucketKey, windowSeconds);
     var used = Number(cache.get(key)) || 0;
-    var effectiveMaxCalls = bucketKey === "read_auth"
-      ? Math.max(Number(maxCalls) || 0, AUTHENTICATED_READ_RATE_LIMIT)
-      : maxCalls;
-    if (used >= effectiveMaxCalls) {
-      return "Juda ko'p so'rov yuborildi. Iltimos, biroz kutib qayta urinib ko'ring.";
-    }
+    if (used >= maxCalls) return RATE_LIMIT_MESSAGE;
     cache.put(key, String(used + 1), windowSeconds + 5);
     return "";
   } catch (error) {
     return "";
   }
+}
+
+/**
+ * Gives one unit back to a bucket.
+ *
+ * The counterpart to reserving an attempt before doing the expensive work:
+ * a login charges its allowance up front and refunds it if the password turns
+ * out to be right, so a correct password costs nothing and a wrong one is
+ * already counted before the answer is known.
+ *
+ * A lost refund - the same read-modify-write race the counters have
+ * everywhere - can only make the limit stricter for the rest of the minute,
+ * never looser, which is the direction to be wrong in.
+ */
+function releaseRateLimit_(bucketKey) {
+  try {
+    var cache = CacheService.getScriptCache();
+    var key = rateLimitKey_(bucketKey, TELEGRAM_RATE_WINDOW_SECONDS);
+    var used = Number(cache.get(key)) || 0;
+    if (used <= 0) return;
+    cache.put(key, String(used - 1), TELEGRAM_RATE_WINDOW_SECONDS + 5);
+  } catch (error) {}
 }
 
 function validateTelegramPayloadLengths_(payload) {
@@ -580,6 +746,568 @@ function validateOmadTelegramReport_(report) {
     return "telegramReport.messageId noto'g'ri.";
   }
   return "";
+}
+
+// ----- apps-script/02a_auth.gs -------------------------------------------------
+
+// ============================================================
+// Web authentication: users, passwords, sessions and roles
+// ------------------------------------------------------------
+// The login page used to hold three username/password pairs in plain page
+// source and then ask for OMAD_ADMIN_KEY as the thing the server actually
+// checked. So the passwords were decoration, the real credential was typed by
+// hand into a phone at every sign-in, and every signed-in browser held the one
+// key that also unlocks migration and maintenance.
+//
+// This module replaces all of that:
+//
+//   * Credentials live in the OMAD_USERS Script Property, as a salted,
+//     iterated hash per user. No password, and nothing derived from one that
+//     could be replayed, is ever sent to a browser or committed to the repo.
+//   * A successful login mints a signed, expiring session token. It is a MAC
+//     over the claims, so verifying one is a hash rather than a sheet read and
+//     losing the cache or restarting the project cannot sign anybody out.
+//   * Every action names the roles that may perform it. A café seller editing
+//     localStorage, or opening omad_admin.html directly, still cannot read the
+//     ledger — the refusal is on the server, where the browser cannot reach it.
+//
+// OMAD_ADMIN_KEY survives as an internal break-glass credential for
+// maintenance and migration, and is accepted as omad_admin wherever a session
+// would be. Nobody has to know it to use the application.
+// ============================================================
+
+/** Salted password hashes, as JSON: { username: { role, salt, hash, pwv } }. */
+var OMAD_PROP_USERS = "OMAD_USERS";
+
+/** HMAC key the session tokens are signed with. Generated on first use. */
+var OMAD_PROP_SESSION_SECRET = "OMAD_SESSION_SECRET";
+
+var AUTH_ROLE_OMAD_ADMIN = "omad_admin";
+var AUTH_ROLE_CAFE_ADMIN = "cafe_admin";
+var AUTH_ROLE_CAFE_SELLER = "cafe_seller";
+
+/** The only roles that exist. A stored record naming anything else is ignored. */
+var AUTH_VALID_ROLES = {
+  omad_admin: true,
+  cafe_admin: true,
+  cafe_seller: true
+};
+
+/** Which page each role signs in to. The server decides, not the page. */
+var AUTH_ROLE_HOME = {
+  omad_admin: "omad_admin.html",
+  cafe_admin: "cafe_admin.html",
+  cafe_seller: "cafe_pos.html"
+};
+
+/**
+ * Password hashing: HMAC-SHA256 chained over a per-user salt.
+ *
+ * Apps Script has no PBKDF2, and `Utilities.computeHmacSha256Signature` is the
+ * only primitive available in both the runtime and the test harness. Chaining
+ * it is a plain iterated KDF: it makes an offline guess cost the same as a
+ * login instead of a single hash, which is the property that matters when the
+ * stored value is a Script Property only the project owner can read.
+ *
+ * The count is a compromise. Sign-in happens once per session and a session
+ * lasts a month, so a few hundred milliseconds there is invisible; the same
+ * cost is charged to every wrong guess, on top of the throttle below.
+ */
+var AUTH_HASH_ITERATIONS = 200;
+
+/** A month. Long enough that nobody is asked to sign in repeatedly. */
+var AUTH_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
+
+/** Usernames are part of the token's own delimiter-separated format. */
+var AUTH_USERNAME_PATTERN = /^[a-z0-9_]{3,32}$/;
+
+var AUTH_MIN_PASSWORD_LENGTH = 8;
+
+var AUTH_MAX_PASSWORD_LENGTH = 200;
+
+var AUTH_TOKEN_VERSION = "v1";
+
+// ---------------------------------------------------------------- throttling
+//
+// Three buckets, deliberately not one:
+//
+//   * per username, strict — the only thing that stops somebody working
+//     through a password list against a known account, and it can only be
+//     filled by failures *against that account*;
+//   * all failed logins, generous — blunts spraying across many usernames
+//     without letting one attacker lock out the whole business at ten
+//     attempts;
+//   * failed authentication on ordinary requests, strict — a wrong or missing
+//     admin key, or a forged token.
+//
+// A *successful* request never touches any of them. That is the fix for the
+// incident this replaced: the café till shared one 40-per-minute bucket with
+// every failed attempt in the world, so a second tab could throttle the shop.
+
+var LOGIN_FAILURE_LIMIT_PER_USER = 8;
+
+var LOGIN_FAILURE_LIMIT_GLOBAL = 100;
+
+var AUTH_FAILURE_LIMIT = 10;
+
+/**
+ * Per-signed-in-user request allowance.
+ *
+ * Keyed by username — which is not a secret, so no credential ever appears in
+ * a cache key — so one busy till cannot throttle the office, and neither can
+ * an anonymous stranger throttle either of them.
+ */
+var AUTHENTICATED_REQUEST_LIMIT = 120;
+
+// --------------------------------------------------------------- user records
+
+function readAuthUsers_() {
+  var stored = safeParseJSON_(getTelegramSetting_(OMAD_PROP_USERS), null);
+  return stored && typeof stored === "object" ? stored : {};
+}
+
+function writeAuthUsers_(users) {
+  setTelegramSetting_(OMAD_PROP_USERS, JSON.stringify(users || {}));
+}
+
+/**
+ * True once the owner's own account has a password.
+ *
+ * This, not "any user exists", is what ends the bootstrap: setting the café
+ * passwords is the first thing the bootstrap session is *for*, so it must not
+ * be the thing that invalidates it half way through.
+ */
+function omadAdminAccountConfigured_() {
+  return !!readAuthUsers_()[AUTH_ROLE_OMAD_ADMIN];
+}
+
+function normalizeUsername_(value) {
+  return String(value === null || value === undefined ? "" : value).trim().toLowerCase();
+}
+
+/** 64 hex characters of salt, from two UUIDs. */
+function newAuthSalt_() {
+  return (Utilities.getUuid() + Utilities.getUuid()).split("-").join("");
+}
+
+/**
+ * The stored form of one password.
+ *
+ * Returns hex. The first round takes the password as the message so the salt
+ * is the key; every later round feeds the digest back as the message, so the
+ * whole chain has to be walked to check one guess.
+ */
+function hashPassword_(password, salt) {
+  var saltBytes = Utilities.newBlob(String(salt)).getBytes();
+  var digest = Utilities.computeHmacSha256Signature(String(password), String(salt));
+  for (var i = 1; i < AUTH_HASH_ITERATIONS; i++) {
+    digest = Utilities.computeHmacSha256Signature(digest, saltBytes);
+  }
+  return bytesToHex_(digest);
+}
+
+function validatePasswordStrength_(password) {
+  var value = String(password === null || password === undefined ? "" : password);
+  if (value.length < AUTH_MIN_PASSWORD_LENGTH) {
+    return "Parol kamida " + AUTH_MIN_PASSWORD_LENGTH + " ta belgidan iborat bo'lishi kerak.";
+  }
+  if (value.length > AUTH_MAX_PASSWORD_LENGTH) return "Parol juda uzun.";
+  return "";
+}
+
+/**
+ * Creates or replaces one user's credential.
+ *
+ * `pwv` is a password version carried inside every token. Changing a password
+ * bumps it, which invalidates every session that user already had — the only
+ * revocation mechanism a stateless token needs, and the one thing a change of
+ * password is expected to do.
+ */
+function setUserCredential_(username, password, role) {
+  var name = normalizeUsername_(username);
+  if (!AUTH_USERNAME_PATTERN.test(name)) {
+    return { status: "error", message: "Foydalanuvchi nomi faqat kichik harf, raqam va _ bo'lishi mumkin (3-32 belgi)." };
+  }
+
+  var users = readAuthUsers_();
+  var existing = users[name] || null;
+  var nextRole = role === undefined || role === null || role === "" ? (existing && existing.role) : String(role);
+  if (!AUTH_VALID_ROLES[nextRole]) {
+    return { status: "error", message: "Rol noto'g'ri. Ruxsat etilgan rollar: omad_admin, cafe_admin, cafe_seller." };
+  }
+
+  var weak = validatePasswordStrength_(password);
+  if (weak) return { status: "error", message: weak };
+
+  var salt = newAuthSalt_();
+  users[name] = {
+    role: nextRole,
+    salt: salt,
+    hash: hashPassword_(password, salt),
+    pwv: (Number(existing && existing.pwv) || 0) + 1,
+    updatedAt: new Date().toISOString()
+  };
+  writeAuthUsers_(users);
+
+  return { status: "success", username: name, role: nextRole, created: !existing };
+}
+
+/**
+ * Checks a username and password against the stored record.
+ *
+ * A missing user and a wrong password answer identically, so the endpoint
+ * cannot be used to find out which accounts exist.
+ */
+function verifyUserPassword_(username, password) {
+  var name = normalizeUsername_(username);
+  var users = readAuthUsers_();
+  var record = users[name];
+  if (!record || !record.salt || !record.hash || !AUTH_VALID_ROLES[record.role]) return { ok: false };
+
+  var candidate = hashPassword_(password, record.salt);
+  if (!hexDigestsMatch_(candidate, String(record.hash))) return { ok: false };
+
+  return { ok: true, username: name, role: record.role, pwv: Number(record.pwv) || 0 };
+}
+
+// -------------------------------------------------------------- session tokens
+
+function sessionSecret_() {
+  var existing = getTelegramSetting_(OMAD_PROP_SESSION_SECRET);
+  if (existing) return existing;
+  var generated = (Utilities.getUuid() + Utilities.getUuid()).split("-").join("");
+  setTelegramSetting_(OMAD_PROP_SESSION_SECRET, generated);
+  return generated;
+}
+
+function signSessionClaims_(claims) {
+  return bytesToHex_(Utilities.computeHmacSha256Signature(claims, sessionSecret_()));
+}
+
+/**
+ * A session token: `v1.<username>.<role>.<expiry>.<pwv>.<nonce>.<signature>`.
+ *
+ * Deliberately not JSON-in-base64. Usernames are restricted to `[a-z0-9_]` and
+ * roles to a fixed list, so no field can contain the separator and the format
+ * needs neither an encoder nor a parser that could disagree with each other.
+ *
+ * Nothing here is secret — the claims are readable by whoever holds the token,
+ * which is the person they describe. The signature is what makes them true.
+ */
+function issueSessionToken_(username, role, pwv, nowMs) {
+  var now = nowMs === undefined ? Date.now() : nowMs;
+  var expiry = Math.floor(now / 1000) + AUTH_SESSION_TTL_SECONDS;
+  var nonce = Utilities.getUuid().split("-").join("");
+  var claims = [AUTH_TOKEN_VERSION, username, role, String(expiry), String(pwv), nonce].join(".");
+  return {
+    token: claims + "." + signSessionClaims_(claims),
+    expiresAt: expiry * 1000
+  };
+}
+
+/**
+ * Verifies one token. Returns `{ ok, username, role, reason }`.
+ *
+ * `reason` is a short code and never depends on a secret: `expired` is the one
+ * the client acts on, by sending the user back to the login page instead of
+ * showing an error over their data.
+ */
+function verifySessionToken_(token, nowMs) {
+  var text = String(token === null || token === undefined ? "" : token);
+  if (!text) return { ok: false, reason: "missing" };
+  if (text.length > 512) return { ok: false, reason: "malformed" };
+
+  var parts = text.split(".");
+  if (parts.length !== 7 || parts[0] !== AUTH_TOKEN_VERSION) return { ok: false, reason: "malformed" };
+
+  var username = parts[1];
+  var role = parts[2];
+  var expiry = Number(parts[3]);
+  var pwv = Number(parts[4]);
+  if (!AUTH_USERNAME_PATTERN.test(username) || !AUTH_VALID_ROLES[role] || !isFinite(expiry)) {
+    return { ok: false, reason: "malformed" };
+  }
+
+  var claims = parts.slice(0, 6).join(".");
+  if (!hexDigestsMatch_(signSessionClaims_(claims), parts[6])) return { ok: false, reason: "bad_signature" };
+
+  var nowSeconds = Math.floor((nowMs === undefined ? Date.now() : nowMs) / 1000);
+  if (nowSeconds >= expiry) return { ok: false, reason: "expired" };
+
+  // The signature proves the claims were minted here; the stored record decides
+  // whether they are still true. A changed password, a changed role or a
+  // deleted user takes effect on the next request rather than in a month.
+  var users = readAuthUsers_();
+  var record = users[username];
+  if (!record) {
+    // The bootstrap session, which exists before the owner's account does and
+    // stops existing the moment it is created. Nothing else can be minted
+    // without a stored record, and this one still had to present the
+    // maintenance key to be issued at all.
+    if (username === AUTH_ROLE_OMAD_ADMIN && role === AUTH_ROLE_OMAD_ADMIN && pwv === 0 &&
+        !omadAdminAccountConfigured_()) {
+      return { ok: true, username: username, role: role, bootstrap: true };
+    }
+    return { ok: false, reason: "revoked" };
+  }
+  if (String(record.role) !== role) return { ok: false, reason: "revoked" };
+  if ((Number(record.pwv) || 0) !== pwv) return { ok: false, reason: "revoked" };
+
+  return { ok: true, username: username, role: role };
+}
+
+// --------------------------------------------------------------------- login
+
+var LOGIN_THROTTLED_MESSAGE = "Juda ko'p urinish. Bir daqiqa kutib qayta urinib ko'ring.";
+
+/**
+ * Charges one attempt to the login buckets, before the password is checked.
+ *
+ * Reserve-then-refund, rather than check-then-charge. Checking first and
+ * charging afterwards leaves the whole password hash — a couple of hundred HMAC
+ * rounds — between reading the counter and writing it, so a burst of parallel
+ * guesses could all read zero and collapse into one increment. Charging first
+ * closes that window to the width of one cache round trip, and
+ * `refundLoginAttempt_` gives the unit back when the password turns out to be
+ * right, which is what keeps a correct sign-in free.
+ *
+ * The counter is still a cache read-modify-write, because Apps Script has no
+ * atomic increment. Serialising it on the script lock was considered and
+ * rejected: that is the same lock the financial writes take, so it would let
+ * anyone with the /exec URL queue behind the ledger.
+ */
+function reserveLoginAttempt_(username) {
+  var perUser = enforceRateLimit_(
+    "login_u_" + username, LOGIN_FAILURE_LIMIT_PER_USER, TELEGRAM_RATE_WINDOW_SECONDS);
+  if (perUser) return LOGIN_THROTTLED_MESSAGE;
+
+  var global = enforceRateLimit_(
+    "login_all", LOGIN_FAILURE_LIMIT_GLOBAL, TELEGRAM_RATE_WINDOW_SECONDS);
+  if (global) {
+    // The per-user unit was already taken; give it back so a global flood
+    // caused by somebody else does not also fill this account's allowance.
+    releaseRateLimit_("login_u_" + username);
+    return LOGIN_THROTTLED_MESSAGE;
+  }
+  return "";
+}
+
+/** Returns the reserved attempt. Called only when the password was correct. */
+function refundLoginAttempt_(username) {
+  releaseRateLimit_("login_u_" + username);
+  releaseRateLimit_("login_all");
+}
+
+/**
+ * Signs a user in.
+ *
+ * The answer is deliberately the same sentence for an unknown user, a wrong
+ * password and a throttled attempt beyond the throttle's own message, so the
+ * page cannot be used to enumerate accounts.
+ */
+function loginAction_(payload) {
+  var username = normalizeUsername_(payload && payload.username);
+  var password = String((payload && payload.password) || "");
+
+  if (!AUTH_USERNAME_PATTERN.test(username) || !password) {
+    return { status: "error", code: "invalid_credentials", message: "Login yoki parol noto'g'ri." };
+  }
+  if (password.length > AUTH_MAX_PASSWORD_LENGTH) {
+    return { status: "error", code: "invalid_credentials", message: "Login yoki parol noto'g'ri." };
+  }
+
+  var throttled = reserveLoginAttempt_(username);
+  if (throttled) return { status: "error", code: "throttled", message: throttled };
+
+  var verified = verifyUserPassword_(username, password);
+
+  // Bootstrap. Until the owner has set the first password there is no user
+  // store to check against, so the maintenance key stands in for exactly one
+  // account: the one that can then create the others. It stops working the
+  // moment any password is set, and the response says so.
+  var bootstrap = false;
+  if (!verified.ok && !omadAdminAccountConfigured_() && username === AUTH_ROLE_OMAD_ADMIN) {
+    var keyError = checkAdminKey_({ adminKey: password });
+    if (!keyError) {
+      verified = { ok: true, username: username, role: AUTH_ROLE_OMAD_ADMIN, pwv: 0 };
+      bootstrap = true;
+    }
+  }
+
+  if (!verified.ok) {
+    // The attempt is already charged; a wrong password simply does not get it
+    // back.
+    return { status: "error", code: "invalid_credentials", message: "Login yoki parol noto'g'ri." };
+  }
+  refundLoginAttempt_(username);
+
+  var issued = issueSessionToken_(verified.username, verified.role, verified.pwv);
+  return {
+    status: "success",
+    token: issued.token,
+    expiresAt: issued.expiresAt,
+    username: verified.username,
+    role: verified.role,
+    home: AUTH_ROLE_HOME[verified.role] || "login.html",
+    bootstrap: bootstrap
+  };
+}
+
+/** Lets a signed-in user replace their own password. */
+function changePasswordAction_(auth, payload) {
+  var current = String((payload && payload.currentPassword) || "");
+  var next = String((payload && payload.newPassword) || "");
+
+  if (auth.bootstrap) {
+    // There is nothing to check the current password against yet, so this is
+    // the first password rather than a change of one.
+    var created = setUserCredential_(auth.username, next, auth.role);
+    if (created.status !== "success") return created;
+    var firstToken = issueSessionToken_(created.username, created.role, 1);
+    return { status: "success", token: firstToken.token, expiresAt: firstToken.expiresAt, role: created.role };
+  }
+
+  var throttled = reserveLoginAttempt_(auth.username);
+  if (throttled) return { status: "error", code: "throttled", message: throttled };
+
+  var verified = verifyUserPassword_(auth.username, current);
+  if (!verified.ok) {
+    return { status: "error", code: "invalid_credentials", message: "Joriy parol noto'g'ri." };
+  }
+  refundLoginAttempt_(auth.username);
+
+  var result = setUserCredential_(auth.username, next, verified.role);
+  if (result.status !== "success") return result;
+
+  // The old sessions — including this browser's — are invalid now, so a fresh
+  // one is issued rather than silently signing the user out mid-task.
+  var reissued = issueSessionToken_(result.username, result.role, (Number(verified.pwv) || 0) + 1);
+  return { status: "success", token: reissued.token, expiresAt: reissued.expiresAt, role: result.role };
+}
+
+/** omad_admin creating or resetting an account, including the café ones. */
+function setUserPasswordAction_(payload) {
+  var result = setUserCredential_(payload && payload.username, (payload && payload.password) || "", payload && payload.role);
+  if (result.status !== "success") return result;
+  return {
+    status: "success",
+    username: result.username,
+    role: result.role,
+    created: result.created,
+    users: listAuthUsers_()
+  };
+}
+
+/** Who exists and what they may do. Never any salt, hash or password. */
+function listAuthUsers_() {
+  var users = readAuthUsers_();
+  var rows = [];
+  Object.keys(users).sort().forEach(function (name) {
+    rows.push({
+      username: name,
+      role: String(users[name].role || ""),
+      updatedAt: String(users[name].updatedAt || "")
+    });
+  });
+  return rows;
+}
+
+// ------------------------------------------------------------- request gating
+
+/**
+ * Authorizes one web-app request against the roles an action allows.
+ *
+ * Order matters:
+ *
+ *   1. A session token is verified first, by signature. Forging one means
+ *      forging an HMAC, so a failure here is a stale or absent session rather
+ *      than evidence of guessing — which is why a valid session never consumes
+ *      a failure allowance and can never be throttled by somebody else's.
+ *   2. The admin key is compared only after its own strict rate limit, which
+ *      is the property the endpoint has always had: it must not be usable to
+ *      guess the key.
+ *   3. Anything else is a failure, and failures share one strict bucket.
+ *
+ * Returns `{ ok, role, username }` or `{ ok: false, message, code }`, where
+ * `code` is `auth` when the client should return to the login page and
+ * `throttled` when it should simply try again shortly.
+ */
+function authorizeWebRequest_(payload, allowedRoles) {
+  var token = payload && payload.sessionToken;
+
+  if (token) {
+    var session = verifySessionToken_(token);
+    if (session.ok) {
+      var throttled = enforceRateLimit_(
+        "user_" + session.username, AUTHENTICATED_REQUEST_LIMIT, TELEGRAM_RATE_WINDOW_SECONDS);
+      if (throttled) return { ok: false, code: "throttled", message: throttled };
+      if (!roleAllowed_(session.role, allowedRoles)) {
+        return { ok: false, code: "forbidden", message: "Bu amal uchun ruxsat yo'q." };
+      }
+      return { ok: true, role: session.role, username: session.username, bootstrap: !!session.bootstrap };
+    }
+
+    var expired = session.reason === "expired" || session.reason === "revoked";
+    var failure = enforceRateLimit_("auth_fail", AUTH_FAILURE_LIMIT, TELEGRAM_RATE_WINDOW_SECONDS);
+    if (failure && !expired) return { ok: false, code: "throttled", message: failure };
+    return {
+      ok: false,
+      code: "auth",
+      message: expired
+        ? "Sessiya muddati tugadi. Qaytadan kiring."
+        : "Kirish tasdiqlanmadi. Qaytadan kiring."
+    };
+  }
+
+  if (payload && payload.adminKey) {
+    var keyThrottled = enforceRateLimit_("auth_key", AUTH_FAILURE_LIMIT, TELEGRAM_RATE_WINDOW_SECONDS);
+    if (keyThrottled) return { ok: false, code: "throttled", message: keyThrottled };
+
+    var keyError = checkAdminKey_(payload);
+    if (keyError) return { ok: false, code: "auth", message: keyError };
+    if (!roleAllowed_(AUTH_ROLE_OMAD_ADMIN, allowedRoles)) {
+      return { ok: false, code: "forbidden", message: "Bu amal uchun ruxsat yo'q." };
+    }
+    return { ok: true, role: AUTH_ROLE_OMAD_ADMIN, username: AUTH_ROLE_OMAD_ADMIN, viaAdminKey: true };
+  }
+
+  var anonymous = enforceRateLimit_("auth_fail", AUTH_FAILURE_LIMIT, TELEGRAM_RATE_WINDOW_SECONDS);
+  if (anonymous) return { ok: false, code: "throttled", message: anonymous };
+  return { ok: false, code: "auth", message: "Kirish tasdiqlanmadi. Qaytadan kiring." };
+}
+
+function roleAllowed_(role, allowedRoles) {
+  if (!allowedRoles || allowedRoles.length === 0) return role === AUTH_ROLE_OMAD_ADMIN;
+  for (var i = 0; i < allowedRoles.length; i++) {
+    if (allowedRoles[i] === role) return true;
+  }
+  return false;
+}
+
+/** The refusal shape every gated handler returns, so clients can branch on it. */
+function authRefusal_(auth) {
+  return jsonOutput_({
+    status: "error",
+    code: auth.code || "auth",
+    // The café screens sign out on this and only on this. A throttle or a
+    // network fault must never look like an expired session, or a busy minute
+    // empties the till's stock list and asks the cashier to log in again.
+    authExpired: auth.code === "auth",
+    message: auth.message
+  });
+}
+
+/**
+ * Run once from the Apps Script editor to create or reset an account.
+ *
+ * Exists so the first password can be set without a password already existing,
+ * and without one ever being typed into a browser address bar or committed.
+ * Nothing calls it; it is an operator tool.
+ */
+function setUserPassword(username, password, role) {
+  var result = setUserCredential_(username, password, role);
+  if (result.status !== "success") throw new Error(result.message);
+  return result.username + " -> " + result.role;
 }
 
 // ----- apps-script/03_settings.gs ----------------------------------------------
@@ -799,7 +1527,9 @@ function checkAdminKey_(payload) {
     return "OMAD_ADMIN_KEY Script Property o'rnatilmagan. Apps Script → Project Settings → Script Properties orqali qo'shing.";
   }
   var provided = String((payload && payload.adminKey) || "");
-  if (provided !== expected) return "Admin kaliti noto'g'ri.";
+  // Compared the way every other secret here is: without letting the answer's
+  // timing say how much of the key was right.
+  if (!secretsMatch_(provided, expected)) return "Admin kaliti noto'g'ri.";
   return "";
 }
 
@@ -2123,6 +2853,7 @@ function appendOmadTransactionGroup_(doc, transactions) {
   var startRow = txSheet.getLastRow() + 1;
   applyTransactionColumnFormats_(txSheet, startRow, values.length, sheetName);
   txSheet.getRange(startRow, 1, values.length, OMAD_TRANSACTION_HEADER.length).setValues(values);
+  bumpDataRevision_(CACHE_SCOPE_OMAD);
   return normalized;
 }
 
@@ -2177,6 +2908,7 @@ function safeRewriteOmadTransactions_(doc, incomingTransactions) {
     applyTransactionColumnFormats_(txSheet, 2, rows.length, sheetName);
     txSheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
   }
+  bumpDataRevision_(CACHE_SCOPE_OMAD);
 }
 
 /**
@@ -2241,6 +2973,7 @@ function appendOmadTransaction_(doc, transaction) {
   applyTransactionColumnFormats_(txSheet, row, 1, sheetName);
   txSheet.getRange(row, 1, 1, OMAD_TRANSACTION_HEADER.length)
     .setValues([transactionToRow_(normalizeTransaction_(transaction))]);
+  bumpDataRevision_(CACHE_SCOPE_OMAD);
 }
 
 /**
@@ -3712,6 +4445,17 @@ var CAFE_MUTATIONS = {
   save_cafe_settings: true, save_sale: true, void_sale: true, close_day: true
 };
 
+/**
+ * Which role each café mutation belongs to.
+ *
+ * The catalogue is the manager's; the till is the seller's. Neither of them
+ * gets the other's, and neither gets the accounting.
+ */
+var CAFE_ACTION_ROLES = {
+  save_inventory: "admin", save_recipe: "admin", save_categories: "admin",
+  save_cafe_settings: "admin", save_sale: "sell", void_sale: "sell", close_day: "sell"
+};
+
 function isCafeAction_(action) {
   return CAFE_MUTATIONS[String(action || "")] === true;
 }
@@ -3722,14 +4466,16 @@ function isCafeAction_(action) {
  *
  * Every one of these writes: inventory, recipes, prices, sales, voids and the
  * close-day record. They were reachable by anyone who knew the /exec URL, which
- * meant anyone could rewrite the stock or file a sale. They now take the same
- * key the rest of the business actions take.
+ * meant anyone could rewrite the stock or file a sale. They now take a session
+ * whose role says which half of the café it may touch.
  */
 function handleCafeAction_(action, payload, doc, configSheet) {
   if (!isCafeAction_(action)) return null;
 
-  var accessError = checkAdminKey_(payload);
-  if (accessError) return jsonOutput_({ status: "error", message: accessError });
+  var auth = authorizeWebRequest_(payload, CAFE_ACTION_ROLES[action] === "admin"
+    ? AUTH_ROLES_CAFE_ADMIN
+    : AUTH_ROLES_CAFE_SELL);
+  if (!auth.ok) return authRefusal_(auth);
 
   if (action === 'save_inventory') {
     // Optimistic concurrency. The screen says which version it was looking at;
@@ -4048,6 +4794,10 @@ function saveCafeSale_(doc, configSheet, payload) {
       JSON.stringify({ requestId: requestId, items: resolved.lines }),
       saleId
     ]);
+    // After the row, not before it: the inventory write bumped the revision
+    // already, and a read landing between the two would otherwise cache a
+    // till payload that is missing the sale that has just been recorded.
+    bumpDataRevision_(CACHE_SCOPE_CAFE);
 
     return jsonOutput_(Object.assign(
       cafeSaleResponse_(saleId, saleDate, seller, resolved, inventory),
@@ -4096,9 +4846,7 @@ function voidCafeSale_(doc, configSheet, payload) {
     }
 
     var current = cafeCatalogue_(configSheet);
-    var items = detail && Array.isArray(detail.items) ? detail.items
-      : (Array.isArray(detail) ? detail : []);
-    var restored = resolveCafeSaleLines_(current, items);
+    var restored = resolveCafeSaleLines_(current, cafeReceiptItems_(detail));
 
     var inventory = current.inventory;
     if (!restored.error) {
@@ -4112,6 +4860,7 @@ function voidCafeSale_(doc, configSheet, payload) {
     }
 
     salesSheet.deleteRow(rowNumber);
+    bumpDataRevision_(CACHE_SCOPE_CAFE);
     appendAuditRow_(doc, "cafe_sale_voided", saleId);
 
     return jsonOutput_({
@@ -4166,6 +4915,7 @@ function closeCafeDay_(doc, configSheet, payload) {
       Math.round(profit),
       JSON.stringify(Array.isArray(payload.summary) ? payload.summary : [])
     ]);
+    bumpDataRevision_(CACHE_SCOPE_CAFE);
 
     var report = {
       date: payload.date, seller: payload.seller,
@@ -4192,6 +4942,23 @@ function closeCafeDay_(doc, configSheet, payload) {
   } finally {
     lock.releaseLock();
   }
+}
+
+/**
+ * The sale lines out of a stored receipt, whichever shape it is in.
+ *
+ * A receipt written since the café became server-authoritative is
+ * `{ requestId, items: [...] }`; one written before that is the bare array.
+ * Readers were handing the *wrapper* on as `items`, so anything doing
+ * `sale.items.forEach(...)` threw on every modern receipt — which in the POS
+ * meant the load failed, and the failure path emptied the till. Both shapes
+ * resolve to the array here, once, so no caller has to know there are two.
+ */
+function cafeReceiptItems_(raw) {
+  var parsed = raw && typeof raw === "object" ? raw : safeParseJSON_(raw, null);
+  if (Array.isArray(parsed)) return parsed;
+  if (parsed && Array.isArray(parsed.items)) return parsed.items;
+  return [];
 }
 
 /**
@@ -4235,6 +5002,213 @@ function readCafeClosingsLean_(doc) {
   return rows;
 }
 
+// ------------------------------------------------------------- scoped reads
+//
+// `readCafeState_` sends every sale ever made, with its receipt parsed, to
+// whichever screen asked. Neither screen wants that:
+//
+//   * the till needs the catalogue and *today's* receipts, so it can show the
+//     progress bar and offer a void;
+//   * the manager needs the catalogue and *totals*, which are four numbers per
+//     period plus a best-seller.
+//
+// Both used to be produced in the browser out of the whole history, so the
+// response grew with every sale the business had ever rung up, and the phone
+// parsed all of it to display four figures. The catalogue is unchanged; only
+// what is derived from the sales sheet is scoped.
+//
+// The full payload is still what an unscoped request gets, so nothing that
+// already works has to know about this.
+
+var CAFE_ADMIN_RECENT_CLOSINGS = 30;
+
+/** How long a café display summary may be reused. Every write bumps the key. */
+var CAFE_SUMMARY_TTL_SECONDS = 120;
+
+/** Routes `get_cafe_data` to the payload the asking screen actually needs. */
+function readCafePayloadForScope_(doc, configSheet, payload) {
+  var scope = String((payload && payload.scope) || "");
+  if (scope === "pos") return readCafePosPayload_(doc, configSheet, payload);
+  if (scope === "admin") return readCafeAdminPayload_(doc, configSheet, payload);
+  return readCafeState_(doc, configSheet);
+}
+
+/** A yyyy-MM-dd the caller supplied, or today in the script's timezone. */
+function cafeRequestedDayKey_(value) {
+  var text = String(value || "");
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
+}
+
+/** The catalogue every café screen starts from. */
+function cafeScreenCatalogue_(configSheet) {
+  return {
+    inventory: safeParseJSON_(getConfigOnce_(configSheet, "Cafe_Inventory"), []),
+    inventoryRev: cafeInventoryRev_(configSheet),
+    recipes: safeParseJSON_(getConfigOnce_(configSheet, "Cafe_Recipes"), []),
+    categories: safeParseJSON_(getConfigOnce_(configSheet, "Cafe_Categories"),
+      ["Ichimliklar", "Fast-Food", "Muzqaymoq"]),
+    settings: safeParseJSON_(getConfigOnce_(configSheet, "Cafe_Settings"), { dailyTarget: 0 })
+  };
+}
+
+/**
+ * The till: the catalogue plus the receipts this cashier rang up today.
+ *
+ * Cached against the café revision, which every sale, void, close-day and
+ * catalogue edit bumps — so the entry is unreachable the moment anything it
+ * describes changes, and the till is never shown a stale shelf. If the cache
+ * is empty the same answer is computed from the sheets.
+ */
+function readCafePosPayload_(doc, configSheet, payload) {
+  var dayKey = cafeRequestedDayKey_(payload && payload.dateKey);
+  var seller = String((payload && payload.seller) || "").slice(0, 120);
+
+  return cachedSummary_("cafe_pos_" + dayKey + "_" + seller, CACHE_SCOPE_CAFE,
+    CAFE_SUMMARY_TTL_SECONDS, function () {
+      var body = cafeScreenCatalogue_(configSheet);
+      body.status = "success";
+      body.scope = "pos";
+      body.dateKey = dayKey;
+      body.sales = readCafeSalesForDay_(doc, dayKey, seller);
+      return body;
+    });
+}
+
+/** Today's receipts for one cashier, parsed — a bounded number of rows. */
+function readCafeSalesForDay_(doc, dayKey, seller) {
+  var rows = readCafeSalesLean_(doc);
+  var sales = [];
+  for (var i = 0; i < rows.length; i++) {
+    if (cafeDateKey_(rows[i].date) !== dayKey) continue;
+    if (seller && String(rows[i].seller || "") !== seller) continue;
+    sales.push({
+      date: rows[i].date, seller: rows[i].seller, total: rows[i].total,
+      profit: rows[i].profit, items: cafeReceiptItems_(rows[i].itemsRaw), id: rows[i].id
+    });
+  }
+  return sales;
+}
+
+/**
+ * The manager: the catalogue, the period totals and the recent closings.
+ *
+ * The four period figures and the best-seller are exactly what the dashboard
+ * used to compute in the browser, from the entire sales history it had been
+ * sent. The day boundaries come from the caller so "today" still means the day
+ * the person looking at the screen is having.
+ */
+function readCafeAdminPayload_(doc, configSheet, payload) {
+  var todayKey = cafeRequestedDayKey_(payload && payload.todayKey);
+  var yesterdayKey = /^\d{4}-\d{2}-\d{2}$/.test(String((payload && payload.yesterdayKey) || ""))
+    ? String(payload.yesterdayKey)
+    : "";
+  var monthKey = /^\d{4}-\d{2}$/.test(String((payload && payload.monthKey) || ""))
+    ? String(payload.monthKey)
+    : todayKey.slice(0, 7);
+
+  var closingsLimit = Math.min(Math.max(Number(payload && payload.closingsLimit) || 0,
+    CAFE_ADMIN_RECENT_CLOSINGS), 500);
+
+  return cachedSummary_(
+    "cafe_admin_" + todayKey + "_" + yesterdayKey + "_" + monthKey + "_" + closingsLimit,
+    CACHE_SCOPE_CAFE, CAFE_SUMMARY_TTL_SECONDS, function () {
+      var body = cafeScreenCatalogue_(configSheet);
+      body.status = "success";
+      body.scope = "admin";
+      body.summary = buildCafeDashboardSummary_(doc, todayKey, yesterdayKey, monthKey);
+      // Newest-first and paged. The count travels with the page so the screen
+      // can say how many it is not showing rather than silently stopping.
+      var closings = readCafeRecentClosings_(doc, closingsLimit);
+      body.closeReports = closings.rows;
+      body.closeReportsTotal = closings.total;
+      return body;
+    });
+}
+
+/** Revenue, profit, sale count and best-seller for each dashboard period. */
+function buildCafeDashboardSummary_(doc, todayKey, yesterdayKey, monthKey) {
+  var rows = readCafeSalesLean_(doc);
+  var buckets = {
+    today: cafeEmptyBucket_(), yesterday: cafeEmptyBucket_(),
+    month: cafeEmptyBucket_(), all: cafeEmptyBucket_()
+  };
+
+  for (var i = 0; i < rows.length; i++) {
+    var key = cafeDateKey_(rows[i].date);
+    var targets = ["all"];
+    if (todayKey && key === todayKey) targets.push("today");
+    if (yesterdayKey && key === yesterdayKey) targets.push("yesterday");
+    if (monthKey && key.indexOf(monthKey) === 0) targets.push("month");
+
+    var revenue = Number(rows[i].total) || 0;
+    var profit = Number(rows[i].profit) || 0;
+    // One parse per row, once, on the server — instead of one per row in every
+    // browser that opens the dashboard, on top of shipping it there.
+    var items = cafeReceiptItems_(rows[i].itemsRaw);
+
+    for (var t = 0; t < targets.length; t++) {
+      var bucket = buckets[targets[t]];
+      bucket.revenue += revenue;
+      bucket.profit += profit;
+      bucket.count++;
+      for (var n = 0; n < items.length; n++) {
+        var name = String((items[n] || {}).name || "");
+        if (!name) continue;
+        bucket.items[name] = (bucket.items[name] || 0) + (Number(items[n].qty) || 0);
+      }
+    }
+  }
+
+  var summary = {};
+  Object.keys(buckets).forEach(function (name) {
+    summary[name] = cafeFinishBucket_(buckets[name]);
+  });
+  return summary;
+}
+
+function cafeEmptyBucket_() {
+  return { revenue: 0, profit: 0, count: 0, items: {} };
+}
+
+function cafeFinishBucket_(bucket) {
+  var top = "";
+  var best = 0;
+  Object.keys(bucket.items).forEach(function (name) {
+    if (bucket.items[name] > best) { best = bucket.items[name]; top = name; }
+  });
+  return {
+    revenue: Math.round(bucket.revenue),
+    profit: Math.round(bucket.profit),
+    count: bucket.count,
+    top: top
+  };
+}
+
+/**
+ * The most recent close-day records, newest first, with their summaries, and
+ * how many there are in total.
+ *
+ * Only the page that is shown has its per-item summary parsed; the count comes
+ * from the row count, so "showing 30 of 214" costs nothing.
+ */
+function readCafeRecentClosings_(doc, limit) {
+  var sheet = doc.getSheetByName("Cafe_Kun_Yakuni");
+  if (!sheet || sheet.getLastRow() < 2) return { rows: [], total: 0 };
+
+  var data = sheet.getDataRange().getValues();
+  var start = Math.max(1, data.length - limit);
+  var rows = [];
+  for (var i = start; i < data.length; i++) {
+    rows.push({
+      date: data[i][0], seller: data[i][1], totalRevenue: data[i][2],
+      totalProfit: data[i][3], summary: safeParseJSON_(data[i][4], [])
+    });
+  }
+  rows.reverse();
+  return { rows: rows, total: data.length - 1 };
+}
+
 /** Everything cafe_admin.html and cafe_pos.html need on load. */
 function readCafeState_(doc, configSheet) {
   var salesSheet = doc.getSheetByName("Cafe_Sales");
@@ -4244,7 +5218,7 @@ function readCafeState_(doc, configSheet) {
     for (var j = 1; j < salesData.length; j++) {
       sales.push({
         date: salesData[j][0], seller: salesData[j][1], total: salesData[j][2],
-        profit: salesData[j][3], items: safeParseJSON_(salesData[j][4], []), id: salesData[j][5]
+        profit: salesData[j][3], items: cafeReceiptItems_(salesData[j][4]), id: salesData[j][5]
       });
     }
   }
@@ -4262,6 +5236,10 @@ function readCafeState_(doc, configSheet) {
   }
 
   return {
+    // The unscoped payload answered without a status at all, which meant the
+    // one thing a client can rely on -- "the server said this worked" -- was
+    // the absence of an error. The scoped payloads say so; so does this one.
+    status: "success",
     inventory: safeParseJSON_(getConfig(configSheet, "Cafe_Inventory"), []),
     inventoryRev: cafeInventoryRev_(configSheet),
     recipes: safeParseJSON_(getConfig(configSheet, "Cafe_Recipes"), []),
@@ -5076,6 +6054,9 @@ function appendLedgerRows_(sheet, rows) {
   var start = sheet.getLastRow() + 1;
   applyLedgerColumnFormats_(sheet, start, rows.length);
   sheet.getRange(start, 1, rows.length, LEDGER_HEADER.length).setValues(rows);
+  // Every cached Omad summary was derived from the rows that were here a
+  // moment ago. Bumping at the writer means a new read path cannot forget to.
+  bumpDataRevision_(CACHE_SCOPE_OMAD);
 }
 
 function ledgerRowToTransaction_(row, rowNumber) {
@@ -5530,6 +6511,8 @@ function cancelTransaction_(doc, input) {
 function setLedgerStatus_(sheet, rowNumber, status, timestamp) {
   sheet.getRange(rowNumber, 19).setValue(status);
   sheet.getRange(rowNumber, 4).setValue(timestamp);
+  // A cancellation or a correction changes every figure derived from this row.
+  bumpDataRevision_(CACHE_SCOPE_OMAD);
 }
 
 /**
@@ -6767,6 +7750,7 @@ function appendTaskRow_(doc, task) {
   var row = sheet.getLastRow() + 1;
   applyTaskTextFormats_(sheet, TASKS_HEADER, TASKS_TEXT_COLUMNS, row, 1);
   sheet.appendRow(taskToRow_(task));
+  bumpDataRevision_(CACHE_SCOPE_TASKS);
 }
 
 function updateTaskRow_(doc, task) {
@@ -6774,6 +7758,7 @@ function updateTaskRow_(doc, task) {
   if (!task.rowNumber) return;
   applyTaskTextFormats_(sheet, TASKS_HEADER, TASKS_TEXT_COLUMNS, task.rowNumber, 1);
   sheet.getRange(task.rowNumber, 1, 1, TASKS_HEADER.length).setValues([taskToRow_(task)]);
+  bumpDataRevision_(CACHE_SCOPE_TASKS);
 }
 
 // ------------------------------------------------------ occurrence records
@@ -6879,6 +7864,7 @@ function appendOccurrenceRow_(doc, occ) {
   applyTaskTextFormats_(sheet, TASK_OCC_HEADER, TASK_OCC_TEXT_COLUMNS, row, 1);
   sheet.appendRow(occurrenceToRow_(occ));
   occ.rowNumber = row;
+  bumpDataRevision_(CACHE_SCOPE_TASKS);
 }
 
 /** Appends many occurrences in one write, protecting their text columns first. */
@@ -6891,6 +7877,7 @@ function appendOccurrenceRows_(doc, occurrences) {
   for (var i = 0; i < occurrences.length; i++) values.push(occurrenceToRow_(occurrences[i]));
   sheet.getRange(startRow, 1, values.length, TASK_OCC_HEADER.length).setValues(values);
   for (var r = 0; r < occurrences.length; r++) occurrences[r].rowNumber = startRow + r;
+  bumpDataRevision_(CACHE_SCOPE_TASKS);
   return occurrences;
 }
 
@@ -6901,6 +7888,7 @@ function writeOccurrenceRow_(doc, occ) {
   occ.updatedAt = new Date().toISOString();
   applyTaskTextFormats_(sheet, TASK_OCC_HEADER, TASK_OCC_TEXT_COLUMNS, occ.rowNumber, 1);
   sheet.getRange(occ.rowNumber, 1, 1, TASK_OCC_HEADER.length).setValues([occurrenceToRow_(occ)]);
+  bumpDataRevision_(CACHE_SCOPE_TASKS);
 }
 
 // ------------------------------------------------ occurrence materialisation
@@ -8068,9 +9056,13 @@ function processTaskSchedules() {
 
 // ---------------------------------------------------------------- web API
 
-// The panel does one read per load and one per mutation, so this is generous
-// for the admin and mean to anyone guessing keys.
+// The panel does one read per load and one per mutation. Signed-in traffic is
+// bounded by AUTHENTICATED_REQUEST_LIMIT, per user; this remains as the
+// documented shape of the board's own load.
 var TASK_READ_RATE_LIMIT = 30;
+
+/** A task view may be reused for this long; the key also carries the minute. */
+var TASK_VIEW_TTL_SECONDS = 90;
 
 function isTaskReadAction_(action) {
   return action === "get_tasks";
@@ -8088,26 +9080,40 @@ function isTaskAction_(action) {
 }
 
 function handleTaskAction_(action, payload, doc) {
+  // The task board is internal company information: who is responsible for
+  // what, when it is due, and who has been missing deadlines. Reads are gated
+  // exactly like mutations, and both are omad_admin only. A failed attempt is
+  // throttled inside the gate; a signed-in one is not, so a stranger hammering
+  // the endpoint can no longer close the board for the person using it.
+  var auth = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+  if (!auth.ok) return authRefusal_(auth);
+
   if (isTaskReadAction_(action)) {
-    // The task board is internal company information: who is responsible for
-    // what, when it is due, and who has been missing deadlines. It is gated
-    // like a mutation, and throttled before the key is compared so the
-    // endpoint cannot be used to guess it.
-    var throttled = enforceRateLimit_("tasks_read", TASK_READ_RATE_LIMIT, TELEGRAM_RATE_WINDOW_SECONDS);
-    if (throttled) return jsonOutput_({ status: "error", message: throttled });
-    var readError = checkAdminKey_(payload);
-    if (readError) return jsonOutput_({ status: "error", message: readError });
     return jsonOutput_({
       status: "success",
-      view: buildTaskViews_(doc, Date.now()),
+      view: cachedTaskView_(doc),
       config: { tasksGroupConfigured: !!getTasksGroupChatId_() }
     });
   }
 
-  var adminError = checkAdminKey_(payload);
-  if (adminError) return jsonOutput_({ status: "error", message: adminError });
-
   return runTaskAction_(action, payload, doc);
+}
+
+/**
+ * The board view, reused within the minute it was built for.
+ *
+ * `Overdue` is derived on read from the current time, so the cache key carries
+ * the minute as well as the task revision: an entry can be a few seconds stale
+ * about the clock and never more, and any write to a task or an occurrence
+ * makes it unreachable immediately. The view is rebuilt from the sheets on a
+ * miss, so losing the cache costs a sheet pass and nothing else.
+ */
+function cachedTaskView_(doc) {
+  var now = Date.now();
+  var minute = Math.floor(now / 60000);
+  return cachedSummary_("task_view_" + minute, CACHE_SCOPE_TASKS, TASK_VIEW_TTL_SECONDS, function () {
+    return buildTaskViews_(doc, now);
+  });
 }
 
 /**
@@ -9696,6 +10702,30 @@ function handleWizardSave_(state, chatId, key, cache, doc, fromId) {
 // format responses; all business logic lives in the modules above.
 // ============================================================
 
+// ------------------------------------------------------------- role sets
+//
+// Every gated action names the roles that may perform it, here, in one place.
+// The three web "roles" used to be a choice of which page opened: the server
+// saw one key and one permission level, so a café seller who edited two
+// localStorage values could read the ledger and run a migration. These lists
+// are what make the roles real, and they are enforced on the server where a
+// browser cannot reach them.
+
+/** Anybody who is signed in, whichever role they hold. */
+var AUTH_ROLES_ANY = [AUTH_ROLE_OMAD_ADMIN, AUTH_ROLE_CAFE_ADMIN, AUTH_ROLE_CAFE_SELLER];
+
+/** The accounting, the settings, the migration, the maintenance, the tasks. */
+var AUTH_ROLES_OMAD_ADMIN = [AUTH_ROLE_OMAD_ADMIN];
+
+/** Reading the café: the till, the café manager, and the owner. */
+var AUTH_ROLES_CAFE_READ = [AUTH_ROLE_OMAD_ADMIN, AUTH_ROLE_CAFE_ADMIN, AUTH_ROLE_CAFE_SELLER];
+
+/** Editing the catalogue: prices, recipes, categories, the daily target. */
+var AUTH_ROLES_CAFE_ADMIN = [AUTH_ROLE_OMAD_ADMIN, AUTH_ROLE_CAFE_ADMIN];
+
+/** Ringing up, voiding and closing the day. */
+var AUTH_ROLES_CAFE_SELL = [AUTH_ROLE_OMAD_ADMIN, AUTH_ROLE_CAFE_SELLER];
+
 function doPost(e) {
   // Anything memoised for the life of a request starts empty. Apps Script
   // gives each execution a fresh global scope so this is already true in
@@ -9741,54 +10771,90 @@ function doPost(e) {
       return handleMiniAppAction_(action, payload, doc);
     }
 
+    // ---- Sign in ----------------------------------------------------------
+    // The only unauthenticated action there is. It is routed after the Mini
+    // App and before everything else so nothing can reach a gated handler
+    // through it, and it never answers with anything but a token.
+    if (action === 'login') {
+      return jsonOutput_(loginAction_(payload));
+    }
+
     // ---- Task management --------------------------------------------------
     if (isTaskAction_(action)) {
       return handleTaskAction_(action, payload, doc);
     }
 
+    // ---- Session & account ------------------------------------------------
+    // verify_access is what a page calls on load to find out whether its stored
+    // session is still good and which role it carries, so every signed-in role
+    // may call it.
+    if (action === 'verify_access' || action === 'change_password') {
+      var sessionAuth = authorizeWebRequest_(payload, AUTH_ROLES_ANY);
+      if (!sessionAuth.ok) return authRefusal_(sessionAuth);
+      if (action === 'change_password') return jsonOutput_(changePasswordAction_(sessionAuth, payload));
+      return jsonOutput_({
+        status: "success", role: sessionAuth.role, username: sessionAuth.username,
+        home: AUTH_ROLE_HOME[sessionAuth.role] || "login.html",
+        bootstrap: !!sessionAuth.bootstrap
+      });
+    }
+
+    if (action === 'set_user_password' || action === 'list_users') {
+      var accountAuth = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+      if (!accountAuth.ok) return authRefusal_(accountAuth);
+      if (action === 'list_users') return jsonOutput_({ status: "success", users: listAuthUsers_() });
+      return jsonOutput_(setUserPasswordAction_(payload));
+    }
+
     // ---- Authenticated reads ----------------------------------------------
     // The financial ledger, the tenant list and the whole café state are the
-    // business's private data. get_omad / get_cafe still answer an anonymous
-    // GET for one release so the deployed frontend cannot break between the
-    // static-host and Apps Script rollouts; these are what the UI now calls,
-    // and the anonymous routes are removed once the live host serves the
-    // current build.
-    if (action === 'verify_access' || action === 'get_omad_data' || action === 'get_cafe_data') {
-      return authenticatedReadAction_(action, payload, doc, configSheet);
+    // business's private data, and the two reads are gated differently: a café
+    // seller has no business reading the ledger, and could previously do so by
+    // editing one localStorage value.
+    if (action === 'get_omad_data') {
+      var omadReadAuth = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+      if (!omadReadAuth.ok) return authRefusal_(omadReadAuth);
+      return jsonOutput_(readOmadPayload_(doc, configSheet));
+    }
+
+    if (action === 'get_cafe_data') {
+      var cafeReadAuth = authorizeWebRequest_(payload, AUTH_ROLES_CAFE_READ);
+      if (!cafeReadAuth.ok) return authRefusal_(cafeReadAuth);
+      return jsonOutput_(readCafePayloadForScope_(doc, configSheet, payload));
     }
 
     // ---- Omad ledger ------------------------------------------------------
-    // Financial writes take the access key. They were reachable by anyone who
+    // Financial writes are omad_admin only. They were reachable by anyone who
     // knew the /exec URL, which meant anyone could rewrite the whole ledger.
     if (action === 'migrate_omad' || action === 'save_omad') {
-      var saveAccessError = checkAdminKey_(payload);
-      if (saveAccessError) return jsonOutput_({ status: "error", message: saveAccessError });
+      var saveAccess = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+      if (!saveAccess.ok) return authRefusal_(saveAccess);
       return saveOmadAction_(action, payload, doc, configSheet);
     }
 
     if (action === 'tenant_paid_expense') {
-      var pairAccessError = checkAdminKey_(payload);
-      if (pairAccessError) return jsonOutput_({ status: "error", message: pairAccessError });
+      var pairAccess = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+      if (!pairAccess.ok) return authRefusal_(pairAccess);
       return tenantPaidExpenseAction_(payload, doc, configSheet);
     }
 
     // ---- Append-only ledger -----------------------------------------------
     if (isLedgerAction_(action)) {
-      var ledgerAccessError = checkAdminKey_(payload);
-      if (ledgerAccessError) return jsonOutput_({ status: "error", message: ledgerAccessError });
+      var ledgerAccess = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+      if (!ledgerAccess.ok) return authRefusal_(ledgerAccess);
       return ledgerAction_(action, payload, doc);
     }
 
     // ---- Retry queue ------------------------------------------------------
     if (action === 'get_job_queue_status') {
-      var queueAccessError = checkAdminKey_(payload);
-      if (queueAccessError) return jsonOutput_({ status: "error", message: queueAccessError });
+      var queueAccess = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+      if (!queueAccess.ok) return authRefusal_(queueAccess);
       return jsonOutput_({ status: "success", queue: buildJobQueueStatus_(doc) });
     }
 
     if (action === 'process_jobs') {
-      var jobsAdminError = checkAdminKey_(payload);
-      if (jobsAdminError) return jsonOutput_({ status: "error", message: jobsAdminError });
+      var jobsAccess = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+      if (!jobsAccess.ok) return authRefusal_(jobsAccess);
       var processed = processPendingJobs_(doc, JOB_QUEUE_MANUAL_BATCH);
       return jsonOutput_({ status: "success", processed: processed, queue: buildJobQueueStatus_(doc) });
     }
@@ -9797,8 +10863,8 @@ function doPost(e) {
     // The view carries no secret, but it does carry the authorized user id and
     // both group chat ids -- enough to know exactly who and where to target.
     if (action === 'get_telegram_settings') {
-      var settingsAccessError = checkAdminKey_(payload);
-      if (settingsAccessError) return jsonOutput_({ status: "error", message: settingsAccessError });
+      var settingsAccess = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+      if (!settingsAccess.ok) return authRefusal_(settingsAccess);
       return jsonOutput_({ status: "success", settings: buildTelegramSettingsView_() });
     }
 
@@ -9810,14 +10876,14 @@ function doPost(e) {
     // Counts and event names only, but the audit tail names tasks, people and
     // operations, and the counts describe the size of the business.
     if (action === 'get_system_status') {
-      var statusAccessError = checkAdminKey_(payload);
-      if (statusAccessError) return jsonOutput_({ status: "error", message: statusAccessError });
+      var statusAccess = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+      if (!statusAccess.ok) return authRefusal_(statusAccess);
       return jsonOutput_({ status: "success", system: buildSystemStatus_(doc) });
     }
 
     if (action === 'create_backup' || action === 'retry_failed_jobs') {
-      var systemAdminError = checkAdminKey_(payload);
-      if (systemAdminError) return jsonOutput_({ status: "error", message: systemAdminError });
+      var systemAccess = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+      if (!systemAccess.ok) return authRefusal_(systemAccess);
       var systemResult = action === 'create_backup'
         ? createManualBackup_(doc)
         : retryFailedJobs_(doc);
@@ -9832,22 +10898,22 @@ function doPost(e) {
 
     // ---- Health & Mini App configuration ----------------------------------
     if (action === 'get_health' || action === 'configure_mini_app') {
-      var healthAdminError = checkAdminKey_(payload);
-      if (healthAdminError) return jsonOutput_({ status: "error", message: healthAdminError });
+      var healthAccess = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+      if (!healthAccess.ok) return authRefusal_(healthAccess);
       if (action === 'configure_mini_app') return jsonOutput_(configureMiniApp_(payload));
       return jsonOutput_({ status: "success", health: buildHealthReport_(doc) });
     }
 
     // ---- Migration --------------------------------------------------------
     if (action === 'get_migration_status') {
-      var migrationReadError = checkAdminKey_(payload);
-      if (migrationReadError) return jsonOutput_({ status: "error", message: migrationReadError });
+      var migrationRead = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+      if (!migrationRead.ok) return authRefusal_(migrationRead);
       return jsonOutput_({ status: "success", migration: getMigrationStatus_(doc) });
     }
 
     if (isMigrationAction_(action)) {
-      var migrationAdminError = checkAdminKey_(payload);
-      if (migrationAdminError) return jsonOutput_({ status: "error", message: migrationAdminError });
+      var migrationAccess = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+      if (!migrationAccess.ok) return authRefusal_(migrationAccess);
       return migrationAction_(action, payload, doc);
     }
 
@@ -9989,8 +11055,8 @@ function telegramAdminAction_(action, payload) {
   var lengthError = validateTelegramPayloadLengths_(payload);
   if (lengthError) return jsonOutput_({ status: "error", message: lengthError });
 
-  var adminError = checkAdminKey_(payload);
-  if (adminError) return jsonOutput_({ status: "error", message: adminError });
+  var auth = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+  if (!auth.ok) return authRefusal_(auth);
 
   if (action === 'save_telegram_settings') return jsonOutput_(saveTelegramSettings_(payload));
   if (action === 'test_telegram_connection') return jsonOutput_(testTelegramConnection_());
@@ -9999,24 +11065,13 @@ function telegramAdminAction_(action, payload) {
 }
 
 /**
- * Reads that require the access key.
+ * Everything omad_admin.html needs on load, in one round trip.
  *
- * Throttled before the key is compared, exactly as the Telegram admin actions
- * are, so the endpoint cannot be used to guess it.
+ * `migration` used to be a second request the page fired immediately after
+ * this one, which on Apps Script is another cold-start-and-lock round trip
+ * before the dashboard can decide whether the ledger is live. It is four
+ * Script Property reads, so it rides along.
  */
-function authenticatedReadAction_(action, payload, doc, configSheet) {
-  var throttled = enforceRateLimit_("read_auth", TELEGRAM_ADMIN_RATE_LIMIT, TELEGRAM_RATE_WINDOW_SECONDS);
-  if (throttled) return jsonOutput_({ status: "error", message: throttled });
-
-  var accessError = checkAdminKey_(payload);
-  if (accessError) return jsonOutput_({ status: "error", message: accessError });
-
-  if (action === 'verify_access') return jsonOutput_({ status: "success" });
-  if (action === 'get_omad_data') return jsonOutput_(readOmadPayload_(doc, configSheet));
-  return jsonOutput_(readCafeState_(doc, configSheet));
-}
-
-/** The Omad read payload, shared by the authenticated and legacy routes. */
 function readOmadPayload_(doc, configSheet) {
   return {
     status: "success",
@@ -10024,7 +11079,8 @@ function readOmadPayload_(doc, configSheet) {
     tenants: normalizeTenantList_(safeParseJSON_(getConfig(configSheet, "Omad_Tenants"), [])),
     rates: safeParseJSON_(getConfig(configSheet, "Omad_Rates"), { "Fevral": 12500 }),
     templateExpenses: normalizeTemplateExpenses_(
-      safeParseJSON_(getConfig(configSheet, "Omad_Template_Expenses"), []))
+      safeParseJSON_(getConfig(configSheet, "Omad_Template_Expenses"), [])),
+    migration: getMigrationStatus_(doc)
   };
 }
 
@@ -10045,8 +11101,8 @@ function isMaintenanceAction_(action) {
  * would otherwise report on financial rows to anyone who asked.
  */
 function maintenanceAction_(action, payload, doc) {
-  var adminError = checkAdminKey_(payload);
-  if (adminError) return jsonOutput_({ status: "error", message: adminError });
+  var auth = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+  if (!auth.ok) return authRefusal_(auth);
 
   if (action === 'audit_transaction_dates') {
     return jsonOutput_({ status: "success", audit: auditTransactionDates_(doc) });
@@ -10417,6 +11473,18 @@ var MINI_APP_RECENT_SALES = 10;
 var MINI_APP_RECENT_CLOSINGS = 5;
 
 /**
+ * How long a Mini App summary may be reused.
+ *
+ * Short, and secondary: the cache key carries the data revision, so any write
+ * to the ledger, the tenant list, the rates or the café makes the stored
+ * answer unreachable at once. This is the backstop for a write path that has
+ * not been taught to bump — a minute of staleness on a *display* summary, on a
+ * phone, where the only alternative was rescanning the whole ledger for a
+ * screen that had not changed.
+ */
+var MINI_APP_SUMMARY_TTL_SECONDS = 60;
+
+/**
  * Fields the caller may never contribute to — the answer to "who did this".
  *
  * The task engine reads all of these straight off the payload. A Mini App
@@ -10453,25 +11521,24 @@ function handleMiniAppAction_(action, payload, doc) {
   // the task case for counts no screen ever rendered. Café and Tasks are
   // fetched when their tab is first opened.
   if (action === 'mini_home' || action === 'mini_omad') {
-    var omadCtx = miniOmadContext_(doc, configSheet, payload.period);
-    var response = {
-      status: "success", authorized: true,
-      omad: buildMiniOmadSummary_(omadCtx),
-      tenants: buildMiniTenantStatus_(omadCtx),
-      transactions: buildMiniRecentEntries_(omadCtx)
-    };
-    if (action === 'mini_home') response.user = auth.user;
+    var response = miniOmadSnapshot_(doc, configSheet, payload.period);
+    if (action === 'mini_home') response = Object.assign({ user: auth.user }, response);
     return jsonOutput_(response);
   }
 
   if (action === 'mini_cafe') {
-    return jsonOutput_({ status: "success", authorized: true, cafe: buildMiniCafeSummary_(doc, configSheet) });
+    return jsonOutput_({
+      status: "success", authorized: true,
+      cafe: cachedSummary_("mini_cafe", CACHE_SCOPE_CAFE, MINI_APP_SUMMARY_TTL_SECONDS, function () {
+        return buildMiniCafeSummary_(doc, configSheet);
+      })
+    });
   }
 
   if (action === 'mini_tasks') {
     return jsonOutput_({
       status: "success", authorized: true,
-      view: buildTaskViews_(doc, Date.now()),
+      view: cachedTaskView_(doc),
       config: { tasksGroupConfigured: !!getTasksGroupChatId_() }
     });
   }
@@ -10494,6 +11561,33 @@ function handleMiniAppAction_(action, payload, doc) {
 }
 
 // ------------------------------------------------------------------- reading
+
+/**
+ * The whole Omad tab, cached against the accounting revision.
+ *
+ * The opening screen was a full scan of the historical ledger every time the
+ * Mini App was opened, and opening it again a minute later scanned it again to
+ * produce byte-for-byte the same answer. The scan still happens — it is the
+ * only way to be right — but only once per period per change to the data.
+ *
+ * The user identity is deliberately *not* part of this: the summary is the
+ * business's figures, the same for whoever is authorized to see them, and only
+ * one person is. `user` is attached outside the cache so the stored value can
+ * never carry somebody's name into somebody else's response.
+ */
+function miniOmadSnapshot_(doc, configSheet, requestedPeriod) {
+  var period = isCanonicalPeriod_(requestedPeriod) ? String(requestedPeriod) : "";
+  return cachedSummary_("mini_omad_" + period, CACHE_SCOPE_OMAD, MINI_APP_SUMMARY_TTL_SECONDS,
+    function () {
+      var ctx = miniOmadContext_(doc, configSheet, requestedPeriod);
+      return {
+        status: "success", authorized: true,
+        omad: buildMiniOmadSummary_(ctx),
+        tenants: buildMiniTenantStatus_(ctx),
+        transactions: buildMiniRecentEntries_(ctx)
+      };
+    });
+}
 
 /**
  * Everything the Omad screens read, fetched once per request.
@@ -10683,14 +11777,14 @@ function buildMiniCafeSummary_(doc, configSheet) {
   // to count its lines.
   for (var s = Math.max(0, sales.length - MINI_APP_RECENT_SALES); s < sales.length; s++) {
     var recent = sales[s];
-    var items = safeParseJSON_(recent.itemsRaw, []);
+    var items = cafeReceiptItems_(recent.itemsRaw);
     recentSales.push({
       id: String(recent.id || ""),
       date: cafeDateKey_(recent.date),
       seller: String(recent.seller || ""),
       total: Number(recent.total) || 0,
       profit: Number(recent.profit) || 0,
-      items: Array.isArray(items) ? items.length : 0
+      items: items.length
     });
   }
   recentSales.reverse();

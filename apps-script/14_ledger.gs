@@ -125,6 +125,9 @@ function appendLedgerRows_(sheet, rows) {
   var start = sheet.getLastRow() + 1;
   applyLedgerColumnFormats_(sheet, start, rows.length);
   sheet.getRange(start, 1, rows.length, LEDGER_HEADER.length).setValues(rows);
+  // Every cached Omad summary was derived from the rows that were here a
+  // moment ago. Bumping at the writer means a new read path cannot forget to.
+  bumpDataRevision_(CACHE_SCOPE_OMAD);
 }
 
 function ledgerRowToTransaction_(row, rowNumber) {
@@ -579,6 +582,8 @@ function cancelTransaction_(doc, input) {
 function setLedgerStatus_(sheet, rowNumber, status, timestamp) {
   sheet.getRange(rowNumber, 19).setValue(status);
   sheet.getRange(rowNumber, 4).setValue(timestamp);
+  // A cancellation or a correction changes every figure derived from this row.
+  bumpDataRevision_(CACHE_SCOPE_OMAD);
 }
 
 /**

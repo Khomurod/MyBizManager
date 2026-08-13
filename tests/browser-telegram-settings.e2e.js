@@ -71,8 +71,8 @@ describe('Telegram settings panel (browser)', () => {
 
     await context.addInitScript(() => {
       localStorage.setItem('omad_role', 'omad_admin');
-      localStorage.setItem('omad_token', 'omad_admin_active');
-      localStorage.setItem('omad_access_key', 'e2e-access-key');
+      localStorage.setItem('omad_session', 'e2e-session-token');
+      localStorage.setItem('omad_session_expires', String(Date.now() + 86400000));
       localStorage.setItem('omad_user', 'tester');
     });
 
@@ -219,7 +219,7 @@ describe('Telegram settings panel (browser)', () => {
     await context.close();
   });
 
-  test('an empty key field falls back to the key this browser signed in with', async () => {
+  test('an empty key field means the session is the credential', async () => {
     const state = { ...savedState };
     const { page, context, backendRequests } = await openAdmin(backend(state));
 
@@ -236,16 +236,18 @@ describe('Telegram settings panel (browser)', () => {
       await page.waitForTimeout(100);
     }
 
-    // The field exists so a *different* key can be tried without signing out.
-    // Leaving it empty is not a refusal to authenticate - the signed-in key is
-    // the same key, so the save goes through carrying it.
+    // The field is the break-glass maintenance key. Empty means "use my
+    // session", which is what every other request in the app does - not "send
+    // nothing", and no longer "send the key this browser is holding", because
+    // it is not holding one.
     const saves = backendRequests.filter(r => r.action === 'save_telegram_settings');
     assert.strictEqual(saves.length, 1);
-    assert.strictEqual(saves[0].adminKey, 'e2e-access-key');
+    assert.strictEqual(saves[0].adminKey, undefined, 'no key is sent when none was typed');
+    assert.strictEqual(saves[0].sessionToken, 'e2e-session-token');
     await context.close();
   });
 
-  test('a typed key wins over the signed-in one', async () => {
+  test('a typed key is sent instead of the session', async () => {
     const state = { ...savedState };
     const { page, context, backendRequests } = await openAdmin(backend(state));
 
@@ -294,8 +296,8 @@ describe('Telegram settings panel (browser)', () => {
 
     await context.addInitScript(() => {
       localStorage.setItem('omad_role', 'cafe_seller');
-      localStorage.setItem('omad_token', 'cafe_seller_active');
-      localStorage.setItem('omad_access_key', 'e2e-access-key');
+      localStorage.setItem('omad_session', 'e2e-session-token');
+      localStorage.setItem('omad_session_expires', String(Date.now() + 86400000));
       localStorage.setItem('omad_user', 'kassir');
     });
     await context.route('**://api.telegram.org/**', route => {
@@ -386,20 +388,24 @@ describe('Telegram settings panel (browser)', () => {
   });
 
   test('café screens still load without page errors (regression)', async () => {
-    for (const [file, role, token] of [
-      ['cafe_admin.html', 'cafe_admin', 'cafe_admin_active'],
-      ['cafe_pos.html', 'cafe_seller', 'cafe_seller_active']
+    for (const [file, role] of [
+      ['cafe_admin.html', 'cafe_admin'],
+      ['cafe_pos.html', 'cafe_seller']
     ]) {
       const context = await browser.newContext();
-      await context.addInitScript(([r, t]) => {
+      await context.addInitScript(r => {
         localStorage.setItem('omad_role', r);
-        localStorage.setItem('omad_token', t);
+        localStorage.setItem('omad_session', 'e2e-session-token');
+        localStorage.setItem('omad_session_expires', String(Date.now() + 86400000));
         localStorage.setItem('omad_user', 'tester');
-      }, [role, token]);
+      }, role);
       await context.route('**script.google.com/**', route => route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ inventory: [], recipes: [], categories: [], sales: [], closeReports: [], settings: {} })
+        body: JSON.stringify({
+          status: 'success', inventory: [], recipes: [], categories: [],
+          sales: [], closeReports: [], summary: {}, settings: {}
+        })
       }));
 
       const page = await context.newPage();

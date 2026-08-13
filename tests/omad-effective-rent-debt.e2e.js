@@ -102,8 +102,8 @@ describe('Effective rent drives tenant debt (browser)', () => {
     const context = await browser.newContext();
     await context.addInitScript(() => {
       localStorage.setItem('omad_role', 'omad_admin');
-      localStorage.setItem('omad_token', 'omad_admin_active');
-      localStorage.setItem('omad_access_key', 'e2e-access-key');
+      localStorage.setItem('omad_session', 'e2e-session-token');
+      localStorage.setItem('omad_session_expires', String(Date.now() + 86400000));
     });
     await context.route('**script.google.com/**', async route => {
       const request = route.request();

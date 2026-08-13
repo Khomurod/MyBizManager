@@ -18,7 +18,9 @@ sheet and the legacy `Omad_Transactions` is kept intact for rollback.
 
 | File | Role |
 |---|---|
-| `login.html` | Role selection **and the access key**: verifies it against `verify_access`, then stores `omad_role` / `omad_token` / `omad_access_key` |
+| `login.html` | Username and password only. Posts `login`, and stores the signed session it gets back as `omad_session` / `omad_role` / `omad_user` / `omad_session_expires` |
+| `assets/session.js` | Loaded first by every web page: the session, the transport, the four kinds of request failure, and the per-screen snapshot |
+| `assets/css/app.css` | The committed Tailwind build (`npm run build:css`), replacing the Play CDN's in-browser compile |
 | `omad_admin.html` | Omad-D rent admin markup: dashboard, entry, history, settings |
 | `assets/omad/*.js` | The Omad admin application, split by responsibility |
 | `cafe_admin.html` | Café inventory, recipes, categories, settings |
@@ -251,7 +253,10 @@ Secrets and configuration that must never reach the browser.
 | Property | Secret | Purpose |
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | **yes** | BotFather token |
-| `OMAD_ADMIN_KEY` | **yes** | Required for every settings mutation |
+| `OMAD_ADMIN_KEY` | **yes** | Internal break-glass credential: accepted as `omad_admin` on any web action, and the bootstrap password until the owner's account exists. No normal user needs it |
+| `OMAD_USERS` | **yes** | `{ username: { role, salt, hash, pwv, updatedAt } }`. Passwords are 200 chained HMAC-SHA256 rounds over a per-user salt |
+| `OMAD_SESSION_SECRET` | **yes** | HMAC key the session tokens are signed with. Generated on first use; never entered by hand |
+| `OMAD_REV_OMAD` / `OMAD_REV_CAFE` / `OMAD_REV_TASKS` | no | Cache revision counters. Bumped by every write; part of every summary cache key |
 | `TELEGRAM_AUTHORIZED_USER_ID` | no | The only user allowed to run `/yangi` |
 | `TELEGRAM_GROUP_CHAT_ID` | no | Reporting group |
 | `TELEGRAM_WEBHOOK_URL` | no | Last configured webhook URL (without the secret) |
@@ -321,22 +326,71 @@ one of them:
 
 | Gate | Proves | Used by |
 |---|---|---|
-| **Access key** (`OMAD_ADMIN_KEY`) | you signed in | the three web apps, and every admin/maintenance action |
+| **Session token** | you signed in as this person, in this role | the three web apps and the task board |
 | **Telegram `initData`** | Telegram signed this, and you are the authorized user | the Mini App |
 | **Webhook secret** + authorized user id | Telegram delivered this update | the bot |
 
-### The access key
+### Sessions and roles
 
-The same key that was already typed into Sozlamalar. It is entered once on
-`login.html`, verified there against `verify_access`, kept in `localStorage`,
-and attached by `callBackend` to every request. The username and password on
-that page choose which app opens; they are in the page source and have never
-been a security boundary. The key is.
+`login` takes a username and a password, checks them against the salted hashes
+in `OMAD_USERS`, and returns
+
+```
+v1.<username>.<role>.<expirySeconds>.<passwordVersion>.<nonce>.<hmacSha256Hex>
+```
+
+signed with `OMAD_SESSION_SECRET`. The browser stores it and `callApi` attaches
+it to every request. Verifying one is a hash, not a sheet read, so nothing about
+the session depends on the cache or on the project staying warm.
+
+The claims are readable by whoever holds the token — they describe that person —
+and the signature is what makes them true. Editing the role and re-sending it
+fails the signature check. The stored record is consulted too, so a changed
+password (`pwv`), a changed role or a deleted account takes effect on the next
+request rather than in thirty days.
+
+Every gated action names the roles that may perform it, from the `AUTH_ROLES_*`
+lists in `20_api.gs`:
+
+| Role | May do |
+|---|---|
+| `omad_admin` | everything |
+| `cafe_admin` | read the café; save inventory, recipes, categories, café settings |
+| `cafe_seller` | read the café; `save_sale`, `void_sale`, `close_day` |
+
+`OMAD_ADMIN_KEY` is still accepted, as `omad_admin`, so maintenance and
+migration work against a project with no user store. It is compared **after**
+its own strict rate limit, so the endpoint cannot be used to guess it.
 
 Reads go over an **authenticated POST** (`get_omad_data`, `get_cafe_data`)
 rather than a GET, because a GET puts its parameters in the URL — which is
-where a key must never be. Both are compared **after** a rate limit, so the
-endpoint cannot be used to guess the key.
+where a credential must never be.
+
+`get_cafe_data` takes a `scope`:
+
+| `scope` | Answers |
+|---|---|
+| `"pos"` | catalogue + today's receipts for the named cashier |
+| `"admin"` | catalogue + per-period totals + recent close-day records |
+| absent | the full historical payload, unchanged, for anything that has not been taught about scopes |
+
+### Refusals
+
+A refusal is a shape, not a sentence, because the client has to act on it:
+
+| Field | Meaning | Client does |
+|---|---|---|
+| `authExpired: true` | the session is over or forged | clear it and return to login |
+| `code: "forbidden"` | wrong role | show the message; the session is fine |
+| `code: "throttled"` | rate limited | keep the screen, show Retry |
+| anything else | an ordinary refusal | show the message |
+
+`code: "stale_client"` is the one refusal the *browser* produces without asking:
+a write attempted while the screen is showing a snapshot the server has not
+confirmed this session. See [APP_BRIEF.md §11](APP_BRIEF.md#11-decisions-that-must-be-preserved).
+
+**Only `authExpired` signs anybody out.** Treating a throttle as an expiry is
+what emptied the café till mid-shift.
 
 The GET surface is **inert**. `doGet` reads nothing and answers every request,
 whatever action it names, with the same sentence. `get_omad` / `get_cafe` used

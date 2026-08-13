@@ -428,3 +428,80 @@ test('verifying the migration reads the ledger once', () => {
   assert.strictEqual(counts.Omad_Transactions_V2, 1,
     'the totals and the row-by-row check share one pass');
 });
+
+// ------------------------------------------------------------- scoped café
+
+/**
+ * How much of the sales sheet each café screen actually costs.
+ *
+ * Both screens used to be handed every sale ever made, with every receipt
+ * parsed, and then derived four figures from it in the browser. The counts
+ * below are what stops that coming back: they are asserted directly rather
+ * than timed, so they stay stable on a slow machine.
+ */
+test('the till payload parses only the receipts it is going to show', () => {
+  const gas = bootManySales();
+  // One sale today for this cashier, among two hundred historical ones.
+  const today = gas.Utilities.formatDate(new Date(), 'Asia/Tashkent', 'yyyy-MM-dd');
+  post(gas, {
+    action: 'save_sale', date: `${today}T09:00:00.000Z`, seller: 'kassir',
+    id: 'sale_today', requestId: 'req_today',
+    items: [{ kind: 'product', inventoryId: 'i1', qty: 1 }]
+  });
+
+  let body;
+  const parses = countJsonParses(gas, () => {
+    body = post(gas, { action: 'get_cafe_data', scope: 'pos', dateKey: today, seller: 'kassir' });
+  });
+
+  assert.strictEqual(body.status, 'success');
+  assert.strictEqual(body.sales.length, 1, "only today's, and only this cashier's");
+  // One receipt plus a handful of config values. Unscoped it is one parse per
+  // sale in the sheet, however old, and all of them go down the wire.
+  assert.ok(parses < 15, `${parses} JSON parses for 201 sales; only the shown row needs one`);
+});
+
+test('the café dashboard sends totals rather than the sales they came from', () => {
+  const gas = bootManySales();
+  const today = gas.Utilities.formatDate(new Date(), 'Asia/Tashkent', 'yyyy-MM-dd');
+
+  const counts = countSheetReads(gas, () => {
+    const body = post(gas, {
+      action: 'get_cafe_data', scope: 'admin',
+      todayKey: today, yesterdayKey: today, monthKey: today.slice(0, 7)
+    });
+    assert.strictEqual(body.status, 'success');
+    assert.strictEqual(body.sales, undefined, 'no receipt reaches the browser');
+    assert.ok(body.summary.all.count > 0, 'the totals are still over the whole history');
+  });
+
+  assert.strictEqual(counts.Cafe_Sales, 1, 'one pass answers all four periods');
+});
+
+test('the café dashboard says how many closings it is not showing', () => {
+  const gas = bootManySales();
+  const today = gas.Utilities.formatDate(new Date(), 'Asia/Tashkent', 'yyyy-MM-dd');
+  const body = post(gas, {
+    action: 'get_cafe_data', scope: 'admin',
+    todayKey: today, yesterdayKey: today, monthKey: today.slice(0, 7)
+  });
+
+  // A page rather than everything, and a count rather than a silent cap.
+  assert.ok(Array.isArray(body.closeReports));
+  assert.strictEqual(typeof body.closeReportsTotal, 'number');
+  assert.ok(body.closeReports.length <= body.closeReportsTotal || body.closeReportsTotal === 0);
+});
+
+// ----------------------------------------------------------------- round trips
+
+test('the Omad screen learns the migration state without a second request', () => {
+  const gas = boot();
+  const body = post(gas, { action: 'get_omad_data' });
+
+  // This used to be a second Apps Script round trip, fired the moment the first
+  // returned, before the dashboard could decide whether the ledger was live.
+  assert.strictEqual(body.status, 'success');
+  assert.ok(body.migration, 'the migration status rides along with the data');
+  assert.ok(body.migration.activeSheet, 'and it is the same shape the separate call returns');
+  assert.deepStrictEqual(body.migration, post(gas, { action: 'get_migration_status' }).migration);
+});

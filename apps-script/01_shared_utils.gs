@@ -70,6 +70,11 @@ function setConfig(sheet, key, value) {
   // Hooking the single writer means a memo cannot be added elsewhere and then
   // forgotten here.
   invalidateConfigMemo_(key);
+  // ...and the same argument applies to the cross-request summary cache: every
+  // stored Omad_*/Cafe_* value reaches the sheet through here, so bumping the
+  // revision here is what makes "a write invalidates the summaries derived
+  // from it" a property of the code rather than of remembering.
+  bumpScopeForConfigKey_(key);
 
   var data = sheet.getDataRange().getValues();
   for (var i = 0; i < data.length; i++) {

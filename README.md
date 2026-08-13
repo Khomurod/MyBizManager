@@ -48,13 +48,21 @@ npm test               # unit/integration tests
 npm run test:e2e       # browser tests (Playwright + Chromium)
 ```
 
+The stylesheet is generated too. Regenerate it whenever a page gains a
+Tailwind class, and commit the result — Cloudflare Pages serves this repository
+with no build step:
+
+```bash
+npm run build:css      # regenerate assets/css/app.css from the pages
+```
+
 Before pushing, run everything CI runs:
 
 ```bash
 npm run build:check && npm run lint && npm test && npm run test:e2e && npm run scan:secrets
 ```
 
-Three rules that catch most mistakes:
+Five rules that catch most mistakes:
 
 - **`script.gs` is generated.** Run `npm run build` after any `apps-script/`
   change and commit the result, or `build:check` fails CI.
@@ -62,6 +70,10 @@ Three rules that catch most mistakes:
   mirrors** (as are the tenants and periods pairs). Never change one alone.
 - **The transaction ledger is append-only.** Never rewrite or delete a
   financial row.
+- **A failed read never destroys what is on screen**, and only an expired
+  session returns anyone to the login page.
+- **`assets/css/app.css` is generated.** Add a Tailwind class to a page and run
+  `npm run build:css`, or the class does nothing.
 
 **Never push to `main` directly** — develop on a branch and open a PR. The full
 set of non-negotiables is in [`CLAUDE.md`](CLAUDE.md) and the App Brief.

@@ -13,7 +13,44 @@ function renderAll() {
     renderHistory();
     renderSettings();
     renderEntryDropdowns();
+    renderSyncBanner();
 }
+
+/**
+ * Says when the figures are not the server's latest.
+ *
+ * Shown rather than hidden, because the alternative to a stale figure with a
+ * warning is a blank screen or a zero, and a zero on an accounting dashboard
+ * is a statement about money.
+ */
+function renderSyncBanner() {
+    const banner = document.getElementById('syncBanner');
+    if (!banner) return;
+
+    if (app.loadError) {
+        // The commonest way to end up on a snapshot is a load that just failed,
+        // so this branch has to carry the "saving is off" note too - otherwise
+        // it is only ever shown in the case nobody is in.
+        const savingOff = app.snapshotAt ? " Saqlash vaqtincha o'chirilgan." : '';
+        banner.className = 'card border-amber-300 bg-amber-50 text-amber-800 text-xs font-bold';
+        banner.innerHTML = `Ma'lumot yangilanmadi: ${escapeHtmlText(app.loadError + savingOff)}
+            <button onclick="syncData()" class="ml-2 underline">Qayta urinish</button>`;
+        banner.classList.remove('hidden');
+        return;
+    }
+    if (app.snapshotAt) {
+        // Saying that saving is off matters as much as saying the figures are
+        // old: the screen looks ordinary, and somebody would otherwise find out
+        // by pressing Save.
+        banner.className = 'card border-slate-200 bg-slate-50 text-slate-500 text-xs font-bold';
+        banner.textContent =
+            "Saqlangan ma'lumot ko'rsatilmoqda, yangilanmoqda... Saqlash vaqtincha o'chirilgan.";
+        banner.classList.remove('hidden');
+        return;
+    }
+    banner.classList.add('hidden');
+}
+
 
 function switchTab(t) {
     document.querySelectorAll('.tab-content').forEach(e => e.classList.remove('active'));
@@ -48,10 +85,7 @@ function showSettingsSection(section) {
 }
 
 function logout() {
-    localStorage.removeItem("omad_role");
-    localStorage.removeItem("omad_token");
-    localStorage.removeItem("omad_user");
-    window.location.href = "login.html";
+    signOut();
 }
 
 function showLoader(show) { document.getElementById('loader').style.display = show ? 'flex' : 'none'; }

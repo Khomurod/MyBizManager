@@ -246,7 +246,12 @@ const RETIRED_FUNCTIONS = {
   // caller has already read. The old one fetched the whole ledger for itself
   // and the caller then fetched it again for the balances -- two full passes
   // per report, and a report is queued for every accounting entry.
-  'resolveReportGroup_': 'replaced by resolveReportGroupFrom_'
+  'resolveReportGroup_': 'replaced by resolveReportGroupFrom_',
+  // Split into per-action gates in doPost when the three web roles became real.
+  // One function answering verify_access, get_omad_data and get_cafe_data meant
+  // one permission level for all three, which is exactly what a café seller
+  // must not have.
+  'authenticatedReadAction_': 'replaced by per-action role gates in doPost'
 };
 
 /**

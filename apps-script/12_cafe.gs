@@ -37,6 +37,17 @@ var CAFE_MUTATIONS = {
   save_cafe_settings: true, save_sale: true, void_sale: true, close_day: true
 };
 
+/**
+ * Which role each café mutation belongs to.
+ *
+ * The catalogue is the manager's; the till is the seller's. Neither of them
+ * gets the other's, and neither gets the accounting.
+ */
+var CAFE_ACTION_ROLES = {
+  save_inventory: "admin", save_recipe: "admin", save_categories: "admin",
+  save_cafe_settings: "admin", save_sale: "sell", void_sale: "sell", close_day: "sell"
+};
+
 function isCafeAction_(action) {
   return CAFE_MUTATIONS[String(action || "")] === true;
 }
@@ -47,14 +58,16 @@ function isCafeAction_(action) {
  *
  * Every one of these writes: inventory, recipes, prices, sales, voids and the
  * close-day record. They were reachable by anyone who knew the /exec URL, which
- * meant anyone could rewrite the stock or file a sale. They now take the same
- * key the rest of the business actions take.
+ * meant anyone could rewrite the stock or file a sale. They now take a session
+ * whose role says which half of the café it may touch.
  */
 function handleCafeAction_(action, payload, doc, configSheet) {
   if (!isCafeAction_(action)) return null;
 
-  var accessError = checkAdminKey_(payload);
-  if (accessError) return jsonOutput_({ status: "error", message: accessError });
+  var auth = authorizeWebRequest_(payload, CAFE_ACTION_ROLES[action] === "admin"
+    ? AUTH_ROLES_CAFE_ADMIN
+    : AUTH_ROLES_CAFE_SELL);
+  if (!auth.ok) return authRefusal_(auth);
 
   if (action === 'save_inventory') {
     // Optimistic concurrency. The screen says which version it was looking at;
@@ -373,6 +386,10 @@ function saveCafeSale_(doc, configSheet, payload) {
       JSON.stringify({ requestId: requestId, items: resolved.lines }),
       saleId
     ]);
+    // After the row, not before it: the inventory write bumped the revision
+    // already, and a read landing between the two would otherwise cache a
+    // till payload that is missing the sale that has just been recorded.
+    bumpDataRevision_(CACHE_SCOPE_CAFE);
 
     return jsonOutput_(Object.assign(
       cafeSaleResponse_(saleId, saleDate, seller, resolved, inventory),
@@ -421,9 +438,7 @@ function voidCafeSale_(doc, configSheet, payload) {
     }
 
     var current = cafeCatalogue_(configSheet);
-    var items = detail && Array.isArray(detail.items) ? detail.items
-      : (Array.isArray(detail) ? detail : []);
-    var restored = resolveCafeSaleLines_(current, items);
+    var restored = resolveCafeSaleLines_(current, cafeReceiptItems_(detail));
 
     var inventory = current.inventory;
     if (!restored.error) {
@@ -437,6 +452,7 @@ function voidCafeSale_(doc, configSheet, payload) {
     }
 
     salesSheet.deleteRow(rowNumber);
+    bumpDataRevision_(CACHE_SCOPE_CAFE);
     appendAuditRow_(doc, "cafe_sale_voided", saleId);
 
     return jsonOutput_({
@@ -491,6 +507,7 @@ function closeCafeDay_(doc, configSheet, payload) {
       Math.round(profit),
       JSON.stringify(Array.isArray(payload.summary) ? payload.summary : [])
     ]);
+    bumpDataRevision_(CACHE_SCOPE_CAFE);
 
     var report = {
       date: payload.date, seller: payload.seller,
@@ -517,6 +534,23 @@ function closeCafeDay_(doc, configSheet, payload) {
   } finally {
     lock.releaseLock();
   }
+}
+
+/**
+ * The sale lines out of a stored receipt, whichever shape it is in.
+ *
+ * A receipt written since the café became server-authoritative is
+ * `{ requestId, items: [...] }`; one written before that is the bare array.
+ * Readers were handing the *wrapper* on as `items`, so anything doing
+ * `sale.items.forEach(...)` threw on every modern receipt — which in the POS
+ * meant the load failed, and the failure path emptied the till. Both shapes
+ * resolve to the array here, once, so no caller has to know there are two.
+ */
+function cafeReceiptItems_(raw) {
+  var parsed = raw && typeof raw === "object" ? raw : safeParseJSON_(raw, null);
+  if (Array.isArray(parsed)) return parsed;
+  if (parsed && Array.isArray(parsed.items)) return parsed.items;
+  return [];
 }
 
 /**
@@ -560,6 +594,213 @@ function readCafeClosingsLean_(doc) {
   return rows;
 }
 
+// ------------------------------------------------------------- scoped reads
+//
+// `readCafeState_` sends every sale ever made, with its receipt parsed, to
+// whichever screen asked. Neither screen wants that:
+//
+//   * the till needs the catalogue and *today's* receipts, so it can show the
+//     progress bar and offer a void;
+//   * the manager needs the catalogue and *totals*, which are four numbers per
+//     period plus a best-seller.
+//
+// Both used to be produced in the browser out of the whole history, so the
+// response grew with every sale the business had ever rung up, and the phone
+// parsed all of it to display four figures. The catalogue is unchanged; only
+// what is derived from the sales sheet is scoped.
+//
+// The full payload is still what an unscoped request gets, so nothing that
+// already works has to know about this.
+
+var CAFE_ADMIN_RECENT_CLOSINGS = 30;
+
+/** How long a café display summary may be reused. Every write bumps the key. */
+var CAFE_SUMMARY_TTL_SECONDS = 120;
+
+/** Routes `get_cafe_data` to the payload the asking screen actually needs. */
+function readCafePayloadForScope_(doc, configSheet, payload) {
+  var scope = String((payload && payload.scope) || "");
+  if (scope === "pos") return readCafePosPayload_(doc, configSheet, payload);
+  if (scope === "admin") return readCafeAdminPayload_(doc, configSheet, payload);
+  return readCafeState_(doc, configSheet);
+}
+
+/** A yyyy-MM-dd the caller supplied, or today in the script's timezone. */
+function cafeRequestedDayKey_(value) {
+  var text = String(value || "");
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
+}
+
+/** The catalogue every café screen starts from. */
+function cafeScreenCatalogue_(configSheet) {
+  return {
+    inventory: safeParseJSON_(getConfigOnce_(configSheet, "Cafe_Inventory"), []),
+    inventoryRev: cafeInventoryRev_(configSheet),
+    recipes: safeParseJSON_(getConfigOnce_(configSheet, "Cafe_Recipes"), []),
+    categories: safeParseJSON_(getConfigOnce_(configSheet, "Cafe_Categories"),
+      ["Ichimliklar", "Fast-Food", "Muzqaymoq"]),
+    settings: safeParseJSON_(getConfigOnce_(configSheet, "Cafe_Settings"), { dailyTarget: 0 })
+  };
+}
+
+/**
+ * The till: the catalogue plus the receipts this cashier rang up today.
+ *
+ * Cached against the café revision, which every sale, void, close-day and
+ * catalogue edit bumps — so the entry is unreachable the moment anything it
+ * describes changes, and the till is never shown a stale shelf. If the cache
+ * is empty the same answer is computed from the sheets.
+ */
+function readCafePosPayload_(doc, configSheet, payload) {
+  var dayKey = cafeRequestedDayKey_(payload && payload.dateKey);
+  var seller = String((payload && payload.seller) || "").slice(0, 120);
+
+  return cachedSummary_("cafe_pos_" + dayKey + "_" + seller, CACHE_SCOPE_CAFE,
+    CAFE_SUMMARY_TTL_SECONDS, function () {
+      var body = cafeScreenCatalogue_(configSheet);
+      body.status = "success";
+      body.scope = "pos";
+      body.dateKey = dayKey;
+      body.sales = readCafeSalesForDay_(doc, dayKey, seller);
+      return body;
+    });
+}
+
+/** Today's receipts for one cashier, parsed — a bounded number of rows. */
+function readCafeSalesForDay_(doc, dayKey, seller) {
+  var rows = readCafeSalesLean_(doc);
+  var sales = [];
+  for (var i = 0; i < rows.length; i++) {
+    if (cafeDateKey_(rows[i].date) !== dayKey) continue;
+    if (seller && String(rows[i].seller || "") !== seller) continue;
+    sales.push({
+      date: rows[i].date, seller: rows[i].seller, total: rows[i].total,
+      profit: rows[i].profit, items: cafeReceiptItems_(rows[i].itemsRaw), id: rows[i].id
+    });
+  }
+  return sales;
+}
+
+/**
+ * The manager: the catalogue, the period totals and the recent closings.
+ *
+ * The four period figures and the best-seller are exactly what the dashboard
+ * used to compute in the browser, from the entire sales history it had been
+ * sent. The day boundaries come from the caller so "today" still means the day
+ * the person looking at the screen is having.
+ */
+function readCafeAdminPayload_(doc, configSheet, payload) {
+  var todayKey = cafeRequestedDayKey_(payload && payload.todayKey);
+  var yesterdayKey = /^\d{4}-\d{2}-\d{2}$/.test(String((payload && payload.yesterdayKey) || ""))
+    ? String(payload.yesterdayKey)
+    : "";
+  var monthKey = /^\d{4}-\d{2}$/.test(String((payload && payload.monthKey) || ""))
+    ? String(payload.monthKey)
+    : todayKey.slice(0, 7);
+
+  var closingsLimit = Math.min(Math.max(Number(payload && payload.closingsLimit) || 0,
+    CAFE_ADMIN_RECENT_CLOSINGS), 500);
+
+  return cachedSummary_(
+    "cafe_admin_" + todayKey + "_" + yesterdayKey + "_" + monthKey + "_" + closingsLimit,
+    CACHE_SCOPE_CAFE, CAFE_SUMMARY_TTL_SECONDS, function () {
+      var body = cafeScreenCatalogue_(configSheet);
+      body.status = "success";
+      body.scope = "admin";
+      body.summary = buildCafeDashboardSummary_(doc, todayKey, yesterdayKey, monthKey);
+      // Newest-first and paged. The count travels with the page so the screen
+      // can say how many it is not showing rather than silently stopping.
+      var closings = readCafeRecentClosings_(doc, closingsLimit);
+      body.closeReports = closings.rows;
+      body.closeReportsTotal = closings.total;
+      return body;
+    });
+}
+
+/** Revenue, profit, sale count and best-seller for each dashboard period. */
+function buildCafeDashboardSummary_(doc, todayKey, yesterdayKey, monthKey) {
+  var rows = readCafeSalesLean_(doc);
+  var buckets = {
+    today: cafeEmptyBucket_(), yesterday: cafeEmptyBucket_(),
+    month: cafeEmptyBucket_(), all: cafeEmptyBucket_()
+  };
+
+  for (var i = 0; i < rows.length; i++) {
+    var key = cafeDateKey_(rows[i].date);
+    var targets = ["all"];
+    if (todayKey && key === todayKey) targets.push("today");
+    if (yesterdayKey && key === yesterdayKey) targets.push("yesterday");
+    if (monthKey && key.indexOf(monthKey) === 0) targets.push("month");
+
+    var revenue = Number(rows[i].total) || 0;
+    var profit = Number(rows[i].profit) || 0;
+    // One parse per row, once, on the server — instead of one per row in every
+    // browser that opens the dashboard, on top of shipping it there.
+    var items = cafeReceiptItems_(rows[i].itemsRaw);
+
+    for (var t = 0; t < targets.length; t++) {
+      var bucket = buckets[targets[t]];
+      bucket.revenue += revenue;
+      bucket.profit += profit;
+      bucket.count++;
+      for (var n = 0; n < items.length; n++) {
+        var name = String((items[n] || {}).name || "");
+        if (!name) continue;
+        bucket.items[name] = (bucket.items[name] || 0) + (Number(items[n].qty) || 0);
+      }
+    }
+  }
+
+  var summary = {};
+  Object.keys(buckets).forEach(function (name) {
+    summary[name] = cafeFinishBucket_(buckets[name]);
+  });
+  return summary;
+}
+
+function cafeEmptyBucket_() {
+  return { revenue: 0, profit: 0, count: 0, items: {} };
+}
+
+function cafeFinishBucket_(bucket) {
+  var top = "";
+  var best = 0;
+  Object.keys(bucket.items).forEach(function (name) {
+    if (bucket.items[name] > best) { best = bucket.items[name]; top = name; }
+  });
+  return {
+    revenue: Math.round(bucket.revenue),
+    profit: Math.round(bucket.profit),
+    count: bucket.count,
+    top: top
+  };
+}
+
+/**
+ * The most recent close-day records, newest first, with their summaries, and
+ * how many there are in total.
+ *
+ * Only the page that is shown has its per-item summary parsed; the count comes
+ * from the row count, so "showing 30 of 214" costs nothing.
+ */
+function readCafeRecentClosings_(doc, limit) {
+  var sheet = doc.getSheetByName("Cafe_Kun_Yakuni");
+  if (!sheet || sheet.getLastRow() < 2) return { rows: [], total: 0 };
+
+  var data = sheet.getDataRange().getValues();
+  var start = Math.max(1, data.length - limit);
+  var rows = [];
+  for (var i = start; i < data.length; i++) {
+    rows.push({
+      date: data[i][0], seller: data[i][1], totalRevenue: data[i][2],
+      totalProfit: data[i][3], summary: safeParseJSON_(data[i][4], [])
+    });
+  }
+  rows.reverse();
+  return { rows: rows, total: data.length - 1 };
+}
+
 /** Everything cafe_admin.html and cafe_pos.html need on load. */
 function readCafeState_(doc, configSheet) {
   var salesSheet = doc.getSheetByName("Cafe_Sales");
@@ -569,7 +810,7 @@ function readCafeState_(doc, configSheet) {
     for (var j = 1; j < salesData.length; j++) {
       sales.push({
         date: salesData[j][0], seller: salesData[j][1], total: salesData[j][2],
-        profit: salesData[j][3], items: safeParseJSON_(salesData[j][4], []), id: salesData[j][5]
+        profit: salesData[j][3], items: cafeReceiptItems_(salesData[j][4]), id: salesData[j][5]
       });
     }
   }
@@ -587,6 +828,10 @@ function readCafeState_(doc, configSheet) {
   }
 
   return {
+    // The unscoped payload answered without a status at all, which meant the
+    // one thing a client can rely on -- "the server said this worked" -- was
+    // the absence of an error. The scoped payloads say so; so does this one.
+    status: "success",
     inventory: safeParseJSON_(getConfig(configSheet, "Cafe_Inventory"), []),
     inventoryRev: cafeInventoryRev_(configSheet),
     recipes: safeParseJSON_(getConfig(configSheet, "Cafe_Recipes"), []),

@@ -1,0 +1,7 @@
+/*
+  Source for assets/css/app.css. Generated with `npm run build:css`;
+  see tailwind.config.js for why the output is committed.
+*/
+@tailwind base;
+@tailwind components;
+@tailwind utilities;

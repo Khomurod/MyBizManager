@@ -268,6 +268,7 @@ function appendTaskRow_(doc, task) {
   var row = sheet.getLastRow() + 1;
   applyTaskTextFormats_(sheet, TASKS_HEADER, TASKS_TEXT_COLUMNS, row, 1);
   sheet.appendRow(taskToRow_(task));
+  bumpDataRevision_(CACHE_SCOPE_TASKS);
 }
 
 function updateTaskRow_(doc, task) {
@@ -275,6 +276,7 @@ function updateTaskRow_(doc, task) {
   if (!task.rowNumber) return;
   applyTaskTextFormats_(sheet, TASKS_HEADER, TASKS_TEXT_COLUMNS, task.rowNumber, 1);
   sheet.getRange(task.rowNumber, 1, 1, TASKS_HEADER.length).setValues([taskToRow_(task)]);
+  bumpDataRevision_(CACHE_SCOPE_TASKS);
 }
 
 // ------------------------------------------------------ occurrence records
@@ -380,6 +382,7 @@ function appendOccurrenceRow_(doc, occ) {
   applyTaskTextFormats_(sheet, TASK_OCC_HEADER, TASK_OCC_TEXT_COLUMNS, row, 1);
   sheet.appendRow(occurrenceToRow_(occ));
   occ.rowNumber = row;
+  bumpDataRevision_(CACHE_SCOPE_TASKS);
 }
 
 /** Appends many occurrences in one write, protecting their text columns first. */
@@ -392,6 +395,7 @@ function appendOccurrenceRows_(doc, occurrences) {
   for (var i = 0; i < occurrences.length; i++) values.push(occurrenceToRow_(occurrences[i]));
   sheet.getRange(startRow, 1, values.length, TASK_OCC_HEADER.length).setValues(values);
   for (var r = 0; r < occurrences.length; r++) occurrences[r].rowNumber = startRow + r;
+  bumpDataRevision_(CACHE_SCOPE_TASKS);
   return occurrences;
 }
 
@@ -402,6 +406,7 @@ function writeOccurrenceRow_(doc, occ) {
   occ.updatedAt = new Date().toISOString();
   applyTaskTextFormats_(sheet, TASK_OCC_HEADER, TASK_OCC_TEXT_COLUMNS, occ.rowNumber, 1);
   sheet.getRange(occ.rowNumber, 1, 1, TASK_OCC_HEADER.length).setValues([occurrenceToRow_(occ)]);
+  bumpDataRevision_(CACHE_SCOPE_TASKS);
 }
 
 // ------------------------------------------------ occurrence materialisation

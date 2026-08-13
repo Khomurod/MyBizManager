@@ -329,22 +329,6 @@ function submitTaskForm() {
     tasksSave(payload).then(result => { if (result) closeTaskForm(); });
 }
 
-// ------------------------------------------------------------- admin key
-
-function openAdminKey() {
-    const input = document.getElementById('adminKeyInput');
-    if (input) input.value = tasksAdminKey();
-    document.getElementById('adminModal').classList.remove('hidden');
-}
-function closeAdminKey() { document.getElementById('adminModal').classList.add('hidden'); }
-function saveAdminKey() {
-    setTasksAdminKey(document.getElementById('adminKeyInput').value.trim());
-    closeAdminKey();
-    taskToast('Admin kaliti saqlandi');
-    // The board could not be read without a key, so entering one is a reload.
-    loadTasks();
-}
-
 // ---------------------------------------------------------------- bootstrap
 
 window.onload = () => {
