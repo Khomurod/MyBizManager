@@ -532,6 +532,15 @@ npm run scan:secrets:history   # every committed blob
   `Utilities`, `Session`, `ContentService` and `HtmlService` mocked, so backend
   logic is testable outside Apps Script. **The harness's fidelity matters** — a
   previously wrong `Utilities.formatDate` mock hid a real class of bug.
+- **Dates in tests are the recurring trap.** The harness's `formatDate` mock
+  still **ignores its timezone argument** and formats with the host's local
+  getters, though `Session.getScriptTimeZone()` reports `Asia/Tashkent`. So a
+  date built from the host clock does not mean to the code what it means to
+  the test. Build task date keys with the engine's own helpers
+  (`taskDateKeyAddDays_`) or in fixed UTC+5 — never from `new Date()` local
+  getters. A test that does is not stable; one here passed only between 19:00
+  and midnight UTC, and the café tab's assertions still fail on a host behind
+  UTC for this reason.
 - CI (`.github/workflows/ci.yml`) runs static analysis, secret scans (tree *and*
   full history), unit tests and browser tests on **every branch and PR**. On
   `main` only, a green run then deploys: `clasp pull` (live manifest) → stage →
