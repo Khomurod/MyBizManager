@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Tizimga Kirish</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="assets/css/app.css">
   <style>
     body { background: linear-gradient(160deg, #e2e8f0, #f8fafc); font-family: sans-serif; }
     .glass { background: rgba(255, 255, 255, 0.55); backdrop-filter: blur(18px); border: 1px solid rgba(255,255,255,0.7); box-shadow: 0 10px 35px rgba(15,23,42,0.12); }
@@ -15,36 +15,43 @@
     <h1 class="text-xl font-bold text-center mb-1">Biznes Ekotizim</h1>
     <p class="text-xs text-center text-slate-500 mb-5">Tizimga kirish</p>
 
-    <label class="block text-[11px] font-bold text-slate-500 mb-1">Foydalanuvchi nomi</label>
-    <input id="username" type="text" class="w-full rounded-xl border border-slate-200 bg-white/80 p-3 text-sm outline-none mb-3" placeholder="omad_admin / cafe_admin / cafe_seller">
+    <form id="loginForm" autocomplete="on">
+      <label for="username" class="block text-[11px] font-bold text-slate-500 mb-1">Foydalanuvchi nomi</label>
+      <input id="username" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false"
+             class="w-full rounded-xl border border-slate-200 bg-white/80 p-3 text-sm outline-none mb-3">
 
-    <label class="block text-[11px] font-bold text-slate-500 mb-1">Parol</label>
-    <input id="password" type="password" class="w-full rounded-xl border border-slate-200 bg-white/80 p-3 text-sm outline-none mb-3" placeholder="••••••">
+      <label for="password" class="block text-[11px] font-bold text-slate-500 mb-1">Parol</label>
+      <input id="password" name="password" type="password" autocomplete="current-password"
+             class="w-full rounded-xl border border-slate-200 bg-white/80 p-3 text-sm outline-none mb-4" placeholder="••••••">
 
-    <label class="block text-[11px] font-bold text-slate-500 mb-1">Kirish kaliti</label>
-    <input id="accessKey" type="password" autocomplete="off" class="w-full rounded-xl border border-slate-200 bg-white/80 p-3 text-sm outline-none mb-1" placeholder="OMAD_ADMIN_KEY">
-    <p class="text-[10px] text-slate-400 mb-4">Ma'lumotlar faqat shu kalit bilan ochiladi. Bir marta kiritiladi.</p>
-
-    <button onclick="login()" id="loginBtn" class="w-full rounded-2xl bg-slate-800 text-white font-bold py-3 text-sm active:scale-95 transition-transform">Kirish</button>
+      <button type="submit" id="loginBtn" class="w-full rounded-2xl bg-slate-800 text-white font-bold py-3 text-sm active:scale-95 transition-transform">Kirish</button>
+    </form>
     <p id="loginError" class="hidden text-[11px] text-red-500 font-bold text-center mt-3"></p>
-
   </div>
 
   <script>
     // The backend URL is repeated here deliberately: login.html loads no
-    // application script, and the key has to be checked before anything else
-    // is allowed to run.
+    // application script, because nothing of the application may run before
+    // the server has said who this is.
     const GOOGLE_APP_URL = "https://script.google.com/macros/s/AKfycbzhKyEOGZbVdtpSd7fa6aTDZf1QsqWQeOpWRxrb7bYpzWWDQxUXZID8JNzGMfDtCA2W/exec";
-    const ACCESS_KEY_STORAGE = "omad_access_key";
 
-    // The username and password choose which app to open. They have never been
-    // a security boundary -- they are in this file, in plain sight. The access
-    // key is: it is checked by the server, and every request carries it.
-    const USERS = {
-      omad_admin: { password: "admin123", role: "omad_admin", token: "omad_admin_active", redirect: "omad_admin.html" },
-      cafe_admin: { password: "admin123", role: "cafe_admin", token: "cafe_admin_active", redirect: "cafe_admin.html" },
-      cafe_seller: { password: "seller123", role: "cafe_seller", token: "cafe_seller_active", redirect: "cafe_pos.html" }
-    };
+    // ------------------------------------------------------------------
+    // What this page no longer holds
+    // ------------------------------------------------------------------
+    // It used to carry all three passwords in plain source, and then ask for
+    // OMAD_ADMIN_KEY as the credential the server actually checked -- so the
+    // passwords were decoration, and every signed-in browser stored the one
+    // key that also unlocks migration and maintenance.
+    //
+    // Now the page holds nothing. It sends a username and a password, the
+    // server checks them against hashes only it can read, and answers with a
+    // signed session token that expires. The token says which role it carries
+    // and the server enforces that role on every request, so editing it here
+    // buys nothing: a forged one has no valid signature and is refused.
+    const SESSION_STORAGE = "omad_session";
+    const ROLE_STORAGE = "omad_role";
+    const USER_STORAGE = "omad_user";
+    const EXPIRY_STORAGE = "omad_session_expires";
 
     function showLoginError(message) {
       const box = document.getElementById("loginError");
@@ -52,36 +59,41 @@
       box.classList.remove("hidden");
     }
 
-    async function login() {
+    /** Nothing from a previous session survives a visit to this page. */
+    function clearStoredSession() {
+      [SESSION_STORAGE, ROLE_STORAGE, USER_STORAGE, EXPIRY_STORAGE,
+       "omad_token", "omad_access_key", "tasks_admin_key"].forEach(key => {
+        try { localStorage.removeItem(key); } catch (e) {}
+      });
+      try { sessionStorage.removeItem("tasks_admin_key"); } catch (e) {}
+    }
+
+    async function login(event) {
+      if (event) event.preventDefault();
+
       const username = document.getElementById("username").value.trim().toLowerCase();
-      const password = document.getElementById("password").value.trim();
-      const key = document.getElementById("accessKey").value.trim();
+      const password = document.getElementById("password").value;
       const button = document.getElementById("loginBtn");
-      const user = USERS[username];
 
       document.getElementById("loginError").classList.add("hidden");
-
-      if (!user || user.password !== password) {
-        showLoginError("Login yoki parol noto'g'ri");
-        return;
-      }
-      if (!key) {
-        showLoginError("Kirish kalitini kiriting");
+      if (!username || !password) {
+        showLoginError("Login va parolni kiriting");
         return;
       }
 
       button.disabled = true;
       button.textContent = "Tekshirilmoqda...";
+      let body = null;
       try {
-        // Verified against the server before it is stored, so a wrong key
-        // fails here rather than as a wall of errors inside the app.
         const res = await fetch(GOOGLE_APP_URL, {
           method: "POST",
-          body: JSON.stringify({ action: "verify_access", adminKey: key })
+          body: JSON.stringify({ action: "login", username, password })
         });
-        const body = await res.json();
-        if (!body || body.status !== "success") {
-          showLoginError((body && body.message) || "Kirish kaliti noto'g'ri");
+        const text = await res.text();
+        try {
+          body = JSON.parse(text);
+        } catch (e) {
+          showLoginError("Server javobi tushunarsiz. Qayta urinib ko'ring.");
           return;
         }
       } catch (error) {
@@ -92,12 +104,34 @@
         button.textContent = "Kirish";
       }
 
-      localStorage.setItem("omad_role", user.role);
-      localStorage.setItem("omad_token", user.token);
-      localStorage.setItem("omad_user", username);
-      localStorage.setItem(ACCESS_KEY_STORAGE, key);
-      window.location.href = user.redirect;
+      if (!body || body.status !== "success" || !body.token) {
+        showLoginError((body && body.message) || "Login yoki parol noto'g'ri");
+        return;
+      }
+
+      clearStoredSession();
+      try {
+        localStorage.setItem(SESSION_STORAGE, body.token);
+        localStorage.setItem(ROLE_STORAGE, body.role);
+        localStorage.setItem(USER_STORAGE, body.username || username);
+        localStorage.setItem(EXPIRY_STORAGE, String(body.expiresAt || 0));
+      } catch (e) {
+        showLoginError("Brauzer xotirasi ishlamayapti. Boshqa rejimda urinib ko'ring.");
+        return;
+      }
+
+      if (body.bootstrap) {
+        // Signed in with the maintenance key because no password has been set
+        // yet. Saying so here is the only chance to say it before the app
+        // opens; the Sozlamalar → Tizim panel is where it gets fixed.
+        alert("Diqqat: hali parol o'rnatilmagan. Sozlamalar → Tizim → Foydalanuvchilar bo'limidan parollarni o'rnating.");
+      }
+
+      window.location.href = body.home || "omad_admin.html";
     }
+
+    clearStoredSession();
+    document.getElementById("loginForm").addEventListener("submit", login);
   </script>
 </body>
 </html>

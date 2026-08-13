@@ -65,11 +65,33 @@ function ordinaryRowMarkup(t) {
         </div>`;
 }
 
+/**
+ * How many business actions the Tarix tab renders at once.
+ *
+ * The whole ledger used to be built into the DOM on every render, and a render
+ * happens after every save — so entering a payment rebuilt a card for every
+ * transaction the business had ever recorded, none of which had changed. The
+ * newest entries are the ones anybody is looking at; the rest arrive on
+ * request. Nothing is filtered out of the *data*, only out of the first paint.
+ */
+const HISTORY_PAGE_SIZE = 40;
+
+let historyVisibleGroups = HISTORY_PAGE_SIZE;
+
+/** Shows the next page. Called from the button renderHistory appends. */
+function showMoreHistory() {
+    historyVisibleGroups += HISTORY_PAGE_SIZE;
+    renderHistory();
+}
+
 function renderHistory() {
     const list = document.getElementById('historyList');
     list.innerHTML = "";
 
-    historyGroups().forEach(rows => {
+    const groups = historyGroups();
+    const shown = groups.slice(0, historyVisibleGroups);
+
+    shown.forEach(rows => {
         const tenantPaid = rows.length > 0 && rows.every(isTenantPaidRow);
         const cards = tenantPaid ? [tenantPaidCardMarkup(rows)] : rows.map(ordinaryRowMarkup);
         cards.forEach(markup => {
@@ -79,6 +101,14 @@ function renderHistory() {
             list.appendChild(div);
         });
     });
+
+    if (groups.length > shown.length) {
+        const more = document.createElement('button');
+        more.className = "w-full mt-2 bg-white border border-slate-200 rounded-lg py-3 text-xs font-bold text-slate-500";
+        more.textContent = `Yana ko'rsatish (${groups.length - shown.length} ta qoldi)`;
+        more.onclick = showMoreHistory;
+        list.appendChild(more);
+    }
 }
 
 function openExpenseModal() {

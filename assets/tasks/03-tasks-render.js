@@ -19,16 +19,18 @@ function renderAllTasks() {
     const warn = document.getElementById('tgWarn');
     if (warn) warn.classList.toggle('hidden', !(TASKS_STATE.config && TASKS_STATE.config.tasksGroupConfigured === false));
 
-    const keyBtn = document.getElementById('adminKeyBtn');
-    if (keyBtn) {
-        const stored = !!tasksAdminKey();
-        keyBtn.classList.toggle('icon-btn--ok', stored);
-        keyBtn.setAttribute('aria-label', stored ? 'Admin kaliti saqlangan' : 'Admin kalitini kiriting');
+    const failed = document.getElementById('loadWarn');
+    if (failed) {
+        failed.textContent = TASKS_STATE.loadError
+            ? "⚠️ " + TASKS_STATE.loadError + " — ko'rsatilayotgan ro'yxat eskirgan bo'lishi mumkin."
+            : '';
+        failed.classList.toggle('hidden', !TASKS_STATE.loadError);
     }
 
-    if (TASKS_STATE.needsKey && !TASKS_STATE.view) {
-        // An empty board would read as "nothing to do" rather than "not shown".
-        const prompt = emptyNote('Vazifalarni ko\'rish uchun admin kalitini kiriting. 🔑');
+    if (!TASKS_STATE.view) {
+        const prompt = emptyNote(TASKS_STATE.loadError
+            ? "Ro'yxatni yuklab bo'lmadi. Qayta urinib ko'ring."
+            : 'Yuklanmoqda...');
         TASK_TABS.forEach(t => { const p = document.getElementById('panel-' + t); if (p) p.innerHTML = prompt; });
         return;
     }

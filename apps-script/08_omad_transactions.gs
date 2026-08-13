@@ -326,6 +326,7 @@ function appendOmadTransactionGroup_(doc, transactions) {
   var startRow = txSheet.getLastRow() + 1;
   applyTransactionColumnFormats_(txSheet, startRow, values.length, sheetName);
   txSheet.getRange(startRow, 1, values.length, OMAD_TRANSACTION_HEADER.length).setValues(values);
+  bumpDataRevision_(CACHE_SCOPE_OMAD);
   return normalized;
 }
 
@@ -380,6 +381,7 @@ function safeRewriteOmadTransactions_(doc, incomingTransactions) {
     applyTransactionColumnFormats_(txSheet, 2, rows.length, sheetName);
     txSheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
   }
+  bumpDataRevision_(CACHE_SCOPE_OMAD);
 }
 
 /**
@@ -444,6 +446,7 @@ function appendOmadTransaction_(doc, transaction) {
   applyTransactionColumnFormats_(txSheet, row, 1, sheetName);
   txSheet.getRange(row, 1, 1, OMAD_TRANSACTION_HEADER.length)
     .setValues([transactionToRow_(normalizeTransaction_(transaction))]);
+  bumpDataRevision_(CACHE_SCOPE_OMAD);
 }
 
 /**

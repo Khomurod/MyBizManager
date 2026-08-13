@@ -40,13 +40,33 @@ Apps Script muharririda: **⚙️ Project Settings → Script Properties → Add
 
 | Property | Majburiy | Nima |
 |---|---|---|
-| `OMAD_ADMIN_KEY` | ha | Sozlamalarni saqlash uchun maxfiy parol. O'zingiz o'ylab toping (uzun, tasodifiy). |
+| `OMAD_ADMIN_KEY` | ha | Ichki texnik xizmat kaliti. O'zingiz o'ylab toping (uzun, tasodifiy). Oddiy foydalanuvchilar buni bilishi shart emas — ular login va parol bilan kiradi. Birinchi marta parol o'rnatish uchun `omad_admin` sifatida shu qiymat bilan kiriladi. |
 | `TELEGRAM_BOT_TOKEN` | ha | BotFather bergan yangi token. Panel orqali ham kiritish mumkin. |
 | `TELEGRAM_AUTHORIZED_USER_ID` | ha | `/yangi` dan foydalanishga ruxsat etilgan yagona Telegram raqamli ID. |
 | `TELEGRAM_GROUP_CHAT_ID` | ha | Hisobotlar yuboriladigan guruh ID (masalan `-1001234567890`). |
 
 `OMAD_ADMIN_KEY` **faqat** shu yerda o'rnatiladi — u brauzer orqali o'zgartirilmaydi.
 Qolgan uchtasini panel orqali kiritish qulayroq.
+
+Tizim yana ikkita property'ni **o'zi** yaratadi va boshqaradi — qo'lda kiritish
+shart emas: `OMAD_USERS` (foydalanuvchilar parollarining shifrlangan ko'rinishi)
+va `OMAD_SESSION_SECRET` (sessiya kalitlarini imzolash uchun). `OMAD_REV_*`
+qiymatlari esa kesh hisoblagichlari, maxfiy emas.
+
+### Foydalanuvchi parollarini o'rnatish
+
+Birinchi marta: `login.html` da **omad_admin** nomi va **`OMAD_ADMIN_KEY`**
+qiymati bilan kiring. So'ng **Sozlamalar → 🗄️ Tizim → Foydalanuvchilar**
+bo'limidan uchta hisob uchun ham parol o'rnating:
+
+| Login | Kim uchun |
+|---|---|
+| `omad_admin` | egasi / buxgalteriya |
+| `cafe_admin` | kafe boshqaruvchisi |
+| `cafe_seller` | kassir |
+
+`omad_admin` paroli o'rnatilgandan keyin `OMAD_ADMIN_KEY` bilan kirish
+ishlamaydi — u faqat ichki texnik xizmat uchun qoladi.
 
 ### Telegram user ID'ni qanday bilish mumkin
 
@@ -87,7 +107,8 @@ qo'shiladi) — bunday holda ID'ni qayta kiriting.
 
 **Omad Admin → Sozlamalar → Telegram**:
 
-1. **Admin Kaliti** — `OMAD_ADMIN_KEY` qiymatini kiriting.
+1. **Admin Kaliti** — bo'sh qoldiring. Sizning sessiyangiz yetarli; bu maydon
+   faqat texnik xizmat uchun (`OMAD_ADMIN_KEY`).
 2. **Bot Tokeni** — BotFather bergan yangi token.
 3. **Ruxsat Etilgan Telegram User ID** — 2-bosqichdagi raqam.
 4. **Hisobot Guruhi ID** — guruh ID.

@@ -77,9 +77,19 @@ Cloudflare Pages (static HTML/JS)         Google Apps Script web app        Goog
   cafe_admin.html, cafe_pos.html                                              Omad_Transactions (legacy)
   tasks.html + assets/tasks/*                                                 Cafe_Sales, Cafe_Kun_Yakuni
   mini.html + assets/mini/*  (Telegram Mini App)                              Tasks, Task_Occurrences
-                                             ▲                                Omad_Job_Queue, backups, logs
-                          Telegram Bot API ──┘  (webhook + outbound sends)
+  assets/session.js  (shared session/transport)  ▲                            Omad_Job_Queue, backups, logs
+  assets/css/app.css (generated Tailwind build)  │
+                          Telegram Bot API ──────┘  (webhook + outbound sends)
 ```
+
+- **`assets/session.js` is loaded first by every web page.** It owns what being
+  signed in means, what a failed request means, and the per-screen snapshot.
+  Four screens behaving differently about any of those is what caused the café
+  incident.
+- **`assets/css/app.css` is generated and committed.** The pages used to load
+  the Tailwind Play CDN, which compiles the stylesheet in the browser on every
+  load. `npm run build:css` regenerates it; Cloudflare Pages has no build step,
+  which is why the output is in the repository.
 
 - **Backend source of truth is `apps-script/*.gs`.** They share one global
   scope and are concatenated in filename order.
@@ -101,7 +111,9 @@ Cloudflare Pages (static HTML/JS)         Google Apps Script web app        Goog
 |---|---|
 | `01_shared_utils.gs` | JSON/HTML/date helpers, `getConfig`/`setConfig`, the per-request config memo |
 | `01a_periods.gs` | Canonical `YYYY-MM` periods, Uzbek labels, legacy period resolution |
+| `01c_cache.gs` | Revision counters and the read-only summary cache |
 | `02_validation.gs` | Rate limiting, length limits, input validators |
+| `02a_auth.gs` | Users, password hashes, session tokens, roles, login throttling |
 | `03_settings.gs` | Script Properties, secrets, `checkAdminKey_`, Telegram settings actions |
 | `04_audit_history.gs` | Backups, transaction archive, audit and debug logs |
 | `05_exchange_rates.gs` | Rate normalisation, `toUZS_`, balances |
@@ -172,49 +184,93 @@ are **deliberately not** in the Mini App.
 
 ## 5. Permissions and access rules
 
-There are exactly **three** ways to be authorized, and every action belongs to
-one of them.
+There are **three** ways to be authorized, and every action belongs to one of
+them.
 
 | Gate | Proves | Used by |
 |---|---|---|
-| **Access key** — `OMAD_ADMIN_KEY` in Script Properties, compared by `checkAdminKey_` | you signed in | every web-app action, every admin/maintenance/migration action, and every `/tasks` action **including reads** |
+| **Session token** — signed by `OMAD_SESSION_SECRET`, minted by `login`, carries the username, the role and an expiry | you signed in as this person, in this role | every web-app action: `omad_admin.html`, `cafe_admin.html`, `cafe_pos.html`, `tasks.html` |
 | **Telegram `initData`** — HMAC verified against the bot token | Telegram signed this **and** you are `TELEGRAM_AUTHORIZED_USER_ID` | the Mini App (`mini_*` actions) |
 | **Webhook secret (`?wh=`) + authorized user id** | Telegram delivered this update | the bot |
+
+`OMAD_ADMIN_KEY` survives as an **internal break-glass credential**. It is
+accepted as `omad_admin` wherever a session would be, so maintenance and
+migration still work against a project whose user store is not set up. No
+normal user needs to know it, no page asks for it, and no browser stores it.
+
+### The three web roles are enforced on the server
+
+| Role | May do |
+|---|---|
+| `omad_admin` | everything: the ledger, tenants, rates, planned expenses, settings, migration, maintenance, health, the task board, and both halves of the café |
+| `cafe_admin` | read the café; edit inventory, recipes, categories and café settings |
+| `cafe_seller` | read the café; ring up a sale, void one, close the day |
+
+The role lists live in one place, `AUTH_ROLES_*` in `20_api.gs`, and every gate
+names one. **Editing `localStorage` or opening another URL changes nothing** —
+the role is inside a signed token the browser cannot forge, and the refusal
+happens on the server. A refusal for the wrong role answers `code: "forbidden"`
+and `authExpired: false`, which is deliberately *not* the shape that signs a
+client out.
+
+### Sessions
+
+- Format `v1.<username>.<role>.<expiry>.<pwv>.<nonce>.<signature>`, signed with
+  HMAC-SHA256. Stateless, so losing the cache or restarting the project cannot
+  sign anybody out.
+- **30 days.** Long enough that nobody is asked to sign in repeatedly.
+- The stored record still decides: a changed password bumps `pwv` and every
+  token carrying the old one stops working on the next request. That is the
+  revocation mechanism, and it is what a password change is expected to do.
+- Passwords are stored in `OMAD_USERS` as a per-user salt plus 200 chained
+  HMAC-SHA256 rounds. **No password, and nothing replayable derived from one,
+  is ever sent to a browser or committed.**
+
+### Throttling
+
+Three buckets, deliberately not one, and **a successful request never touches
+any of them**:
+
+| Bucket | Limit | Filled by |
+|---|---|---|
+| `login_u_<username>` | 8/min | failed logins for that one account |
+| `login_all` | 100/min | all failed logins |
+| `auth_fail` / `auth_key` | 10/min | a forged token, a wrong admin key, no credential at all |
+| `user_<username>` | 120/min | that signed-in user's own requests |
+
+This is the fix for the café incident. One shared bucket meant a stranger
+guessing keys — or a second tab — could throttle the till, and the 40/min
+hotfix that relieved the till also gave a guesser four times as many attempts.
+The key comparison still happens **after** its own rate limit, so the endpoint
+still cannot be used to guess it.
 
 Rules that must not be weakened:
 
 - **`doGet` is inert.** It reads nothing and answers every request with one
-  sentence. A GET puts parameters in the URL, which is the one place a key must
-  never be. The old anonymous `get_omad` / `get_cafe` GET routes are **gone**;
-  `tests/anonymous-access.test.js` is the regression inventory and the health
-  check probes the live router for them.
+  sentence. A GET puts parameters in the URL, which is the one place a
+  credential must never be. `tests/anonymous-access.test.js` is the regression
+  inventory and the health check probes the live router.
 - `mini_*` actions are routed **first** in `doPost`, so one can never fall
   through into a handler with a different gate. **Any action name starting with
   `mini_` is Mini-App-gated** — do not name a new admin action `mini_…`.
-- **The admin key is never sent to, or accepted from, the Mini App.**
+- **Neither the admin key nor a web session is accepted by the Mini App**, and
+  the Mini App is never given one.
 - Mini App task mutations **strip** attribution fields (`completedById`,
   `completedBy`, `completedByName`, `completedSource`, `createdBy`,
   `proofAwaitingUserId`) from the payload and rewrite them from the verified
   signature. Stripped rather than overwritten, so a new attribution field cannot
   become spoofable just by being forwarded.
-- The key comparison happens **after** a rate limit on every path that exposes
-  it (`read_auth`, `tg_admin`, `tasks_read`, `mini_auth`), so the endpoint
-  cannot be used to guess the key.
 - `/yangi` runs **only in a private chat with the authorized user**. The
   reporting group never accepts entry.
 
-### The web "roles" are not a security boundary
+### Setting a password
 
-`login.html` holds three username/password pairs in plain page source
-(`omad_admin`, `cafe_admin`, `cafe_seller`). They only choose which page opens
-and which `localStorage` guard passes. **Server-side there is one key and one
-permission level:** a café seller's stored key is the same `OMAD_ADMIN_KEY` that
-unlocks the accounting and the maintenance actions. Do not add a feature that
-assumes the server can tell the three roles apart — it cannot.
-
-`/tasks` is a double gate in practice: `assets/omad/00-config.js` redirects
-anyone not signed in as `omad_admin`, and the board additionally asks for the
-admin key, which it keeps only in `sessionStorage`.
+`omad_admin` sets and resets every account from **Sozlamalar → 🗄️ Tizim →
+Foydalanuvchilar**. Before any password exists, signing in as `omad_admin` with
+the value of `OMAD_ADMIN_KEY` works once — that bootstrap answers
+`bootstrap: true`, the login page says so, and it stops working the moment the
+owner's own password is set. `setUserPassword(username, password, role)` in the
+Apps Script editor does the same thing without a browser.
 
 ## 6. Important business rules
 
@@ -284,6 +340,12 @@ bills and it comes off what they owe:
   `duplicate: true` and moves stock once.
 - A **void restores stock from the stored receipt**, never from an inventory the
   browser supplies; voiding twice is a no-op.
+- A stored receipt has **two shapes**: `{ requestId, items: [...] }` since the
+  café became server-authoritative, and a bare array before that. Every reader
+  goes through `cafeReceiptItems_`, which resolves both. Handing the wrapper on
+  as `items` is what made `sale.items.forEach(...)` throw on every modern
+  receipt — and in the POS that threw inside the load, whose failure path then
+  emptied the till.
 - Inventory is written in exactly one place, `writeCafeInventory_`, which bumps
   `Cafe_Inventory_Rev`. The admin screen must quote the revision it loaded
   (`expectedRev`); a mismatch is refused. A **counted** stock level at close-day
@@ -353,7 +415,9 @@ Other sheets: `Omad_Backups`, `Omad_Transaction_Archive`, `Omad_Audit_Log`,
   being edited.
 
 **Script Properties** (secrets never reach the browser): `TELEGRAM_BOT_TOKEN`*,
-`OMAD_ADMIN_KEY`*, `TELEGRAM_WEBHOOK_SECRET`*, `TELEGRAM_AUTHORIZED_USER_ID`,
+`OMAD_ADMIN_KEY`*, `OMAD_USERS`*, `OMAD_SESSION_SECRET`*,
+`OMAD_REV_OMAD` / `OMAD_REV_CAFE` / `OMAD_REV_TASKS` (cache revision counters,
+not secrets), `TELEGRAM_WEBHOOK_SECRET`*, `TELEGRAM_AUTHORIZED_USER_ID`,
 `TELEGRAM_GROUP_CHAT_ID`, `TELEGRAM_TASKS_GROUP_CHAT_ID`,
 `TELEGRAM_WEBHOOK_URL`, `TELEGRAM_WEBHOOK_STATUS`, `TELEGRAM_LAST_SUCCESS`,
 `TELEGRAM_LAST_ERROR` (`*` = secret). They are project state, not code — the
@@ -411,8 +475,22 @@ composes the message from data it already stored.
   `resetRequestMemos_()` runs at the top of `doPost` and `doGet`, and `setConfig`
   drops the entry it overwrites so a read-after-write in the same request sees
   the new value. The memo caches the **read**, never the decision made from it.
-  **There is no cross-request cache, by design** — every candidate is a financial
-  summary with six write paths, and a missed invalidation is a wrong balance.
+- **Read-only display summaries are cached across requests** (`01c_cache.gs`),
+  and nothing else is. Two properties make that safe:
+  - **A revision counter per scope** (`OMAD`, `CAFE`, `TASKS`) is part of every
+    cache key, and every write bumps it — `setConfig` for anything named
+    `Omad_*`/`Cafe_*`, the ledger and legacy transaction writers, the café sales
+    and close-day writers, and the task store writers. A write does not expire
+    the old entry; it makes it **unreachable**. The TTL (60s for accounting,
+    120s for the café, 90s for a task view whose key also carries the minute) is
+    the backstop for a write path that forgets to bump.
+  - **Only summaries.** Pricing, stock checks, the ledger read, task mutations
+    and every write path read the sheets directly. A poisoned or missing cache
+    can make a screen a minute out of date; it cannot make a sale, a balance or
+    an occurrence wrong, and `tests/summary-cache.test.js` asserts exactly that
+    by emptying and then poisoning the cache.
+  Cached today: the Mini App Omad tab and café tab, the café POS payload, the
+  café dashboard summary, and the task board view.
 
 ## 10. Relationships — where one change breaks another
 
@@ -429,6 +507,10 @@ composes the message from data it already stored.
 | deleting or renaming a backend function | add it to `RETIRED_FUNCTIONS` in `scripts/clasp-deploy.js` with a reason, or the deploy's drift guard fails |
 | a new money input field | add its id to `MONEY_FIELD_IDS` |
 | the task sheets | columns are positional — append only |
+| a new gated action | give it a role list from `AUTH_ROLES_*` in `20_api.gs`; there is no default |
+| a new sheet write path | bump the matching `CACHE_SCOPE_*` revision, or a summary goes stale for its TTL |
+| a Tailwind class on any page | run `npm run build:css` and commit `assets/css/app.css` |
+| anything a web page loads | it must come after `assets/session.js`, which owns the session and the transport |
 
 ## 11. Decisions that must be preserved
 
@@ -479,6 +561,15 @@ composes the message from data it already stored.
     code for weeks.
 11. **Never weaken a test to make CI green.** Updating an assertion to the new
     contract is fine; deleting it is not.
+12. **A failed read never destroys what is on screen.** A network fault, a rate
+    limit, a server error and an unparsable answer all keep the session and keep
+    the data, say what went wrong in Uzbek, and offer Retry. Only
+    `authExpired: true` — the server saying the session is over — returns anyone
+    to the login page. The café till once cleared its stored key and reset its
+    stock, categories and daily target on a *throttled* read, mid-shift.
+13. **The cache never answers an authoritative question.** Prices, stock checks,
+    the ledger, task state and every write path read the sheets. If deleting
+    every cache entry would change an answer, that answer must not be cached.
 
 ## 12. Known limitations and intentional exceptions
 
@@ -497,6 +588,19 @@ composes the message from data it already stored.
 - **`cafe_admin.html` recipes, categories and settings still save wholesale with
   no version check.** Only inventory is guarded, because only inventory is also
   written by the server.
+- **The Mini App deliberately has no client-side snapshot.** The web screens
+  paint their last successful answer while they refresh; the Mini App renders
+  nothing and requests nothing until the backend has verified the signature,
+  and showing figures before that would weaken the one gate it has.
+- **`assets/css/app.css` is generated but not verified in CI.** `npm run
+  build:css` regenerates it from the pages; CI does not run it, because making
+  the deploy depend on a CSS toolchain is a worse failure mode than the one it
+  would catch. A page that adds a class nobody regenerates for loses that one
+  piece of styling — visible, and not a correctness problem.
+- **`omad_admin.html` and `tasks.html` still load Font Awesome from a CDN** for
+  their icons. It is a stylesheet plus a webfont rather than an in-browser
+  compiler, so it is a much smaller cost than the Tailwind Play CDN was;
+  self-hosting it means committing font binaries and was left out of scope.
 - **The repository is public and its git history contains committed financial
   dumps** — the 2026-04 `diagnostics/` snapshots, with real tenant names and
   amounts. They are no longer in the working tree, but removing files does not
@@ -520,6 +624,7 @@ composes the message from data it already stored.
 ```
 npm run build            # regenerate script.gs from apps-script/
 npm run build:check      # fail if the bundle is stale
+npm run build:css        # regenerate assets/css/app.css (needs tailwindcss)
 npm run lint             # static analysis: syntax, duplicates, deploy gating
 npm test                 # unit/integration tests (node --test)
 npm run test:e2e         # Playwright/Chromium browser flows
@@ -581,6 +686,15 @@ Verified 2026-08-12 and unchanged in the repository since:
 | Anonymous access | closed — `doGet` reads nothing |
 | Telegram | webhook on the active deployment with a URL secret; one 5-minute trigger |
 | Mini App | menu button installed and verified |
+| Web sign-in | username + password, server-verified, 30-day signed session |
+
+**One manual step is outstanding after this change is deployed:** the owner
+signs in as `omad_admin` with the value of `OMAD_ADMIN_KEY` (the bootstrap
+described in [§5](#setting-a-password)) and sets a real password for
+`omad_admin`, `cafe_admin` and `cafe_seller` in Sozlamalar → 🗄️ Tizim →
+Foydalanuvchilar. Until that is done the café accounts cannot sign in at all,
+and `OMAD_USERS` / `OMAD_SESSION_SECRET` do not exist yet — the latter is
+generated on first use and needs no manual value.
 
 Hosting, project ids and the deployment id are in `docs/DEPLOYMENT.md` — the
 one place that records them. If a change makes any of this untrue, update it

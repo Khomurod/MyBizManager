@@ -21,6 +21,18 @@ var MINI_APP_RECENT_SALES = 10;
 var MINI_APP_RECENT_CLOSINGS = 5;
 
 /**
+ * How long a Mini App summary may be reused.
+ *
+ * Short, and secondary: the cache key carries the data revision, so any write
+ * to the ledger, the tenant list, the rates or the café makes the stored
+ * answer unreachable at once. This is the backstop for a write path that has
+ * not been taught to bump — a minute of staleness on a *display* summary, on a
+ * phone, where the only alternative was rescanning the whole ledger for a
+ * screen that had not changed.
+ */
+var MINI_APP_SUMMARY_TTL_SECONDS = 60;
+
+/**
  * Fields the caller may never contribute to — the answer to "who did this".
  *
  * The task engine reads all of these straight off the payload. A Mini App
@@ -57,25 +69,24 @@ function handleMiniAppAction_(action, payload, doc) {
   // the task case for counts no screen ever rendered. Café and Tasks are
   // fetched when their tab is first opened.
   if (action === 'mini_home' || action === 'mini_omad') {
-    var omadCtx = miniOmadContext_(doc, configSheet, payload.period);
-    var response = {
-      status: "success", authorized: true,
-      omad: buildMiniOmadSummary_(omadCtx),
-      tenants: buildMiniTenantStatus_(omadCtx),
-      transactions: buildMiniRecentEntries_(omadCtx)
-    };
-    if (action === 'mini_home') response.user = auth.user;
+    var response = miniOmadSnapshot_(doc, configSheet, payload.period);
+    if (action === 'mini_home') response = Object.assign({ user: auth.user }, response);
     return jsonOutput_(response);
   }
 
   if (action === 'mini_cafe') {
-    return jsonOutput_({ status: "success", authorized: true, cafe: buildMiniCafeSummary_(doc, configSheet) });
+    return jsonOutput_({
+      status: "success", authorized: true,
+      cafe: cachedSummary_("mini_cafe", CACHE_SCOPE_CAFE, MINI_APP_SUMMARY_TTL_SECONDS, function () {
+        return buildMiniCafeSummary_(doc, configSheet);
+      })
+    });
   }
 
   if (action === 'mini_tasks') {
     return jsonOutput_({
       status: "success", authorized: true,
-      view: buildTaskViews_(doc, Date.now()),
+      view: cachedTaskView_(doc),
       config: { tasksGroupConfigured: !!getTasksGroupChatId_() }
     });
   }
@@ -98,6 +109,33 @@ function handleMiniAppAction_(action, payload, doc) {
 }
 
 // ------------------------------------------------------------------- reading
+
+/**
+ * The whole Omad tab, cached against the accounting revision.
+ *
+ * The opening screen was a full scan of the historical ledger every time the
+ * Mini App was opened, and opening it again a minute later scanned it again to
+ * produce byte-for-byte the same answer. The scan still happens — it is the
+ * only way to be right — but only once per period per change to the data.
+ *
+ * The user identity is deliberately *not* part of this: the summary is the
+ * business's figures, the same for whoever is authorized to see them, and only
+ * one person is. `user` is attached outside the cache so the stored value can
+ * never carry somebody's name into somebody else's response.
+ */
+function miniOmadSnapshot_(doc, configSheet, requestedPeriod) {
+  var period = isCanonicalPeriod_(requestedPeriod) ? String(requestedPeriod) : "";
+  return cachedSummary_("mini_omad_" + period, CACHE_SCOPE_OMAD, MINI_APP_SUMMARY_TTL_SECONDS,
+    function () {
+      var ctx = miniOmadContext_(doc, configSheet, requestedPeriod);
+      return {
+        status: "success", authorized: true,
+        omad: buildMiniOmadSummary_(ctx),
+        tenants: buildMiniTenantStatus_(ctx),
+        transactions: buildMiniRecentEntries_(ctx)
+      };
+    });
+}
 
 /**
  * Everything the Omad screens read, fetched once per request.
@@ -287,14 +325,14 @@ function buildMiniCafeSummary_(doc, configSheet) {
   // to count its lines.
   for (var s = Math.max(0, sales.length - MINI_APP_RECENT_SALES); s < sales.length; s++) {
     var recent = sales[s];
-    var items = safeParseJSON_(recent.itemsRaw, []);
+    var items = cafeReceiptItems_(recent.itemsRaw);
     recentSales.push({
       id: String(recent.id || ""),
       date: cafeDateKey_(recent.date),
       seller: String(recent.seller || ""),
       total: Number(recent.total) || 0,
       profit: Number(recent.profit) || 0,
-      items: Array.isArray(items) ? items.length : 0
+      items: items.length
     });
   }
   recentSales.reverse();

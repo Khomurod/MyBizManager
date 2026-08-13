@@ -444,23 +444,33 @@ new task appears in the group promptly; the trigger handles the rest.
 | `skip_occurrence` | **yes** | Skip a single occurrence. A future-dated one needs `confirmFuture: true`; without it the answer is `needsFutureConfirm` |
 | `complete_occurrence` / `reopen_occurrence` | **yes** | Web completion / undo, incl. goal steps. A future-dated occurrence cannot be completed |
 
-**Every** action requires `OMAD_ADMIN_KEY` — reads included. The task board is
-internal company information: who is responsible for what, when it is due and
-whose deadlines have been slipping. The key is entered once on the /tasks page
-and kept only in `sessionStorage`, and reads are rate-limited
-(`TASK_READ_RATE_LIMIT`, 30/minute) **before** the key is compared, so the
-endpoint cannot be used to guess it.
+**Every** action requires an **`omad_admin` session** — reads included. The task
+board is internal company information: who is responsible for what, when it is
+due and whose deadlines have been slipping. The board used to ask for
+`OMAD_ADMIN_KEY` and keep it in `sessionStorage`, so the person running the
+business typed the maintenance key into a phone to look at a task list; the
+session already proves who they are and that is what the server checks. The
+maintenance key is still accepted, as `omad_admin`, for scripted use.
+
+A failed attempt is throttled inside the gate (`auth_fail`, 10/minute) and a
+signed-in one is not, so a stranger hammering the endpoint cannot close the
+board for the person using it.
+
+The view is cached for up to 90 seconds against the task revision, and the cache
+key carries the minute as well — `Overdue` is derived from the current time, so
+the entry can be a few seconds stale about the clock and never more. Any task or
+occurrence write makes it unreachable immediately.
 
 `get_tasks` over **GET returns an error by design**: a GET carries its
-parameters in the URL, which is the one place an admin key must never travel.
+parameters in the URL, which is the one place a credential must never travel.
 The accounting reads follow the same rule — `doGet` is inert and the
 authenticated replacements are `get_omad_data` / `get_cafe_data` over POST.
 
 ## Frontend
 
-`tasks.html` + `assets/tasks/0{1..4}-*.js`, reusing `assets/omad/00-config.js`
-for the backend URL and the admin access guard (so there is still one source of
-truth for the URL). Tabs: **Bugun | Vazifalar | Muntazam | Maqsadlar |
+`tasks.html` + `assets/session.js` + `assets/tasks/0{1..4}-*.js`, reusing
+`assets/omad/00-config.js` for the backend URL and the `omad_admin` session
+guard (so there is still one source of truth for the URL). Tabs: **Bugun | Vazifalar | Muntazam | Maqsadlar |
 Bajarilgan**. The Today view separates overdue, due-now, waiting-for-proof,
 upcoming and completed-today.
 
@@ -474,8 +484,9 @@ The backend ships itself: merging to `main` deploys it once CI is green (see
    Save. `@username` is not accepted here (see
    [TELEGRAM_SETUP.md](TELEGRAM_SETUP.md#vazifalar-guruhi-uchun-raqamli-id)).
    It can be the same group as the reporting group or a different one.
-2. **`OMAD_ADMIN_KEY` must be set** in Script Properties — the /tasks page now
-   needs it to read the board, not only to change it.
+2. **An `omad_admin` password must be set** — see
+   [APP_BRIEF.md §5](APP_BRIEF.md#setting-a-password). The /tasks page needs an
+   omad_admin session to read the board, not only to change it.
 
 **No trigger to add.** The existing `processPendingTelegramJobs` trigger runs
 the task scheduler before draining the queue. Add a `processTaskSchedules`

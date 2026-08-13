@@ -32,8 +32,8 @@ rewrite file. To roll the frontend back, pick an earlier deployment in the
 Cloudflare dashboard — every one is kept.
 
 > **Netlify is retired but still connected.** `omad-d.netlify.app` is *not*
-> production: it serves a build from before the access key existed and can no
-> longer sign in. The integration still posts deploy-preview checks and
+> production: it serves a build from before the login page was rewritten and can
+> no longer sign in. The integration still posts deploy-preview checks and
 > comments on pull requests, so ignore them — a green Netlify preview says
 > nothing about this application. Deleting the Netlify site is a manual step
 > nobody has taken; nothing here depends on it.
@@ -69,8 +69,10 @@ The deploy job is `.github/workflows/ci.yml → deploy`, and the orchestration i
   [Never "New deployment"](#never-new-deployment).)
 - **Never touches Script Properties.** `TELEGRAM_BOT_TOKEN`,
   `TELEGRAM_WEBHOOK_SECRET`, `TELEGRAM_AUTHORIZED_USER_ID`,
-  `TELEGRAM_GROUP_CHAT_ID`, `TELEGRAM_TASKS_GROUP_CHAT_ID`, `OMAD_ADMIN_KEY`
-  and everything else are project state, not code. Updating the code inside the
+  `TELEGRAM_GROUP_CHAT_ID`, `TELEGRAM_TASKS_GROUP_CHAT_ID`, `OMAD_ADMIN_KEY`,
+  `OMAD_USERS`, `OMAD_SESSION_SECRET` and everything else are project state,
+  not code. **A deploy therefore never signs anybody out** — the session secret
+  and the password hashes outlive it. Updating the code inside the
   same project leaves them exactly where they are.
 - **Never re-registers the webhook**, recreates the spreadsheet, or deletes the
   `processPendingTelegramJobs` trigger.

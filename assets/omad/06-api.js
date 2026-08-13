@@ -12,58 +12,39 @@
 /** What the user is told when the server could not be understood at all. */
 const SAVE_FAILED_MESSAGE = "Saqlanmadi. Internetni tekshirib, qayta urinib ko'ring.";
 
-/**
- * The access key this browser was let in with.
- *
- * Reads and writes both need it now: the ledger, the tenant list and the whole
- * café state are the business's private data, and until this change anyone who
- * knew the /exec URL could read all of it. It is verified once at login and
- * kept in localStorage, so the workflow is unchanged after the first sign-in.
- */
-const ACCESS_KEY_STORAGE = 'omad_access_key';
+/** How old a stored dashboard snapshot may be before it is not shown at all. */
+const OMAD_SNAPSHOT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
-function accessKey() {
-    try { return localStorage.getItem(ACCESS_KEY_STORAGE) || ""; } catch (e) { return ""; }
-}
-
-/** Sends the browser back to the login page when the key is gone or wrong. */
+/** Ends the session. Only ever called when the *server* says it has expired. */
 function requireAccess() {
-    try { localStorage.removeItem(ACCESS_KEY_STORAGE); } catch (e) {}
-    window.location.href = 'login.html';
+    signOut();
 }
 
 /**
  * One request to Apps Script, returning the parsed JSON body.
  *
- * Apps Script answers HTTP 200 for almost everything, including its own
- * errors, so the status line says nothing about whether the work happened.
- * A body that cannot be parsed is a failure too - it means a login page or a
- * redirect came back instead of an answer.
+ * The same transport every other screen uses (`callApi`), with one difference
+ * this app relies on everywhere: a *refusal* comes back as the body rather than
+ * as an exception, because most callers here already read `status` and
+ * `message` off it and act on them. A transport failure, an unparsable answer
+ * and a non-200 still throw, because there is no body to read.
  *
- * The access key rides on every request. A payload that supplies its own -
- * the admin-key field in Sozlamalar - keeps it, so typing a different key
- * there still works exactly as before.
+ * The session token rides on every request. A payload that supplies its own
+ * admin key - the field in Sozlamalar, kept for maintenance work - keeps it,
+ * so a key can still be tried without signing out.
  */
 async function callBackend(payload) {
-    const body = Object.assign({}, payload || {});
-    // A payload that names its own key keeps it - that is the Sozlamalar field,
-    // which exists so a different key can be tried without signing out. An
-    // empty one is not a choice, so the signed-in key is used instead.
-    if (!body.adminKey) body.adminKey = accessKey();
-    if (!body.adminKey) delete body.adminKey;
-
-    const res = await fetch(GOOGLE_APP_URL.trim(), {
-        method: 'POST',
-        body: JSON.stringify(body)
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-    const text = await res.text();
     try {
-        return JSON.parse(text);
-    } catch (e) {
-        throw new Error('Server javobi tushunarsiz (JSON emas).');
+        return await callApi(GOOGLE_APP_URL, payload);
+    } catch (error) {
+        if (error && error.body) return error.body;
+        throw error;
     }
+}
+
+/** True when the server said this session is over, rather than merely busy. */
+function isAuthExpiredResponse(body) {
+    return !!(body && body.status === 'error' && body.authExpired === true);
 }
 
 /**
@@ -76,16 +57,51 @@ function isSuccessResponse(body) {
     return !!(body && body.status === 'success');
 }
 
+/**
+ * Paints the dashboard from the last answer that worked, before asking for a
+ * new one.
+ *
+ * An Apps Script round trip is seconds, and until it returned this screen was
+ * blank. The snapshot is display only and is replaced wholesale the moment the
+ * live answer arrives; every save still goes to the server and every figure is
+ * recomputed from whatever the server last said.
+ */
+function hydrateFromSnapshot() {
+    const snapshot = readSnapshot('omad', OMAD_SNAPSHOT_MAX_AGE_MS);
+    if (!snapshot || !snapshot.value) return false;
+    const stored = snapshot.value;
+    if (!Array.isArray(stored.transactions)) return false;
+
+    app.transactions = stored.transactions;
+    app.rates = normalizeRatesMap(stored.rates || {});
+    app.tenants = (stored.tenants || []).map(normalizeTenantObject);
+    app.templateExpenses = Array.isArray(stored.templateExpenses)
+        ? stored.templateExpenses.map(normalizeTemplateExpense)
+        : [];
+    app.migration = stored.migration || null;
+    app.ledgerActive = !!(app.migration && app.migration.activeSheet === 'Omad_Transactions_V2');
+    app.snapshotAt = snapshot.savedAt;
+    renderAll();
+    return true;
+}
+
 // --- CLOUD ---
 async function syncData() {
-    showLoader(true);
+    const hadSnapshot = hydrateFromSnapshot();
+    showLoader(!hadSnapshot);
     try {
         // An authenticated POST, not the old anonymous GET: a GET puts its
-        // parameters in the URL, which is where a key must never be.
+        // parameters in the URL, which is where a credential must never be.
         const data = await callBackend({ action: 'get_omad_data' });
-        if (data && data.status === 'error') {
+        // Only an expired or refused session sends anybody back to the login
+        // page. A rate limit or a server fault leaves the screen exactly as it
+        // is - with the previous figures, which are the last true ones.
+        if (isAuthExpiredResponse(data)) {
             requireAccess();
             return;
+        }
+        if (data && data.status === 'error') {
+            throw new Error(data.message || SAVE_FAILED_MESSAGE);
         }
         if (data) {
             const remote = data.data || data.payload || data;
@@ -114,9 +130,35 @@ async function syncData() {
             app.templateExpenses = Array.isArray(remote.templateExpenses)
                 ? remote.templateExpenses.map(normalizeTemplateExpense)
                 : [];
+
+            // The migration status used to be a second request fired the
+            // moment this one returned - another Apps Script round trip before
+            // the dashboard could decide whether the ledger was live. It is
+            // four property reads, so it rides along with the data now. The
+            // separate call remains for an older backend that does not send it.
+            if (remote.migration) {
+                app.migration = remote.migration;
+                app.ledgerActive = app.migration.activeSheet === 'Omad_Transactions_V2';
+            } else {
+                await loadMigrationState();
+            }
+
+            app.snapshotAt = 0;
+            app.loadError = '';
+            writeSnapshot('omad', {
+                transactions: app.transactions,
+                rates: app.rates,
+                tenants: app.tenants,
+                templateExpenses: app.templateExpenses,
+                migration: app.migration
+            });
         }
-        await loadMigrationState();
-    } catch (e) { console.log("Offline or Error"); }
+    } catch (e) {
+        // Whatever was on screen stays on screen. Emptying it would replace
+        // real figures with zeroes, which reads as "the money is gone".
+        console.error('Omad sync failed', e);
+        app.loadError = (e && e.message) || SAVE_FAILED_MESSAGE;
+    }
     renderAll();
     showLoader(false);
 }

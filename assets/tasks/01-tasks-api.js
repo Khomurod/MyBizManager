@@ -3,17 +3,22 @@
 // ==========================================================
 // Tasks — API client & state
 // ----------------------------------------------------------
-// Reuses GOOGLE_APP_URL and the admin access guard from assets/omad/00-config.js
-// (the single source of truth for the backend URL). Every call - read as well
-// as mutation - carries the admin key, which is entered once and kept only in
-// sessionStorage.
+// Reuses GOOGLE_APP_URL and the omad_admin session guard from
+// assets/omad/00-config.js (the single source of truth for the backend URL),
+// and the session helpers from assets/session.js. Every call - read as well as
+// mutation - carries the session token, and the server checks that it is an
+// omad_admin one.
 // ==========================================================
 
-const TASKS_STATE = { view: null, config: null, needsKey: false };
-const TASKS_ADMIN_KEY_STORE = 'tasks_admin_key';
+const TASKS_STATE = { view: null, config: null, loadError: '' };
 
 async function tasksApiCall(payload) {
-    const res = await fetch(GOOGLE_APP_URL.trim(), { method: 'POST', body: JSON.stringify(payload) });
+    const body = Object.assign({}, payload);
+    if (!body.adminKey) {
+        const token = sessionToken();
+        if (token) body.sessionToken = token;
+    }
+    const res = await fetch(GOOGLE_APP_URL.trim(), { method: 'POST', body: JSON.stringify(body) });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const text = await res.text();
     try {
@@ -23,45 +28,34 @@ async function tasksApiCall(payload) {
     }
 }
 
-function tasksAdminKey() {
-    try { return sessionStorage.getItem(TASKS_ADMIN_KEY_STORE) || ''; } catch (e) { return ''; }
-}
-
-function setTasksAdminKey(value) {
-    try {
-        if (value) sessionStorage.setItem(TASKS_ADMIN_KEY_STORE, value);
-        else sessionStorage.removeItem(TASKS_ADMIN_KEY_STORE);
-    } catch (e) { /* private mode */ }
+/**
+ * The board used to ask for OMAD_ADMIN_KEY and keep it in sessionStorage, so
+ * the person running the business typed the maintenance key into a phone to
+ * look at a task list. The omad_admin session already proves who they are, and
+ * that is what the server now checks.
+ */
+function tasksAuthExpired(data) {
+    return !!(data && data.status === 'error' && data.authExpired === true);
 }
 
 async function loadTasks() {
-    const key = tasksAdminKey();
-    if (!key) {
-        // The board is admin-only now; there is nothing to show without a key.
-        TASKS_STATE.view = null;
-        TASKS_STATE.needsKey = true;
-        renderAllTasks();
-        openAdminKey();
-        return;
-    }
     taskLoader(true);
     try {
-        const data = await tasksApiCall({ action: 'get_tasks', adminKey: key });
+        const data = await tasksApiCall({ action: 'get_tasks' });
+        if (tasksAuthExpired(data)) { signOut(); return; }
         if (data && data.status === 'success') {
             TASKS_STATE.view = data.view;
             TASKS_STATE.config = data.config;
-            TASKS_STATE.needsKey = false;
+            TASKS_STATE.loadError = '';
         } else {
-            const message = (data && data.message) || "Ma'lumotni yuklab bo'lmadi";
-            if (/admin kalit/i.test(message)) {
-                setTasksAdminKey('');
-                TASKS_STATE.needsKey = true;
-                openAdminKey();
-            }
-            taskToast(message, true);
+            // A throttle or a server fault leaves the board exactly as it was.
+            // Emptying it would read as "nothing to do" rather than "not shown".
+            TASKS_STATE.loadError = (data && data.message) || "Ma'lumotni yuklab bo'lmadi";
+            taskToast(TASKS_STATE.loadError, true);
         }
     } catch (e) {
-        taskToast("Ma'lumotni yuklab bo'lmadi", true);
+        TASKS_STATE.loadError = "Ma'lumotni yuklab bo'lmadi";
+        taskToast(TASKS_STATE.loadError, true);
     } finally {
         taskLoader(false);
     }
@@ -69,23 +63,18 @@ async function loadTasks() {
 }
 
 /**
- * A mutation always carries the admin key. A "wrong key" answer clears the
- * stored key and reprompts, so a mistyped key is corrected without a reload.
+ * A mutation rides the session, like every other request the app makes.
+ *
+ * An expired session is the one answer that ends the session; everything else
+ * is a message beside the board, with the board still showing what it showed.
  */
 async function taskMutation(payload, okMessage) {
-    const key = tasksAdminKey();
-    if (!key) {
-        taskToast('Avval admin kalitini kiriting', true);
-        openAdminKey();
-        return null;
-    }
     taskLoader(true);
     try {
-        const data = await tasksApiCall(Object.assign({}, payload, { adminKey: key }));
+        const data = await tasksApiCall(payload);
+        if (tasksAuthExpired(data)) { signOut(); return null; }
         if (!data || data.status !== 'success') {
-            const message = (data && data.message) || 'Xatolik yuz berdi';
-            if (/admin kalit/i.test(message)) { setTasksAdminKey(''); openAdminKey(); }
-            taskToast(message, true);
+            taskToast((data && data.message) || 'Xatolik yuz berdi', true);
             return null;
         }
         if (data.view) { TASKS_STATE.view = data.view; TASKS_STATE.config = data.config; }

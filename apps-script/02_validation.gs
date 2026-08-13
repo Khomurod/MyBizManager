@@ -14,40 +14,68 @@ var TELEGRAM_RATE_WINDOW_SECONDS = 60;
 
 var TELEGRAM_ADMIN_RATE_LIMIT = 10;
 
-// Normal authenticated page loads share the read_auth bucket. Keep that
-// protection, but give regular app usage enough room that a few tabs/devices
-// cannot temporarily lock every legitimate user out of reads.
-var AUTHENTICATED_READ_RATE_LIMIT = 40;
-
 var TELEGRAM_WEBHOOK_RATE_LIMIT = 120;
 
 var TELEGRAM_MAX_TEXT_LENGTH = 3500;
 
 var TELEGRAM_MAX_FIELD_LENGTH = 512;
 
+var RATE_LIMIT_MESSAGE = "Juda ko'p so'rov yuborildi. Iltimos, biroz kutib qayta urinib ko'ring.";
+
+/** The fixed one-minute window a bucket is currently counting in. */
+function rateLimitKey_(bucketKey, windowSeconds) {
+  return "rl_" + bucketKey + "_" + Math.floor(new Date().getTime() / (windowSeconds * 1000));
+}
+
 /**
  * Fixed-window counter in the script cache. Returns "" when the call is
  * allowed, or a user-facing error message when the window is exhausted.
  * Cache failures fail open on purpose - throttling must never take the app
  * down, it only has to blunt abuse.
+ *
+ * `bucketKey` must never contain a credential: cache keys are not a place to
+ * put a secret, and one is never needed - an identity (a username) or the name
+ * of the gate is what a bucket is actually about.
  */
 function enforceRateLimit_(bucketKey, maxCalls, windowSeconds) {
   try {
     var cache = CacheService.getScriptCache();
-    var window = Math.floor(new Date().getTime() / (windowSeconds * 1000));
-    var key = "rl_" + bucketKey + "_" + window;
+    var key = rateLimitKey_(bucketKey, windowSeconds);
     var used = Number(cache.get(key)) || 0;
-    var effectiveMaxCalls = bucketKey === "read_auth"
-      ? Math.max(Number(maxCalls) || 0, AUTHENTICATED_READ_RATE_LIMIT)
-      : maxCalls;
-    if (used >= effectiveMaxCalls) {
-      return "Juda ko'p so'rov yuborildi. Iltimos, biroz kutib qayta urinib ko'ring.";
-    }
+    if (used >= maxCalls) return RATE_LIMIT_MESSAGE;
     cache.put(key, String(used + 1), windowSeconds + 5);
     return "";
   } catch (error) {
     return "";
   }
+}
+
+/**
+ * Whether a bucket is already exhausted, without consuming from it.
+ *
+ * Splitting the check from the increment is what lets a failure allowance be
+ * charged only to failures. Checking and consuming together would mean every
+ * legitimate sign-in spent from the same budget as every wrong guess, which is
+ * how a shared bucket ends up locking out the people it is protecting.
+ */
+function peekRateLimit_(bucketKey, maxCalls) {
+  try {
+    var used = Number(CacheService.getScriptCache().get(
+      rateLimitKey_(bucketKey, TELEGRAM_RATE_WINDOW_SECONDS))) || 0;
+    return used >= maxCalls ? RATE_LIMIT_MESSAGE : "";
+  } catch (error) {
+    return "";
+  }
+}
+
+/** Charges one unit to a bucket. Used on failure paths only. */
+function consumeRateLimit_(bucketKey) {
+  try {
+    var cache = CacheService.getScriptCache();
+    var key = rateLimitKey_(bucketKey, TELEGRAM_RATE_WINDOW_SECONDS);
+    var used = Number(cache.get(key)) || 0;
+    cache.put(key, String(used + 1), TELEGRAM_RATE_WINDOW_SECONDS + 5);
+  } catch (error) {}
 }
 
 function validateTelegramPayloadLengths_(payload) {

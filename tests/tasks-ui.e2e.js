@@ -28,7 +28,8 @@ const http = require('http');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
-const ADMIN_KEY = 'test-admin-key';
+/** The board is reached with an omad_admin session, like every other page. */
+const SESSION_TOKEN = 'e2e-session-token';
 
 let chromium = null;
 try { ({ chromium } = require('playwright')); } catch (error) { chromium = null; }
@@ -82,7 +83,7 @@ describe('Tasks UI (browser)', () => {
   /**
    * @param {object} options
    * @param {boolean} options.withKey  seed sessionStorage with the admin key
-   *        (default true). Without it the board is not readable at all.
+   *        (default true). Without a session the board is not readable at all.
    * @param {object} options.view      override the mock view.
    * @param {object} options.viewport  {width, height} to emulate a handset.
    */
@@ -94,10 +95,11 @@ describe('Tasks UI (browser)', () => {
       options.viewport ? { viewport: options.viewport, hasTouch: true, isMobile: true } : {});
     await context.addInitScript((args) => {
       localStorage.setItem('omad_role', 'omad_admin');
-      localStorage.setItem('omad_token', 'omad_admin_active');
-      localStorage.setItem('omad_access_key', 'e2e-access-key');
-      if (args.withKey) sessionStorage.setItem('tasks_admin_key', args.key);
-    }, { key: ADMIN_KEY, withKey });
+      if (args.withKey) {
+        localStorage.setItem('omad_session', args.key);
+        localStorage.setItem('omad_session_expires', String(Date.now() + 86400000));
+      }
+    }, { key: SESSION_TOKEN, withKey });
 
     // Stub the render-blocking CDNs so the page loads without any network.
     await context.route('**cdn.tailwindcss.com**', route => route.fulfill({ status: 200, contentType: 'application/javascript', body: '' }));
@@ -120,10 +122,12 @@ describe('Tasks UI (browser)', () => {
     const consoleErrors = [];
     page.on('pageerror', err => consoleErrors.push(String(err)));
     await page.goto(`${baseUrl}/tasks.html`);
-    await page.waitForFunction(() => typeof window.renderAllTasks === 'function');
     if (withKey) {
+      await page.waitForFunction(() => typeof window.renderAllTasks === 'function');
       await page.waitForFunction(() => document.querySelector('#panel-today .card') !== null);
     }
+    // Without a session the page redirects before its scripts finish, so
+    // waiting for them here would be waiting for a page that is leaving.
     return { page, context, backendRequests, telegramRequests, consoleErrors };
   }
 
@@ -135,23 +139,20 @@ describe('Tasks UI (browser)', () => {
 
     const reads = backendRequests.filter(r => r.action === 'get_tasks');
     assert.ok(reads.length >= 1, 'the board was read');
-    assert.strictEqual(reads[0].adminKey, ADMIN_KEY, 'the read carries the admin key');
+    assert.strictEqual(reads[0].adminKey, undefined, 'no maintenance key is typed any more');
+    assert.strictEqual(reads[0].sessionToken, SESSION_TOKEN, 'the read carries the session');
 
     assert.deepStrictEqual(telegramRequests, [], 'the browser never calls Telegram directly');
     assert.deepStrictEqual(consoleErrors, []);
     await context.close();
   });
 
-  test('the page asks for the admin key before showing anything', async () => {
-    const { page, context, backendRequests, consoleErrors } = await open({ withKey: false });
+  test('without a session the board sends the browser to the login page', async () => {
+    const { page, context, backendRequests } = await open({ withKey: false });
 
-    await page.waitForSelector('#adminModal:not(.hidden)');
-    const panel = await page.textContent('#panel-today');
-    assert.match(panel, /admin kalitini kiriting/i);
-
+    await page.waitForURL(/login\.html/, { timeout: 15000 });
     assert.deepStrictEqual(backendRequests.filter(r => r.action === 'get_tasks'), [],
-      'nothing was requested without a key');
-    assert.deepStrictEqual(consoleErrors, []);
+      'nothing was requested without a session');
     await context.close();
   });
 
@@ -169,7 +170,7 @@ describe('Tasks UI (browser)', () => {
     await context.close();
   });
 
-  test('creating a task posts a well-formed save_task with the admin key', async () => {
+  test('creating a task posts a well-formed save_task on the session', async () => {
     const { page, context, backendRequests } = await open();
     await page.click('button:has-text("+")');
     await page.waitForSelector('#taskModal:not(.hidden)');
@@ -186,7 +187,7 @@ describe('Tasks UI (browser)', () => {
     assert.ok(saves.length >= 1, 'a save_task was posted');
     assert.strictEqual(saves[0].title, 'Yangi test vazifa');
     assert.strictEqual(saves[0].type, 'once');
-    assert.strictEqual(saves[0].adminKey, ADMIN_KEY);
+    assert.strictEqual(saves[0].sessionToken, SESSION_TOKEN);
     await context.close();
   });
 
@@ -332,7 +333,7 @@ describe('Tasks UI (browser)', () => {
       assert.ok(skip.width < box.width, 'skip is visually subordinate to Bajarildi');
 
       // Header controls are real buttons, not 10px text.
-      for (const sel of ['#adminKeyBtn', '.hdr__tools a']) {
+      for (const sel of ['.hdr__tools button', '.hdr__tools a']) {
         const tool = await page.locator(sel).boundingBox();
         assert.ok(tool.height >= 40 && tool.width >= 40,
           `${sel} is ${tool.width}x${tool.height} at ${width}px`);
@@ -478,7 +479,7 @@ describe('Tasks UI (browser)', () => {
     assert.strictEqual(sent.remindDaily, false);
     assert.deepStrictEqual(sent.reminderTimes, ['09:00', '14:00'],
       'the repeater produces the same HH:MM array the text field used to');
-    assert.strictEqual(sent.adminKey, ADMIN_KEY);
+    assert.strictEqual(sent.sessionToken, SESSION_TOKEN);
     assert.strictEqual(sent.id, undefined, 'a new task carries no id');
 
     await context.close();

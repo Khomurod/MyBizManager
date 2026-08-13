@@ -108,8 +108,8 @@ describe('Sozlamalar (browser)', () => {
     const context = await browser.newContext();
     await context.addInitScript(() => {
       localStorage.setItem('omad_role', 'omad_admin');
-      localStorage.setItem('omad_token', 'omad_admin_active');
-      localStorage.setItem('omad_access_key', 'e2e-access-key');
+      localStorage.setItem('omad_session', 'e2e-session-token');
+      localStorage.setItem('omad_session_expires', String(Date.now() + 86400000));
     });
 
     await context.route('**script.google.com/**', async route => {
@@ -226,7 +226,7 @@ describe('Sozlamalar (browser)', () => {
     await context.close();
   });
 
-  test('admin actions carry the signed-in key even with the field empty', async () => {
+  test('admin actions ride the session with the key field empty', async () => {
     const { page, context, requests } = await openSettings();
     await page.evaluate(() => showSettingsSection('system'));
     await page.waitForFunction(() => systemStatus !== null);
@@ -237,30 +237,37 @@ describe('Sozlamalar (browser)', () => {
       await retryFailedJobs();
     });
 
-    // The Telegram field is for trying a *different* key. Empty means "use the
-    // one I signed in with", not "send nothing" - the server is the thing that
-    // decides, and it needs a key to decide with.
+    // Nothing here needs the maintenance key any more: the session token
+    // carries the omad_admin role and the server checks it. The field is for
+    // trying a different key, and an empty one means "use my session".
     for (const action of ['create_backup', 'process_jobs', 'retry_failed_jobs']) {
       const sent = requests.filter(r => r.action === action);
       assert.strictEqual(sent.length, 1, action);
-      assert.strictEqual(sent[0].adminKey, 'e2e-access-key', action);
+      assert.strictEqual(sent[0].adminKey, undefined, action);
+      assert.strictEqual(sent[0].sessionToken, 'e2e-session-token', action);
     }
     await context.close();
   });
 
-  test('with no key anywhere, nothing is sent at all', async () => {
+  test('with no session and no key, nothing authenticates the request', async () => {
     const { page, context, requests } = await openSettings();
     await page.evaluate(() => showSettingsSection('system'));
     await page.waitForFunction(() => systemStatus !== null);
 
     await page.evaluate(async () => {
-      localStorage.removeItem('omad_access_key');
+      localStorage.removeItem('omad_session');
       await createBackup();
       await retryFailedJobs();
     });
 
+    // The request is still made - the server is what refuses, and it has to be
+    // given the chance to say so. What must not happen is a credential
+    // appearing from somewhere.
     for (const action of ['create_backup', 'retry_failed_jobs']) {
-      assert.deepStrictEqual(requests.filter(r => r.action === action), [], action);
+      const sent = requests.filter(r => r.action === action);
+      assert.strictEqual(sent.length, 1, action);
+      assert.strictEqual(sent[0].sessionToken, undefined, action);
+      assert.strictEqual(sent[0].adminKey, undefined, action);
     }
     await context.close();
   });

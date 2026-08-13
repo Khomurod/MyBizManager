@@ -5,6 +5,30 @@
 // format responses; all business logic lives in the modules above.
 // ============================================================
 
+// ------------------------------------------------------------- role sets
+//
+// Every gated action names the roles that may perform it, here, in one place.
+// The three web "roles" used to be a choice of which page opened: the server
+// saw one key and one permission level, so a café seller who edited two
+// localStorage values could read the ledger and run a migration. These lists
+// are what make the roles real, and they are enforced on the server where a
+// browser cannot reach them.
+
+/** Anybody who is signed in, whichever role they hold. */
+var AUTH_ROLES_ANY = [AUTH_ROLE_OMAD_ADMIN, AUTH_ROLE_CAFE_ADMIN, AUTH_ROLE_CAFE_SELLER];
+
+/** The accounting, the settings, the migration, the maintenance, the tasks. */
+var AUTH_ROLES_OMAD_ADMIN = [AUTH_ROLE_OMAD_ADMIN];
+
+/** Reading the café: the till, the café manager, and the owner. */
+var AUTH_ROLES_CAFE_READ = [AUTH_ROLE_OMAD_ADMIN, AUTH_ROLE_CAFE_ADMIN, AUTH_ROLE_CAFE_SELLER];
+
+/** Editing the catalogue: prices, recipes, categories, the daily target. */
+var AUTH_ROLES_CAFE_ADMIN = [AUTH_ROLE_OMAD_ADMIN, AUTH_ROLE_CAFE_ADMIN];
+
+/** Ringing up, voiding and closing the day. */
+var AUTH_ROLES_CAFE_SELL = [AUTH_ROLE_OMAD_ADMIN, AUTH_ROLE_CAFE_SELLER];
+
 function doPost(e) {
   // Anything memoised for the life of a request starts empty. Apps Script
   // gives each execution a fresh global scope so this is already true in
@@ -50,54 +74,90 @@ function doPost(e) {
       return handleMiniAppAction_(action, payload, doc);
     }
 
+    // ---- Sign in ----------------------------------------------------------
+    // The only unauthenticated action there is. It is routed after the Mini
+    // App and before everything else so nothing can reach a gated handler
+    // through it, and it never answers with anything but a token.
+    if (action === 'login') {
+      return jsonOutput_(loginAction_(payload));
+    }
+
     // ---- Task management --------------------------------------------------
     if (isTaskAction_(action)) {
       return handleTaskAction_(action, payload, doc);
     }
 
+    // ---- Session & account ------------------------------------------------
+    // verify_access is what a page calls on load to find out whether its stored
+    // session is still good and which role it carries, so every signed-in role
+    // may call it.
+    if (action === 'verify_access' || action === 'change_password') {
+      var sessionAuth = authorizeWebRequest_(payload, AUTH_ROLES_ANY);
+      if (!sessionAuth.ok) return authRefusal_(sessionAuth);
+      if (action === 'change_password') return jsonOutput_(changePasswordAction_(sessionAuth, payload));
+      return jsonOutput_({
+        status: "success", role: sessionAuth.role, username: sessionAuth.username,
+        home: AUTH_ROLE_HOME[sessionAuth.role] || "login.html",
+        bootstrap: !!sessionAuth.bootstrap
+      });
+    }
+
+    if (action === 'set_user_password' || action === 'list_users') {
+      var accountAuth = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+      if (!accountAuth.ok) return authRefusal_(accountAuth);
+      if (action === 'list_users') return jsonOutput_({ status: "success", users: listAuthUsers_() });
+      return jsonOutput_(setUserPasswordAction_(payload));
+    }
+
     // ---- Authenticated reads ----------------------------------------------
     // The financial ledger, the tenant list and the whole café state are the
-    // business's private data. get_omad / get_cafe still answer an anonymous
-    // GET for one release so the deployed frontend cannot break between the
-    // static-host and Apps Script rollouts; these are what the UI now calls,
-    // and the anonymous routes are removed once the live host serves the
-    // current build.
-    if (action === 'verify_access' || action === 'get_omad_data' || action === 'get_cafe_data') {
-      return authenticatedReadAction_(action, payload, doc, configSheet);
+    // business's private data, and the two reads are gated differently: a café
+    // seller has no business reading the ledger, and could previously do so by
+    // editing one localStorage value.
+    if (action === 'get_omad_data') {
+      var omadReadAuth = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+      if (!omadReadAuth.ok) return authRefusal_(omadReadAuth);
+      return jsonOutput_(readOmadPayload_(doc, configSheet));
+    }
+
+    if (action === 'get_cafe_data') {
+      var cafeReadAuth = authorizeWebRequest_(payload, AUTH_ROLES_CAFE_READ);
+      if (!cafeReadAuth.ok) return authRefusal_(cafeReadAuth);
+      return jsonOutput_(readCafePayloadForScope_(doc, configSheet, payload));
     }
 
     // ---- Omad ledger ------------------------------------------------------
-    // Financial writes take the access key. They were reachable by anyone who
+    // Financial writes are omad_admin only. They were reachable by anyone who
     // knew the /exec URL, which meant anyone could rewrite the whole ledger.
     if (action === 'migrate_omad' || action === 'save_omad') {
-      var saveAccessError = checkAdminKey_(payload);
-      if (saveAccessError) return jsonOutput_({ status: "error", message: saveAccessError });
+      var saveAccess = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+      if (!saveAccess.ok) return authRefusal_(saveAccess);
       return saveOmadAction_(action, payload, doc, configSheet);
     }
 
     if (action === 'tenant_paid_expense') {
-      var pairAccessError = checkAdminKey_(payload);
-      if (pairAccessError) return jsonOutput_({ status: "error", message: pairAccessError });
+      var pairAccess = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+      if (!pairAccess.ok) return authRefusal_(pairAccess);
       return tenantPaidExpenseAction_(payload, doc, configSheet);
     }
 
     // ---- Append-only ledger -----------------------------------------------
     if (isLedgerAction_(action)) {
-      var ledgerAccessError = checkAdminKey_(payload);
-      if (ledgerAccessError) return jsonOutput_({ status: "error", message: ledgerAccessError });
+      var ledgerAccess = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+      if (!ledgerAccess.ok) return authRefusal_(ledgerAccess);
       return ledgerAction_(action, payload, doc);
     }
 
     // ---- Retry queue ------------------------------------------------------
     if (action === 'get_job_queue_status') {
-      var queueAccessError = checkAdminKey_(payload);
-      if (queueAccessError) return jsonOutput_({ status: "error", message: queueAccessError });
+      var queueAccess = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+      if (!queueAccess.ok) return authRefusal_(queueAccess);
       return jsonOutput_({ status: "success", queue: buildJobQueueStatus_(doc) });
     }
 
     if (action === 'process_jobs') {
-      var jobsAdminError = checkAdminKey_(payload);
-      if (jobsAdminError) return jsonOutput_({ status: "error", message: jobsAdminError });
+      var jobsAccess = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+      if (!jobsAccess.ok) return authRefusal_(jobsAccess);
       var processed = processPendingJobs_(doc, JOB_QUEUE_MANUAL_BATCH);
       return jsonOutput_({ status: "success", processed: processed, queue: buildJobQueueStatus_(doc) });
     }
@@ -106,8 +166,8 @@ function doPost(e) {
     // The view carries no secret, but it does carry the authorized user id and
     // both group chat ids -- enough to know exactly who and where to target.
     if (action === 'get_telegram_settings') {
-      var settingsAccessError = checkAdminKey_(payload);
-      if (settingsAccessError) return jsonOutput_({ status: "error", message: settingsAccessError });
+      var settingsAccess = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+      if (!settingsAccess.ok) return authRefusal_(settingsAccess);
       return jsonOutput_({ status: "success", settings: buildTelegramSettingsView_() });
     }
 
@@ -119,14 +179,14 @@ function doPost(e) {
     // Counts and event names only, but the audit tail names tasks, people and
     // operations, and the counts describe the size of the business.
     if (action === 'get_system_status') {
-      var statusAccessError = checkAdminKey_(payload);
-      if (statusAccessError) return jsonOutput_({ status: "error", message: statusAccessError });
+      var statusAccess = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+      if (!statusAccess.ok) return authRefusal_(statusAccess);
       return jsonOutput_({ status: "success", system: buildSystemStatus_(doc) });
     }
 
     if (action === 'create_backup' || action === 'retry_failed_jobs') {
-      var systemAdminError = checkAdminKey_(payload);
-      if (systemAdminError) return jsonOutput_({ status: "error", message: systemAdminError });
+      var systemAccess = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+      if (!systemAccess.ok) return authRefusal_(systemAccess);
       var systemResult = action === 'create_backup'
         ? createManualBackup_(doc)
         : retryFailedJobs_(doc);
@@ -141,22 +201,22 @@ function doPost(e) {
 
     // ---- Health & Mini App configuration ----------------------------------
     if (action === 'get_health' || action === 'configure_mini_app') {
-      var healthAdminError = checkAdminKey_(payload);
-      if (healthAdminError) return jsonOutput_({ status: "error", message: healthAdminError });
+      var healthAccess = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+      if (!healthAccess.ok) return authRefusal_(healthAccess);
       if (action === 'configure_mini_app') return jsonOutput_(configureMiniApp_(payload));
       return jsonOutput_({ status: "success", health: buildHealthReport_(doc) });
     }
 
     // ---- Migration --------------------------------------------------------
     if (action === 'get_migration_status') {
-      var migrationReadError = checkAdminKey_(payload);
-      if (migrationReadError) return jsonOutput_({ status: "error", message: migrationReadError });
+      var migrationRead = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+      if (!migrationRead.ok) return authRefusal_(migrationRead);
       return jsonOutput_({ status: "success", migration: getMigrationStatus_(doc) });
     }
 
     if (isMigrationAction_(action)) {
-      var migrationAdminError = checkAdminKey_(payload);
-      if (migrationAdminError) return jsonOutput_({ status: "error", message: migrationAdminError });
+      var migrationAccess = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+      if (!migrationAccess.ok) return authRefusal_(migrationAccess);
       return migrationAction_(action, payload, doc);
     }
 
@@ -298,8 +358,8 @@ function telegramAdminAction_(action, payload) {
   var lengthError = validateTelegramPayloadLengths_(payload);
   if (lengthError) return jsonOutput_({ status: "error", message: lengthError });
 
-  var adminError = checkAdminKey_(payload);
-  if (adminError) return jsonOutput_({ status: "error", message: adminError });
+  var auth = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+  if (!auth.ok) return authRefusal_(auth);
 
   if (action === 'save_telegram_settings') return jsonOutput_(saveTelegramSettings_(payload));
   if (action === 'test_telegram_connection') return jsonOutput_(testTelegramConnection_());
@@ -308,24 +368,13 @@ function telegramAdminAction_(action, payload) {
 }
 
 /**
- * Reads that require the access key.
+ * Everything omad_admin.html needs on load, in one round trip.
  *
- * Throttled before the key is compared, exactly as the Telegram admin actions
- * are, so the endpoint cannot be used to guess it.
+ * `migration` used to be a second request the page fired immediately after
+ * this one, which on Apps Script is another cold-start-and-lock round trip
+ * before the dashboard can decide whether the ledger is live. It is four
+ * Script Property reads, so it rides along.
  */
-function authenticatedReadAction_(action, payload, doc, configSheet) {
-  var throttled = enforceRateLimit_("read_auth", TELEGRAM_ADMIN_RATE_LIMIT, TELEGRAM_RATE_WINDOW_SECONDS);
-  if (throttled) return jsonOutput_({ status: "error", message: throttled });
-
-  var accessError = checkAdminKey_(payload);
-  if (accessError) return jsonOutput_({ status: "error", message: accessError });
-
-  if (action === 'verify_access') return jsonOutput_({ status: "success" });
-  if (action === 'get_omad_data') return jsonOutput_(readOmadPayload_(doc, configSheet));
-  return jsonOutput_(readCafeState_(doc, configSheet));
-}
-
-/** The Omad read payload, shared by the authenticated and legacy routes. */
 function readOmadPayload_(doc, configSheet) {
   return {
     status: "success",
@@ -333,7 +382,8 @@ function readOmadPayload_(doc, configSheet) {
     tenants: normalizeTenantList_(safeParseJSON_(getConfig(configSheet, "Omad_Tenants"), [])),
     rates: safeParseJSON_(getConfig(configSheet, "Omad_Rates"), { "Fevral": 12500 }),
     templateExpenses: normalizeTemplateExpenses_(
-      safeParseJSON_(getConfig(configSheet, "Omad_Template_Expenses"), []))
+      safeParseJSON_(getConfig(configSheet, "Omad_Template_Expenses"), [])),
+    migration: getMigrationStatus_(doc)
   };
 }
 
@@ -354,8 +404,8 @@ function isMaintenanceAction_(action) {
  * would otherwise report on financial rows to anyone who asked.
  */
 function maintenanceAction_(action, payload, doc) {
-  var adminError = checkAdminKey_(payload);
-  if (adminError) return jsonOutput_({ status: "error", message: adminError });
+  var auth = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+  if (!auth.ok) return authRefusal_(auth);
 
   if (action === 'audit_transaction_dates') {
     return jsonOutput_({ status: "success", audit: auditTransactionDates_(doc) });

@@ -213,7 +213,9 @@ function checkAdminKey_(payload) {
     return "OMAD_ADMIN_KEY Script Property o'rnatilmagan. Apps Script → Project Settings → Script Properties orqali qo'shing.";
   }
   var provided = String((payload && payload.adminKey) || "");
-  if (provided !== expected) return "Admin kaliti noto'g'ri.";
+  // Compared the way every other secret here is: without letting the answer's
+  // timing say how much of the key was right.
+  if (!secretsMatch_(provided, expected)) return "Admin kaliti noto'g'ri.";
   return "";
 }
 
