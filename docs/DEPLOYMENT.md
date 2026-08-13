@@ -1,8 +1,42 @@
 # Deployment
 
-**GitHub `main` is the source of truth for the backend.** Merging to `main`
-updates the live Apps Script project automatically, once every CI check has
-passed. Nobody pastes `script.gs` into the editor any more.
+**GitHub `main` is the source of truth.** Merging to `main` updates the live
+Apps Script project automatically, once every CI check has passed, and
+Cloudflare Pages publishes the frontend from the same branch. Nobody pastes
+`script.gs` into the editor any more.
+
+For what the application *is* and the rules it must not break, read
+[APP_BRIEF.md](APP_BRIEF.md). This page is the deployment detail behind it.
+
+---
+
+## Where everything lives
+
+| Piece | Value |
+|---|---|
+| Frontend | <https://mybizmanager.pages.dev> — Cloudflare Pages project `mybizmanager`, connected to `Khomurod/MyBizManager`, production branch `main`, automatic deployments, **no build step** |
+| Backend | Google Apps Script project **LIVE**, deployed by CI on every merge to `main` |
+| Script ID | `1afG6M-…9fgsWcpG` — the full value exists only in the `CLASP_JSON` secret |
+| Active deployment | id begins `AKfycbzhKyEOG…`, ends `…DtCA2W` — **never recreated** |
+| Executes as | the owner; access: Anyone |
+| Database | Google Sheet `1Q9_v2PrusZimoAjqbOUmHkW_NzDiV0z_8Wtr-v963CA` |
+| Bot / Mini App | Telegram `@mybizmanagerbot` |
+
+The Script ID is masked here because clasp guidance keeps `.clasp.json` out of
+version control. It was committed in full before that change, so it is still
+recoverable from git history — treat it as known, not as rotated.
+
+Cloudflare Pages serves `mini.html` and `tasks.html` at the clean `/mini` and
+`/tasks` paths with no configuration, which is why the repository carries no
+rewrite file. To roll the frontend back, pick an earlier deployment in the
+Cloudflare dashboard — every one is kept.
+
+> **Netlify is retired but still connected.** `omad-d.netlify.app` is *not*
+> production: it serves a build from before the access key existed and can no
+> longer sign in. The integration still posts deploy-preview checks and
+> comments on pull requests, so ignore them — a green Netlify preview says
+> nothing about this application. Deleting the Netlify site is a manual step
+> nobody has taken; nothing here depends on it.
 
 ---
 
@@ -30,9 +64,9 @@ The deploy job is `.github/workflows/ci.yml → deploy`, and the orchestration i
 - **Never creates an Apps Script project.** It pushes into the existing one.
 - **Never creates a deployment.** It calls `update-deployment` against the id
   already serving production, so the `/exec` URL is unchanged — which is what
-  keeps the Telegram webhook, the three frontend hardcodes and every bookmark
+  keeps the Telegram webhook, the five frontend hardcodes and every bookmark
   working. (`New deployment` mints a URL nothing calls; see
-  [LIVE_STATE.md](LIVE_STATE.md).)
+  [Never "New deployment"](#never-new-deployment).)
 - **Never touches Script Properties.** `TELEGRAM_BOT_TOKEN`,
   `TELEGRAM_WEBHOOK_SECRET`, `TELEGRAM_AUTHORIZED_USER_ID`,
   `TELEGRAM_GROUP_CHAT_ID`, `TELEGRAM_TASKS_GROUP_CHAT_ID`, `OMAD_ADMIN_KEY`
@@ -104,8 +138,11 @@ npx clasp clone-script <scriptId>     # or read .clasp.json of an existing clone
 npx clasp list-deployments            # ids and their current versions
 ```
 
-The live deployment is the one whose id ends `…DtCA2W`. Confirm before using it
-— see [LIVE_STATE.md](LIVE_STATE.md#where-everything-lives).
+The live deployment is the one whose id ends `…DtCA2W` — see
+[Where everything lives](#where-everything-lives). To confirm which deployment
+is actually answering, run **Sozlamalar → Tizim → Tizim Salomatligi**: its
+first check compares the deployment serving the request with the one the
+Telegram webhook points at.
 
 ### Why these are secrets
 
@@ -121,8 +158,8 @@ committed here — `.gitignore` excludes them and
 
 `apps-script/*.gs` and nothing else, plus the manifest the live project already
 has. The staging directory is built fresh on every run and is the only thing
-clasp can see, so frontend HTML, `assets/`, `tests/`, `docs/`, `diagnostics/`,
-`script.gs`, `.git` and `node_modules` cannot reach Apps Script. `clasp
+clasp can see, so frontend HTML, `assets/`, `tests/`, `docs/`, `script.gs`,
+`.git` and `node_modules` cannot reach Apps Script. `clasp
 show-file-status` prints the exact list before the push:
 
 ```
@@ -180,6 +217,25 @@ instead:
 Fix it by porting the code into a module and letting CI ship it. The override
 variable exists for the case where the remote code really is dead, and should
 be removed again afterwards.
+
+---
+
+## Never "New deployment"
+
+The project has around twenty deployments and **only one is live**. The manual
+path is Deploy → **Manage deployments** → the deployment ending `…DtCA2W` →
+pencil → Version → **New version** → Deploy.
+
+**Never "New deployment".** It mints a *new URL that nothing calls*, so the code
+looks deployed while the app keeps running the old version. This happened
+repeatedly and is why production once ran stale code for weeks. The pipeline
+uses `clasp update-deployment` against the existing id precisely so it cannot
+happen again; the manual path remains only as an Actions-outage fallback.
+
+An **archived** deployment cannot be given a new version — the version selector
+is not offered and there is no restore action — but it *keeps serving traffic*.
+The previous live deployment (`hmm4`, ending `…Zi1SMkdtw`) is archived and
+permanently pinned to old code. Nothing points at it any more; leave it alone.
 
 ---
 

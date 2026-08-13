@@ -1,20 +1,18 @@
-# MyBizManager — current architecture and data structures
+# Architecture and data structures
 
-Documented as of the Telegram credential-hardening change. This is the
-"before" picture that the remaining migration stages build on.
+The detailed design reference: sheet schemas, data shapes, API surface and the
+rationale behind the mechanisms.
 
-> **Start with [APP_BRIEF.md](APP_BRIEF.md).** This file is the detailed design
-> reference — data shapes and rationale — and parts of it are out of date. The
-> App Brief lists what.
+> **Start with [APP_BRIEF.md](APP_BRIEF.md)** — it is the orientation document
+> and states the business rules this page implements. Read this file when you
+> need the exact shape of a row, a config value or an API action.
 >
-> **This file describes the design, not what is deployed.** For the live
-> deployment, which sheet is active, the Telegram setup and the work still
-> outstanding, see **[LIVE_STATE.md](LIVE_STATE.md)**.
->
-> **Correction (2026-08-12): the V2 append-only ledger *is* live.** The cutover
-> was performed and `Omad_Transactions_V2` is the active sheet; the legacy
-> `Omad_Transactions` is kept intact for rollback. Every "after cutover" passage
-> below therefore describes the **current** state, not a future one.
+> Deployment identity, hosting and the live deployment id are in
+> [DEPLOYMENT.md](DEPLOYMENT.md). The task module has its own reference,
+> [TASKS.md](TASKS.md).
+
+The V2 append-only ledger is **live**: `Omad_Transactions_V2` is the active
+sheet and the legacy `Omad_Transactions` is kept intact for rollback.
 
 ## Components
 
@@ -29,7 +27,7 @@ Documented as of the Telegram credential-hardening change. This is the
 | `apps-script/*.gs` | Apps Script backend **source of truth** — what CI uploads to the live project |
 | `script.gs` | **Generated** single-file bundle of `apps-script/*.gs`; a review aid and manual-deployment fallback, no longer the production path |
 
-The frontend is static HTML served from GitHub Pages; it talks to a single
+The frontend is static HTML served from Cloudflare Pages; it talks to a single
 Apps Script `/exec` web app over `fetch`.
 
 ### Backend modules
@@ -143,6 +141,7 @@ Column A = key, column B = a JSON string.
 | 10 | `Telegram_Msg_ID` | group message id, for later edit/delete |
 | 11 | `Request_ID` | idempotency key; empty on legacy rows |
 | 12 | `Entry_Group_ID` | the business action this row belongs to (see below) |
+| 13 | `Entry_Kind` | `""` or `tenant_paid_expense` (see below) |
 
 ### Entry groups
 
@@ -263,9 +262,13 @@ Secrets and configuration that must never reach the browser.
 
 ## API actions (`doPost`)
 
+Routing order in `20_api.gs` is load-bearing, because a name matched earlier is
+gated differently: `mini_*` first, then tasks, then reads, then the rest; a café
+action is matched last. Check it before adding an action name.
+
 | Action | Admin key | Notes |
 |---|---|---|
-| `save_omad` / `migrate_omad` | **yes** | **Rewrites the whole transaction list** (see limitations). Optional `telegramReport: {operation, groupId, baseId, messageId}` queues a server-composed report |
+| `save_omad` / `migrate_omad` | **yes** | Whole-list save. Its **transaction half is refused while V2 is live** (`saveOmadSettingsOnly_` runs instead); tenants, rates and planned expenses still save through it. Optional `telegramReport: {operation, groupId, baseId, messageId}` queues a server-composed report |
 | `tenant_paid_expense` | **yes** | One tenant-paid expense: two linked rows, one group, one report. `replaceGroupId` edits an existing pair |
 | `get_telegram_settings` | **yes** | Never includes the token, but does carry the authorized user id and both chat ids |
 | `save_telegram_settings` | **yes** | Validates before accepting |
@@ -281,13 +284,24 @@ Secrets and configuration that must never reach the browser.
 | `save_sale`, `void_sale`, `close_day` | **yes** | Café POS |
 | `verify_access` | **yes** | Checks a key at login and returns nothing else |
 | `get_omad_data` / `get_cafe_data` | **yes** | The authenticated replacements for the `doGet` reads |
+| `get_health` | **yes** | The sixteen-check system health report |
+| `configure_mini_app` | **yes** | Installs and verifies the bot's Mini App menu button |
+| `get_migration_status` | **yes** | Which sheet is live; the frontend picks its entry path from this |
+| `preview_` / `apply_` / `verify_` / `cutover_` / `rollback_omad_migration` | **yes** | The migration sequence, above |
+| `create_transaction` / `correct_transaction` / `cancel_transaction` / `list_transactions` / `get_transaction` / `get_transaction_history` | **yes** | The append-only ledger, below |
+| `get_tasks` (**POST only**) / `save_task` / `cancel_task` / `pause_routine` / `resume_routine` / `skip_occurrence` / `complete_occurrence` / `reopen_occurrence` | **yes** | The task board — reads included; see [TASKS.md](TASKS.md) |
 | `mini_home` / `mini_omad` / `mini_cafe` / `mini_tasks` | initData | Mini App reads — server-computed summaries |
 | `mini_save_transaction` / `mini_tenant_paid` / `mini_task_action` | initData | Mini App writes, through the shared implementations |
+| `mini_flush_reports` | initData | Drains queued jobs so the group card arrives without waiting for the trigger |
 | `audit_transaction_dates` | **yes** | Classifies every Date cell against the date its id proves. Writes nothing |
 | `fix_transaction_dates` | **yes** | Corrects only provably transposed dates. `dryRun` reports without writing |
 | `backfill_entry_group_ids` | **yes** | Writes the deterministic group id onto rows that predate the column |
 | `purge_telegram_debug_secrets` | **yes** | Copies `Telegram_Debug_Log`, then re-redacts every row in place |
+| `audit_telegram_secret_exposure` | **yes** | Reports whether anything credential-shaped remains in the debug log. Writes nothing |
 | `rotate_telegram_webhook_secret` | **yes** | New verification secret, `setWebhook`, verify, or roll back |
+
+**Any action name starting with `mini_` is Mini-App-gated** — never name a new
+admin action `mini_…`.
 
 `doGet` is **inert**: it reads nothing and answers every request, whatever
 action it names, with the same sentence. The anonymous `get_omad` / `get_cafe`
@@ -295,13 +309,15 @@ GET routes were removed — see below.
 
 ## Who may call what
 
-The `/exec` URL is hardcoded in three pages served from a public site, so
-everyone who has seen the frontend knows it. Until the Mini App change, that was
-enough to read the whole financial ledger, the tenant list, every café sale and
-its margin — and to write all of it.
+The `/exec` URL is hardcoded in **five** places served from a public site
+(`assets/omad/00-config.js`, `assets/mini/00-config.js`, `login.html`,
+`cafe_admin.html`, `cafe_pos.html`), so everyone who has seen the frontend
+knows it. Before the access key existed, that was enough to read the whole
+financial ledger, the tenant list, every café sale and its margin — and to
+write all of it. All five must always carry the same value.
 
-There are now exactly **three** ways to be authorized, and every action belongs
-to one of them:
+There are exactly **three** ways to be authorized, and every action belongs to
+one of them:
 
 | Gate | Proves | Used by |
 |---|---|---|
@@ -327,25 +343,26 @@ whatever action it names, with the same sentence. `get_omad` / `get_cafe` used
 to answer there anonymously — that was the exposure, since the /exec URL is
 hardcoded in pages served from a public site — and they are gone.
 
-### The rollout grace, and why it no longer exists
+### The removed bypass must not come back
 
-The frontend and the backend deploy on different pipelines and do not land
-together. When the backend started demanding a key and the deployed browser had
-not learned to send one, every save failed. `LEGACY_CLIENT_GRACE` bridged that
-gap: while it was on, the actions the pre-key frontend called accepted a request
-carrying no key at all.
+`LEGACY_CLIENT_GRACE` was a temporary rollout flag that let the actions the
+pre-key frontend called accept a request carrying no key at all. It is gone,
+along with the second access check (`checkAccessKeyDuringRollout_`) and the
+anonymous GET routes. **Do not reintroduce any of them**, and do not add a new
+flag that makes a business action optional-key: `tests/api-security.test.js`
+asserts that neither the flag nor the bypass function exists.
 
-It was always meant to be temporary, and it is gone — the flag, the second
-access check (`checkAccessKeyDuringRollout_`) and the anonymous GET routes with
-it. Every business action now takes the same key, and `api-security.test.js`
-asserts that neither the flag nor the bypass function exists any more, so there
-is no undocumented way back.
+If the key ever has to be rolled out again, the order matters and is the
+opposite of the obvious one: get the frontend live and proven first — signed
+in, reading, writing and reversing — and only then close the hole. Closing it
+first takes the whole application down, because the frontend and the backend
+deploy on different pipelines and do not land together.
 
-`anonymous-access.test.js` is the inventory, written from the outside: it asks
-what a stranger holding the /exec URL can read and write, and pins the answers
-at nothing. The health check no longer reports a flag — it *probes* `doGet` for
-both retired routes on every run, because a flag describes what the source
-intended and a probe describes what the deployed router does.
+`tests/anonymous-access.test.js` is the inventory, written from the outside: it
+asks what a stranger holding the /exec URL can read and write, and pins the
+answers at nothing. The health check *probes* `doGet` for both retired routes
+on every run, because a flag describes what the source intended and a probe
+describes what the deployed router does.
 
 ### The café is server-priced
 
@@ -420,6 +437,14 @@ a shorter window would break a Mini App left in the background mid-edit.
 screen is the wrong place for the key that also unlocks the settings and the
 maintenance actions.
 
+**Attribution comes from the signature, never from the payload.** A Mini App
+task mutation has `completedById`, `completedBy`, `completedByName`,
+`completedSource`, `createdBy` and `proofAwaitingUserId` **stripped** from the
+request and rewritten from the verified `initData`. Stripped rather than
+overwritten, so an attribution field added to the task engine later cannot
+become spoofable merely by being forwarded. The `/tasks` board is deliberately
+different: it is admin-key gated and picks a completer from a list on purpose.
+
 `mini_*` actions are routed before everything else, so one can never fall
 through into a handler with a different gate. They reuse the existing business
 logic rather than reimplementing it — figures from `05a_calculations.gs`, tenant
@@ -442,31 +467,29 @@ The full web app remains the administration interface. Rates, tenant
 schedules, planned expenses, migration and the maintenance actions are
 deliberately not here.
 
-### One read per request
+### One read per request, and it computes nothing
 
-Every Mini App screen used to pay for the others. `mini_home` built the Omad
-summary, the café summary and the whole task view, and the client then called
-`mini_omad` anyway because the tenant list and the recent entries were missing
-from it — two round trips and **four separate full reads of the ledger** to
-paint one tab, plus a café read and a task-view build for tabs nobody had
-opened. The task counts it computed were never rendered by any screen.
+Every figure arrives already calculated, and no screen pays for the others.
+`miniOmadContext_` reads the ledger, the tenant list and the rate table **once**
+and the three builders take that context, so `mini_home` answers the Omad tab
+completely on one request; Café and Tasks are fetched when their tab is first
+opened.
 
-`miniOmadContext_` reads the ledger, the tenant list and the rate table once,
-and the three builders take that context. `mini_home` answers Omad completely
-from it. Café and Tasks are fetched when their tab is first opened.
+Sending the raw state to the phone instead is not an option to reach for: the
+café state alone is a third of a megabyte, and totalling it in the browser
+would be a second implementation of arithmetic that already exists in
+`05a_calculations.gs`.
 
-### It computes nothing
-
-Every figure arrives already calculated. `mini_home` returns the Omad summary,
-the café summary and the task counts in **one** round trip, so the first screen
-paints on one request; each tab's detail is fetched when that tab is first
-opened. The café state alone is a third of a megabyte — sending it to a phone
-to be totalled there would be slow *and* a second implementation of arithmetic
-that already exists in `05a_calculations.gs`.
+`tests/read-efficiency.test.js` counts sheet passes directly rather than timing
+anything, so a regression here fails the build instead of just feeling slow.
 
 Writes go through the same functions the web app and the bot use, so a Mini App
 entry is indistinguishable from any other: same row shape, same
-`Entry_Group_ID`, same idempotency, same queued group report.
+`Entry_Group_ID`, same idempotency, same queued group report. The write returns
+as soon as the row is stored; the group card is queued and the client calls
+`mini_flush_reports` **without awaiting it**, so the card appears in seconds
+rather than at the next trigger tick. Losing that call costs a delay, never a
+report — the job stays queued and the trigger sends it.
 
 ### Design
 
@@ -492,15 +515,19 @@ user and the webhook are checked in the same pass. There is no manual step.
 pass over everything that can stop working quietly. Green / warning / error
 with a sentence each, and never a secret, a chat id or a deployment URL.
 
+Sixteen checks, in `buildHealthReport_`:
+
 | Check | Notices |
 |---|---|
+| Backend | it answered at all |
+| Anonymous read | either retired GET route answering again |
 | Deployment | **the webhook pointing at a different deployment than the one answering** — the failure this project has actually had, repeatedly |
 | Telegram bot | the token is missing or the bot will not answer |
 | Mini App | the menu button is unset, or points somewhere else |
 | Authorized user | unset, or not numeric |
 | Webhook | disconnected, erroring, or badly backed up |
 | Tasks group | unset, or an `@username` that will silently match nothing |
-| Trigger | `processPendingTelegramJobs` is missing — no reminder or report would ever be sent |
+| Trigger | `processPendingTelegramJobs` is missing — no reminder or report would ever be sent. It currently reports the list as *unreadable*: `ScriptApp.getProjectTriggers()` throws because the live manifest's OAuth scopes omit `script.scriptapp`. The trigger itself works |
 | Queue | failed jobs, or a growing backlog |
 | Sheets | one of the five required sheets is absent |
 | Ledger | which transaction sheet is live, and whether V2 is on |
@@ -508,7 +535,7 @@ with a sentence each, and never a secret, a chat id or a deployment URL.
 | Omad / Café / Tasks | each is reachable, with its row count |
 
 A failing bot does not take the report down with it: each check catches its own
-errors, so one broken thing still leaves the other fourteen answers readable.
+errors, so one broken thing still leaves the other fifteen answers readable.
 
 ## Telegram reporting
 
@@ -573,6 +600,11 @@ The web id survives a mid-save refresh, so the resubmission carries the
 original id and the server recognises it. It is cleared only once the
 submission succeeds. A second click while a save is in flight is ignored.
 
+On the `/yangi` side the `sessionId` is written to the transaction's
+`Request_ID`, and the insert looks that id up first, so a redelivered Telegram
+update, a retried webhook or a repeated callback all resolve to the same single
+transaction. Café sales carry their own `requestId` on the same principle.
+
 ### Webhook verification
 
 Apps Script cannot read request headers, so Telegram's
@@ -580,16 +612,8 @@ Apps Script cannot read request headers, so Telegram's
 mechanism is a high-entropy secret embedded in the webhook URL
 (`?wh=<secret>`), stored in `TELEGRAM_WEBHOOK_SECRET` and additionally passed
 to `setWebhook` as `secret_token`. Updates that do not present it are dropped
-before any state changes. If no secret is stored yet (a deployment from before
-this change), updates are accepted until the operator presses **🔄 Webhook**
-once.
-
-### Idempotency
-
-Each `/yangi` conversation gets a `sessionId`; it is written to the
-transaction's `Request_ID`. The insert looks the request id up first, so a
-redelivered Telegram update, a retried webhook or a repeated callback all
-resolve to the same single transaction.
+before any state changes. If no secret is stored yet, updates are accepted
+until the operator presses **🔄 Webhook** once.
 
 ## Periods
 
@@ -630,6 +654,51 @@ so the app shows correct years **before** the sheet is migrated.
 | `verify_omad_migration` | Row counts, unique ids, canonical periods, per-period totals and cash/bank/total balances |
 | `cutover_omad_migration` | Refuses unless verification passes, then points `Omad_Active_Transactions_Sheet` at V2 |
 | `rollback_omad_migration` | Points reads back at the original and restores the pre-migration rate map. **Never deletes migrated data** |
+
+The migration ran and cut over on 2026-08-12. These actions stay live because
+rollback has to stay one button, which also means the sequence can be needed
+again.
+
+> ### ⛔ `apply_omad_migration` destroys the live ledger if V2 is active
+>
+> It **rebuilds `Omad_Transactions_V2` from scratch** — `clearSheetRows_` on the
+> target, then repopulate **exclusively from the legacy `Omad_Transactions`** —
+> and there is **no backend guard** refusing to run while V2 is the active
+> sheet. Every row written since the cutover exists only in V2 and is not on
+> the legacy sheet, so running apply today would delete all of it.
+>
+> **Never run apply while the migration state is `cutover`.** The whole
+> sequence below is a *re-run after a rollback*, never something to start from
+> the live ledger.
+
+If it is ever needed again, in this order:
+
+1. **Roll back first.** `rollback_omad_migration` points reads and writes back
+   at `Omad_Transactions` and restores the pre-migration rate map. It deletes
+   nothing, so the V2 rows are still there to be recovered in step 2.
+2. **Reconcile the V2-only rows.** Every transaction created after the last
+   cutover lives only in `Omad_Transactions_V2`. Copy those rows into
+   `Omad_Transactions` by hand now — apply reads the legacy sheet and nothing
+   else, so anything left behind is gone at step 4.
+3. **Back up three ways** — `create_backup` (in-sheet JSON snapshot, verify the
+   row appears), Drive **File → Make a copy**, and an off-Drive `.xlsx` export.
+   They fail in different ways.
+4. **Preview.** Writes nothing. Duplicate ids must be empty; unresolved rows
+   are better fixed in the sheet than covered by a fallback year, because then
+   the year comes from the record itself.
+5. **Apply.** Rebuilds the target from scratch, so an apply interrupted *within
+   this same procedure* is recovered by running it again. It **never touches
+   the legacy sheet**, which is what makes everything up to cutover cheap to
+   undo.
+6. **Verify.** Field-by-field, including each frozen `Amount_UZS` against the
+   rate recorded on that same row. **Never cut over on matching totals alone**
+   — an earlier version compared ten fields, none of them `Entry_Group_ID`,
+   `Entry_Kind` or `Comment`, and would have let every tenant-paid pair arrive
+   as two unrelated rows.
+7. **Cut over.** Refuses unless verification passed.
+
+**Never delete `Omad_Transactions`** — it costs nothing to keep and it is the
+last line of defence.
 
 ## Append-only ledger (`Omad_Transactions_V2`, schema version 2)
 
@@ -894,46 +963,20 @@ If `setWebhook` fails or Telegram will not confirm, the old secret is restored
 exactly as it was rather than deaf. The secret is never returned to the browser
 and never written to a log.
 
-## Known limitations (not addressed by this change)
+## Known limitations
 
-These are tracked as the remaining migration stages:
+Current limitations and intentional exceptions are listed in
+[APP_BRIEF.md §12](APP_BRIEF.md#12-known-limitations-and-intentional-exceptions).
+Two that bear on the data shapes above:
 
-1. ~~Whole-database rewrites.~~ Replaced by the append-only ledger once the
-   migration is cut over. Before cutover the legacy path is still used, by
-   design.
-2. ~~Month-only periods.~~ Replaced by canonical `YYYY-MM` periods. The
-   migration tooling is delivered and tested; the live sheet migration has not
-   been run (it needs access to the spreadsheet).
-3. **No stored exchange rate per transaction** *for legacy rows only*. Ledger
-   rows freeze the rates at write time and every consumer reads the frozen
-   value.
-4. **Idempotency** is delivered for Telegram `/yangi` and for web submits
-   against the ledger. The legacy pre-cutover path is still not idempotent.
-5. ~~No retry queue.~~ Delivered — `Omad_Job_Queue`.
-6. ~~Projection uses `buy`, actuals use `sell`.~~ Everything uses `sell`; the
-   rule is stated once and tested on both sides.
-7. ~~Duplicate functions in `cafe_pos.html`.~~ Removed in stage 2. The
-   surviving implementations are the ones that were already winning at
-   runtime: they cost consumption against `state.openingInventory` rather than
-   the running balance, so a mid-day restock does not skew the cost of goods
-   sold. `tests/cafe-regression.e2e.js` pins that behaviour.
-8. ~~Horizontal overflow on `omad_admin.html` at 375px~~ — fixed in stage 7.
-   The original diagnosis, for the record: (`scrollWidth` 489px vs
-   a 375px viewport, Sozlamalar tab). Traced to the pre-existing exchange-rate
-   row in the *Oylik Kurslar* card:
+- **Legacy rows carry no frozen exchange rate** and are converted live. Ledger
+  rows freeze the rates at write time and every consumer reads the frozen value.
+- **The legacy pre-cutover write path is not idempotent.** It is dormant while
+  V2 is live and exists for rollback.
 
-   ```html
-   <div class="flex gap-2 mb-2">
-     <input ... id="settingRateBuyInput"  class="flex-1 p-2 border rounded text-sm">
-     <input ... id="settingRateSellInput" class="flex-1 p-2 border rounded text-sm">
-     <button ... class="bg-blue-600 text-white px-3 rounded ...">OK</button>
-   </div>
-   ```
-
-   `flex-1` items default to `min-width: auto`, so the inputs refuse to shrink
-   below their intrinsic width and push the button off-screen. The fix is to add
-   `min-w-0` to both inputs. Left alone here because it is unrelated to the
-   Telegram change; scheduled for the settings redesign (stage 7).
+One behaviour worth not "fixing" by accident: café cost of goods sold is costed
+against `state.openingInventory` rather than the running balance, so a mid-day
+restock does not skew it. `tests/cafe-regression.e2e.js` pins that.
 
 ## Sozlamalar
 
@@ -964,10 +1007,10 @@ past its own card at **320 / 375 / 414 / 768 / 1280 px**, that every control is
 visible and enabled at 320px, that numeric fields keep `inputmode`, and that
 secret fields stay `type="password"`.
 
-The known 375px overflow is gone: the exchange-rate row used two `flex-1`
-inputs plus a button, and `flex-1` items default to `min-width: auto`, so the
-inputs refused to shrink and pushed the button off-screen. It is now a
-two-column grid with `min-w-0` and a full-width button beneath.
+When adding a control, remember that `flex-1` items default to
+`min-width: auto`: a flex row of inputs plus a button refuses to shrink and
+pushes the button off-screen on a narrow phone. Use a grid with `min-w-0`, as
+the exchange-rate row now does.
 
 ## Monetary input
 
@@ -1004,9 +1047,7 @@ npm run scan:secrets:history  # every committed blob
 
 CI runs all of these on every branch and pull request. On `main`, and only
 there, a green run is followed by an automatic deployment to the live Apps
-Script project — see `docs/DEPLOYMENT.md`.
-
-See `docs/MIGRATION_RUNBOOK.md` for the live migration procedure.
+Script project — see [DEPLOYMENT.md](DEPLOYMENT.md).
 
 `tests/gas-harness.js` loads `script.gs` into a Node VM with
 `SpreadsheetApp`, `PropertiesService`, `CacheService`, `LockService`,

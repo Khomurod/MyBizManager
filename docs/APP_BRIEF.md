@@ -442,7 +442,11 @@ composes the message from data it already stored.
 2. **Migration never destroys the source.** `apply_omad_migration` rebuilds
    `Omad_Transactions_V2` from scratch and never touches the legacy sheet;
    `rollback_omad_migration` points reads back and restores the pre-migration
-   rate map without deleting migrated data.
+   rate map without deleting migrated data. **It does destroy the *target*:**
+   apply clears V2 and repopulates it from the legacy sheet alone, and no guard
+   stops it running while V2 is live — so it must never be run while the
+   migration state is `cutover`. The full precondition chain is in
+   [`ARCHITECTURE.md`](ARCHITECTURE.md#migration-and-cutover).
 3. **Tasks never touch financial data — one-way isolation.** The `/yangi`
    conversation may *create* a task; nothing in the task module reads or writes
    a transaction, tenant, rate or backup. `19a_tasks_wizard.gs` is never handed
@@ -493,12 +497,15 @@ composes the message from data it already stored.
 - **`cafe_admin.html` recipes, categories and settings still save wholesale with
   no version check.** Only inventory is guarded, because only inventory is also
   written by the server.
-- **The repository is public and `diagnostics/*.json` contains committed
-  financial dumps.** Deleting the files does not help — git history keeps them.
-  Making the repo private is the owner's call.
+- **The repository is public and its git history contains committed financial
+  dumps** — the 2026-04 `diagnostics/` snapshots, with real tenant names and
+  amounts. They are no longer in the working tree, but removing files does not
+  remove them from history. Making the repo private, or rewriting history, is
+  the owner's call. **Do not commit another data export.**
 - **The Script ID and the leaked bot tokens are recoverable from git history.**
   Treat them as known, not rotated. Current secrets live only in Script
-  Properties.
+  Properties. `docs/TELEGRAM_SETUP.md` holds the history-rewrite procedure if
+  it is ever wanted.
 - **The Mini App has never been exercised on a real phone** — signed `initData`
   cannot be produced without the bot token. It is covered by integration and
   browser tests only.
@@ -514,7 +521,7 @@ composes the message from data it already stored.
 npm run build            # regenerate script.gs from apps-script/
 npm run build:check      # fail if the bundle is stale
 npm run lint             # static analysis: syntax, duplicates, deploy gating
-npm test                 # 781 unit/integration tests (node --test)
+npm test                 # unit/integration tests (node --test)
 npm run test:e2e         # Playwright/Chromium browser flows
 npm run scan:secrets     # working tree
 npm run scan:secrets:history   # every committed blob
@@ -525,6 +532,15 @@ npm run scan:secrets:history   # every committed blob
   `Utilities`, `Session`, `ContentService` and `HtmlService` mocked, so backend
   logic is testable outside Apps Script. **The harness's fidelity matters** — a
   previously wrong `Utilities.formatDate` mock hid a real class of bug.
+- **Dates in tests are the recurring trap.** The harness's `formatDate` mock
+  still **ignores its timezone argument** and formats with the host's local
+  getters, though `Session.getScriptTimeZone()` reports `Asia/Tashkent`. So a
+  date built from the host clock does not mean to the code what it means to
+  the test. Build task date keys with the engine's own helpers
+  (`taskDateKeyAddDays_`) or in fixed UTC+5 — never from `new Date()` local
+  getters. A test that does is not stable; one here passed only between 19:00
+  and midnight UTC, and the café tab's assertions still fail on a host behind
+  UTC for this reason.
 - CI (`.github/workflows/ci.yml`) runs static analysis, secret scans (tree *and*
   full history), unit tests and browser tests on **every branch and PR**. On
   `main` only, a green run then deploys: `clasp pull` (live manifest) → stage →
@@ -552,7 +568,7 @@ npm run scan:secrets:history   # every committed blob
 | Bad backend deploy | Re-run CI on a known-good commit; the deployment id never changes |
 | Bad frontend deploy | Cloudflare Pages keeps every deployment; roll back in the dashboard |
 
-## 14. Live state at the time of writing
+## 14. Live state
 
 Verified 2026-08-12 and unchanged in the repository since:
 
@@ -561,38 +577,31 @@ Verified 2026-08-12 and unchanged in the repository since:
 | Active transaction sheet | **`Omad_Transactions_V2`** — the append-only ledger, cut over 2026-08-12 |
 | Migration state | `cutover` (fallback year `2026`) |
 | Legacy sheet | `Omad_Transactions`, intact, 226 rows |
-| Frontend | Cloudflare Pages, auto-deploying `main`; Netlify retired |
+| Frontend | Cloudflare Pages, auto-deploying `main` |
 | Anonymous access | closed — `doGet` reads nothing |
 | Telegram | webhook on the active deployment with a URL secret; one 5-minute trigger |
 | Mini App | menu button installed and verified |
 
-If you change any of this, update **both** this section and `docs/LIVE_STATE.md`.
+Hosting, project ids and the deployment id are in `docs/DEPLOYMENT.md` — the
+one place that records them. If a change makes any of this untrue, update it
+there and here.
 
 ## Documentation map
 
-| File | What it is | Trust |
-|---|---|---|
-| **`docs/APP_BRIEF.md`** (this file) | The orientation document. Read first. | ✅ current |
-| `docs/LIVE_STATE.md` | What is actually deployed and configured. | ✅ current, except the two notes below |
-| `docs/DEPLOYMENT.md` | The CI deployment pipeline and its one-time secrets. | ✅ current |
-| `docs/TASKS.md` | Deep reference for the task module. | ✅ current |
-| `docs/TELEGRAM_SETUP.md` | Operator guide for bot/webhook/group setup (Uzbek). | ✅ current |
-| `docs/ARCHITECTURE.md` | Detailed design reference. Still useful for data shapes and rationale. | ⚠️ its **banner is stale** — it says the app runs on the legacy sheet and V2 is not live. V2 **is** live. Its `doPost` table also still calls the anonymous GET routes "deprecated" rather than removed. |
-| `docs/MIGRATION_PLAN.md` | The staged plan the refactor followed. | ⚠️ **historical.** Its "remaining live action" list (run the migration, deploy `script.gs`, add the trigger, set the credentials) is all **done**. |
-| `docs/MIGRATION_RUNBOOK.md` | Step-by-step migration procedure. | ⚠️ **historical.** Its status block ("not run, V2 does not exist, state `not_started`") is stale, and its manual paste-`script.gs` deploy step has been replaced by CI. Keep it only as the rollback/redo procedure. |
-| `docs/TASK_MANAGER_FIX_PLAN.md` | Record of a completed remediation. | ⚠️ **historical.** Its ground rule "do not cut over the V2 ledger" no longer applies. |
-| `docs/HANDOVER.md` | Session handover from the 2026-08-12 work. | ⚠️ **point-in-time.** Its branch name and test counts are session-specific. |
-| `diagnostics/` | Committed snapshots from the 2026-04 recovery work. | 📦 archive — contains real financial data. |
+Five documents, each authoritative for one thing. Nothing else in this
+repository is project documentation.
 
-Corrections this brief makes to the older documents, beyond the above:
+| File | What it is |
+|---|---|
+| **`docs/APP_BRIEF.md`** (this file) | Orientation: what the app is, its rules, gates, jobs and preserved decisions. Read first. |
+| `docs/ARCHITECTURE.md` | Design reference: sheet schemas, data shapes, the API surface, and why each mechanism is shaped the way it is. |
+| `docs/DEPLOYMENT.md` | The CI pipeline, its one-time secrets, where everything is hosted, and how to roll back. |
+| `docs/TASKS.md` | Deep reference for the task module. |
+| `docs/TELEGRAM_SETUP.md` | Operator guide for bot, webhook, group and Mini App setup (Uzbek). |
 
-- The `/exec` URL is hardcoded in **five** places, not three (§8).
-- The health check runs **sixteen** checks, not fifteen.
-- `audit_telegram_secret_exposure` is a maintenance action that
-  `docs/ARCHITECTURE.md` does not list.
-- `docs/LIVE_STATE.md` still calls Tasks "not yet deployed"; the task backend
-  ships with every deploy and is live. What was outstanding was **configuration**
-  (`TELEGRAM_TASKS_GROUP_CHAT_ID`), not code.
-- `docs/LIVE_STATE.md`'s note about removing `maximum-scale` / `user-scalable`
-  applies to `mini.html` and `tasks.html`. `login.html`, `omad_admin.html`,
-  `cafe_admin.html` and `cafe_pos.html` still carry them.
+`CLAUDE.md` says how to work here; `.claude/skills/implement/` is the change
+workflow. `README.md` is a short entry point, not a second brief.
+
+Completed plans, migration runbooks, session handovers and the 2026-04
+diagnostic snapshots have been removed — git history holds them, and the rules
+worth keeping from them live in the documents above.

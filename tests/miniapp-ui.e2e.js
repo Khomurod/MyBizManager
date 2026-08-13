@@ -82,10 +82,21 @@ function yesterdayKey() {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-function tomorrowKey() {
-  const d = new Date(Date.now() + 86400000);
+// The task engine works in Asia/Tashkent (a fixed UTC+5), so a deadline key
+// built from the host's own date does not mean the same day to it. Between
+// 19:00 and midnight UTC, Tashkent has already rolled over and a host
+// "tomorrow" is the engine's *today* -- which silently moves an occurrence
+// from `upcoming` into `needsAttention` and made a test here pass for five
+// hours a day and fail for nineteen. Deadlines are built in the engine's
+// timezone so they mean one thing whatever hour the suite runs at.
+//
+// Two days out rather than one, so that a run straddling Tashkent midnight --
+// key computed before it, view built after -- still leaves the deadline in
+// the future instead of turning it into today's.
+function tashkentFutureKey() {
+  const d = new Date(Date.now() + 5 * 3600000 + 2 * 86400000);
   const pad = n => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
 }
 
 const LEGACY_HEADER = [
@@ -171,12 +182,13 @@ callBackend({
   type: 'goal', title: 'Yangi filial',
   steps: [{ title: 'Bir' }, { title: 'Ikki' }, { title: 'Uch' }, { title: "To'rt" }]
 });
-// A deadline with a clock time on it, tomorrow so it is always "upcoming"
-// whatever hour the suite runs at.
+// A deadline with a clock time on it, dated ahead in Tashkent so it is always
+// "upcoming" whatever hour the suite runs at. Today would not do: once the
+// clock passes 14:30 the occurrence is Overdue instead.
 callBackend({
   action: 'mini_task_action', taskAction: 'save_task',
   type: 'once', title: 'Soatli muddat',
-  deadlineKey: tomorrowKey(), deadlineTime: '14:30'
+  deadlineKey: tashkentFutureKey(), deadlineTime: '14:30'
 });
 
 const HOME = callBackend({ action: 'mini_home', period: '2026-08' });
@@ -457,15 +469,18 @@ describe('The Telegram Mini App', () => {
     // routine's definition does -- so it was always undefined and no deadline
     // time has ever been shown on a phone. The date came out alone and a task
     // due at 14:30 looked the same as one due at the end of the day.
-    // A once-task is work in front of you until it is done, so the engine puts
-    // it on the due-today list whatever date its deadline carries.
-    const dated = (TASKS.view.today.needsAttention || []).find(o => o.title === 'Soatli muddat');
-    assert.ok(dated, 'the fixture task is on the due-today list');
+    // The fixture is dated ahead in Tashkent, so the engine files it under
+    // `upcoming` -- which is where the Keyingi tab reads from.
+    const dated = (TASKS.view.today.upcoming || []).find(o => o.title === 'Soatli muddat');
+    assert.ok(dated, 'the fixture task is on the upcoming list');
     assert.ok(/14:30$/.test(dated.dueLabel), 'and the server labelled its time');
 
     const { page, context } = await openMini('auth_date=1&hash=x', defaultHandlers);
     await page.waitForSelector('#nav:not(.hidden)');
     await page.locator('#nav-tasks').click();
+    // The tab opens on Bugun; the fixture is due tomorrow, so switch to Keyingi.
+    await page.waitForSelector('#tab-tasks [role="tab"]');
+    await page.locator('#tab-tasks [role="tab"]:has-text("Keyingi")').click();
     await page.waitForFunction(
       () => document.getElementById('tab-tasks').innerText.includes('Soatli muddat'));
 

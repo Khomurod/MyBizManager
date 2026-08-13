@@ -2,8 +2,8 @@
 
 **Read [`docs/APP_BRIEF.md`](docs/APP_BRIEF.md) before changing anything.** It is
 the central App Brief: what this application is, who uses it, the business rules
-that must not be broken, the permission gates, the background jobs, and which of
-the older documents under `docs/` are stale.
+that must not be broken, the permission gates and the background jobs. Its
+documentation map names the four specialized documents and what each one owns.
 
 Two rules that apply to every task:
 
