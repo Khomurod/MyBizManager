@@ -94,6 +94,19 @@ function occurrenceRows(list) {
     }).join('');
 }
 
+/**
+ * "🔔 09:00, 18:00" — what a task will actually remind about, and when.
+ *
+ * Shown on the list rather than only inside the editor, because "did I set
+ * that reminder?" is the question people open the app to answer.
+ */
+function reminderSummary(task) {
+    const times = (task && task.reminderTimes) || [];
+    if (!times.length) return '';
+    const daily = task.type === 'once' && task.remindDaily ? ' (har kuni)' : '';
+    return ` · 🔔 ${escapeHtml(times.join(', '))}${daily}`;
+}
+
 function routineSection(view) {
     const routines = (view.tasks || []).filter(t => t.type === 'routine');
     if (!routines.length) return '';
@@ -104,8 +117,9 @@ function routineSection(view) {
                 <div class="item">
                     <div class="grow">
                         <p class="title ellipsis">${escapeHtml(t.title)}</p>
-                        <p class="tiny muted">${t.status === 'paused' ? "To'xtatilgan" : 'Faol'}${(t.stats && t.stats.streak) ? ' · ' + t.stats.streak + ' kun' : ''}${(t.recurrenceLabel ? ' · ' + escapeHtml(t.recurrenceLabel) : '')}</p>
+                        <p class="tiny muted">${t.status === 'paused' ? "To'xtatilgan" : 'Faol'}${(t.stats && t.stats.streak) ? ' · ' + t.stats.streak + ' kun' : ''}${(t.recurrenceLabel ? ' · ' + escapeHtml(t.recurrenceLabel) : '')}${reminderSummary(t)}</p>
                     </div>
+                    <button class="btn-sm" onclick="openTaskSheet('${escapeHtml(t.id)}')" aria-label="Tahrirlash">✎</button>
                     <button class="btn-sm" onclick="taskAction('${t.status === 'paused' ? 'resume_routine' : 'pause_routine'}','','${escapeHtml(t.id)}')">
                         ${t.status === 'paused' ? 'Davom' : "To'xtatish"}
                     </button>
@@ -177,16 +191,153 @@ async function taskAction(action, occurrenceId, taskId, extra) {
     }
 }
 
+// ------------------------------------------------------------------ reminders
+//
+// Reminder times are stored, scheduled and displayed in **Asia/Tashkent**,
+// which Uzbekistan has kept at a fixed UTC+5 since 1992. The engine does that
+// arithmetic with epoch-millisecond maths (`16_tasks_recurrence.gs`) and never
+// consults a host clock — so "09:00" means nine in the morning in Tashkent
+// whatever timezone the phone is set to. The note under the field says so,
+// because a `<input type="time">` looks local and nothing else would tell
+// anybody otherwise.
+
+const TASK_TIMEZONE_NOTE = "Barcha vaqtlar Toshkent vaqti (UTC+5)";
+
+/** Uzbek weekday labels mapped to the engine's numbers (0 = Sunday). */
+const MINI_WEEKDAYS = [['Du', 1], ['Se', 2], ['Chor', 3], ['Pay', 4], ['Jum', 5], ['Shan', 6], ['Yak', 0]];
+
+/** One reminder row: a native time picker and a way to remove it. */
+function addReminderTime(value) {
+    const list = document.getElementById('tReminderList');
+    if (!list) return;
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.style.gap = '8px';
+    row.innerHTML =
+        `<input type="time" style="flex:1;min-width:0" value="${escapeHtml(value || '')}">` +
+        '<button type="button" class="btn-sm" aria-label="Eslatmani o\'chirish" ' +
+        'onclick="removeReminderTime(this)">✕</button>';
+    list.appendChild(row);
+    syncReminderControls();
+    if (!value) {
+        const input = row.querySelector('input');
+        if (input) input.focus();
+    }
+}
+
+function removeReminderTime(button) {
+    const row = button.closest('.row');
+    if (row) row.remove();
+    syncReminderControls();
+}
+
+/** Every time entered, in the order shown. */
+function reminderTimeValues() {
+    const list = document.getElementById('tReminderList');
+    if (!list) return [];
+    return Array.from(list.querySelectorAll('input'))
+        .map(input => String(input.value || '').trim())
+        .filter(Boolean);
+}
+
+/**
+ * Keeps the reminder block honest about what the backend will actually do.
+ *
+ * Three rules, all of them the engine's rather than this screen's:
+ *
+ *   * Reminders off means no times at all, so the list is hidden rather than
+ *     left showing values that will be discarded.
+ *   * "Har kuni" is a real choice only for a one-time task *with* a deadline:
+ *     daily until it is done, or only on the deadline day. Without a deadline
+ *     there is no deadline day to fall back on, so leaving it clear would mean
+ *     the times fire never — the box is ticked and locked, and the note says why.
+ *   * A routine's reminders belong to the day each occurrence was scheduled
+ *     for, so there is nothing to choose; a goal's steps have no date at all
+ *     and the server repeats theirs daily.
+ */
+function syncReminderControls() {
+    const on = document.getElementById('tRemindOn');
+    const block = document.getElementById('tReminderBlock');
+    const empty = document.getElementById('tReminderEmpty');
+    if (!on || !block) return;
+
+    block.classList.toggle('hidden', !on.checked);
+    const list = document.getElementById('tReminderList');
+    if (empty && list) empty.classList.toggle('hidden', list.children.length > 0);
+
+    const daily = document.getElementById('tRemindDaily');
+    const dailyRow = document.getElementById('tRemindDailyRow');
+    if (!daily || !dailyRow) return;
+
+    const type = miniTaskFormType();
+    const isOnce = type === 'once';
+    dailyRow.classList.toggle('hidden', !isOnce);
+
+    const deadline = document.getElementById('tDeadline');
+    const locked = isOnce && !(deadline && deadline.value);
+    if (locked) {
+        // The admin's own answer is parked while the box is locked and handed
+        // back when a deadline is typed, so ticking it automatically here can
+        // never leave daily reminders switched on that nobody asked for.
+        if (!daily.disabled) daily.dataset.chosen = daily.checked ? '1' : '0';
+        daily.checked = true;
+    } else if (daily.disabled) {
+        daily.checked = daily.dataset.chosen === '1';
+    }
+    daily.disabled = locked;
+
+    const note = document.getElementById('tRemindNote');
+    if (note) {
+        note.textContent = locked
+            ? "Muddat yo'q — eslatma har kuni, vazifa bajarilguncha."
+            : (isOnce
+                ? "Belgilansa — har kuni, bajarilguncha. Aks holda faqat muddat kunida."
+                : (type === 'routine'
+                    ? "Eslatma har bir rejalashtirilgan kunda shu vaqtlarda yuboriladi."
+                    : "Maqsad bosqichlari uchun eslatma har kuni takrorlanadi."));
+    }
+}
+
+/** The type the form is editing: fixed on an edit, chosen on a create. */
+function miniTaskFormType() {
+    const field = document.getElementById('tType');
+    if (field) return field.value;
+    const stored = document.getElementById('tExistingType');
+    return stored ? stored.value : 'once';
+}
+
+function onMiniTypeChange() {
+    const routine = document.getElementById('tRoutineBlock');
+    const once = document.getElementById('tOnceBlock');
+    const type = miniTaskFormType();
+    if (routine) routine.classList.toggle('hidden', type !== 'routine');
+    if (once) once.classList.toggle('hidden', type !== 'once');
+    syncReminderControls();
+}
+
+function onMiniFreqChange() {
+    const freq = document.getElementById('tFreq');
+    const weekdays = document.getElementById('tWeekdayRow');
+    if (freq && weekdays) weekdays.classList.toggle('hidden', freq.value !== 'weekly');
+}
+
 /** Create, or edit when a task id is supplied. */
 function openTaskSheet(taskId) {
     const existing = taskId
         ? ((state.tasks && state.tasks.tasks) || []).find(t => t.id === taskId)
         : null;
 
+    const type = existing ? existing.type : 'once';
+    const recurrence = (existing && existing.recurrence) || {};
+    const reminderTimes = (existing && existing.reminderTimes) || [];
+
     openSheet(existing ? 'Vazifani tahrirlash' : 'Yangi vazifa', `
-        ${existing ? '' : `
+        ${existing
+            ? `<input type="hidden" id="tExistingType" value="${escapeHtml(type)}">
+               <p class="tiny muted">Turi: ${escapeHtml(miniTypeLabel(type))} — o'zgartirib bo'lmaydi.</p>`
+            : `
         <label for="tType">Turi</label>
-        <select id="tType">
+        <select id="tType" onchange="onMiniTypeChange()">
             <option value="once">Bir martalik</option>
             <option value="routine">Takrorlanuvchi</option>
         </select>`}
@@ -197,28 +348,93 @@ function openTaskSheet(taskId) {
         <label for="tDescription">Tavsif</label>
         <textarea id="tDescription">${escapeHtml(existing ? existing.description || '' : '')}</textarea>
 
-        <div class="grid2">
-            <div>
-                <label for="tDeadline">Muddat</label>
-                <input id="tDeadline" type="date" value="${escapeHtml(existing ? existing.deadlineKey || '' : '')}">
-            </div>
-            <div>
-                <label for="tPriority">Muhimlik</label>
-                <select id="tPriority">
-                    ${['low', 'normal', 'high', 'urgent'].map(p =>
-                        `<option value="${p}" ${existing && existing.priority === p ? 'selected' : ''}>${p}</option>`).join('')}
-                </select>
-            </div>
+        <div id="tOnceBlock" class="${type === 'once' ? '' : 'hidden'}">
+            <label for="tDeadline">Muddat</label>
+            <input id="tDeadline" type="date" onchange="syncReminderControls()"
+                   value="${escapeHtml(existing ? existing.deadlineKey || '' : '')}">
         </div>
+
+        <div id="tRoutineBlock" class="${type === 'routine' ? '' : 'hidden'}">
+            ${existing
+                ? `<p class="tiny muted">Takrorlanish: ${escapeHtml(existing.recurrenceLabel || 'har kuni')}.
+                     O'zgartirish uchun to'liq boshqaruv panelidan foydalaning.</p>`
+                : `
+            <label for="tFreq">Takrorlanish</label>
+            <select id="tFreq" onchange="onMiniFreqChange()">
+                <option value="daily">Har kuni</option>
+                <option value="weekly">Har hafta</option>
+                <option value="monthly">Har oy</option>
+            </select>
+            <div id="tWeekdayRow" class="hidden">
+                <label>Kunlar</label>
+                <div class="row" style="flex-wrap:wrap;gap:6px">
+                    ${MINI_WEEKDAYS.map(([label, wd]) =>
+                        `<label class="tiny"><input type="checkbox" class="mini-wd" data-wd="${wd}"> ${label}</label>`).join('')}
+                </div>
+            </div>`}
+        </div>
+
+        <label for="tPriority">Muhimlik</label>
+        <select id="tPriority">
+            ${['low', 'normal', 'high', 'urgent'].map(p =>
+                `<option value="${p}" ${existing && existing.priority === p ? 'selected' : ''}>${p}</option>`).join('')}
+        </select>
 
         <label for="tResponsible">Mas'ul</label>
         <input id="tResponsible" autocomplete="off" value="${escapeHtml(existing ? existing.responsible || '' : '')}">
+
+        <label class="row" style="gap:8px;margin-top:14px">
+            <input type="checkbox" id="tRemindOn" onchange="syncReminderControls()"
+                   ${reminderTimes.length ? 'checked' : ''}>
+            <span>🔔 Eslatma yuborilsin</span>
+        </label>
+
+        <div id="tReminderBlock" class="${reminderTimes.length ? '' : 'hidden'}">
+            <p class="tiny muted">${escapeHtml(TASK_TIMEZONE_NOTE)}</p>
+            <div id="tReminderList" class="stack" style="margin-top:6px"></div>
+            <p id="tReminderEmpty" class="tiny muted">Vaqt qo'shilmagan.</p>
+            <button type="button" class="btn-sm" style="margin-top:6px"
+                    onclick="addReminderTime()">＋ Vaqt qo'shish</button>
+
+            <label id="tRemindDailyRow" class="row hidden" style="gap:8px;margin-top:10px">
+                <input type="checkbox" id="tRemindDaily" onchange="syncReminderControls()"
+                       ${existing && existing.remindDaily ? 'checked' : ''}>
+                <span>Har kuni takrorlansin</span>
+            </label>
+            <p id="tRemindNote" class="tiny muted"></p>
+        </div>
 
         <button class="btn-primary btn-full" style="margin-top:14px" id="tSubmit"
                 onclick="submitTask('${escapeHtml(taskId || '')}')">Saqlash</button>
         ${existing ? `<button class="btn-danger btn-full" style="margin-top:8px"
                 onclick="cancelTask('${escapeHtml(taskId)}')">Bekor qilish</button>` : ''}
     `);
+
+    // Prefilled after the sheet exists, so an edit opens on the task's *actual*
+    // configuration rather than on a default that a save would then store.
+    reminderTimes.forEach(time => addReminderTime(time));
+    if (existing && type === 'routine') {
+        const freq = document.getElementById('tFreq');
+        if (freq) freq.value = recurrence.freq || 'daily';
+    }
+    const daily = document.getElementById('tRemindDaily');
+    if (daily) daily.dataset.chosen = (existing && existing.remindDaily) ? '1' : '0';
+    onMiniTypeChange();
+}
+
+function miniTypeLabel(type) {
+    if (type === 'routine') return 'Takrorlanuvchi';
+    if (type === 'goal') return 'Maqsad';
+    return 'Bir martalik';
+}
+
+/** "9:05" typed by hand becomes "09:05"; a native picker already produces it. */
+function normalizeReminderTimes(values) {
+    return (values || []).map(value => {
+        const match = /^(\d{1,2}):(\d{2})$/.exec(String(value).trim());
+        if (!match) return String(value).trim();   // let the server reject it
+        return (match[1].length === 1 ? '0' + match[1] : match[1]) + ':' + match[2];
+    });
 }
 
 async function submitTask(taskId) {
@@ -226,7 +442,11 @@ async function submitTask(taskId) {
     const title = document.getElementById('tTitle').value.trim();
     if (!title) return toast('Sarlavha kiriting', true);
 
-    const typeField = document.getElementById('tType');
+    const type = miniTaskFormType();
+    const remindOn = document.getElementById('tRemindOn').checked;
+    const times = remindOn ? normalizeReminderTimes(reminderTimeValues()) : [];
+    if (remindOn && !times.length) return toast("Kamida bitta eslatma vaqtini kiriting", true);
+
     button.disabled = true;
     button.textContent = 'Saqlanmoqda...';
     try {
@@ -235,25 +455,41 @@ async function submitTask(taskId) {
             title,
             description: document.getElementById('tDescription').value.trim(),
             priority: document.getElementById('tPriority').value,
-            responsible: document.getElementById('tResponsible').value.trim()
+            responsible: document.getElementById('tResponsible').value.trim(),
+            // Sent explicitly, and sent empty when reminders are switched off:
+            // an absent field means "leave alone" to the engine, so omitting it
+            // would make reminders impossible to turn back off from here.
+            reminderTimes: times
         };
+        // Only a one-time task gets to choose. A routine's reminders belong to
+        // each scheduled day, and sending `remindDaily` for one would roll them
+        // forward on to days it was never scheduled for.
+        if (type === 'once') payload.remindDaily = document.getElementById('tRemindDaily').checked;
 
         if (taskId) {
-            // An edit sends only the fields this sheet actually shows. The
-            // server keeps everything it is not told about, so a weekly
-            // routine edited here stays weekly -- it used to come back daily.
+            // An edit sends only the fields this sheet actually shows, and the
+            // server keeps everything it is not told about -- so the cadence, the
+            // start date, the photo rule and the end date all survive an edit
+            // made here. A weekly routine used to come back daily.
             payload.taskId = taskId;
             payload.id = taskId;
-            const deadline = document.getElementById('tDeadline').value || '';
-            const editing = ((state.tasks && state.tasks.tasks) || []).find(t => t.id === taskId);
-            if (!editing || editing.type === 'once') payload.deadlineKey = deadline;
+            if (type === 'once') payload.deadlineKey = document.getElementById('tDeadline').value || '';
         } else {
-            payload.type = typeField ? typeField.value : 'once';
-            payload.deadlineKey = document.getElementById('tDeadline').value || '';
-            // A new routine needs a cadence. The engine's shape is
-            // {freq, interval}; `{type:'daily'}` matched nothing and fell
-            // through to the default.
-            if (payload.type === 'routine') payload.recurrence = { freq: 'daily', interval: 1 };
+            payload.type = type;
+            if (type === 'once') {
+                payload.deadlineKey = document.getElementById('tDeadline').value || '';
+            } else {
+                // A new routine needs a cadence. The engine's shape is
+                // {freq, interval}; `{type:'daily'}` matched nothing and fell
+                // through to the default.
+                const freq = document.getElementById('tFreq');
+                const recurrence = { freq: (freq && freq.value) || 'daily', interval: 1 };
+                if (recurrence.freq === 'weekly') {
+                    recurrence.weekdays = Array.from(document.querySelectorAll('.mini-wd'))
+                        .filter(box => box.checked).map(box => Number(box.dataset.wd));
+                }
+                payload.recurrence = recurrence;
+            }
         }
 
         const body = await api('mini_task_action', payload);

@@ -531,6 +531,17 @@ function normalizeTaskInput_(payload, existing) {
     if (deadlineTime && !isTaskTimeKey_(deadlineTime)) return { error: "Muddat vaqti noto'g'ri." };
     task.deadlineKey = isTaskDateKey_(deadlineKey) ? String(deadlineKey) : "";
     task.deadlineTime = isTaskTimeKey_(deadlineTime) ? String(deadlineTime) : "";
+    // Reminders on a task with no deadline day have exactly one reading that
+    // does anything: every day until it is done. `taskReminderDatesFor_`
+    // returns nothing at all for an undated occurrence that is not rolling, so
+    // "reminders set, daily off, no deadline" is not a configuration — it is
+    // reminders that silently never fire.
+    //
+    // Three clients build this payload (the web board, the Mini App and the
+    // /yangi wizard) and all three show the choice as locked. Deciding it here
+    // as well is what makes it a property of the engine rather than of three
+    // screens remembering the same rule.
+    if (!task.deadlineKey && task.reminderTimes.length > 0) task.remindDaily = true;
   } else if (type === "routine") {
     // An edit that does not mention the cadence keeps the cadence. Sending
     // `recurrence` explicitly still replaces it, so the web editor is
