@@ -226,6 +226,33 @@ test('an inactive recipe leaves the menu but keeps its history', () => {
   assert.strictEqual(stored.sales[0].items[0].name, 'Pitsa', 'and its receipt still reads');
 });
 
+test('voiding a sale of a retired recipe still puts its stock back', () => {
+  // A void undoes a sale. Whether the recipe is still on the menu today has
+  // nothing to do with whether the flour that went into it should come back.
+  const gas = boot();
+  const created = post(gas, { action: 'save_recipe', recipes: [pizza()] });
+  const id = created.recipes[0].id;
+
+  post(gas, {
+    action: 'save_sale', requestId: 'sale1', id: 'sale1', seller: 'k',
+    date: '2026-08-12T09:00:00.000Z',
+    items: [{ kind: 'recipe', recipeId: id, qty: 1 }]
+  });
+  const afterSale = catalogue(gas).inventory.find(i => i.id === 'flour').qty;
+  assert.strictEqual(afterSale, 9.7);
+
+  post(gas, {
+    action: 'save_recipe',
+    recipes: [Object.assign({}, created.recipes[0], { active: false })],
+    expectedCatalogueRev: catalogue(gas).catalogueRev
+  });
+
+  const voided = post(gas, { action: 'void_sale', id: 'sale1' });
+  assert.strictEqual(voided.status, 'success');
+  assert.strictEqual(voided.stockRestored, true);
+  assert.strictEqual(catalogue(gas).inventory.find(i => i.id === 'flour').qty, 10);
+});
+
 test('a recipe dropped from the list does not take its sales with it', () => {
   const gas = boot();
   const created = post(gas, { action: 'save_recipe', recipes: [pizza()] });

@@ -208,7 +208,11 @@ function cafeProductStockPerUnit_(product) {
  * catalogue does not contain is refused rather than sold at whatever the
  * caller suggested.
  */
-function resolveCafeSaleLines_(state, items) {
+function resolveCafeSaleLines_(state, items, options) {
+  // `allowInactive` is for *undoing* a sale, not making one. A void restores
+  // the stock a receipt consumed, and whether the recipe is still on the menu
+  // today has nothing to do with whether that stock should come back.
+  var settings = options || {};
   var requested = Array.isArray(items) ? items : [];
   if (requested.length === 0) return { error: "Savat bo'sh." };
   if (requested.length > 200) return { error: "Savatda juda ko'p mahsulot." };
@@ -239,7 +243,7 @@ function resolveCafeSaleLines_(state, items) {
       // A retired recipe leaves the menu but keeps its history: every sale
       // already recorded still names it, and every one of those receipts still
       // reads. What it may not do is be sold again.
-      if (recipe.active === false) {
+      if (recipe.active === false && !settings.allowInactive) {
         return { error: "Retsept sotuvdan olingan: " + String(recipe.name || "") };
       }
       var recipePrice = Number(recipe.sellPrice) || 0;
@@ -475,7 +479,7 @@ function voidCafeSale_(doc, configSheet, payload) {
     }
 
     var current = cafeCatalogue_(configSheet);
-    var restored = resolveCafeSaleLines_(current, cafeReceiptItems_(detail));
+    var restored = resolveCafeSaleLines_(current, cafeReceiptItems_(detail), { allowInactive: true });
 
     var inventory = current.inventory;
     if (!restored.error) {

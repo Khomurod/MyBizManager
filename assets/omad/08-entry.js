@@ -276,6 +276,10 @@ async function submitAll() {
 
 function clearEntryForm() {
     cart = [];
+    // The edit is over, so the rows it was holding go with it. Keeping them
+    // would leave the next save aimed at records a correction has already
+    // replaced.
+    editingGroupRows = { groupId: '', rows: [] };
     document.getElementById('entryComment').value = "";
     document.getElementById('editId').value = "";
     document.getElementById('msgId').value = "";
@@ -411,6 +415,7 @@ async function submitTenantPaid() {
 
         clearPendingRequest();
         editingTenantPaidGroupId = "";
+        editingGroupRows = { groupId: '', rows: [] };
         document.getElementById('tempAmount').value = "";
         document.getElementById('entryComment').value = "";
         document.getElementById('cancelEditBtn').classList.add('hidden');

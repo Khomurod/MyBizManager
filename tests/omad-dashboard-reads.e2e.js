@@ -387,6 +387,10 @@ describe('The Omad dashboard reads figures, not the ledger', () => {
       'it corrected the row it was editing rather than creating a second one');
     assert.strictEqual(writes[0].transactionId, firstId);
 
+    // ...and once it is saved the form lets go, so the *next* entry is not
+    // aimed at records this correction has already replaced.
+    assert.strictEqual(await page.evaluate(() => editingGroupRows.groupId), '');
+
     await context.close();
   });
 
