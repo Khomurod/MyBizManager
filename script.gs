@@ -4918,17 +4918,29 @@ function handleCafeAction_(action, payload, doc, configSheet) {
     // Optimistic concurrency. The screen says which version it was looking at;
     // anything else means stock moved underneath it and its copy is a
     // rollback waiting to happen.
-    var currentRev = cafeInventoryRev_(configSheet);
-    if (currentRev > 0 && Number(payload.expectedRev) !== currentRev) {
+    //
+    // Under the same lock every other stock movement takes, and for the same
+    // reason the catalogue guard is: reading the revision and writing the array
+    // as two steps lets a sale land between them, so the check passes against a
+    // version the write then replaces. It is the one place inventory is written
+    // without holding it.
+    var inventoryLock = LockService.getScriptLock();
+    inventoryLock.waitLock(30000);
+    try {
+      var currentRev = cafeInventoryRev_(configSheet);
+      if (currentRev > 0 && Number(payload.expectedRev) !== currentRev) {
+        return jsonOutput_({
+          status: "error", stale: true, inventoryRev: currentRev,
+          message: "Ombor boshqa joyda o'zgardi. Sahifani yangilab, qaytadan kiriting."
+        });
+      }
       return jsonOutput_({
-        status: "error", stale: true, inventoryRev: currentRev,
-        message: "Ombor boshqa joyda o'zgardi. Sahifani yangilab, qaytadan kiriting."
+        status: "success",
+        inventoryRev: writeCafeInventory_(configSheet, payload.inventory)
       });
+    } finally {
+      inventoryLock.releaseLock();
     }
-    return jsonOutput_({
-      status: "success",
-      inventoryRev: writeCafeInventory_(configSheet, payload.inventory)
-    });
   }
   // Recipes, categories and settings are the *catalogue*, and it has a
   // revision of its own. Two admin sessions used to overwrite each other

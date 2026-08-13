@@ -569,6 +569,41 @@ test('the revision check, the write and the bump are one locked step', () => {
   assert.strictEqual(held, 0, 'and gave it back');
 });
 
+test('the inventory guard is locked to its write too', () => {
+  // The same three-step shape, in the one place inventory is written without
+  // holding the lock: read the revision, write the array, and a sale can land
+  // between them so the check passes against a version the write replaces.
+  const gas = boot();
+  let held = 0;
+  let heldDuringWrite = 0;
+  const realLock = gas.LockService.getScriptLock;
+  gas.LockService.getScriptLock = function () {
+    const lock = realLock();
+    return {
+      waitLock: function (ms) { held++; return lock.waitLock(ms); },
+      releaseLock: function () { held--; return lock.releaseLock(); }
+    };
+  };
+  const realWrite = gas.writeCafeInventory_;
+  gas.writeCafeInventory_ = function (sheet, inventory) {
+    heldDuringWrite = held;
+    return realWrite(sheet, inventory);
+  };
+
+  try {
+    const rev = catalogue(gas).inventoryRev;
+    assert.strictEqual(post(gas, {
+      action: 'save_inventory', inventory: INVENTORY, expectedRev: rev
+    }).status, 'success');
+  } finally {
+    gas.LockService.getScriptLock = realLock;
+    gas.writeCafeInventory_ = realWrite;
+  }
+
+  assert.strictEqual(heldDuringWrite, 1, 'the lock was held across the write');
+  assert.strictEqual(held, 0, 'and given back');
+});
+
 test('a client that quotes no revision is still allowed to save', () => {
   // Older pages, and the editor, cannot quote a counter they do not know about.
   const gas = boot();
