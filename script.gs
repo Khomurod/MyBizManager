@@ -459,6 +459,11 @@ var TELEGRAM_RATE_WINDOW_SECONDS = 60;
 
 var TELEGRAM_ADMIN_RATE_LIMIT = 10;
 
+// Normal authenticated page loads share the read_auth bucket. Keep that
+// protection, but give regular app usage enough room that a few tabs/devices
+// cannot temporarily lock every legitimate user out of reads.
+var AUTHENTICATED_READ_RATE_LIMIT = 40;
+
 var TELEGRAM_WEBHOOK_RATE_LIMIT = 120;
 
 var TELEGRAM_MAX_TEXT_LENGTH = 3500;
@@ -477,7 +482,10 @@ function enforceRateLimit_(bucketKey, maxCalls, windowSeconds) {
     var window = Math.floor(new Date().getTime() / (windowSeconds * 1000));
     var key = "rl_" + bucketKey + "_" + window;
     var used = Number(cache.get(key)) || 0;
-    if (used >= maxCalls) {
+    var effectiveMaxCalls = bucketKey === "read_auth"
+      ? Math.max(Number(maxCalls) || 0, AUTHENTICATED_READ_RATE_LIMIT)
+      : maxCalls;
+    if (used >= effectiveMaxCalls) {
       return "Juda ko'p so'rov yuborildi. Iltimos, biroz kutib qayta urinib ko'ring.";
     }
     cache.put(key, String(used + 1), windowSeconds + 5);
