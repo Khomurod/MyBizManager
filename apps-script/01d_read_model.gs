@@ -138,6 +138,11 @@ function buildOmadReadModel_(doc, configSheet, revision, source) {
     builtAt: new Date().toISOString(),
     rows: transactions.length,
     balances: { cash: allTime.cash, bank: allTime.bank, total: allTime.total },
+    // "Jami Davr" as `calculateActuals_` computes it, not as the sum of the
+    // periods. They differ by exactly the rows whose period could not be
+    // resolved — a legacy-sheet possibility — and those rows are money that
+    // moved. Summing the buckets would quietly leave them out.
+    allTime: { income: allTime.income, expense: allTime.expense, net: allTime.net },
     periods: periods,
     periodList: periodList,
     // Newest business actions across every period, so the commonest recent
@@ -279,6 +284,13 @@ function omadRecentForPeriod_(doc, model, period, limit) {
 /**
  * Stores the model. Failing to store one is not a failure of anything: the
  * caller already has the answer, and the next read simply rebuilds.
+ *
+ * This is the one `setConfig` that happens on a *read* path and therefore
+ * outside the script lock. Two first-ever reads landing together could both
+ * append the row, leaving a duplicate. `getConfig` answers with the first match
+ * and `setConfig` updates the first match, so the second row is inert and every
+ * later write keeps it that way. Taking the financial write lock to prevent an
+ * unread spare row would be a far worse trade.
  */
 function storeOmadReadModel_(configSheet, model) {
   try {

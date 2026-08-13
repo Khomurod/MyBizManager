@@ -34,12 +34,19 @@ const INVENTORY = [
 ];
 
 function boot(extraConfig) {
+  // Overrides *replace* the default row rather than following it: getConfig
+  // answers with the first match, so an appended row would never be read.
   const config = [
     ['Cafe_Inventory', JSON.stringify(INVENTORY)],
     ['Cafe_Recipes', '[]'],
     ['Cafe_Categories', JSON.stringify(['Ichimliklar', 'Fast-Food'])],
     ['Cafe_Settings', JSON.stringify({ dailyTarget: 500000 })]
-  ].concat(extraConfig || []);
+  ];
+  (extraConfig || []).forEach(([key, value]) => {
+    const at = config.findIndex(row => row[0] === key);
+    if (at === -1) config.push([key, value]);
+    else config[at] = [key, value];
+  });
 
   return loadScript({
     properties: { OMAD_ADMIN_KEY: ADMIN_KEY, TELEGRAM_BOT_TOKEN: BOT_TOKEN },
@@ -146,6 +153,38 @@ test('every editable field survives a round trip', () => {
   assert.strictEqual(stored.ingredients.length, 1);
   assert.strictEqual(stored.ingredients[0].qty, 0.4);
   assert.strictEqual(stored.baseCost, 20000);
+});
+
+test('an unrelated save does not delete an incomplete recipe from the Sheet', () => {
+  // Normalisation runs over the whole stored array on every save. A rule like
+  // "a nameless recipe is not one" would therefore delete live rows as a side
+  // effect of editing a different recipe. Nothing is dropped for being
+  // incomplete; the health check says so instead.
+  const gas = boot([
+    ['Cafe_Recipes', JSON.stringify([
+      { id: 'legacy_1', name: '', category: '', ingredients: [], sellPrice: 0 },
+      { id: 'legacy_2', name: 'Eski', ingredients: [{ inventoryId: 'flour', qty: 0 }] }
+    ])]
+  ]);
+
+  const saved = post(gas, { action: 'save_recipe', recipes: JSON.parse(JSON.stringify(
+    post(gas, { action: 'get_cafe_data', scope: 'admin' }).recipes.concat([pizza()]))) });
+
+  assert.strictEqual(saved.status, 'success');
+  const ids = saved.recipes.map(r => r.id);
+  assert.ok(ids.indexOf('legacy_1') !== -1, 'the nameless one is still stored');
+  assert.ok(ids.indexOf('legacy_2') !== -1, 'so is the one with a zero quantity');
+
+  const reasons = saved.health.incomplete.map(r => r.reason);
+  assert.ok(reasons.some(r => r === "nomi yo'q"), reasons.join(' | '));
+  assert.ok(reasons.some(r => r.indexOf('miqdorsiz ingredient') === 0), reasons.join(' | '));
+});
+
+test('an entry that is not a recipe at all is not kept', () => {
+  const gas = boot();
+  const saved = post(gas, { action: 'save_recipe', recipes: [null, {}, '', pizza()] });
+  assert.strictEqual(saved.recipes.length, 1);
+  assert.strictEqual(saved.recipes[0].name, 'Pitsa');
 });
 
 // ------------------------------------------------------------ active / POS

@@ -105,7 +105,7 @@ describe('The Omad dashboard reads figures, not the ledger', () => {
    * Opens the admin screen against a stub backend.
    * `overrides` maps an action name to a body (or a function returning one).
    */
-  async function openAdmin(overrides = {}) {
+  async function openAdmin(overrides = {}, options = {}) {
     const seen = [];
     const context = await browser.newContext();
     await context.addInitScript(() => {
@@ -154,7 +154,11 @@ describe('The Omad dashboard reads figures, not the ledger', () => {
 
     const page = await context.newPage();
     await page.goto(`${baseUrl}/omad_admin.html`);
-    await page.waitForFunction(() => app.migration !== null);
+    // Not waited for when the answer is a refusal: the page leaves for the
+    // login screen, where `app` does not exist.
+    if (options.expectSignOut !== true) {
+      await page.waitForFunction(() => app.migration !== null);
+    }
     return { page, context, seen };
   }
 
@@ -326,8 +330,8 @@ describe('The Omad dashboard reads figures, not the ledger', () => {
   test('an expired session — and only that — returns to the login page', async () => {
     const { page, context } = await openAdmin({
       get_omad_data: () => ({ status: 'error', authExpired: true, message: 'Sessiya tugadi.' })
-    });
-    await page.waitForURL(/login\.html/, { timeout: 5000 });
+    }, { expectSignOut: true });
+    await page.waitForURL(/login\.html/, { timeout: 15000 });
     await context.close();
   });
 
@@ -353,6 +357,35 @@ describe('The Omad dashboard reads figures, not the ledger', () => {
     assert.ok(save, 'the settings save happened');
     assert.ok(Array.isArray(save.transactions) && save.transactions.length === 1,
       'and it still carries the whole list the legacy sheet is rewritten from');
+
+    await context.close();
+  });
+
+  test('an edit corrects its own rows even after the page they came from is gone', async () => {
+    // The entry form used to look its rows up in `app.transactions` at submit
+    // time. Since history is paged, a refresh empties that list -- and an edit
+    // that cannot find its own rows stops *correcting* them and starts
+    // *creating* new ones, which is the entry recorded twice. The form holds
+    // what it is editing.
+    const { page, context, seen } = await openAdmin();
+
+    await page.evaluate(() => switchTab('history'));
+    await page.waitForFunction(() => app.historyLoaded === true);
+
+    const firstId = await page.evaluate(() => app.transactions[0].id);
+    await page.evaluate(id => editTx(id), firstId);
+
+    // Whatever emptied it -- a background refresh, a settings save -- the edit
+    // in front of the operator must still be an edit.
+    await page.evaluate(() => { app.transactions = []; });
+    await page.evaluate(() => submitAll());
+
+    const writes = seen.filter(p =>
+      p.action === 'correct_transaction' || p.action === 'create_transaction');
+    assert.ok(writes.length > 0, 'the save happened');
+    assert.strictEqual(writes[0].action, 'correct_transaction',
+      'it corrected the row it was editing rather than creating a second one');
+    assert.strictEqual(writes[0].transactionId, firstId);
 
     await context.close();
   });

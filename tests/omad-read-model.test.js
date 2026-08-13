@@ -163,6 +163,32 @@ test('every figure in the model is the figure the full ledger pass gives', () =>
   });
 });
 
+test('the all-time figures are the ledger\'s, not the sum of the periods', () => {
+  // A row whose period could not be resolved is money that moved, and it is
+  // counted by `calculateActuals_` with no period. Summing the per-period
+  // buckets would silently leave it out, so the model carries the all-time
+  // figures separately.
+  const gas = boot();          // legacy sheet, where a period can go unresolved
+  const sheet = gas.__spreadsheet.getSheetByName('Omad_Transactions');
+  sheet.appendRow([
+    '1750000000999_0', 'Apteka', '', 'Income', 500000, 'UZS', 'Naqd',
+    '', 'davri yo\'q', '', 'req_x', 'grp_x', ''
+  ]);
+
+  const configSheet = gas.__spreadsheet.getSheetByName('System_Config');
+  const model = JSON.parse(JSON.stringify(gas.buildOmadReadModel_(gas.__spreadsheet, configSheet)));
+  const transactions = gas.readOmadTransactions_(gas.__spreadsheet);
+  const allTime = gas.calculateActuals_(transactions, '');
+
+  assert.strictEqual(model.allTime.income, allTime.income);
+  assert.strictEqual(model.allTime.expense, allTime.expense);
+  assert.strictEqual(model.allTime.net, allTime.net);
+
+  const summed = model.periodList.reduce((sum, p) => sum + model.periods[p].income, 0);
+  assert.ok(summed < model.allTime.income,
+    'the fixture really does have a row no period claims');
+});
+
 test('the Mini App answers the same figures from the model as from the ledger', () => {
   const gas = bootOnLedger();
   const body = readJsonOutput(gas.doPost(postEvent({

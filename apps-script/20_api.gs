@@ -440,6 +440,7 @@ function readOmadDashboardPayload_(doc, configSheet) {
     builtAt: model.builtAt,
     rows: model.rows,
     balances: model.balances,
+    allTime: model.allTime,
     periods: model.periods,
     periodList: model.periodList
   };

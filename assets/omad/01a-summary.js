@@ -54,11 +54,20 @@ function periodActuals(period) {
     let expense = 0;
 
     if (period === ALL_PERIODS) {
-        summaryPeriods().forEach(name => {
-            const entry = app.summary.periods[name] || {};
-            income += Number(entry.income) || 0;
-            expense += Number(entry.expense) || 0;
-        });
+        // The server's own all-time figure, not the sum of the per-period ones.
+        // They differ by the rows whose period could not be resolved, and those
+        // rows are money that moved.
+        const all = app.summary.allTime || null;
+        if (all) {
+            income = Number(all.income) || 0;
+            expense = Number(all.expense) || 0;
+        } else {
+            summaryPeriods().forEach(name => {
+                const entry = app.summary.periods[name] || {};
+                income += Number(entry.income) || 0;
+                expense += Number(entry.expense) || 0;
+            });
+        }
     } else {
         const entry = summaryEntry(period) || {};
         income = Number(entry.income) || 0;

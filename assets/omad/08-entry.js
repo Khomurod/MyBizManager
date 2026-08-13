@@ -113,6 +113,7 @@ function setType(type) {
 function cancelEdit() {
     cart = []; renderCart();
     editingTenantPaidGroupId = "";
+    editingGroupRows = { groupId: '', rows: [] };
     document.getElementById('editId').value = "";
     document.getElementById('msgId').value = "";
     document.getElementById('entryComment').value = "";
@@ -220,10 +221,29 @@ function isTenantPaidRow(t) {
     return String((t && t.entryKind) || "") === 'tenant_paid_expense';
 }
 
-/** Every loaded row of one business action, in cart order. */
+/**
+ * The rows of the entry currently loaded into the form.
+ *
+ * Captured when the edit is opened, not looked up when it is submitted. Since
+ * history is fetched a page at a time, `app.transactions` is a *page* and a
+ * refresh empties it — and an edit that could not find its own rows would stop
+ * correcting them and start creating new ones instead, which is the entry
+ * recorded twice. The form holds what it is editing.
+ */
+let editingGroupRows = { groupId: '', rows: [] };
+
+function rememberEditingGroup(groupId, rows) {
+    editingGroupRows = { groupId: String(groupId || ''), rows: (rows || []).slice() };
+}
+
+/** Every known row of one business action, in cart order. */
 function entryGroupRows(groupId) {
-    return app.transactions
-        .filter(t => txGroupId(t) === groupId)
+    const key = String(groupId || '');
+    const source = (editingGroupRows.groupId === key && editingGroupRows.rows.length)
+        ? editingGroupRows.rows
+        : app.transactions.filter(t => txGroupId(t) === key);
+    return source
+        .slice()
         .sort((a, b) => (Number(String(a.id).split('_')[1]) || 0) - (Number(String(b.id).split('_')[1]) || 0));
 }
 
@@ -340,6 +360,7 @@ function editTenantPaid(groupId, rows) {
 
     setType('TenantPaid');
     editingTenantPaidGroupId = groupId;
+    rememberEditingGroup(groupId, rows);
 
     document.getElementById('entryTenant').value = income.tenant;
     document.getElementById('entryMonth').value = recordPeriod(income);
@@ -489,6 +510,9 @@ function editTx(id) {
     if(grouped.every(isTenantPaidRow)) return editTenantPaid(groupId, grouped);
 
     setType(tx.type);
+    // After setType, never before: switching *into* tenant-paid mode calls
+    // cancelEdit, which is what clears this.
+    rememberEditingGroup(groupId, grouped);
     document.getElementById('entryTenant').value = tx.tenant;
     document.getElementById('entryMonth').value = recordPeriod(tx);
     document.getElementById('entryComment').value = tx.comment || "";

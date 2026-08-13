@@ -67,9 +67,33 @@ function miniLastVerifiedUser() {
     try { return localStorage.getItem(`${MINI_SNAPSHOT_PREFIX}user`) || ''; } catch (error) { return ''; }
 }
 
+/**
+ * The account Telegram *says* is opening the app, unsigned.
+ *
+ * `initDataUnsafe` is deliberately never trusted anywhere else in this app: it
+ * is the signed payload with the signature removed, so believing it would mean
+ * believing whoever opened the page. It is read here for the one thing it can
+ * safely do — **narrow** what is shown. Two Telegram accounts on one phone
+ * share this origin's storage, so without it, opening the bot as somebody else
+ * would paint the first account's figures for the second until the backend
+ * answered. It can only ever hide a snapshot, never reveal one, and a bridge
+ * that does not expose it hides the snapshot too.
+ */
+function telegramClaimedUserId() {
+    try {
+        const app = telegramApp();
+        const user = app && app.initDataUnsafe && app.initDataUnsafe.user;
+        return user && user.id !== undefined ? String(user.id) : '';
+    } catch (error) {
+        return '';
+    }
+}
+
 function readMiniSnapshot() {
     const userId = miniLastVerifiedUser();
     if (!userId) return null;
+    // Fail closed: no claim, or a different claim, and nothing is painted.
+    if (telegramClaimedUserId() !== userId) return null;
     let raw = '';
     try { raw = localStorage.getItem(miniSnapshotKey(userId)) || ''; } catch (error) { return null; }
     if (!raw) return null;

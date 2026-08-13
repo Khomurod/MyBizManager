@@ -393,7 +393,7 @@ function openTaskSheet(taskId) {
             <p class="tiny muted">${escapeHtml(TASK_TIMEZONE_NOTE)}</p>
             <div id="tReminderList" class="stack" style="margin-top:6px"></div>
             <p id="tReminderEmpty" class="tiny muted">Vaqt qo'shilmagan.</p>
-            <button type="button" class="btn-sm" style="margin-top:6px"
+            <button type="button" class="btn-sm" id="tReminderAdd" style="margin-top:6px"
                     onclick="addReminderTime()">＋ Vaqt qo'shish</button>
 
             <label id="tRemindDailyRow" class="row hidden" style="gap:8px;margin-top:10px">

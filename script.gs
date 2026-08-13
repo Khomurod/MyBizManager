@@ -741,6 +741,11 @@ function buildOmadReadModel_(doc, configSheet, revision, source) {
     builtAt: new Date().toISOString(),
     rows: transactions.length,
     balances: { cash: allTime.cash, bank: allTime.bank, total: allTime.total },
+    // "Jami Davr" as `calculateActuals_` computes it, not as the sum of the
+    // periods. They differ by exactly the rows whose period could not be
+    // resolved — a legacy-sheet possibility — and those rows are money that
+    // moved. Summing the buckets would quietly leave them out.
+    allTime: { income: allTime.income, expense: allTime.expense, net: allTime.net },
     periods: periods,
     periodList: periodList,
     // Newest business actions across every period, so the commonest recent
@@ -882,6 +887,13 @@ function omadRecentForPeriod_(doc, model, period, limit) {
 /**
  * Stores the model. Failing to store one is not a failure of anything: the
  * caller already has the answer, and the next read simply rebuilds.
+ *
+ * This is the one `setConfig` that happens on a *read* path and therefore
+ * outside the script lock. Two first-ever reads landing together could both
+ * append the row, leaving a duplicate. `getConfig` answers with the first match
+ * and `setConfig` updates the first match, so the second row is inert and every
+ * later write keeps it that way. Taking the financial write lock to prevent an
+ * unread spare row would be a far worse trade.
  */
 function storeOmadReadModel_(configSheet, model) {
   try {
@@ -5924,9 +5936,13 @@ function normalizeCafeRecipe_(raw, inventoryIndex, existing) {
   for (var i = 0; i < source.length; i++) {
     var line = source[i] || {};
     var inventoryId = String(line.inventoryId || "").trim();
-    var qty = Number(line.qty);
+    // A line naming nothing references nothing and cannot be costed or
+    // consumed. Anything that *does* name an ingredient is kept, including a
+    // zero or unreadable quantity: dropping it would quietly make the recipe
+    // cheaper, and the health check exists to say so out loud instead.
     if (!inventoryId) continue;
-    if (!isFinite(qty) || qty <= 0) continue;
+    var qty = Number(line.qty);
+    if (!isFinite(qty) || qty < 0) qty = 0;
     qty = cafeRoundQty_(qty);
 
     var item = inventoryIndex[inventoryId];
@@ -5969,8 +5985,16 @@ function normalizeCafeRecipes_(recipes, inventory, existingRecipes) {
   var out = [];
   var seen = {};
   for (var i = 0; i < list.length; i++) {
-    var normalized = normalizeCafeRecipe_(list[i], index, previous[String((list[i] || {}).id || "")]);
-    if (!normalized.name) continue;               // a nameless recipe is not one
+    var raw = list[i];
+    // Nothing is dropped for being *incomplete*. This runs over the whole
+    // stored array on every save, so a rule like "a nameless recipe is not one"
+    // would delete live rows from the Sheet as a side effect of an unrelated
+    // edit. An empty entry is not a recipe at all and goes; anything carrying
+    // an id or a name stays and is reported by the health check.
+    if (!raw || typeof raw !== "object") continue;
+    if (!String(raw.id || "").trim() && !String(raw.name || "").trim()) continue;
+
+    var normalized = normalizeCafeRecipe_(raw, index, previous[String(raw.id || "")]);
     if (seen[normalized.id]) continue;            // an id may appear once
     seen[normalized.id] = true;
     out.push(normalized);
@@ -6044,10 +6068,19 @@ function buildCafeCatalogueHealth_(inventory, recipes, settings) {
       });
     }
 
-    if (!ingredients.length) {
+    if (!name) {
+      incomplete.push({ id: String(recipe.id || ""), name: String(recipe.id || ""), reason: "nomi yo'q" });
+    } else if (!ingredients.length) {
       incomplete.push({ id: String(recipe.id || ""), name: name, reason: "ingredientlar yo'q" });
     } else if (!String(recipe.category || "").trim()) {
       incomplete.push({ id: String(recipe.id || ""), name: name, reason: "kategoriya tanlanmagan" });
+    }
+    for (var z = 0; z < ingredients.length; z++) {
+      if ((Number(ingredients[z].qty) || 0) > 0) continue;
+      incomplete.push({
+        id: String(recipe.id || ""), name: name,
+        reason: "miqdorsiz ingredient: " + String(ingredients[z].name || ingredients[z].inventoryId || "")
+      });
     }
 
     var sell = Number(recipe.sellPrice) || 0;
@@ -12224,6 +12257,7 @@ function readOmadDashboardPayload_(doc, configSheet) {
     builtAt: model.builtAt,
     rows: model.rows,
     balances: model.balances,
+    allTime: model.allTime,
     periods: model.periods,
     periodList: model.periodList
   };
