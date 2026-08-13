@@ -31,12 +31,39 @@ Cloudflare Pages serves `mini.html` and `tasks.html` at the clean `/mini` and
 rewrite file. To roll the frontend back, pick an earlier deployment in the
 Cloudflare dashboard — every one is kept.
 
-> **Netlify is retired but still connected.** `omad-d.netlify.app` is *not*
-> production: it serves a build from before the login page was rewritten and can
-> no longer sign in. The integration still posts deploy-preview checks and
-> comments on pull requests, so ignore them — a green Netlify preview says
-> nothing about this application. Deleting the Netlify site is a manual step
-> nobody has taken; nothing here depends on it.
+### Netlify is not part of this project
+
+There is **no Netlify configuration in this repository** — no `netlify.toml`, no
+`_redirects`, no `_headers`, and nothing in the workflow that mentions it.
+`tests/static-analysis.test.js` asserts that, so a build file cannot reappear
+without somebody deciding to add one.
+
+The old Netlify project is called **`omad-d`**. `omad-d.netlify.app` is *not*
+production: it serves a build from before the login page was rewritten and can
+no longer sign in. Nothing in the application, the deploy or the Telegram
+configuration points at it.
+
+**One manual step remains, and it can only be done in a browser.** The Netlify
+GitHub App is still linked to this repository, so every pull request still gets
+three neutral checks — *Redirect rules – omad-d*, *Header rules – omad-d*,
+*Pages changed – omad-d* — linking to `app.netlify.com/projects/omad-d`. They
+are noise: a green Netlify check says nothing about this application, and a red
+one says nothing either.
+
+To stop them, do **one** of these (the first is the cleanest):
+
+1. **Delete the project.** Netlify → *Projects* → **omad-d** → *Project
+   configuration* → *General* → *Danger zone* → **Delete project**. The
+   `omad-d.netlify.app` hostname stops resolving; nothing here uses it.
+2. **Unlink the repository only.** Netlify → **omad-d** → *Project
+   configuration* → *Build & deploy* → *Continuous deployment* → **Unlink
+   repository**. The project survives as a dead site but stops watching GitHub.
+3. **Remove this repository from the Netlify GitHub App.** GitHub → *Settings*
+   → *Applications* → *Installed GitHub Apps* → **Netlify** → *Configure* →
+   under *Repository access*, uncheck `Khomurod/MyBizManager`.
+
+Do **not** uninstall the Netlify GitHub App outright — the installation is
+account-wide and other repositories may be using it.
 
 ---
 

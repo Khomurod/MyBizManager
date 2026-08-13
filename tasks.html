@@ -438,6 +438,13 @@
                 <!-- REMINDERS -->
                 <div class="field">
                     <span class="f-label">Eslatma vaqtlari</span>
+                    <!--
+                      A time input looks like the phone's own clock and nothing
+                      would otherwise say it is not. Every reminder is scheduled
+                      in Asia/Tashkent, a fixed UTC+5, whatever the browser is
+                      set to - so the field says so.
+                    -->
+                    <p class="f-hint">Barcha vaqtlar Toshkent vaqti (UTC+5).</p>
                     <div class="rep">
                         <p id="reminderEmpty" class="rep__empty">Eslatma yo'q.</p>
                         <div id="reminderList" class="rep"></div>

@@ -40,6 +40,10 @@ function showApp() {
  */
 function failAuth(error) {
     const stale = error && error.reason === 'stale';
+    // A refused signature is not a slow network: whatever this device had
+    // stored was verified for an account that is no longer being accepted, so
+    // it goes rather than staying behind the gate.
+    if (!stale) clearMiniSnapshot();
     showGate(stale ? '⌛' : '🔒', error && error.message ? error.message : OPEN_IN_TELEGRAM_MESSAGE, stale);
     closeSheet();
 }
@@ -76,13 +80,41 @@ function switchTab(name) {
  * build for tabs nobody had opened yet. Café and Tasks now load when they are
  * first opened.
  */
-async function bootstrap() {
-    showGate('⏳', 'Tekshirilmoqda...', false);
+/**
+ * Paints the last verified answer, if this device has one.
+ *
+ * Display only, and never mistaken for the live one: `state.snapshotAt` puts a
+ * banner above the figures for as long as they are the stored ones, and the
+ * live answer replaces every field the moment it arrives.
+ */
+function hydrateMiniSnapshot() {
+    const snapshot = readMiniSnapshot();
+    if (!snapshot || !snapshot.value || !snapshot.value.omad) return false;
 
+    const stored = snapshot.value;
+    state.user = stored.user || null;
+    state.omad = stored.omad;
+    state.period = stored.omad.period || state.period;
+    state.tenants = stored.tenants || [];
+    state.entries = stored.entries || [];
+    state.snapshotAt = snapshot.savedAt;
+
+    showApp();
+    renderOmad();
+    return true;
+}
+
+async function bootstrap() {
     if (!telegramInitData()) {
         showGate('📱', OPEN_IN_TELEGRAM_MESSAGE, false);
         return;
     }
+
+    // The stored answer goes up first so the app is readable at once; the
+    // request below is then a refresh rather than a wait. With nothing stored
+    // this is exactly the old behaviour — the gate, and no application.
+    const painted = hydrateMiniSnapshot();
+    if (!painted) showGate('⏳', 'Tekshirilmoqda...', false);
 
     try {
         const body = await api('mini_home', { period: state.period || currentPeriod() });
@@ -91,11 +123,25 @@ async function bootstrap() {
         state.period = body.omad.period;
         state.tenants = body.tenants || [];
         state.entries = body.transactions || [];
+        state.snapshotAt = 0;
+
+        writeMiniSnapshot(body.user && body.user.id, {
+            user: state.user, omad: state.omad,
+            tenants: state.tenants, entries: state.entries
+        });
 
         showApp();
         renderOmad();
     } catch (error) {
         if (error.unauthorized) return failAuth(error);
+        // A network fault or a busy backend leaves the stored figures on
+        // screen, still labelled as stored, with a retry — rather than
+        // replacing them with an error page.
+        if (painted) {
+            state.loadError = error.message || 'Xatolik';
+            renderOmad();
+            return;
+        }
         showGate('⚠️', error.message || 'Xatolik', true);
     }
 }

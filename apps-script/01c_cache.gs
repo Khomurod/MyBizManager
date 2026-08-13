@@ -46,6 +46,19 @@ var CACHE_CONFIG_KEY_SCOPES = [
 ];
 
 /**
+ * Keys that are *derived from* a scope rather than part of it.
+ *
+ * The Omad read model is a summary of the ledger, stored in System_Config and
+ * keyed by the ledger's own revision. Bumping that revision when the summary is
+ * written would make every summary stale the instant it was stored — a rebuild
+ * on every single read, for ever. Nothing else derives what it is a copy of, so
+ * this list has exactly one entry and adding a second one deserves a reason.
+ */
+var CACHE_DERIVED_CONFIG_KEYS = {
+  Omad_Read_Model: true
+};
+
+/**
  * The current revision of one scope.
  *
  * A Script Property read, not a sheet pass — this is consulted on every cached
@@ -84,6 +97,7 @@ function bumpDataRevision_(scope) {
 /** Bumps whichever scope a System_Config key belongs to, if any. */
 function bumpScopeForConfigKey_(key) {
   var name = String(key || "");
+  if (CACHE_DERIVED_CONFIG_KEYS[name]) return;
   for (var i = 0; i < CACHE_CONFIG_KEY_SCOPES.length; i++) {
     if (name.indexOf(CACHE_CONFIG_KEY_SCOPES[i].prefix) === 0) {
       bumpDataRevision_(CACHE_CONFIG_KEY_SCOPES[i].scope);

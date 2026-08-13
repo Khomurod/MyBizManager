@@ -114,10 +114,23 @@ function doPost(e) {
     // business's private data, and the two reads are gated differently: a café
     // seller has no business reading the ledger, and could previously do so by
     // editing one localStorage value.
-    if (action === 'get_omad_data') {
+    if (action === 'get_omad_data' || action === 'get_omad_history') {
       var omadReadAuth = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
       if (!omadReadAuth.ok) return authRefusal_(omadReadAuth);
-      return jsonOutput_(readOmadPayload_(doc, configSheet));
+      if (action === 'get_omad_history') return jsonOutput_(readOmadHistoryPage_(doc, payload));
+      return jsonOutput_(readOmadPayload_(doc, configSheet, payload));
+    }
+
+    // ---- The derived read model -------------------------------------------
+    // Reading is what everything else does implicitly; these two exist so an
+    // operator can check the summary against the ledger and rebuild it.
+    if (action === 'verify_omad_read_model' || action === 'rebuild_omad_read_model') {
+      var modelAuth = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+      if (!modelAuth.ok) return authRefusal_(modelAuth);
+      if (action === 'verify_omad_read_model') {
+        return jsonOutput_({ status: "success", readModel: verifyOmadReadModel_(doc, configSheet) });
+      }
+      return jsonOutput_(rebuildOmadReadModel_(doc, configSheet));
     }
 
     if (action === 'get_cafe_data') {
@@ -375,7 +388,10 @@ function telegramAdminAction_(action, payload) {
  * before the dashboard can decide whether the ledger is live. It is four
  * Script Property reads, so it rides along.
  */
-function readOmadPayload_(doc, configSheet) {
+function readOmadPayload_(doc, configSheet, payload) {
+  if (String((payload && payload.scope) || "") === "dashboard") {
+    return readOmadDashboardPayload_(doc, configSheet);
+  }
   return {
     status: "success",
     transactions: readOmadTransactions_(doc),
@@ -384,6 +400,109 @@ function readOmadPayload_(doc, configSheet) {
     templateExpenses: normalizeTemplateExpenses_(
       safeParseJSON_(getConfig(configSheet, "Omad_Template_Expenses"), [])),
     migration: getMigrationStatus_(doc)
+  };
+}
+
+/**
+ * What the dashboard needs, without the ledger.
+ *
+ * The whole transaction history used to travel to the browser on every load so
+ * that four figures and a tenant list could be derived from it there — hundreds
+ * of rows down the wire, and a full pass over the ledger sheet to produce them,
+ * for a screen that shows totals. The totals come from the read model instead;
+ * the history arrives page by page when somebody opens Tarix.
+ *
+ * Before cutover this still answers with the whole list, because the legacy
+ * save path submits it back: a screen that may have to write the list must be
+ * holding all of it. That path is dormant while V2 is live and exists for a
+ * rollback, and this is the one place that difference is decided.
+ */
+function readOmadDashboardPayload_(doc, configSheet) {
+  var body = {
+    status: "success",
+    scope: "dashboard",
+    tenants: normalizeTenantList_(safeParseJSON_(getConfigOnce_(configSheet, "Omad_Tenants"), [])),
+    rates: safeParseJSON_(getConfigOnce_(configSheet, "Omad_Rates"), { "Fevral": 12500 }),
+    templateExpenses: normalizeTemplateExpenses_(
+      safeParseJSON_(getConfigOnce_(configSheet, "Omad_Template_Expenses"), [])),
+    migration: getMigrationStatus_(doc)
+  };
+
+  if (!isLedgerActive_(doc)) {
+    body.historyMode = "full";
+    body.transactions = readOmadTransactions_(doc);
+    return body;
+  }
+
+  var model = omadReadModel_(doc, configSheet);
+  body.historyMode = "paged";
+  body.summary = {
+    builtAt: model.builtAt,
+    rows: model.rows,
+    balances: model.balances,
+    allTime: model.allTime,
+    periods: model.periods,
+    periodList: model.periodList
+  };
+  body.recent = omadRecentForPeriod_(doc, model, "", OMAD_READ_MODEL_RECENT);
+  return body;
+}
+
+/** How many business actions one history page carries. */
+var OMAD_HISTORY_PAGE_GROUPS = 40;
+
+/**
+ * One page of history, as whole business actions.
+ *
+ * Paged by *group* rather than by row, because a group is what the screen
+ * draws and what an edit and a cancellation both operate on: handing back half
+ * of a tenant-paid pair would let one side of it be edited alone. Every row of
+ * every group on the page is returned, so the client's existing grouping,
+ * editing and cancellation code is unchanged — it simply holds a page of the
+ * ledger instead of all of it.
+ */
+function readOmadHistoryPage_(doc, payload) {
+  var options = payload || {};
+  var period = isCanonicalPeriod_(options.period) ? String(options.period) : "";
+  var offset = Math.max(0, Math.floor(Number(options.offset) || 0));
+  var limit = Math.min(200, Math.max(1, Math.floor(Number(options.limit) || OMAD_HISTORY_PAGE_GROUPS)));
+
+  var transactions = readOmadTransactions_(doc);
+  var order = [];
+  var groups = {};
+  for (var i = 0; i < transactions.length; i++) {
+    var t = transactions[i];
+    if (period && transactionPeriod_(t) !== period) continue;
+    var key = String(t.groupId || "");
+    if (!groups[key]) { groups[key] = []; order.push(key); }
+    groups[key].push(t);
+  }
+
+  // Newest first: the later period wins, and within a period the later id.
+  order.sort(function (a, b) {
+    var rowsA = groups[a][0];
+    var rowsB = groups[b][0];
+    var periodOrder = String(transactionPeriod_(rowsB)).localeCompare(String(transactionPeriod_(rowsA)));
+    if (periodOrder !== 0) return periodOrder;
+    return (Number(String(rowsB.id).split("_")[0]) || 0) - (Number(String(rowsA.id).split("_")[0]) || 0);
+  });
+
+  var page = order.slice(offset, offset + limit);
+  var rows = [];
+  for (var g = 0; g < page.length; g++) {
+    var groupRows = groups[page[g]];
+    for (var r = 0; r < groupRows.length; r++) rows.push(groupRows[r]);
+  }
+
+  return {
+    status: "success",
+    period: period,
+    offset: offset,
+    limit: limit,
+    groupTotal: order.length,
+    groupCount: page.length,
+    hasMore: offset + page.length < order.length,
+    transactions: rows
   };
 }
 

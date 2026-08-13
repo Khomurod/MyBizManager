@@ -34,7 +34,8 @@ function writeCafeInventory_(configSheet, inventory) {
 
 var CAFE_MUTATIONS = {
   save_inventory: true, save_recipe: true, save_categories: true,
-  save_cafe_settings: true, save_sale: true, void_sale: true, close_day: true
+  save_cafe_settings: true, save_sale: true, void_sale: true, close_day: true,
+  adjust_cafe_stock: true
 };
 
 /**
@@ -42,10 +43,14 @@ var CAFE_MUTATIONS = {
  *
  * The catalogue is the manager's; the till is the seller's. Neither of them
  * gets the other's, and neither gets the accounting.
+ *
+ * A stock movement — spoilage, waste, a staff drink, a miscount — is the
+ * manager's: it changes what the business owns without any money coming in.
  */
 var CAFE_ACTION_ROLES = {
   save_inventory: "admin", save_recipe: "admin", save_categories: "admin",
-  save_cafe_settings: "admin", save_sale: "sell", void_sale: "sell", close_day: "sell"
+  save_cafe_settings: "admin", save_sale: "sell", void_sale: "sell", close_day: "sell",
+  adjust_cafe_stock: "admin"
 };
 
 function isCafeAction_(action) {
@@ -73,29 +78,38 @@ function handleCafeAction_(action, payload, doc, configSheet) {
     // Optimistic concurrency. The screen says which version it was looking at;
     // anything else means stock moved underneath it and its copy is a
     // rollback waiting to happen.
-    var currentRev = cafeInventoryRev_(configSheet);
-    if (currentRev > 0 && Number(payload.expectedRev) !== currentRev) {
+    //
+    // Under the same lock every other stock movement takes, and for the same
+    // reason the catalogue guard is: reading the revision and writing the array
+    // as two steps lets a sale land between them, so the check passes against a
+    // version the write then replaces. It is the one place inventory is written
+    // without holding it.
+    var inventoryLock = LockService.getScriptLock();
+    inventoryLock.waitLock(30000);
+    try {
+      var currentRev = cafeInventoryRev_(configSheet);
+      if (currentRev > 0 && Number(payload.expectedRev) !== currentRev) {
+        return jsonOutput_({
+          status: "error", stale: true, inventoryRev: currentRev,
+          message: "Ombor boshqa joyda o'zgardi. Sahifani yangilab, qaytadan kiriting."
+        });
+      }
       return jsonOutput_({
-        status: "error", stale: true, inventoryRev: currentRev,
-        message: "Ombor boshqa joyda o'zgardi. Sahifani yangilab, qaytadan kiriting."
+        status: "success",
+        inventoryRev: writeCafeInventory_(configSheet, payload.inventory)
       });
+    } finally {
+      inventoryLock.releaseLock();
     }
-    return jsonOutput_({
-      status: "success",
-      inventoryRev: writeCafeInventory_(configSheet, payload.inventory)
-    });
   }
-  if (action === 'save_recipe') {
-    setConfig(configSheet, "Cafe_Recipes", JSON.stringify(payload.recipes));
-    return jsonOutput_({ status: "success" });
+  // Recipes, categories and settings are the *catalogue*, and it has a
+  // revision of its own. Two admin sessions used to overwrite each other
+  // silently — the second save simply replaced whatever the first had stored.
+  if (isCafeCatalogueAction_(action)) {
+    return saveCafeCatalogue_(action, payload, configSheet);
   }
-  if (action === 'save_categories') {
-    setConfig(configSheet, "Cafe_Categories", JSON.stringify(payload.categories));
-    return jsonOutput_({ status: "success" });
-  }
-  if (action === 'save_cafe_settings') {
-    setConfig(configSheet, "Cafe_Settings", JSON.stringify(payload.settings));
-    return jsonOutput_({ status: "success" });
+  if (action === 'adjust_cafe_stock') {
+    return adjustCafeStock_(doc, configSheet, payload, auth.username);
   }
   if (action === 'save_sale') return saveCafeSale_(doc, configSheet, payload);
   if (action === 'void_sale') return voidCafeSale_(doc, configSheet, payload);
@@ -177,7 +191,11 @@ function cafeProductStockPerUnit_(product) {
  * catalogue does not contain is refused rather than sold at whatever the
  * caller suggested.
  */
-function resolveCafeSaleLines_(state, items) {
+function resolveCafeSaleLines_(state, items, options) {
+  // `allowInactive` is for *undoing* a sale, not making one. A void restores
+  // the stock a receipt consumed, and whether the recipe is still on the menu
+  // today has nothing to do with whether that stock should come back.
+  var settings = options || {};
   var requested = Array.isArray(items) ? items : [];
   if (requested.length === 0) return { error: "Savat bo'sh." };
   if (requested.length > 200) return { error: "Savatda juda ko'p mahsulot." };
@@ -205,6 +223,12 @@ function resolveCafeSaleLines_(state, items) {
     if (kind === "recipe") {
       var recipe = recipes[String(item.recipeId)];
       if (!recipe) return { error: "Retsept topilmadi: " + String(item.name || item.recipeId || "") };
+      // A retired recipe leaves the menu but keeps its history: every sale
+      // already recorded still names it, and every one of those receipts still
+      // reads. What it may not do is be sold again.
+      if (recipe.active === false && !settings.allowInactive) {
+        return { error: "Retsept sotuvdan olingan: " + String(recipe.name || "") };
+      }
       var recipePrice = Number(recipe.sellPrice) || 0;
       if (recipePrice <= 0) return { error: "Retsept narxi belgilanmagan: " + String(recipe.name || "") };
 
@@ -438,7 +462,7 @@ function voidCafeSale_(doc, configSheet, payload) {
     }
 
     var current = cafeCatalogue_(configSheet);
-    var restored = resolveCafeSaleLines_(current, cafeReceiptItems_(detail));
+    var restored = resolveCafeSaleLines_(current, cafeReceiptItems_(detail), { allowInactive: true });
 
     var inventory = current.inventory;
     if (!restored.error) {
@@ -477,25 +501,57 @@ function closeCafeDay_(doc, configSheet, payload) {
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
-    var state = readCafeState_(doc, configSheet);
+    // Lean rather than `readCafeState_`: closing the day needs the day's
+    // totals, not the parsed receipt of every sale ever rung up.
+    var sales = readCafeSalesLean_(doc);
+    var inventory = safeParseJSON_(getConfig(configSheet, "Cafe_Inventory"), []);
     var dayKey = cafeDateKey_(payload.date || new Date().toISOString());
 
     var revenue = 0;
     var profit = 0;
     var count = 0;
-    for (var i = 0; i < state.sales.length; i++) {
-      if (cafeDateKey_(state.sales[i].date) !== dayKey) continue;
-      revenue += Number(state.sales[i].total) || 0;
-      profit += Number(state.sales[i].profit) || 0;
+    for (var i = 0; i < sales.length; i++) {
+      if (cafeDateKey_(sales[i].date) !== dayKey) continue;
+      revenue += Number(sales[i].total) || 0;
+      profit += Number(sales[i].profit) || 0;
       count++;
+    }
+
+    // ---- the two accidents worth stopping ------------------------------
+    //
+    // Neither is an error: a second report for a day genuinely happens (two
+    // shifts, a correction), and a day with no sales genuinely happens (the
+    // café was shut). Both are refused *once*, with a code the screen turns
+    // into a question, so the confirmation is a decision rather than a habit.
+    var existing = findCafeClosingForDay_(doc, dayKey);
+    if (existing && payload.confirmDuplicate !== true) {
+      return jsonOutput_({
+        status: "error", code: "duplicate_close", dateKey: dayKey,
+        existing: {
+          date: existing.date, seller: existing.seller,
+          totalRevenue: existing.totalRevenue, totalProfit: existing.totalProfit
+        },
+        message: "Bu kun uchun yakun allaqachon yozilgan (" +
+          formatUZS_(existing.totalRevenue) + " UZS). Yana yozilsinmi?"
+      });
+    }
+
+    if (count === 0 && payload.confirmEmpty !== true) {
+      return jsonOutput_({
+        status: "error", code: "empty_close", dateKey: dayKey,
+        message: "Bu kunda birorta sotuv yozilmagan. Bo'sh yakun yozilsinmi?"
+      });
     }
 
     // A physical count is the one thing only a person can supply.
     // A physical count is a measurement, not an edit of a stale copy, so it
     // is not version-checked -- what is on the shelf is what is on the shelf.
+    // It does leave a trace, though: `recordCafeRecount_` writes what changed
+    // and by how much, so a quantity never moves without a reason on record.
     if (Array.isArray(payload.countedInventory)) {
+      recordCafeRecount_(doc, inventory, payload.countedInventory, payload.seller);
       writeCafeInventory_(configSheet, payload.countedInventory);
-      state.inventory = payload.countedInventory;
+      inventory = payload.countedInventory;
     }
 
     var closeSheet = doc.getSheetByName("Cafe_Kun_Yakuni") || doc.insertSheet("Cafe_Kun_Yakuni");
@@ -529,11 +585,32 @@ function closeCafeDay_(doc, configSheet, payload) {
     return jsonOutput_({
       status: "success", reportJobId: closeJobId || "",
       totalRevenue: Math.round(revenue), totalProfit: Math.round(profit),
-      salesCount: count, inventory: state.inventory
+      salesCount: count, inventory: inventory
     });
   } finally {
     lock.releaseLock();
   }
+}
+
+/**
+ * The close-day record already filed for a calendar day, or null.
+ *
+ * Row-count-cheap: it reads the sheet once and compares the day key the same
+ * way every other café reader derives one, so "today" means the same thing here
+ * as it does in the till.
+ */
+function findCafeClosingForDay_(doc, dayKey) {
+  var sheet = doc.getSheetByName("Cafe_Kun_Yakuni");
+  if (!sheet || sheet.getLastRow() < 2 || !dayKey) return null;
+  var data = sheet.getDataRange().getValues();
+  for (var i = data.length - 1; i >= 1; i--) {
+    if (cafeDateKey_(data[i][0]) !== dayKey) continue;
+    return {
+      date: data[i][0], seller: String(data[i][1] || ""),
+      totalRevenue: Number(data[i][2]) || 0, totalProfit: Number(data[i][3]) || 0
+    };
+  }
+  return null;
 }
 
 /**
@@ -638,6 +715,9 @@ function cafeScreenCatalogue_(configSheet) {
     inventory: safeParseJSON_(getConfigOnce_(configSheet, "Cafe_Inventory"), []),
     inventoryRev: cafeInventoryRev_(configSheet),
     recipes: safeParseJSON_(getConfigOnce_(configSheet, "Cafe_Recipes"), []),
+    // Quoted back by every catalogue save, so two stale admin sessions cannot
+    // silently overwrite each other's recipes.
+    catalogueRev: cafeCatalogueRev_(configSheet),
     categories: safeParseJSON_(getConfigOnce_(configSheet, "Cafe_Categories"),
       ["Ichimliklar", "Fast-Food", "Muzqaymoq"]),
     settings: safeParseJSON_(getConfigOnce_(configSheet, "Cafe_Settings"), { dailyTarget: 0 })
@@ -662,6 +742,10 @@ function readCafePosPayload_(doc, configSheet, payload) {
       body.status = "success";
       body.scope = "pos";
       body.dateKey = dayKey;
+      // A retired recipe is off the menu. Historical receipts are untouched --
+      // they carry their own lines -- and the server refuses one anyway, so
+      // this is the till not offering a button that would be refused.
+      body.recipes = cafeSellableRecipes_(body.recipes);
       body.sales = readCafeSalesForDay_(doc, dayKey, seller);
       return body;
     });
@@ -701,9 +785,12 @@ function readCafeAdminPayload_(doc, configSheet, payload) {
 
   var closingsLimit = Math.min(Math.max(Number(payload && payload.closingsLimit) || 0,
     CAFE_ADMIN_RECENT_CLOSINGS), 500);
+  var movementsLimit = Math.min(Math.max(Number(payload && payload.movementsLimit) || 0,
+    CAFE_MOVEMENTS_PAGE), 200);
 
   return cachedSummary_(
-    "cafe_admin_" + todayKey + "_" + yesterdayKey + "_" + monthKey + "_" + closingsLimit,
+    "cafe_admin_" + todayKey + "_" + yesterdayKey + "_" + monthKey + "_" + closingsLimit +
+      "_" + movementsLimit,
     CACHE_SCOPE_CAFE, CAFE_SUMMARY_TTL_SECONDS, function () {
       var body = cafeScreenCatalogue_(configSheet);
       body.status = "success";
@@ -714,6 +801,20 @@ function readCafeAdminPayload_(doc, configSheet, payload) {
       var closings = readCafeRecentClosings_(doc, closingsLimit);
       body.closeReports = closings.rows;
       body.closeReportsTotal = closings.total;
+      // Computed here rather than in the browser, so the Mini App's low-stock
+      // list and the admin screen's warnings are one implementation of one set
+      // of rules.
+      body.health = buildCafeCatalogueHealth_(body.inventory, body.recipes, body.settings);
+      var movements = readCafeStockMovements_(doc, movementsLimit);
+      body.movements = movements.rows;
+      body.movementsTotal = movements.total;
+      // Whether today has already been closed, so the screen can say so before
+      // somebody presses the button rather than after.
+      var closedToday = findCafeClosingForDay_(doc, todayKey);
+      body.closedToday = closedToday ? {
+        date: closedToday.date, seller: closedToday.seller,
+        totalRevenue: closedToday.totalRevenue, totalProfit: closedToday.totalProfit
+      } : null;
       return body;
     });
 }
@@ -835,6 +936,7 @@ function readCafeState_(doc, configSheet) {
     inventory: safeParseJSON_(getConfig(configSheet, "Cafe_Inventory"), []),
     inventoryRev: cafeInventoryRev_(configSheet),
     recipes: safeParseJSON_(getConfig(configSheet, "Cafe_Recipes"), []),
+    catalogueRev: cafeCatalogueRev_(configSheet),
     categories: safeParseJSON_(getConfig(configSheet, "Cafe_Categories"), ["Ichimliklar", "Fast-Food", "Muzqaymoq"]),
     settings: safeParseJSON_(getConfig(configSheet, "Cafe_Settings"), { dailyTarget: 0 }),
     sales: sales,

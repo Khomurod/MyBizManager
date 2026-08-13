@@ -133,12 +133,24 @@
 
         <button onclick="addInventory()" class="w-full mt-3 rounded-xl bg-slate-800 text-white py-3 font-bold text-sm active:scale-95">Omborga Saqlash</button>
       </div>
+      <div id="lowStockCard" class="hidden glass rounded-2xl p-4 border-l-4 border-l-amber-400">
+        <h2 class="font-bold mb-2 text-sm">Kam qolgan</h2>
+        <div id="lowStockList" class="space-y-1"></div>
+      </div>
       <div id="inventoryList" class="space-y-2"></div>
+      <div class="glass rounded-2xl p-4">
+        <h2 class="font-bold mb-2 text-sm">Ombor harakati</h2>
+        <p class="text-[11px] text-slate-500 mb-2">
+          Sotuvdan tashqari har bir kirim va chiqim — sababi bilan.
+        </p>
+        <div id="movementList" class="space-y-1"></div>
+      </div>
     </section>
 
     <section id="screen-recipes" class="screen space-y-3">
       <div class="glass rounded-2xl p-4">
-        <h2 class="font-bold mb-3">Retsept Yaratish</h2>
+        <h2 id="recipeFormTitle" class="font-bold mb-3">Retsept Yaratish</h2>
+        <input id="recipeEditId" type="hidden">
         <input id="recipeName" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-2" placeholder="Masalan: Hot Dog">
         <label class="block text-[11px] font-bold text-slate-500 mb-1">Kategoriya</label>
         <select id="recipeCategory" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-3 bg-white"></select>
@@ -150,10 +162,24 @@
         </div>
         <button onclick="addIngredient()" class="w-full rounded-xl bg-blue-600 text-white py-2 font-bold text-sm mb-3 active:scale-95">Ingredient Qo'shish</button>
         <div id="recipeDraft" class="space-y-1 mb-3"></div>
-        <div class="text-sm font-bold mb-2">Tannarx: <span id="recipeCost">0</span> UZS</div>
-        <input id="recipeSellPrice" type="number" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-2" placeholder="Sotuv narxi (UZS)">
-        <button onclick="saveRecipe()" class="w-full rounded-xl bg-emerald-600 text-white py-3 font-bold text-sm active:scale-95">Retseptni Saqlash</button>
+        <!--
+          Read-only on purpose. The cost is the sum of what the ingredients
+          cost right now, recomputed by the server on every save, so it cannot
+          be typed into disagreeing with the stock it will actually consume.
+        -->
+        <div class="text-sm font-bold mb-2">Tannarx: <span id="recipeCost">0</span> UZS
+          <span class="block text-[10px] font-normal text-slate-400">Ombordagi joriy tannarxdan avtomatik hisoblanadi.</span>
+        </div>
+        <input id="recipeSellPrice" type="number" oninput="renderRecipeMarginNote(recipeDraftCost())" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-2" placeholder="Sotuv narxi (UZS)">
+        <p id="recipeMarginNote" class="hidden text-[11px] font-bold mb-2"></p>
+        <label class="flex items-center gap-2 text-xs font-bold text-slate-500 mb-3">
+          <input id="recipeActive" type="checkbox" class="w-4 h-4" checked>
+          Sotuvda (belgilanmasa POS menyusida ko'rinmaydi)
+        </label>
+        <button onclick="saveRecipe()" id="recipeSaveBtn" class="w-full rounded-xl bg-emerald-600 text-white py-3 font-bold text-sm active:scale-95">Retseptni Saqlash</button>
+        <button onclick="cancelRecipeEdit()" id="recipeCancelBtn" class="hidden w-full mt-2 rounded-xl bg-slate-100 text-slate-600 py-2 font-bold text-xs">Bekor qilish</button>
       </div>
+      <div id="recipeHealth" class="space-y-2"></div>
       <div id="recipeList" class="space-y-2"></div>
     </section>
 
@@ -234,6 +260,33 @@
     </div>
   </div>
 
+  <!--
+    Stock leaves for reasons that are not sales: something spilled, something
+    spoiled, staff drank it, or the count was simply wrong. All of it used to be
+    entered by editing the quantity, which leaves no trace and races the till.
+  -->
+  <div id="removeStockModal" class="hidden fixed inset-0 z-40 bg-black/45 p-4 flex items-end justify-center" onclick="closeRemoveStockModal()">
+    <div class="glass w-full max-w-md rounded-2xl p-4 max-h-[90vh] overflow-y-auto" onclick="event.stopPropagation()">
+      <div class="flex justify-between items-center mb-3">
+        <h3 class="font-bold">Ombordan Chiqim</h3>
+        <button onclick="closeRemoveStockModal()" class="w-8 h-8 rounded-full bg-slate-100">X</button>
+      </div>
+      <input id="removeStockId" type="hidden">
+      <p id="removeStockItemName" class="text-sm font-bold text-slate-700 mb-1"></p>
+      <p id="removeStockAvailable" class="text-[11px] text-slate-500 mb-3"></p>
+      <label class="block text-[11px] font-bold text-slate-500 mb-1">Sababi</label>
+      <select id="removeStockReason" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-2 bg-white">
+        <option value="spoilage">Buzilgan / yaroqsiz</option>
+        <option value="waste">Chiqindi / to'kilgan</option>
+        <option value="internal">Ichki iste'mol</option>
+        <option value="correction">Tuzatish (sanoq xato edi)</option>
+      </select>
+      <input id="removeStockQty" type="number" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-2" placeholder="Qancha kamaydi?">
+      <input id="removeStockNote" maxlength="200" class="w-full rounded-xl border border-slate-200 p-3 text-sm" placeholder="Qisqacha izoh (majburiy)">
+      <button onclick="submitRemoveStock()" class="w-full mt-3 rounded-xl bg-red-600 text-white py-3 font-bold text-sm active:scale-95">Chiqimni Saqlash</button>
+    </div>
+  </div>
+
   <div id="reportDetailModal" class="hidden fixed inset-0 z-40 bg-black/45 p-4 flex items-end justify-center" onclick="closeReportModal()">
     <div class="glass w-full max-w-xl rounded-2xl p-4 max-h-[90vh] overflow-y-auto" onclick="event.stopPropagation()">
       <div class="flex justify-between items-center mb-3">
@@ -255,6 +308,14 @@
       inventory: [],
       inventoryRev: 0,
       recipes: [],
+      // The catalogue's own revision, and the server's warning layer. Both are
+      // read-only here: the health list is computed on the server so the phone
+      // and this screen cannot disagree about what "running out" means.
+      catalogueRev: 0,
+      health: null,
+      movements: [],
+      movementsTotal: 0,
+      closedToday: null,
       categories: [],
       // Period totals computed on the server, keyed by the dashboard filter.
       // The browser no longer holds the sales history it used to add up.
@@ -420,6 +481,7 @@
               <div class="flex flex-col gap-1">
                 <button onclick="openEditModal('${item.id}')" class="text-[10px] font-bold bg-slate-100 text-slate-700 rounded-lg px-2 py-1">Tahrirlash</button>
                 <button onclick="openAddStockModal('${item.id}')" class="text-[10px] font-bold bg-emerald-100 text-emerald-700 rounded-lg px-2 py-1">+ Kirim</button>
+                <button onclick="openRemoveStockModal('${item.id}')" class="text-[10px] font-bold bg-amber-100 text-amber-700 rounded-lg px-2 py-1">− Chiqim</button>
                 <button onclick="deleteInventory('${item.id}')" class="text-[10px] font-bold bg-red-100 text-red-600 rounded-lg px-2 py-1">O'chirish</button>
               </div>
             </div>
@@ -478,30 +540,168 @@
       document.getElementById("addStockModal").classList.add("hidden");
     }
 
-    function submitAddStock() {
+    /**
+     * Records an intake as a movement rather than as a whole-inventory save.
+     *
+     * The old path read the quantity in the browser, added to it, and wrote the
+     * entire inventory back — so a sale landing in between was overwritten, and
+     * nothing anywhere said the stock had arrived. The server applies the delta
+     * under the same lock the till uses and writes a row saying what came in.
+     */
+    async function submitAddStock() {
       const id = document.getElementById("addStockId").value;
-      const idx = state.inventory.findIndex(i => i.id === id);
-      if (idx === -1) return;
+      const item = state.inventory.find(i => i.id === id);
+      if (!item) return;
 
       const addedQty = Number(document.getElementById("addStockQty").value);
       const addedCost = Number(document.getElementById("addStockCost").value);
       if (addedQty <= 0 || addedCost <= 0) return alert("Miqdor va narxni to'g'ri kiriting");
 
-      const current = state.inventory[idx];
-      const newQty = Number(current.qty || 0) + addedQty;
-      const newTotalCost = Number(current.totalCost || 0) + addedCost;
-
-      state.inventory[idx] = {
-        ...current,
-        qty: newQty,
-        totalCost: newTotalCost,
-        unitCost: Math.round(newTotalCost / newQty)
-      };
-
       closeAddStockModal();
+      await submitStockMovement({
+        inventoryId: id, direction: "in", reason: "purchase",
+        qty: addedQty, cost: addedCost, note: ""
+      });
+    }
+
+    function openRemoveStockModal(id) {
+      const item = state.inventory.find(i => i.id === id);
+      if (!item) return;
+      document.getElementById("removeStockId").value = item.id;
+      document.getElementById("removeStockItemName").innerText = item.name;
+      document.getElementById("removeStockAvailable").innerText =
+        `Hozir: ${Number(item.qty || 0).toLocaleString()} ${item.unit || ""}`;
+      document.getElementById("removeStockQty").value = "";
+      document.getElementById("removeStockNote").value = "";
+      document.getElementById("removeStockReason").value = "spoilage";
+      document.getElementById("removeStockModal").classList.remove("hidden");
+    }
+
+    function closeRemoveStockModal() {
+      document.getElementById("removeStockModal").classList.add("hidden");
+    }
+
+    async function submitRemoveStock() {
+      const id = document.getElementById("removeStockId").value;
+      const qty = Number(document.getElementById("removeStockQty").value);
+      const reason = document.getElementById("removeStockReason").value;
+      const note = document.getElementById("removeStockNote").value.trim();
+
+      if (!(qty > 0)) return alert("Miqdorni kiriting");
+      if (!note) return alert("Qisqacha sabab yozing");
+
+      closeRemoveStockModal();
+      await submitStockMovement({ inventoryId: id, direction: "out", reason, qty, note });
+    }
+
+    /** Where the id of a movement that has not been confirmed yet is kept. */
+    const PENDING_MOVEMENT_KEY = "cafe_pending_movement";
+
+    /**
+     * A stable id for one stock movement, kept until the server confirms it.
+     *
+     * Minting a fresh id per attempt is what makes a lost *response* dangerous:
+     * the server applied the movement, the browser saw a network error, and the
+     * obvious retry arrives under a new id and takes the stock a second time.
+     * The id is therefore tied to what the movement *is* — the same item, the
+     * same direction, the same reason, the same quantity and note — so a retry
+     * carries the id the first attempt used and the server recognises it. Any
+     * change to the movement is a different movement and gets its own.
+     *
+     * It is cleared only when the server has answered, which is also what makes
+     * a *deliberate* second identical movement possible: by then there is no
+     * pending id to reuse.
+     */
+    function stockMovementRequestId(movement) {
+      const fingerprint = [
+        movement.inventoryId, movement.direction, movement.reason,
+        movement.qty, movement.note || "", movement.cost || ""
+      ].join("|");
+
+      let stored = null;
+      try { stored = JSON.parse(sessionStorage.getItem(PENDING_MOVEMENT_KEY) || "null"); }
+      catch (e) { stored = null; }
+      if (stored && stored.fingerprint === fingerprint && stored.id) return stored.id;
+
+      const id = `stock_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      try {
+        sessionStorage.setItem(PENDING_MOVEMENT_KEY, JSON.stringify({ fingerprint, id }));
+      } catch (e) { /* private mode: the id lives for this attempt only */ }
+      return id;
+    }
+
+    function clearStockMovementRequestId() {
+      try { sessionStorage.removeItem(PENDING_MOVEMENT_KEY); } catch (e) {}
+    }
+
+    /**
+     * One stock movement, applied by the server.
+     *
+     * A failure leaves the pending id in place, so pressing the same button
+     * again resolves to the movement the first attempt made rather than making
+     * a second one.
+     */
+    async function submitStockMovement(movement) {
+      const answer = await sendToApi("adjust_cafe_stock", {
+        ...movement,
+        requestId: stockMovementRequestId(movement)
+      });
+      if (!answer || answer.status !== "success") return;
+
+      clearStockMovementRequestId();
+      // `duplicate` means the server had already recorded this movement — a
+      // retry after a lost answer. Saying so is better than a success message
+      // for something that did not just happen.
+      if (answer.duplicate) alert("Bu harakat allaqachon yozilgan edi.");
+      if (Array.isArray(answer.inventory)) state.inventory = answer.inventory;
       renderInventory();
       hydrateIngredientSelect();
-      saveInventoryToApi();
+      // The movement list and the low-stock card both come from the server.
+      await syncData();
+    }
+
+    /** What is at or under its low-stock level, emptiest first. */
+    function renderLowStock() {
+      const card = document.getElementById("lowStockCard");
+      const list = document.getElementById("lowStockList");
+      if (!card || !list) return;
+      const rows = (state.health && state.health.lowStock) || [];
+      card.classList.toggle("hidden", rows.length === 0);
+      list.innerHTML = rows.map(row => `
+        <div class="flex justify-between items-center text-xs">
+          <span class="font-bold ${row.out ? "text-red-600" : "text-amber-700"}">${escapeHtml(row.name)}</span>
+          <span class="text-slate-500">${Number(row.qty).toLocaleString()} ${escapeHtml(row.unit)} ${row.out ? "• tugadi" : `• chegara ${row.threshold}`}</span>
+        </div>`).join("");
+    }
+
+    /** Why a quantity changed, newest first. */
+    function renderMovements() {
+      const box = document.getElementById("movementList");
+      if (!box) return;
+      const rows = state.movements || [];
+      if (!rows.length) {
+        box.innerHTML = `<p class="text-xs text-slate-400">Hozircha harakat yo'q.</p>`;
+        return;
+      }
+      box.innerHTML = rows.slice(0, 20).map(row => `
+        <div class="flex justify-between items-start gap-2 text-[11px] border-b border-slate-100 pb-1">
+          <div>
+            <p class="font-bold text-slate-700">${escapeHtml(row.name)}
+              <span class="${row.direction === "in" ? "text-emerald-600" : "text-red-600"}">
+                ${row.direction === "in" ? "+" : "−"}${Number(row.qty).toLocaleString()} ${escapeHtml(row.unit)}
+              </span>
+            </p>
+            <p class="text-slate-500">${escapeHtml(row.reasonLabel)}${row.note ? " • " + escapeHtml(row.note) : ""}</p>
+          </div>
+          <span class="text-slate-400 whitespace-nowrap">${escapeHtml(formatMovementDate(row.date))}</span>
+        </div>`).join("");
+    }
+
+    function formatMovementDate(value) {
+      const when = new Date(String(value || ""));
+      if (isNaN(when.getTime())) return String(value || "").slice(0, 10);
+      const pad = n => String(n).padStart(2, "0");
+      return `${pad(when.getDate())}.${pad(when.getMonth() + 1)} ${pad(when.getHours())}:${pad(when.getMinutes())}`;
     }
 
     function toggleEditForm() {
@@ -557,44 +757,182 @@
       const qty = Number(document.getElementById("ingredientQty").value);
       const item = state.inventory.find(i => i.id === id);
       if (!item || qty <= 0) return;
+      // Only which ingredient and how much of it is the form's to decide. The
+      // cost shown here is today's, and the server recomputes it on save.
       state.recipeDraft.push({ inventoryId: item.id, name: item.name, qty, unitCost: item.unitCost, cost: Math.round(qty * item.unitCost) });
       document.getElementById("ingredientQty").value = "";
       renderRecipeDraft();
     }
 
-    function renderRecipeDraft() {
-      const total = state.recipeDraft.reduce((s, i) => s + i.cost, 0);
-      document.getElementById("recipeDraft").innerHTML = state.recipeDraft.map((i, idx) => `
-        <div class="flex justify-between text-xs bg-slate-50 rounded-xl p-2">
-          <span>${i.name} • ${i.qty}</span>
-          <button onclick="state.recipeDraft.splice(${idx},1); renderRecipeDraft()" class="text-red-500 font-bold">O'chirish</button>
-        </div>`).join("");
-      document.getElementById("recipeCost").innerText = total.toLocaleString();
+    /** What the draft costs at today's ingredient prices. */
+    function recipeDraftCost() {
+      return state.recipeDraft.reduce((sum, line) => {
+        const item = state.inventory.find(i => i.id === line.inventoryId);
+        const unitCost = item ? Number(item.unitCost) || 0 : 0;
+        return sum + Math.round((Number(line.qty) || 0) * unitCost);
+      }, 0);
     }
 
+    function renderRecipeDraft() {
+      const total = recipeDraftCost();
+      document.getElementById("recipeDraft").innerHTML = state.recipeDraft.map((i, idx) => {
+        const item = state.inventory.find(inv => inv.id === i.inventoryId);
+        const gone = item ? "" : `<span class="text-[10px] font-bold text-red-500">omborda yo'q</span>`;
+        return `
+        <div class="flex justify-between items-center text-xs bg-slate-50 rounded-xl p-2">
+          <span>${escapeHtml(item ? item.name : i.name)} • ${i.qty} ${gone}</span>
+          <button onclick="removeRecipeIngredient(${idx})" class="text-red-500 font-bold">O'chirish</button>
+        </div>`;
+      }).join("");
+      document.getElementById("recipeCost").innerText = total.toLocaleString();
+      renderRecipeMarginNote(total);
+    }
+
+    function removeRecipeIngredient(index) {
+      state.recipeDraft.splice(index, 1);
+      renderRecipeDraft();
+    }
+
+    /** Warns about a price that is below cost, or wildly above it. */
+    function renderRecipeMarginNote(cost) {
+      const note = document.getElementById("recipeMarginNote");
+      const sell = Number(document.getElementById("recipeSellPrice").value) || 0;
+      const problem = describePriceProblem(sell, cost);
+      note.classList.toggle("hidden", !problem);
+      if (problem) {
+        note.textContent = problem.text;
+        note.className = `text-[11px] font-bold mb-2 ${problem.bad ? "text-red-600" : "text-amber-600"}`;
+      }
+    }
+
+    /**
+     * The same three price mistakes the server reports, said in one sentence.
+     *
+     * A warning, never a correction: a loss-leader is a legitimate decision and
+     * this screen does not get to overrule it.
+     */
+    function describePriceProblem(sell, cost) {
+      if (sell <= 0) return { bad: true, text: "Sotuv narxi kiritilmagan." };
+      if (cost > 0 && sell < cost) {
+        return { bad: true, text: `Tannarxdan arzon: ${sell.toLocaleString()} < ${cost.toLocaleString()} UZS.` };
+      }
+      if (cost > 0 && sell > cost * 20) {
+        return { bad: false, text: "Narx tannarxdan 20 barobardan yuqori — tekshiring." };
+      }
+      return null;
+    }
+
+    function editRecipe(id) {
+      const recipe = state.recipes.find(r => r.id === id);
+      if (!recipe) return;
+      document.getElementById("recipeEditId").value = recipe.id;
+      document.getElementById("recipeName").value = recipe.name || "";
+      hydrateRecipeCategorySelect();
+      document.getElementById("recipeCategory").value = recipe.category || "";
+      document.getElementById("recipeSellPrice").value = recipe.sellPrice || "";
+      document.getElementById("recipeActive").checked = recipe.active !== false;
+      state.recipeDraft = (recipe.ingredients || []).map(line => ({
+        inventoryId: line.inventoryId, name: line.name,
+        qty: Number(line.qty) || 0, unitCost: Number(line.unitCost) || 0,
+        cost: Number(line.cost) || 0
+      }));
+      document.getElementById("recipeFormTitle").innerText = "Retseptni Tahrirlash";
+      document.getElementById("recipeSaveBtn").innerText = "O'zgarishni Saqlash";
+      document.getElementById("recipeCancelBtn").classList.remove("hidden");
+      renderRecipeDraft();
+      switchTab("recipes", document.querySelector('[onclick*="recipes"]'));
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    function cancelRecipeEdit() {
+      resetRecipeForm();
+      renderRecipeDraft();
+    }
+
+    function resetRecipeForm() {
+      document.getElementById("recipeEditId").value = "";
+      document.getElementById("recipeName").value = "";
+      document.getElementById("recipeSellPrice").value = "";
+      document.getElementById("recipeActive").checked = true;
+      document.getElementById("recipeFormTitle").innerText = "Retsept Yaratish";
+      document.getElementById("recipeSaveBtn").innerText = "Retseptni Saqlash";
+      document.getElementById("recipeCancelBtn").classList.add("hidden");
+      state.recipeDraft = [];
+    }
+
+    /**
+     * Saves a new recipe, or the one being edited.
+     *
+     * An edit keeps the recipe's id: sales reference recipes by id, so minting
+     * a new one would orphan every sale that had already named this recipe.
+     * Retiring one is `active: false` rather than a delete, for the same reason
+     * a tenant is deactivated instead of removed.
+     */
     function saveRecipe() {
+      const editId = document.getElementById("recipeEditId").value;
       const name = document.getElementById("recipeName").value.trim();
       const category = document.getElementById("recipeCategory").value;
       const sellPrice = Number(document.getElementById("recipeSellPrice").value);
-      const baseCost = state.recipeDraft.reduce((s, i) => s + i.cost, 0);
 
       if (!name || !state.recipeDraft.length || sellPrice <= 0) return alert("Retsept to'liq emas");
       if (!category) return alert("Iltimos, kategoriyani tanlang");
 
-      state.recipes.push({
-        id: Date.now().toString(),
+      const cost = recipeDraftCost();
+      const problem = describePriceProblem(sellPrice, cost);
+      if (problem && problem.bad && !confirm(`${problem.text}\n\nShunday saqlansinmi?`)) return;
+
+      const recipe = {
+        id: editId || Date.now().toString(),
         name,
         category,
-        ingredients: [...state.recipeDraft],
-        baseCost,
-        sellPrice
-      });
-      state.recipeDraft = [];
-      document.getElementById("recipeName").value = "";
-      document.getElementById("recipeSellPrice").value = "";
+        // Only the identity and the quantity. Cost is the server's answer.
+        ingredients: state.recipeDraft.map(line => ({
+          inventoryId: line.inventoryId, name: line.name, qty: Number(line.qty) || 0
+        })),
+        sellPrice,
+        active: document.getElementById("recipeActive").checked
+      };
+
+      if (editId) {
+        const index = state.recipes.findIndex(r => r.id === editId);
+        if (index === -1) return alert("Retsept topilmadi");
+        state.recipes[index] = { ...state.recipes[index], ...recipe };
+      } else {
+        state.recipes.push(recipe);
+      }
+
+      resetRecipeForm();
       renderRecipeDraft();
       renderRecipes();
-      sendToApi("save_recipe", { recipes: state.recipes });
+      saveRecipesToApi();
+    }
+
+    /**
+     * Retires a recipe rather than deleting it.
+     *
+     * Every sale that named this recipe still names it, and its stored receipt
+     * still has to read a year from now. Removing the row would leave those
+     * sales pointing at nothing; hiding it from the menu is what "delete" is
+     * actually meant to do here.
+     */
+    function retireRecipe(id) {
+      const recipe = state.recipes.find(r => r.id === id);
+      if (!recipe) return;
+      const retiring = recipe.active !== false;
+      if (retiring && !confirm(
+        `"${recipe.name}" POS menyusidan olib tashlansinmi?\n\n` +
+        "Eski sotuvlar saqlanadi va hisobotlarda ko'rinaveradi.")) return;
+      recipe.active = !retiring;
+      renderRecipes();
+      saveRecipesToApi();
+    }
+
+    /** Recipe saves quote the catalogue version the screen was showing. */
+    function saveRecipesToApi() {
+      return sendToApi("save_recipe", {
+        recipes: state.recipes,
+        expectedCatalogueRev: state.catalogueRev
+      });
     }
 
     function renderRecipes() {
@@ -603,15 +941,75 @@
         box.innerHTML = `<div class="glass rounded-2xl p-3 text-center text-xs font-bold text-slate-500">Retseptlar yo'q</div>`;
         return;
       }
-      box.innerHTML = state.recipes.map(r => `
-        <div class="glass rounded-2xl p-3">
-          <div class="flex justify-between items-center">
-            <p class="font-bold text-sm">${r.name}</p>
-            <span class="text-[10px] font-bold bg-blue-100 text-blue-600 rounded-full px-2 py-[2px]">${r.category || "—"}</span>
+      box.innerHTML = state.recipes.map(r => {
+        const inactive = r.active === false;
+        const cost = Number(r.baseCost) || 0;
+        const sell = Number(r.sellPrice) || 0;
+        const problem = describePriceProblem(sell, cost);
+        const missing = (r.ingredients || []).filter(line =>
+          !state.inventory.some(i => i.id === line.inventoryId));
+        return `
+        <div class="glass rounded-2xl p-3 ${inactive ? "opacity-60" : ""}">
+          <div class="flex justify-between items-center gap-2">
+            <p class="font-bold text-sm">${escapeHtml(r.name)}</p>
+            <div class="flex items-center gap-1">
+              ${inactive ? `<span class="text-[10px] font-bold bg-slate-200 text-slate-600 rounded-full px-2 py-[2px]">Sotuvda emas</span>` : ""}
+              <span class="text-[10px] font-bold bg-blue-100 text-blue-600 rounded-full px-2 py-[2px]">${escapeHtml(r.category || "—")}</span>
+            </div>
           </div>
-          <p class="text-xs text-slate-500 mt-1">Tannarx: ${(r.baseCost || 0).toLocaleString()} UZS</p>
-          <p class="text-xs text-emerald-600 font-bold">Sotuv narxi: ${(r.sellPrice || 0).toLocaleString()} UZS</p>
-        </div>`).join("");
+          <p class="text-xs text-slate-500 mt-1">Tannarx: ${cost.toLocaleString()} UZS</p>
+          <p class="text-xs text-emerald-600 font-bold">Sotuv narxi: ${sell.toLocaleString()} UZS</p>
+          ${problem ? `<p class="text-[11px] font-bold mt-1 ${problem.bad ? "text-red-600" : "text-amber-600"}">${escapeHtml(problem.text)}</p>` : ""}
+          ${missing.length ? `<p class="text-[11px] font-bold text-red-600 mt-1">Ombordan o'chirilgan ingredient: ${escapeHtml(missing.map(m => m.name).join(", "))}</p>` : ""}
+          <div class="flex gap-1 mt-2">
+            <button onclick="editRecipe('${escapeHtml(r.id)}')" class="text-[10px] font-bold bg-slate-100 text-slate-700 rounded-lg px-2 py-1">Tahrirlash</button>
+            <button onclick="retireRecipe('${escapeHtml(r.id)}')" class="text-[10px] font-bold ${inactive ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"} rounded-lg px-2 py-1">
+              ${inactive ? "Sotuvga qaytarish" : "Sotuvdan olish"}
+            </button>
+          </div>
+        </div>`;
+      }).join("");
+      renderRecipeHealth();
+    }
+
+    /**
+     * The warning layer: what is broken, what looks duplicated, what is priced
+     * oddly. Computed on the server so the phone and this screen agree, and
+     * shown as a list of things to look at rather than acted on.
+     */
+    function renderRecipeHealth() {
+      const box = document.getElementById("recipeHealth");
+      if (!box) return;
+      const health = state.health || {};
+      const cards = [];
+
+      const card = (colour, title, lines) => {
+        if (!lines.length) return;
+        cards.push(`
+          <div class="glass rounded-2xl p-3 border-l-4 border-l-${colour}-400">
+            <p class="font-bold text-xs mb-1">${escapeHtml(title)}</p>
+            <ul class="text-[11px] text-slate-600 space-y-[2px]">
+              ${lines.map(line => `<li>${escapeHtml(line)}</li>`).join("")}
+            </ul>
+          </div>`);
+      };
+
+      card("red", "Ingredienti o'chirilgan retseptlar",
+        (health.missingIngredients || []).map(r => `${r.name}: ${r.ingredients.join(", ")}`));
+      card("amber", "Bir xil nomli retseptlar (tekshiring, avtomatik o'chirilmaydi)",
+        (health.duplicates || []).map(d => `${d.name} — ${d.recipes.length} ta`));
+      card("amber", "To'liq bo'lmagan retseptlar",
+        (health.incomplete || []).map(r => `${r.name}: ${r.reason}`));
+      card("red", "Tannarxdan arzon sotilmoqda",
+        (health.belowCost || []).map(r =>
+          `${r.name}: ${Number(r.sellPrice).toLocaleString()} < ${Number(r.cost).toLocaleString()} UZS`));
+      card("amber", "Narxi juda yuqori ko'rinadi",
+        (health.extremePrice || []).map(r =>
+          `${r.name}: ${Number(r.sellPrice).toLocaleString()} UZS (tannarx ${Number(r.cost).toLocaleString()})`));
+      card("red", "Narxi belgilanmagan",
+        (health.noPrice || []).map(r => r.name));
+
+      box.innerHTML = cards.join("");
     }
 
     function addCategory() {
@@ -624,7 +1022,7 @@
       renderCategories();
       hydrateRecipeCategorySelect();
       hydrateInvCategorySelect(document.getElementById("invCategory"));
-      sendToApi("save_categories", { categories: state.categories });
+      sendToApi("save_categories", { categories: state.categories, expectedCatalogueRev: state.catalogueRev });
     }
 
     function moveCategory(index, direction) {
@@ -636,7 +1034,7 @@
       renderCategories();
       hydrateRecipeCategorySelect();
       hydrateInvCategorySelect(document.getElementById("invCategory"));
-      sendToApi("save_categories", { categories: state.categories });
+      sendToApi("save_categories", { categories: state.categories, expectedCatalogueRev: state.catalogueRev });
     }
 
     function deleteCategory(index) {
@@ -646,7 +1044,7 @@
       renderCategories();
       hydrateRecipeCategorySelect();
       hydrateInvCategorySelect(document.getElementById("invCategory"));
-      sendToApi("save_categories", { categories: state.categories });
+      sendToApi("save_categories", { categories: state.categories, expectedCatalogueRev: state.catalogueRev });
     }
 
     function renderCategories() {
@@ -682,7 +1080,7 @@
       state.settings.dailyTarget = dailyTarget;
       if (input) input.value = dailyTarget > 0 ? String(dailyTarget) : "";
 
-      const answer = await sendToApi("save_cafe_settings", { settings: { ...state.settings } });
+      const answer = await sendToApi("save_cafe_settings", { settings: { ...state.settings }, expectedCatalogueRev: state.catalogueRev });
       if (answer && answer.status === "success") alert("Sozlamalar saqlandi.");
     }
 
@@ -819,6 +1217,15 @@
       // would otherwise put the whole day back.
       state.inventoryRev = Number(payload.inventoryRev) || 0;
       state.recipes = Array.isArray(payload.recipes) ? payload.recipes : [];
+      // The catalogue's own version, quoted back by every recipe, category and
+      // settings save. Deliberately not the stock version: an ordinary sale
+      // bumps that one, and a busy till must not stop the manager editing a
+      // recipe.
+      state.catalogueRev = Number(payload.catalogueRev) || 0;
+      state.health = payload.health && typeof payload.health === "object" ? payload.health : null;
+      state.movements = Array.isArray(payload.movements) ? payload.movements : [];
+      state.movementsTotal = Number(payload.movementsTotal) || state.movements.length;
+      state.closedToday = payload.closedToday || null;
       state.summary = payload.summary && typeof payload.summary === "object" ? payload.summary : {};
       state.closeReports = Array.isArray(payload.closeReports) ? payload.closeReports : [];
       state.closeReportsTotal = Number(payload.closeReportsTotal) || state.closeReports.length;
@@ -836,6 +1243,8 @@
 
     function renderCafeAdmin() {
       renderInventory();
+      renderLowStock();
+      renderMovements();
       renderRecipes();
       renderCategories();
       renderSettings();
@@ -860,7 +1269,9 @@
     function hydrateFromSnapshot() {
       const snapshot = readSnapshot("cafe_admin", CAFE_ADMIN_SNAPSHOT_MAX_AGE_MS);
       if (!snapshot || !snapshot.value) return false;
-      applyCafeState({ ...snapshot.value, summary: {}, inventoryRev: 0 });
+      // Neither version is restored: a save must never be attempted against a
+      // revision this screen has not confirmed with the server in this session.
+      applyCafeState({ ...snapshot.value, summary: {}, inventoryRev: 0, catalogueRev: 0 });
       state.snapshotAt = snapshot.savedAt;
       renderCafeAdmin();
       return true;
@@ -937,12 +1348,29 @@
         if (answer && answer.inventoryRev !== undefined) {
           state.inventoryRev = Number(answer.inventoryRev) || 0;
         }
+        if (answer && answer.catalogueRev !== undefined) {
+          state.catalogueRev = Number(answer.catalogueRev) || 0;
+        }
+        // A recipe save answers with the catalogue as the *server* normalised
+        // it — every cost recomputed from today's stock — so the screen shows
+        // what was stored rather than what it sent. Repainted here rather than
+        // left for the next full refresh: the optimistic render happened before
+        // the request, so without this a new recipe keeps showing a zero cost
+        // and an edited one keeps showing the cost it used to have.
+        if (answer && Array.isArray(answer.recipes)) {
+          state.recipes = answer.recipes;
+          if (answer.health) state.health = answer.health;
+          renderRecipes();
+        } else if (answer && answer.health) {
+          state.health = answer.health;
+        }
         return answer;
       } catch (e) {
         if (e && e.isAuthFailure) { signOut(); return null; }
         const body = (e && e.body) || null;
         if (body && body.stale) {
           if (body.inventoryRev !== undefined) state.inventoryRev = Number(body.inventoryRev) || 0;
+          if (body.catalogueRev !== undefined) state.catalogueRev = Number(body.catalogueRev) || 0;
           alert(body.message || "Ombor boshqa joyda o'zgardi. Sahifa yangilanadi.");
           await syncData();
           return body;

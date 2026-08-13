@@ -105,9 +105,19 @@ function hydrateFromSnapshot() {
     const snapshot = readSnapshot('omad', OMAD_SNAPSHOT_MAX_AGE_MS);
     if (!snapshot || !snapshot.value) return false;
     const stored = snapshot.value;
-    if (!Array.isArray(stored.transactions)) return false;
+    // A snapshot is worth painting when it carries either shape: the server's
+    // summary, or the whole list a pre-cutover backend sends.
+    const hasFigures = !!(stored.summary && stored.summary.periods);
+    if (!hasFigures && !Array.isArray(stored.transactions)) return false;
 
-    app.transactions = stored.transactions;
+    app.transactions = Array.isArray(stored.transactions) ? stored.transactions : [];
+    app.summary = hasFigures ? stored.summary : null;
+    app.recent = Array.isArray(stored.recent) ? stored.recent : [];
+    app.historyMode = stored.historyMode === 'paged' ? 'paged' : 'full';
+    app.historyLoaded = app.historyMode === 'full' && app.transactions.length > 0;
+    app.historyOffset = 0;
+    app.historyTotal = 0;
+    app.historyHasMore = false;
     app.rates = normalizeRatesMap(stored.rates || {});
     app.tenants = (stored.tenants || []).map(normalizeTenantObject);
     app.templateExpenses = Array.isArray(stored.templateExpenses)
@@ -127,7 +137,13 @@ async function syncData() {
     try {
         // An authenticated POST, not the old anonymous GET: a GET puts its
         // parameters in the URL, which is where a credential must never be.
-        const data = await callBackend({ action: 'get_omad_data' });
+        //
+        // `scope: 'dashboard'` asks for the figures instead of the rows. The
+        // server answers with its materialised summary and a short recent list
+        // once the ledger is live, and with the whole list before that, because
+        // the legacy save path submits the list back and a screen that may have
+        // to write it must be holding all of it.
+        const data = await callBackend({ action: 'get_omad_data', scope: 'dashboard' });
         // Only an expired or refused session sends anybody back to the login
         // page. A rate limit or a server fault leaves the screen exactly as it
         // is - with the previous figures, which are the last true ones.
@@ -141,7 +157,32 @@ async function syncData() {
         if (data) {
             const remote = data.data || data.payload || data;
 
-            if(remote.transactions) app.transactions = remote.transactions;
+            // Three shapes, in order of what the server said rather than of
+            // what this client hopes for:
+            //   * a summary and no rows  -> history is fetched page by page;
+            //   * rows                   -> the whole ledger is in hand;
+            //   * neither (a very old backend) -> leave what is on screen.
+            app.summary = (remote.summary && remote.summary.periods) ? remote.summary : null;
+            app.recent = Array.isArray(remote.recent) ? remote.recent : [];
+            app.historyMode = remote.historyMode === 'paged' ? 'paged'
+                : (Array.isArray(remote.transactions) ? 'full' : app.historyMode);
+
+            if (Array.isArray(remote.transactions)) {
+                app.transactions = remote.transactions;
+                app.historyLoaded = true;
+                app.historyHasMore = false;
+                app.historyOffset = 0;
+                app.historyTotal = 0;
+            } else if (app.historyMode === 'paged') {
+                // A refresh after a save has to drop the page that is on
+                // screen: it was built from rows the save has just changed.
+                app.transactions = [];
+                app.historyLoaded = false;
+                app.historyOffset = 0;
+                app.historyTotal = 0;
+                app.historyHasMore = false;
+            }
+            app.historyError = '';
 
             if(typeof remote.rate === 'number') {
                 // A very old single-rate payload. It has no period of its own,
@@ -180,8 +221,16 @@ async function syncData() {
 
             app.snapshotAt = 0;
             app.loadError = '';
+            // The snapshot stores what the *dashboard* needs, which since the
+            // summary arrived is a few kilobytes rather than the whole ledger.
+            // The history page is deliberately not kept: it is fetched fresh,
+            // and a stale page of financial rows is exactly what nobody should
+            // be offered to edit.
             writeSnapshot('omad', {
-                transactions: app.transactions,
+                transactions: app.historyMode === 'full' ? app.transactions : [],
+                summary: app.summary,
+                recent: app.recent,
+                historyMode: app.historyMode,
                 rates: app.rates,
                 tenants: app.tenants,
                 templateExpenses: app.templateExpenses,
@@ -196,6 +245,11 @@ async function syncData() {
     }
     renderAll();
     showLoader(false);
+    // A sync after a save dropped the loaded history page, because it was built
+    // from rows the save has moved. If somebody is looking at Tarix, fetch the
+    // first page again rather than leaving them in front of a button.
+    const historyTab = document.getElementById('tab-history');
+    if (historyTab && historyTab.classList.contains('active')) ensureHistoryLoaded();
 }
 
 /**
@@ -227,11 +281,19 @@ async function saveCloud(telegramReport = null) {
         // Only the persisted collections - not the client-side migration flags.
         const body = {
             action: 'save_omad',
-            transactions: app.transactions,
             tenants: app.tenants,
             rates: app.rates,
             templateExpenses: app.templateExpenses
         };
+        // The list is submitted only when this screen genuinely holds all of
+        // it. Since the dashboard stopped downloading the ledger, `transactions`
+        // is a *page* of history — and `save_omad` rewrites the legacy sheet
+        // from whatever it is sent, so sending a page (or an empty array)
+        // would delete the rest. The server refuses an empty overwrite too;
+        // this is the half of that guard that lives where the mistake is.
+        if (app.historyMode === 'full' && app.historyLoaded) {
+            body.transactions = app.transactions;
+        }
         if (telegramReport) body.telegramReport = telegramReport;
 
         // Throws on a transport failure, a non-200, or an unparsable body.

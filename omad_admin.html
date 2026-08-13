@@ -140,7 +140,16 @@
 
         <!-- Ijarachilar Holati (SMART) -->
         <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 mt-4">Ijara Holati (<span id="statusMonthLabel"></span>)</h3>
-        <div id="tenantStatusList" class="space-y-2 pb-8"></div>
+        <div id="tenantStatusList" class="space-y-2"></div>
+
+        <!-- So'nggi amallar: the short list that arrives with the dashboard -->
+        <div id="recentCard" class="hidden mt-6 pb-8">
+            <div class="flex justify-between items-center mb-2">
+                <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider">So'nggi amallar</h3>
+                <button onclick="switchTab('history')" class="text-[10px] font-bold text-blue-500">Hammasi</button>
+            </div>
+            <div id="recentList" class="space-y-2"></div>
+        </div>
     </div>
 
     <!-- 2-TAB: YANGI (ENTRY) -->
@@ -692,6 +701,7 @@
     <!-- DASTUR MANTIQI -->
     <!-- APPLICATION MODULES (load order matters) -->
     <script src="assets/omad/01-state.js"></script>
+    <script src="assets/omad/01a-summary.js"></script>
     <script src="assets/omad/01b-periods.js"></script>
     <script src="assets/omad/02-format.js"></script>
     <script src="assets/omad/02b-calc.js"></script>

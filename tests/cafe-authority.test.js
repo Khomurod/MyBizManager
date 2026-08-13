@@ -387,6 +387,10 @@ test('a void and a close-day both move the revision on', () => {
 
   post(gas, {
     action: 'close_day', date: '2026-08-12T20:00:00.000Z', seller: 'k', summary: [],
+    // The only sale of the day was voided a moment ago, so this close has
+    // nothing on it and is refused once. Answering the question is the point
+    // here; the refusal itself is covered by tests/cafe-close-day.test.js.
+    confirmEmpty: true,
     countedInventory: INVENTORY
   });
   assert.ok(post(gas, { action: 'get_cafe_data' }).inventoryRev > afterVoid,

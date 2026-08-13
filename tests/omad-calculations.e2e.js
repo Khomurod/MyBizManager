@@ -245,8 +245,12 @@ describe('Omad admin calculations (browser)', () => {
       [{ name: 'Tehnopark', rent: 500, currency: 'USD', disabledMonths: [] }]
     );
 
-    const detail = await page.evaluate(() => {
-      openTenantModal('Tehnopark', '2026-01', 500, 'USD', { buy: 12000, sell: 12500 });
+    // Awaited: since the dashboard stopped holding the ledger, the modal paints
+    // its figures at once and fills its payment list afterwards — from the rows
+    // already loaded when there are any, and from a request for just this
+    // tenant when there are not.
+    const detail = await page.evaluate(async () => {
+      await openTenantModal('Tehnopark', '2026-01', 500, 'USD', { buy: 12000, sell: 12500 });
       return document.getElementById('modalContent').textContent;
     });
 

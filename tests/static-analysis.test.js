@@ -230,6 +230,31 @@ test('script.gs reads the bot token only from Script Properties', () => {
 /** The pages that are the signed-in web application. mini.html is not one. */
 const WEB_APP_PAGES = ['omad_admin.html', 'cafe_admin.html', 'cafe_pos.html', 'tasks.html'];
 
+test('the repository carries no Netlify build configuration', () => {
+  // Production is Cloudflare Pages plus Apps Script. The old Netlify project
+  // (`omad-d`) serves a build from before the login page was rewritten and is
+  // not part of anything; a config file here would quietly make it look like it
+  // was, and would give a future reader a decision to make about whether it is
+  // load-bearing. Removing the project itself is a step in the Netlify UI —
+  // docs/DEPLOYMENT.md says exactly which.
+  const configFiles = ['netlify.toml', '_redirects', '_headers', 'netlify.json'];
+  const offenders = configFiles.filter(name => fs.existsSync(path.join(ROOT, name)));
+  assert.deepStrictEqual(offenders, [],
+    `Netlify build configuration is back: ${offenders.join(', ')}`);
+
+  const workflow = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
+  assert.ok(!/netlify/i.test(workflow), 'the CI workflow must not mention Netlify');
+
+  // No page may point at the retired host either.
+  const hosted = [];
+  for (const file of walk(ROOT)) {
+    if (path.extname(file) !== '.html' && path.extname(file) !== '.js') continue;
+    if (relative(file).startsWith('tests' + path.sep)) continue;
+    if (/netlify\.app/i.test(fs.readFileSync(file, 'utf8'))) hosted.push(relative(file));
+  }
+  assert.deepStrictEqual(hosted, [], `a Netlify host is referenced in: ${hosted.join(', ')}`);
+});
+
 test('no page compiles its stylesheet in the browser', () => {
   // cdn.tailwindcss.com is the Play CDN: it ships a compiler, scans the DOM and
   // generates the stylesheet on every load, on the cashier's phone. Tailwind's

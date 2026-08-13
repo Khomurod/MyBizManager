@@ -867,6 +867,38 @@
       `;
     }
 
+    /**
+     * Sends the close-day, answering the server's two safety questions.
+     *
+     * Returns true when the record was stored. A refusal that is a *question*
+     * (`duplicate_close`, `empty_close`) is asked once and, if the operator
+     * says yes, re-sent with the matching confirmation — so a legitimate second
+     * close or a genuinely empty day is never blocked, and an accidental one
+     * takes a deliberate press to happen.
+     */
+    async function sendCloseDay(body, depth) {
+      const attempt = Number(depth) || 0;
+      try {
+        await callCafeApi(body);
+        return true;
+      } catch (error) {
+        if (error && error.isAuthFailure) throw error;
+        const answer = (error && error.body) || null;
+        const code = answer && answer.code;
+        if (code !== 'duplicate_close' && code !== 'empty_close') throw error;
+        // Two questions can both apply — a second close of a day that also has
+        // no sales. Each is answered in turn rather than one being smuggled
+        // past on the strength of the other. Two is all there are; the guard is
+        // there so a server that grew a third cannot loop.
+        if (attempt >= 2) throw error;
+        if (!confirm(answer.message)) return false;
+        const answered = Object.assign({}, body);
+        if (code === 'duplicate_close') answered.confirmDuplicate = true;
+        else answered.confirmEmpty = true;
+        return sendCloseDay(answered, attempt + 1);
+      }
+    }
+
     async function submitCloseDay() {
       if (!closeDayIsSafe()) return;
       const rows = document.querySelectorAll("#closeDayList > div[data-inventory-id]");
@@ -930,7 +962,13 @@
         // The server stores the close-day record and queues its own Telegram
         // report as a retryable job, so a Telegram outage cannot fail or
         // duplicate the close-day.
-        await callCafeApi({
+        //
+        // It also refuses two things once, and only once: a second report for a
+        // day that already has one, and a report for a day with no sales at
+        // all. Both happen legitimately — two shifts, a correction, a day the
+        // café was shut — so neither is blocked; each is turned into a question
+        // and re-sent with the answer.
+        const closeBody = {
           action: "close_day",
           date: closeDateIso,
           seller: cashierName,
@@ -941,7 +979,10 @@
           countedInventory: updatedInventory,
           summary,
           soldItems
-        });
+        };
+
+        let confirmed = await sendCloseDay(closeBody);
+        if (!confirmed) return;
 
         state.inventory = updatedInventory;
         state.openingInventory = cloneInventory(updatedInventory);

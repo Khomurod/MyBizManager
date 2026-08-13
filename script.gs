@@ -496,6 +496,19 @@ var CACHE_CONFIG_KEY_SCOPES = [
 ];
 
 /**
+ * Keys that are *derived from* a scope rather than part of it.
+ *
+ * The Omad read model is a summary of the ledger, stored in System_Config and
+ * keyed by the ledger's own revision. Bumping that revision when the summary is
+ * written would make every summary stale the instant it was stored — a rebuild
+ * on every single read, for ever. Nothing else derives what it is a copy of, so
+ * this list has exactly one entry and adding a second one deserves a reason.
+ */
+var CACHE_DERIVED_CONFIG_KEYS = {
+  Omad_Read_Model: true
+};
+
+/**
  * The current revision of one scope.
  *
  * A Script Property read, not a sheet pass — this is consulted on every cached
@@ -534,6 +547,7 @@ function bumpDataRevision_(scope) {
 /** Bumps whichever scope a System_Config key belongs to, if any. */
 function bumpScopeForConfigKey_(key) {
   var name = String(key || "");
+  if (CACHE_DERIVED_CONFIG_KEYS[name]) return;
   for (var i = 0; i < CACHE_CONFIG_KEY_SCOPES.length; i++) {
     if (name.indexOf(CACHE_CONFIG_KEY_SCOPES[i].prefix) === 0) {
       bumpDataRevision_(CACHE_CONFIG_KEY_SCOPES[i].scope);
@@ -583,6 +597,424 @@ function cachedSummary_(name, scope, ttlSeconds, producer) {
     }
   }
   return fresh;
+}
+
+// ----- apps-script/01d_read_model.gs -------------------------------------------
+
+// ============================================================
+// The Omad read model
+// ------------------------------------------------------------
+// A materialised summary of the ledger, stored in System_Config and rebuilt
+// from the ledger whenever the ledger has moved.
+//
+// WHY IT EXISTS
+// -------------
+// Every figure on the dashboard and on the Mini App's first screen is derived
+// from a full pass over the historical ledger. The pass is correct and it is
+// cheap in arithmetic, but on Apps Script it is a Sheets RPC that grows with
+// the business, and it happened again on every load. `01c_cache.gs` already
+// removes the repeat within a 60-second window; the window is short enough
+// that almost every *real* load is still a miss, because nobody opens the
+// dashboard twice a minute.
+//
+// So the answer is stored where it survives: one System_Config row, which the
+// same request reads anyway for the tenants and the rates, memoised by
+// `getConfigOnce_`. Between two ledger writes the dashboard therefore touches
+// the ledger sheet not at all.
+//
+// WHAT MAKES IT SAFE
+// ------------------
+//   1. **It is not a second source of truth.** Every figure in it is produced
+//      by the same functions the full-ledger path uses -- `calculateActuals_`,
+//      `tenantPaidTotals_` -- applied to the rows `readOmadTransactions_`
+//      returns. There is no second implementation of any monetary rule to
+//      drift from the first.
+//   2. **It is derived, never authoritative.** Nothing writes a transaction
+//      from it, prices anything from it, or decides a save from it. Deleting
+//      the row costs one rebuild.
+//   3. **It is keyed by the data revision.** Every ledger write bumps
+//      `CACHE_SCOPE_OMAD`, and a model whose stored revision is not the current
+//      one is discarded rather than trusted. Corrections and cancellations bump
+//      it exactly like creations do, so a status change invalidates it too.
+//   4. **It fails towards the ledger.** A missing row, an unparsable row, a
+//      version bump, a different active sheet, a failed store -- all of them
+//      end in "compute it from the ledger", which is the behaviour that
+//      existed before this file.
+//
+// `verify_omad_read_model` rebuilds it from scratch and compares field by
+// field with what is stored, so the claim in (1) is checkable against live
+// data and not only in tests.
+// ============================================================
+
+/** Where the model lives. Excluded from the revision bump -- see below. */
+var OMAD_READ_MODEL_KEY = "Omad_Read_Model";
+
+/** Bumped whenever the stored shape changes, which retires every old row. */
+var OMAD_READ_MODEL_VERSION = 1;
+
+/** How many recent business actions the model carries. */
+var OMAD_READ_MODEL_RECENT = 30;
+
+/**
+ * The model as the current ledger would produce it, rebuilding when the stored
+ * one no longer describes the ledger.
+ *
+ * The revision is read *before* the ledger pass, so a write that lands during
+ * the pass leaves the stored model looking stale rather than looking current.
+ * Being wrong in that direction costs one extra rebuild; being wrong the other
+ * way would show a figure that is missing an entry.
+ */
+function omadReadModel_(doc, configSheet) {
+  var revision = dataRevision_(CACHE_SCOPE_OMAD);
+  var source = activeTransactionSheetName_(doc);
+
+  var stored = safeParseJSON_(getConfigOnce_(configSheet, OMAD_READ_MODEL_KEY), null);
+  if (omadReadModelUsable_(stored, revision, source)) return stored;
+
+  var fresh = buildOmadReadModel_(doc, configSheet, revision, source);
+  storeOmadReadModel_(configSheet, fresh);
+  return fresh;
+}
+
+/** Whether a stored model still describes the ledger as it is now. */
+function omadReadModelUsable_(model, revision, source) {
+  if (!model || typeof model !== "object") return false;
+  if (Number(model.version) !== OMAD_READ_MODEL_VERSION) return false;
+  if (String(model.source || "") !== String(source)) return false;
+  // An empty revision means the properties service is unavailable, so nothing
+  // can be keyed reliably and the ledger is the only honest answer.
+  if (!revision) return false;
+  return String(model.revision || "") === String(revision);
+}
+
+/**
+ * One pass over the ledger, turned into every figure the read screens ask for.
+ *
+ * The per-period loops walk an in-memory array, not the sheet, so the cost is
+ * one Sheets read however many periods the business has. They deliberately go
+ * through `calculateActuals_` and `tenantPaidTotals_` rather than adding up
+ * anything here: those are the money rules, and this file is not allowed a
+ * second opinion about them.
+ */
+function buildOmadReadModel_(doc, configSheet, revision, source) {
+  var rev = revision === undefined ? dataRevision_(CACHE_SCOPE_OMAD) : revision;
+  var src = source === undefined ? activeTransactionSheetName_(doc) : source;
+
+  var transactions = readOmadTransactions_(doc);
+  var rates = getOmadRates_();
+
+  // Balances are all-time by rule, so they come from the unscoped call.
+  var allTime = calculateActuals_(transactions, "");
+
+  // Bucketed by period in one pass, so the per-period work below is linear in
+  // the ledger rather than linear in rows × periods. The functions it calls are
+  // unchanged: `calculateActuals_` scoped to a period counts only that period's
+  // rows anyway, and `tenantPaidTotals_` filters on it too, so handing each one
+  // its own bucket is the same arithmetic on the same rows.
+  var byPeriod = {};
+  for (var i = 0; i < transactions.length; i++) {
+    var p = transactionPeriod_(transactions[i]);
+    if (!p) continue;
+    if (!byPeriod[p]) byPeriod[p] = [];
+    byPeriod[p].push(transactions[i]);
+  }
+  var periodList = Object.keys(byPeriod).sort();
+
+  var periods = {};
+  for (var k = 0; k < periodList.length; k++) {
+    var period = periodList[k];
+    var bucket = byPeriod[period];
+    var actuals = calculateActuals_(bucket, period);
+    periods[period] = {
+      income: actuals.income,
+      expense: actuals.expense,
+      net: actuals.net,
+      paid: tenantPaidTotals_(bucket, period),
+      groups: omadPeriodGroupCount_(bucket, period)
+    };
+  }
+
+  return {
+    version: OMAD_READ_MODEL_VERSION,
+    source: String(src),
+    revision: String(rev),
+    builtAt: new Date().toISOString(),
+    rows: transactions.length,
+    balances: { cash: allTime.cash, bank: allTime.bank, total: allTime.total },
+    // "Jami Davr" as `calculateActuals_` computes it, not as the sum of the
+    // periods. They differ by exactly the rows whose period could not be
+    // resolved — a legacy-sheet possibility — and those rows are money that
+    // moved. Summing the buckets would quietly leave them out.
+    allTime: { income: allTime.income, expense: allTime.expense, net: allTime.net },
+    periods: periods,
+    periodList: periodList,
+    // Newest business actions across every period, so the commonest recent
+    // list is answered without a filter and an older period can still tell
+    // whether the slice it gets is the whole story.
+    recent: omadRecentEntries_(transactions, rates, "", OMAD_READ_MODEL_RECENT)
+  };
+}
+
+/** How many distinct business actions a period holds. */
+function omadPeriodGroupCount_(transactions, period) {
+  var seen = {};
+  var count = 0;
+  for (var i = 0; i < transactions.length; i++) {
+    if (transactionPeriod_(transactions[i]) !== period) continue;
+    var key = String(transactions[i].groupId || "");
+    if (seen[key]) continue;
+    seen[key] = true;
+    count++;
+  }
+  return count;
+}
+
+/**
+ * Recent activity as *business actions* rather than rows.
+ *
+ * A tenant-paid pair is one entry, and the several lines of one payment are one
+ * entry with a total, so the reader is never asked to pair rows up themselves.
+ * `period` empty means every period.
+ *
+ * This is the one implementation; the Mini App's recent list is this function.
+ */
+function omadRecentEntries_(transactions, rates, period, limit) {
+  var list = Array.isArray(transactions) ? transactions : [];
+  var wanted = isCanonicalPeriod_(period) ? String(period) : "";
+
+  var order = [];
+  var groups = {};
+  for (var i = 0; i < list.length; i++) {
+    var t = list[i];
+    if (wanted && transactionPeriod_(t) !== wanted) continue;
+    var key = String(t.groupId || "");
+    if (!groups[key]) { groups[key] = []; order.push(key); }
+    groups[key].push(t);
+  }
+
+  var entries = [];
+  for (var g = 0; g < order.length; g++) {
+    var rows = groups[order[g]];
+    var first = rows[0];
+    var total = 0;
+    for (var r = 0; r < rows.length; r++) {
+      if (rows[r].type === "Income") total += transactionUZS_(rows[r], rates);
+    }
+    var tenantPaid = isTenantPaidGroup_(rows);
+    var income = null;
+    for (var q = 0; q < rows.length; q++) if (rows[q].type === "Income") { income = rows[q]; break; }
+    var lead = tenantPaid ? (income || first) : first;
+    if (!tenantPaid) {
+      total = 0;
+      for (var s = 0; s < rows.length; s++) total += transactionUZS_(rows[s], rates);
+    }
+
+    entries.push({
+      groupId: order[g],
+      id: lead.id,
+      kind: tenantPaid ? ENTRY_KIND_TENANT_PAID : "",
+      type: lead.type,
+      tenant: lead.tenant,
+      period: transactionPeriod_(lead),
+      periodLabel: formatPeriodLabel_(transactionPeriod_(lead)),
+      date: typeof lead.date === "object" && lead.date ? formatLedgerDate_(lead.date) : String(lead.date || ""),
+      amountUZS: Math.round(total),
+      currency: lead.currency,
+      amount: lead.amount,
+      lines: rows.length,
+      comment: String(lead.comment || "").slice(0, 300)
+    });
+  }
+
+  // Newest first, by the timestamp the ids encode.
+  entries.sort(function (a, b) {
+    return (Number(String(b.id).split("_")[0]) || 0) - (Number(String(a.id).split("_")[0]) || 0);
+  });
+  return entries.slice(0, Math.max(1, Number(limit) || OMAD_READ_MODEL_RECENT));
+}
+
+/**
+ * One period's figures out of the model, in the shape `calculateActuals_`
+ * returns them.
+ *
+ * Balances ride along unscoped because they are all-time by rule: money in the
+ * safe does not reset when the reporting month changes.
+ */
+function omadPeriodFigures_(model, period) {
+  var m = model || {};
+  var entry = (m.periods || {})[String(period)] || {};
+  var balances = m.balances || {};
+  return {
+    income: Number(entry.income) || 0,
+    expense: Number(entry.expense) || 0,
+    net: Number(entry.net) || 0,
+    cash: Number(balances.cash) || 0,
+    bank: Number(balances.bank) || 0,
+    total: Number(balances.total) || 0,
+    paid: entry.paid || {},
+    groups: Number(entry.groups) || 0
+  };
+}
+
+/**
+ * The recent list for one period, from the model where the model can answer it.
+ *
+ * The stored list is a fixed window of the newest actions across every period.
+ * For the period anybody is actually looking at that window contains all of
+ * them; for an older period it may not, and answering with a short list would
+ * be quietly wrong rather than merely slow. So the model's own group count for
+ * the period decides: a slice that is already the whole period, or is as long
+ * as was asked for, is the answer; anything shorter falls back to the ledger.
+ */
+function omadRecentForPeriod_(doc, model, period, limit) {
+  var want = Math.max(1, Number(limit) || OMAD_READ_MODEL_RECENT);
+  var wanted = isCanonicalPeriod_(period) ? String(period) : "";
+  var stored = (model && Array.isArray(model.recent)) ? model.recent : null;
+
+  if (stored && !model.recentDropped) {
+    if (!wanted) return stored.slice(0, want);
+    var filtered = [];
+    for (var i = 0; i < stored.length; i++) {
+      if (String(stored[i].period || "") === wanted) filtered.push(stored[i]);
+    }
+    var groups = omadPeriodFigures_(model, wanted).groups;
+    if (filtered.length >= want || filtered.length >= groups) return filtered.slice(0, want);
+  }
+
+  return omadRecentEntries_(readOmadTransactions_(doc), getOmadRates_(), wanted, want);
+}
+
+/**
+ * Stores the model. Failing to store one is not a failure of anything: the
+ * caller already has the answer, and the next read simply rebuilds.
+ *
+ * This is the one `setConfig` that happens on a *read* path and therefore
+ * outside the script lock. Two first-ever reads landing together could both
+ * append the row, leaving a duplicate. `getConfig` answers with the first match
+ * and `setConfig` updates the first match, so the second row is inert and every
+ * later write keeps it that way. Taking the financial write lock to prevent an
+ * unread spare row would be a far worse trade.
+ */
+function storeOmadReadModel_(configSheet, model) {
+  try {
+    var body = JSON.stringify(model);
+    // The cell has a hard limit and a summary that approaches it is not a
+    // summary any more. Dropping the recent list first keeps the figures --
+    // the expensive part -- storable for far longer than the list would.
+    if (body.length > OMAD_READ_MODEL_MAX_LENGTH) {
+      var trimmed = {};
+      Object.keys(model).forEach(function (key) { trimmed[key] = model[key]; });
+      trimmed.recent = [];
+      trimmed.recentDropped = true;
+      body = JSON.stringify(trimmed);
+      if (body.length > OMAD_READ_MODEL_MAX_LENGTH) return false;
+    }
+    setConfig(configSheet, OMAD_READ_MODEL_KEY, body);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+/** Sheets refuses a cell over 50 000 characters; stay well clear of it. */
+var OMAD_READ_MODEL_MAX_LENGTH = 45000;
+
+/** Drops the stored model, so the next read rebuilds it from the ledger. */
+function invalidateOmadReadModel_(configSheet) {
+  try {
+    setConfig(configSheet, OMAD_READ_MODEL_KEY, "");
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+/**
+ * Rebuilds the model from the ledger and stores it, whatever was there before.
+ *
+ * The operator-facing repair, and what the tests use to prove the derived
+ * figures are the ledger's own.
+ */
+function rebuildOmadReadModel_(doc, configSheet) {
+  var model = buildOmadReadModel_(doc, configSheet);
+  var stored = storeOmadReadModel_(configSheet, model);
+  return {
+    status: "success",
+    stored: stored,
+    rows: model.rows,
+    periods: model.periodList.length,
+    builtAt: model.builtAt
+  };
+}
+
+/**
+ * Compares what is stored against a fresh full-ledger build, field by field.
+ *
+ * This is the check that "the summary is the ledger" is true of the live data
+ * rather than only of the code. It never repairs anything on its own -- a
+ * difference is something to look at, and `rebuild_omad_read_model` is the
+ * separate, deliberate action that fixes it.
+ */
+function verifyOmadReadModel_(doc, configSheet) {
+  var stored = safeParseJSON_(getConfig(configSheet, OMAD_READ_MODEL_KEY), null);
+  var fresh = buildOmadReadModel_(doc, configSheet);
+  var differences = [];
+
+  if (!stored || typeof stored !== "object") {
+    return {
+      ok: true, present: false, differences: [],
+      message: "Saqlangan xulosa yo'q; keyingi o'qishda qayta quriladi.",
+      rows: fresh.rows
+    };
+  }
+
+  var note = function (field, storedValue, freshValue) {
+    differences.push({ field: field, stored: storedValue, expected: freshValue });
+  };
+
+  ["cash", "bank", "total"].forEach(function (key) {
+    if (Math.round(Number((stored.balances || {})[key]) || 0) !== fresh.balances[key]) {
+      note("balances." + key, (stored.balances || {})[key], fresh.balances[key]);
+    }
+  });
+
+  var storedPeriods = stored.periods || {};
+  var names = {};
+  Object.keys(storedPeriods).forEach(function (p) { names[p] = true; });
+  Object.keys(fresh.periods).forEach(function (p) { names[p] = true; });
+
+  Object.keys(names).sort().forEach(function (period) {
+    var a = storedPeriods[period] || {};
+    var b = fresh.periods[period] || {};
+    ["income", "expense", "net"].forEach(function (key) {
+      if ((Number(a[key]) || 0) !== (Number(b[key]) || 0)) {
+        note(period + "." + key, a[key], b[key]);
+      }
+    });
+    var paidA = a.paid || {};
+    var paidB = b.paid || {};
+    var tenants = {};
+    Object.keys(paidA).forEach(function (n) { tenants[n] = true; });
+    Object.keys(paidB).forEach(function (n) { tenants[n] = true; });
+    Object.keys(tenants).forEach(function (name) {
+      if ((Number(paidA[name]) || 0) !== (Number(paidB[name]) || 0)) {
+        note(period + ".paid." + name, paidA[name], paidB[name]);
+      }
+    });
+  });
+
+  return {
+    ok: differences.length === 0,
+    present: true,
+    stale: !omadReadModelUsable_(stored, dataRevision_(CACHE_SCOPE_OMAD), fresh.source),
+    rows: fresh.rows,
+    storedRows: Number(stored.rows) || 0,
+    builtAt: String(stored.builtAt || ""),
+    // Bounded: a broken model would otherwise answer with one entry per period
+    // per tenant, and the point is to say *that* it disagrees.
+    differences: differences.slice(0, 50),
+    differenceCount: differences.length
+  };
 }
 
 // ----- apps-script/02_validation.gs --------------------------------------------
@@ -4442,7 +4874,8 @@ function writeCafeInventory_(configSheet, inventory) {
 
 var CAFE_MUTATIONS = {
   save_inventory: true, save_recipe: true, save_categories: true,
-  save_cafe_settings: true, save_sale: true, void_sale: true, close_day: true
+  save_cafe_settings: true, save_sale: true, void_sale: true, close_day: true,
+  adjust_cafe_stock: true
 };
 
 /**
@@ -4450,10 +4883,14 @@ var CAFE_MUTATIONS = {
  *
  * The catalogue is the manager's; the till is the seller's. Neither of them
  * gets the other's, and neither gets the accounting.
+ *
+ * A stock movement — spoilage, waste, a staff drink, a miscount — is the
+ * manager's: it changes what the business owns without any money coming in.
  */
 var CAFE_ACTION_ROLES = {
   save_inventory: "admin", save_recipe: "admin", save_categories: "admin",
-  save_cafe_settings: "admin", save_sale: "sell", void_sale: "sell", close_day: "sell"
+  save_cafe_settings: "admin", save_sale: "sell", void_sale: "sell", close_day: "sell",
+  adjust_cafe_stock: "admin"
 };
 
 function isCafeAction_(action) {
@@ -4481,29 +4918,38 @@ function handleCafeAction_(action, payload, doc, configSheet) {
     // Optimistic concurrency. The screen says which version it was looking at;
     // anything else means stock moved underneath it and its copy is a
     // rollback waiting to happen.
-    var currentRev = cafeInventoryRev_(configSheet);
-    if (currentRev > 0 && Number(payload.expectedRev) !== currentRev) {
+    //
+    // Under the same lock every other stock movement takes, and for the same
+    // reason the catalogue guard is: reading the revision and writing the array
+    // as two steps lets a sale land between them, so the check passes against a
+    // version the write then replaces. It is the one place inventory is written
+    // without holding it.
+    var inventoryLock = LockService.getScriptLock();
+    inventoryLock.waitLock(30000);
+    try {
+      var currentRev = cafeInventoryRev_(configSheet);
+      if (currentRev > 0 && Number(payload.expectedRev) !== currentRev) {
+        return jsonOutput_({
+          status: "error", stale: true, inventoryRev: currentRev,
+          message: "Ombor boshqa joyda o'zgardi. Sahifani yangilab, qaytadan kiriting."
+        });
+      }
       return jsonOutput_({
-        status: "error", stale: true, inventoryRev: currentRev,
-        message: "Ombor boshqa joyda o'zgardi. Sahifani yangilab, qaytadan kiriting."
+        status: "success",
+        inventoryRev: writeCafeInventory_(configSheet, payload.inventory)
       });
+    } finally {
+      inventoryLock.releaseLock();
     }
-    return jsonOutput_({
-      status: "success",
-      inventoryRev: writeCafeInventory_(configSheet, payload.inventory)
-    });
   }
-  if (action === 'save_recipe') {
-    setConfig(configSheet, "Cafe_Recipes", JSON.stringify(payload.recipes));
-    return jsonOutput_({ status: "success" });
+  // Recipes, categories and settings are the *catalogue*, and it has a
+  // revision of its own. Two admin sessions used to overwrite each other
+  // silently — the second save simply replaced whatever the first had stored.
+  if (isCafeCatalogueAction_(action)) {
+    return saveCafeCatalogue_(action, payload, configSheet);
   }
-  if (action === 'save_categories') {
-    setConfig(configSheet, "Cafe_Categories", JSON.stringify(payload.categories));
-    return jsonOutput_({ status: "success" });
-  }
-  if (action === 'save_cafe_settings') {
-    setConfig(configSheet, "Cafe_Settings", JSON.stringify(payload.settings));
-    return jsonOutput_({ status: "success" });
+  if (action === 'adjust_cafe_stock') {
+    return adjustCafeStock_(doc, configSheet, payload, auth.username);
   }
   if (action === 'save_sale') return saveCafeSale_(doc, configSheet, payload);
   if (action === 'void_sale') return voidCafeSale_(doc, configSheet, payload);
@@ -4585,7 +5031,11 @@ function cafeProductStockPerUnit_(product) {
  * catalogue does not contain is refused rather than sold at whatever the
  * caller suggested.
  */
-function resolveCafeSaleLines_(state, items) {
+function resolveCafeSaleLines_(state, items, options) {
+  // `allowInactive` is for *undoing* a sale, not making one. A void restores
+  // the stock a receipt consumed, and whether the recipe is still on the menu
+  // today has nothing to do with whether that stock should come back.
+  var settings = options || {};
   var requested = Array.isArray(items) ? items : [];
   if (requested.length === 0) return { error: "Savat bo'sh." };
   if (requested.length > 200) return { error: "Savatda juda ko'p mahsulot." };
@@ -4613,6 +5063,12 @@ function resolveCafeSaleLines_(state, items) {
     if (kind === "recipe") {
       var recipe = recipes[String(item.recipeId)];
       if (!recipe) return { error: "Retsept topilmadi: " + String(item.name || item.recipeId || "") };
+      // A retired recipe leaves the menu but keeps its history: every sale
+      // already recorded still names it, and every one of those receipts still
+      // reads. What it may not do is be sold again.
+      if (recipe.active === false && !settings.allowInactive) {
+        return { error: "Retsept sotuvdan olingan: " + String(recipe.name || "") };
+      }
       var recipePrice = Number(recipe.sellPrice) || 0;
       if (recipePrice <= 0) return { error: "Retsept narxi belgilanmagan: " + String(recipe.name || "") };
 
@@ -4846,7 +5302,7 @@ function voidCafeSale_(doc, configSheet, payload) {
     }
 
     var current = cafeCatalogue_(configSheet);
-    var restored = resolveCafeSaleLines_(current, cafeReceiptItems_(detail));
+    var restored = resolveCafeSaleLines_(current, cafeReceiptItems_(detail), { allowInactive: true });
 
     var inventory = current.inventory;
     if (!restored.error) {
@@ -4885,25 +5341,57 @@ function closeCafeDay_(doc, configSheet, payload) {
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
-    var state = readCafeState_(doc, configSheet);
+    // Lean rather than `readCafeState_`: closing the day needs the day's
+    // totals, not the parsed receipt of every sale ever rung up.
+    var sales = readCafeSalesLean_(doc);
+    var inventory = safeParseJSON_(getConfig(configSheet, "Cafe_Inventory"), []);
     var dayKey = cafeDateKey_(payload.date || new Date().toISOString());
 
     var revenue = 0;
     var profit = 0;
     var count = 0;
-    for (var i = 0; i < state.sales.length; i++) {
-      if (cafeDateKey_(state.sales[i].date) !== dayKey) continue;
-      revenue += Number(state.sales[i].total) || 0;
-      profit += Number(state.sales[i].profit) || 0;
+    for (var i = 0; i < sales.length; i++) {
+      if (cafeDateKey_(sales[i].date) !== dayKey) continue;
+      revenue += Number(sales[i].total) || 0;
+      profit += Number(sales[i].profit) || 0;
       count++;
+    }
+
+    // ---- the two accidents worth stopping ------------------------------
+    //
+    // Neither is an error: a second report for a day genuinely happens (two
+    // shifts, a correction), and a day with no sales genuinely happens (the
+    // café was shut). Both are refused *once*, with a code the screen turns
+    // into a question, so the confirmation is a decision rather than a habit.
+    var existing = findCafeClosingForDay_(doc, dayKey);
+    if (existing && payload.confirmDuplicate !== true) {
+      return jsonOutput_({
+        status: "error", code: "duplicate_close", dateKey: dayKey,
+        existing: {
+          date: existing.date, seller: existing.seller,
+          totalRevenue: existing.totalRevenue, totalProfit: existing.totalProfit
+        },
+        message: "Bu kun uchun yakun allaqachon yozilgan (" +
+          formatUZS_(existing.totalRevenue) + " UZS). Yana yozilsinmi?"
+      });
+    }
+
+    if (count === 0 && payload.confirmEmpty !== true) {
+      return jsonOutput_({
+        status: "error", code: "empty_close", dateKey: dayKey,
+        message: "Bu kunda birorta sotuv yozilmagan. Bo'sh yakun yozilsinmi?"
+      });
     }
 
     // A physical count is the one thing only a person can supply.
     // A physical count is a measurement, not an edit of a stale copy, so it
     // is not version-checked -- what is on the shelf is what is on the shelf.
+    // It does leave a trace, though: `recordCafeRecount_` writes what changed
+    // and by how much, so a quantity never moves without a reason on record.
     if (Array.isArray(payload.countedInventory)) {
+      recordCafeRecount_(doc, inventory, payload.countedInventory, payload.seller);
       writeCafeInventory_(configSheet, payload.countedInventory);
-      state.inventory = payload.countedInventory;
+      inventory = payload.countedInventory;
     }
 
     var closeSheet = doc.getSheetByName("Cafe_Kun_Yakuni") || doc.insertSheet("Cafe_Kun_Yakuni");
@@ -4937,11 +5425,32 @@ function closeCafeDay_(doc, configSheet, payload) {
     return jsonOutput_({
       status: "success", reportJobId: closeJobId || "",
       totalRevenue: Math.round(revenue), totalProfit: Math.round(profit),
-      salesCount: count, inventory: state.inventory
+      salesCount: count, inventory: inventory
     });
   } finally {
     lock.releaseLock();
   }
+}
+
+/**
+ * The close-day record already filed for a calendar day, or null.
+ *
+ * Row-count-cheap: it reads the sheet once and compares the day key the same
+ * way every other café reader derives one, so "today" means the same thing here
+ * as it does in the till.
+ */
+function findCafeClosingForDay_(doc, dayKey) {
+  var sheet = doc.getSheetByName("Cafe_Kun_Yakuni");
+  if (!sheet || sheet.getLastRow() < 2 || !dayKey) return null;
+  var data = sheet.getDataRange().getValues();
+  for (var i = data.length - 1; i >= 1; i--) {
+    if (cafeDateKey_(data[i][0]) !== dayKey) continue;
+    return {
+      date: data[i][0], seller: String(data[i][1] || ""),
+      totalRevenue: Number(data[i][2]) || 0, totalProfit: Number(data[i][3]) || 0
+    };
+  }
+  return null;
 }
 
 /**
@@ -5046,6 +5555,9 @@ function cafeScreenCatalogue_(configSheet) {
     inventory: safeParseJSON_(getConfigOnce_(configSheet, "Cafe_Inventory"), []),
     inventoryRev: cafeInventoryRev_(configSheet),
     recipes: safeParseJSON_(getConfigOnce_(configSheet, "Cafe_Recipes"), []),
+    // Quoted back by every catalogue save, so two stale admin sessions cannot
+    // silently overwrite each other's recipes.
+    catalogueRev: cafeCatalogueRev_(configSheet),
     categories: safeParseJSON_(getConfigOnce_(configSheet, "Cafe_Categories"),
       ["Ichimliklar", "Fast-Food", "Muzqaymoq"]),
     settings: safeParseJSON_(getConfigOnce_(configSheet, "Cafe_Settings"), { dailyTarget: 0 })
@@ -5070,6 +5582,10 @@ function readCafePosPayload_(doc, configSheet, payload) {
       body.status = "success";
       body.scope = "pos";
       body.dateKey = dayKey;
+      // A retired recipe is off the menu. Historical receipts are untouched --
+      // they carry their own lines -- and the server refuses one anyway, so
+      // this is the till not offering a button that would be refused.
+      body.recipes = cafeSellableRecipes_(body.recipes);
       body.sales = readCafeSalesForDay_(doc, dayKey, seller);
       return body;
     });
@@ -5109,9 +5625,12 @@ function readCafeAdminPayload_(doc, configSheet, payload) {
 
   var closingsLimit = Math.min(Math.max(Number(payload && payload.closingsLimit) || 0,
     CAFE_ADMIN_RECENT_CLOSINGS), 500);
+  var movementsLimit = Math.min(Math.max(Number(payload && payload.movementsLimit) || 0,
+    CAFE_MOVEMENTS_PAGE), 200);
 
   return cachedSummary_(
-    "cafe_admin_" + todayKey + "_" + yesterdayKey + "_" + monthKey + "_" + closingsLimit,
+    "cafe_admin_" + todayKey + "_" + yesterdayKey + "_" + monthKey + "_" + closingsLimit +
+      "_" + movementsLimit,
     CACHE_SCOPE_CAFE, CAFE_SUMMARY_TTL_SECONDS, function () {
       var body = cafeScreenCatalogue_(configSheet);
       body.status = "success";
@@ -5122,6 +5641,20 @@ function readCafeAdminPayload_(doc, configSheet, payload) {
       var closings = readCafeRecentClosings_(doc, closingsLimit);
       body.closeReports = closings.rows;
       body.closeReportsTotal = closings.total;
+      // Computed here rather than in the browser, so the Mini App's low-stock
+      // list and the admin screen's warnings are one implementation of one set
+      // of rules.
+      body.health = buildCafeCatalogueHealth_(body.inventory, body.recipes, body.settings);
+      var movements = readCafeStockMovements_(doc, movementsLimit);
+      body.movements = movements.rows;
+      body.movementsTotal = movements.total;
+      // Whether today has already been closed, so the screen can say so before
+      // somebody presses the button rather than after.
+      var closedToday = findCafeClosingForDay_(doc, todayKey);
+      body.closedToday = closedToday ? {
+        date: closedToday.date, seller: closedToday.seller,
+        totalRevenue: closedToday.totalRevenue, totalProfit: closedToday.totalProfit
+      } : null;
       return body;
     });
 }
@@ -5243,11 +5776,631 @@ function readCafeState_(doc, configSheet) {
     inventory: safeParseJSON_(getConfig(configSheet, "Cafe_Inventory"), []),
     inventoryRev: cafeInventoryRev_(configSheet),
     recipes: safeParseJSON_(getConfig(configSheet, "Cafe_Recipes"), []),
+    catalogueRev: cafeCatalogueRev_(configSheet),
     categories: safeParseJSON_(getConfig(configSheet, "Cafe_Categories"), ["Ichimliklar", "Fast-Food", "Muzqaymoq"]),
     settings: safeParseJSON_(getConfig(configSheet, "Cafe_Settings"), { dailyTarget: 0 }),
     sales: sales,
     closeReports: closeReports
   };
+}
+
+// ----- apps-script/12a_cafe_catalogue.gs ---------------------------------------
+
+// ============================================================
+// Café catalogue: recipes, their cost, their health, and stock movements
+// ------------------------------------------------------------
+// Three things live here that the café did not have:
+//
+//   1. **A recipe's cost is derived, never typed.** The admin screen used to
+//      compute `cost` per ingredient and `baseCost` for the recipe in the
+//      browser and send both. Whatever the ingredient had cost when the recipe
+//      was written stayed on it for ever, so a recipe saved when flour was
+//      cheap kept charging the cheap price after a restock — and the same
+//      recipe priced a sale at one cost and the stock movement at another.
+//      Every cost is recomputed here from the inventory as it is now.
+//
+//   2. **A catalogue revision of its own.** Inventory already has one, bumped
+//      by every sale. Reusing it for recipes would mean a busy till stopped the
+//      manager saving a recipe, which is a different thing going wrong. This
+//      counter moves only when the *catalogue* — recipes, categories,
+//      settings — changes.
+//
+//   3. **Stock leaves for reasons other than a sale.** Spoilage, waste, staff
+//      drinks and plain miscounts all used to be entered by editing the
+//      quantity, which is untraceable and races the till. They are a movement
+//      now, applied under the script lock and written to a sheet that says what
+//      happened and why.
+// ============================================================
+
+/** Bumped by every catalogue write. Deliberately not the inventory counter. */
+var CAFE_CATALOGUE_REV_KEY = "Cafe_Catalogue_Rev";
+
+/** Where stock movements that are not sales are recorded. */
+var CAFE_MOVEMENTS_SHEET = "Cafe_Stock_Movements";
+
+var CAFE_MOVEMENTS_HEADER = [
+  "Sana", "Yo'nalish", "Sabab", "Mahsulot_ID", "Nomi",
+  "Miqdor", "Birlik", "Tannarx", "Qoldiq", "Izoh", "Kim", "Request_ID"
+];
+
+/** How many movements one screen is handed. */
+var CAFE_MOVEMENTS_PAGE = 40;
+
+/**
+ * Why stock left or arrived outside a sale.
+ *
+ * Deliberately a short, closed list: the point is that a year later somebody
+ * can tell a spillage from a staff drink from a miscount, and free text does
+ * not survive that. `note` carries the detail.
+ */
+var CAFE_MOVEMENT_REASONS = {
+  purchase: "Kirim",
+  spoilage: "Buzilgan",
+  waste: "Chiqindi",
+  internal: "Ichki iste'mol",
+  correction: "Tuzatish",
+  recount: "Qayta sanoq"
+};
+
+/** Default "running out" level when neither the item nor the settings say. */
+var CAFE_DEFAULT_LOW_STOCK = 3;
+
+/** A sell price this many times the cost is almost certainly a typo. */
+var CAFE_EXTREME_MARGIN_RATIO = 20;
+
+function cafeCatalogueRev_(configSheet) {
+  return Number(getConfig(configSheet, CAFE_CATALOGUE_REV_KEY)) || 0;
+}
+
+/** Bumps the catalogue revision. Called by every catalogue writer. */
+function bumpCafeCatalogueRev_(configSheet) {
+  var next = cafeCatalogueRev_(configSheet) + 1;
+  setConfig(configSheet, CAFE_CATALOGUE_REV_KEY, String(next));
+  return next;
+}
+
+/**
+ * Refuses a catalogue write that was composed against an older catalogue.
+ *
+ * The check is *opt-in*, and deliberately so. A caller that names the revision
+ * it read is asking to be protected and is held to it exactly. A caller that
+ * names none is a client written before the counter existed — a cached page, a
+ * script in the editor — and refusing it would break saving outright without
+ * protecting anything, because such a client cannot quote a revision however
+ * strict this is. The screens that can, do.
+ *
+ * A project whose counter has never moved accepts the first write for the same
+ * reason the inventory guard does: nothing has been overwritten yet.
+ */
+function cafeCatalogueStale_(configSheet, expectedRev) {
+  if (expectedRev === undefined || expectedRev === null || expectedRev === "") return null;
+  var current = cafeCatalogueRev_(configSheet);
+  if (current <= 0) return null;
+  if (Number(expectedRev) === current) return null;
+  return {
+    status: "error", stale: true, catalogueRev: current,
+    message: "Katalog boshqa joyda o'zgardi. Sahifani yangilab, qaytadan kiriting."
+  };
+}
+
+function isCafeCatalogueAction_(action) {
+  return action === 'save_recipe' || action === 'save_categories' || action === 'save_cafe_settings';
+}
+
+/**
+ * One catalogue write: check the revision, store, bump — under the script lock.
+ *
+ * The lock is what makes the revision mean anything. Reading the counter,
+ * writing the array and bumping the counter as three separate steps lets two
+ * saves that quoted the *same* revision both pass the check, and the second
+ * whole-array write then silently replaces the first — which is exactly the
+ * accident the counter exists to stop, arriving exactly when two people are
+ * saving at once.
+ *
+ * It is the same lock the till takes, and that is affordable here: a catalogue
+ * save is a handful of `System_Config` cells and happens a few times a week,
+ * where a sale happens a few times a minute. What must *not* happen is the
+ * reverse — a sale waiting on a catalogue edit — and it does not, because this
+ * holds the lock for the length of one write.
+ */
+function saveCafeCatalogue_(action, payload, configSheet) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var stale = cafeCatalogueStale_(configSheet, payload.expectedCatalogueRev);
+    if (stale) return jsonOutput_(stale);
+
+    if (action === 'save_recipe') {
+      // Every cost is recomputed here from the inventory as it is now. The
+      // browser sends which ingredient and how much of it; what that is worth
+      // is not its to decide, exactly as it is not its to decide what a sale
+      // is worth. A recipe saved when flour was cheap used to keep the cheap
+      // cost for ever.
+      var catalogue = cafeCatalogue_(configSheet);
+      var recipes = normalizeCafeRecipes_(payload.recipes, catalogue.inventory, catalogue.recipes);
+      setConfig(configSheet, "Cafe_Recipes", JSON.stringify(recipes));
+      return jsonOutput_({
+        status: "success",
+        recipes: recipes,
+        catalogueRev: bumpCafeCatalogueRev_(configSheet),
+        health: buildCafeCatalogueHealth_(catalogue.inventory, recipes,
+          safeParseJSON_(getConfig(configSheet, "Cafe_Settings"), { dailyTarget: 0 }))
+      });
+    }
+
+    if (action === 'save_categories') {
+      setConfig(configSheet, "Cafe_Categories", JSON.stringify(payload.categories));
+      return jsonOutput_({ status: "success", catalogueRev: bumpCafeCatalogueRev_(configSheet) });
+    }
+
+    setConfig(configSheet, "Cafe_Settings", JSON.stringify(payload.settings));
+    return jsonOutput_({ status: "success", catalogueRev: bumpCafeCatalogueRev_(configSheet) });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// --------------------------------------------------------------- recipes
+
+/**
+ * One recipe, with every money figure recomputed from the inventory.
+ *
+ * `ingredients` keeps `inventoryId` and `qty` from the caller and nothing else:
+ * `cost` and `baseCost` are what this ingredient costs *now*, and `name` is
+ * what the inventory calls it now, so a renamed ingredient stops reading as two
+ * different things. A recipe whose ingredient has been deleted keeps the line —
+ * losing it would silently make the recipe cheaper — with a zero cost and a
+ * `missing` marker that the health check reports.
+ */
+function normalizeCafeRecipe_(raw, inventoryIndex, existing) {
+  var input = raw && typeof raw === "object" ? raw : {};
+  var previous = existing || {};
+
+  var id = String(input.id || previous.id || "").trim();
+  if (!id) id = "rec_" + new Date().getTime() + "_" + Math.floor(Math.random() * 100000);
+
+  var name = String(input.name === undefined ? (previous.name || "") : input.name).trim().slice(0, 120);
+  var category = String(input.category === undefined ? (previous.category || "") : input.category)
+    .trim().slice(0, 80);
+
+  var sellPrice = Math.max(0, Math.round(Number(
+    input.sellPrice === undefined ? previous.sellPrice : input.sellPrice) || 0));
+
+  // Absent means "still whatever it was"; present and false means retired.
+  var active = input.active === undefined
+    ? (previous.active === undefined ? true : previous.active !== false)
+    : input.active !== false;
+
+  var source = Array.isArray(input.ingredients)
+    ? input.ingredients
+    : (Array.isArray(previous.ingredients) ? previous.ingredients : []);
+
+  var ingredients = [];
+  var baseCost = 0;
+  for (var i = 0; i < source.length; i++) {
+    var line = source[i] || {};
+    var inventoryId = String(line.inventoryId || "").trim();
+    // A line naming nothing references nothing and cannot be costed or
+    // consumed. Anything that *does* name an ingredient is kept, including a
+    // zero or unreadable quantity: dropping it would quietly make the recipe
+    // cheaper, and the health check exists to say so out loud instead.
+    if (!inventoryId) continue;
+    var qty = Number(line.qty);
+    if (!isFinite(qty) || qty < 0) qty = 0;
+    qty = cafeRoundQty_(qty);
+
+    var item = inventoryIndex[inventoryId];
+    var unitCost = item ? (Number(item.unitCost) || 0) : 0;
+    var cost = Math.round(qty * unitCost);
+    baseCost += cost;
+
+    ingredients.push({
+      inventoryId: inventoryId,
+      // The inventory's own name, so a rename cannot leave a recipe describing
+      // an ingredient nobody has heard of. A deleted one keeps the last name
+      // the recipe carried, which is the only record of what it used to be.
+      name: item ? String(item.name || "") : String(line.name || ""),
+      qty: qty,
+      unitCost: unitCost,
+      cost: cost,
+      missing: !item
+    });
+  }
+
+  return {
+    id: id,
+    name: name,
+    category: category,
+    ingredients: ingredients,
+    // Never read from the payload. The whole point of the server pricing a sale
+    // is that the browser cannot decide what something costs us.
+    baseCost: Math.round(baseCost),
+    sellPrice: sellPrice,
+    active: active,
+    updatedAt: new Date().toISOString()
+  };
+}
+
+/** Every recipe, costed against the inventory as it is now. */
+function normalizeCafeRecipes_(recipes, inventory, existingRecipes) {
+  var index = cafeInventoryIndex_(Array.isArray(inventory) ? inventory : []);
+  var previous = cafeRecipeIndex_(Array.isArray(existingRecipes) ? existingRecipes : []);
+  var list = Array.isArray(recipes) ? recipes : [];
+  var out = [];
+  var seen = {};
+  for (var i = 0; i < list.length; i++) {
+    var raw = list[i];
+    // Nothing is dropped for being *incomplete*. This runs over the whole
+    // stored array on every save, so a rule like "a nameless recipe is not one"
+    // would delete live rows from the Sheet as a side effect of an unrelated
+    // edit. An empty entry is not a recipe at all and goes; anything carrying
+    // an id or a name stays and is reported by the health check.
+    if (!raw || typeof raw !== "object") continue;
+    if (!String(raw.id || "").trim() && !String(raw.name || "").trim()) continue;
+
+    var normalized = normalizeCafeRecipe_(raw, index, previous[String(raw.id || "")]);
+    if (seen[normalized.id]) continue;            // an id may appear once
+    seen[normalized.id] = true;
+    out.push(normalized);
+  }
+  return out;
+}
+
+/** What the POS may sell: a recipe that is active and priced. */
+function cafeSellableRecipes_(recipes) {
+  var list = Array.isArray(recipes) ? recipes : [];
+  var out = [];
+  for (var i = 0; i < list.length; i++) {
+    if (list[i] && list[i].active === false) continue;
+    out.push(list[i]);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------- health
+
+/** The low-stock level for one item: its own, the café's, or the default. */
+function cafeLowStockThreshold_(item, settings) {
+  var own = Number((item || {}).lowStockThreshold);
+  if (isFinite(own) && own >= 0) return own;
+  var configured = Number((settings || {}).lowStockThreshold);
+  if (isFinite(configured) && configured >= 0) return configured;
+  return CAFE_DEFAULT_LOW_STOCK;
+}
+
+/**
+ * Everything worth warning the admin about, in one pass over the catalogue.
+ *
+ * Warnings, never corrections: nothing here changes a price, deletes a recipe
+ * or merges a duplicate. A duplicate in particular is *reported* — historical
+ * sales reference recipes by id, and deciding which of two is the real one is a
+ * judgement about the business, not about the data.
+ */
+function buildCafeCatalogueHealth_(inventory, recipes, settings) {
+  var items = Array.isArray(inventory) ? inventory : [];
+  var list = Array.isArray(recipes) ? recipes : [];
+  var index = cafeInventoryIndex_(items);
+
+  var missingIngredients = [];
+  var incomplete = [];
+  var belowCost = [];
+  var extremePrice = [];
+  var noPrice = [];
+  var byName = {};
+
+  for (var i = 0; i < list.length; i++) {
+    var recipe = list[i] || {};
+    var name = String(recipe.name || "");
+    var key = name.toLowerCase().replace(/\s+/g, " ").trim();
+    if (key) {
+      if (!byName[key]) byName[key] = [];
+      byName[key].push({ id: String(recipe.id || ""), name: name, active: recipe.active !== false });
+    }
+
+    var ingredients = Array.isArray(recipe.ingredients) ? recipe.ingredients : [];
+    var missing = [];
+    for (var g = 0; g < ingredients.length; g++) {
+      var inventoryId = String((ingredients[g] || {}).inventoryId || "");
+      if (inventoryId && !index[inventoryId]) {
+        missing.push(String(ingredients[g].name || inventoryId));
+      }
+    }
+    if (missing.length) {
+      missingIngredients.push({
+        id: String(recipe.id || ""), name: name, ingredients: missing,
+        active: recipe.active !== false
+      });
+    }
+
+    if (!name) {
+      incomplete.push({ id: String(recipe.id || ""), name: String(recipe.id || ""), reason: "nomi yo'q" });
+    } else if (!ingredients.length) {
+      incomplete.push({ id: String(recipe.id || ""), name: name, reason: "ingredientlar yo'q" });
+    } else if (!String(recipe.category || "").trim()) {
+      incomplete.push({ id: String(recipe.id || ""), name: name, reason: "kategoriya tanlanmagan" });
+    }
+    for (var z = 0; z < ingredients.length; z++) {
+      if ((Number(ingredients[z].qty) || 0) > 0) continue;
+      incomplete.push({
+        id: String(recipe.id || ""), name: name,
+        reason: "miqdorsiz ingredient: " + String(ingredients[z].name || ingredients[z].inventoryId || "")
+      });
+    }
+
+    var sell = Number(recipe.sellPrice) || 0;
+    var cost = Number(recipe.baseCost) || 0;
+    if (sell <= 0) {
+      noPrice.push({ id: String(recipe.id || ""), name: name });
+    } else if (cost > 0 && sell < cost) {
+      belowCost.push({ id: String(recipe.id || ""), name: name, sellPrice: sell, cost: cost });
+    } else if (cost > 0 && sell > cost * CAFE_EXTREME_MARGIN_RATIO) {
+      extremePrice.push({ id: String(recipe.id || ""), name: name, sellPrice: sell, cost: cost });
+    }
+  }
+
+  // A product sold straight from the shelf has the same two mistakes available.
+  for (var p = 0; p < items.length; p++) {
+    var product = items[p] || {};
+    if (product.type !== "product") continue;
+    var productSell = Number(product.sellPrice) || 0;
+    var productCost = cafeProductUnitCost_(product);
+    if (productSell <= 0) {
+      noPrice.push({ id: String(product.id || ""), name: String(product.name || ""), product: true });
+    } else if (productCost > 0 && productSell < productCost) {
+      belowCost.push({
+        id: String(product.id || ""), name: String(product.name || ""),
+        sellPrice: productSell, cost: productCost, product: true
+      });
+    } else if (productCost > 0 && productSell > productCost * CAFE_EXTREME_MARGIN_RATIO) {
+      extremePrice.push({
+        id: String(product.id || ""), name: String(product.name || ""),
+        sellPrice: productSell, cost: productCost, product: true
+      });
+    }
+  }
+
+  var duplicates = [];
+  Object.keys(byName).forEach(function (key) {
+    if (byName[key].length > 1) duplicates.push({ name: byName[key][0].name, recipes: byName[key] });
+  });
+
+  return {
+    missingIngredients: missingIngredients,
+    duplicates: duplicates,
+    incomplete: incomplete,
+    belowCost: belowCost,
+    extremePrice: extremePrice,
+    noPrice: noPrice,
+    lowStock: buildCafeLowStock_(items, settings),
+    // One number the screen can put on a badge without re-deriving the rule.
+    warnings: missingIngredients.length + duplicates.length + incomplete.length +
+      belowCost.length + extremePrice.length + noPrice.length
+  };
+}
+
+/** Everything at or under its low-stock level, emptiest first. */
+function buildCafeLowStock_(inventory, settings) {
+  var items = Array.isArray(inventory) ? inventory : [];
+  var low = [];
+  for (var i = 0; i < items.length; i++) {
+    var item = items[i] || {};
+    var threshold = cafeLowStockThreshold_(item, settings);
+    if (threshold <= 0) continue;                 // 0 means "do not warn me"
+    var qty = Number(item.qty) || 0;
+    if (qty > threshold) continue;
+    low.push({
+      id: String(item.id || ""), name: String(item.name || ""), qty: cafeRoundQty_(qty),
+      unit: String(item.unit || ""), threshold: threshold, type: String(item.type || ""),
+      out: qty <= 0
+    });
+  }
+  low.sort(function (a, b) { return a.qty - b.qty; });
+  return low;
+}
+
+// ------------------------------------------------------- stock movements
+
+function cafeMovementsSheet_(doc) {
+  var sheet = doc.getSheetByName(CAFE_MOVEMENTS_SHEET) || doc.insertSheet(CAFE_MOVEMENTS_SHEET);
+  if (sheet.getLastRow() === 0) sheet.appendRow(CAFE_MOVEMENTS_HEADER);
+  return sheet;
+}
+
+/** The movement this request id already produced, or null. */
+function findCafeMovementByRequestId_(sheet, requestId) {
+  if (!sheet || !requestId || sheet.getLastRow() < 2) return null;
+  var data = sheet.getDataRange().getValues();
+  var column = CAFE_MOVEMENTS_HEADER.length - 1;
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][column]) === String(requestId)) return { rowNumber: i + 1, row: data[i] };
+  }
+  return null;
+}
+
+/**
+ * Moves stock for a reason that is not a sale, and records why.
+ *
+ * Under the script lock, like every other stock movement, because it is a
+ * read-modify-write against a quantity the till is also changing. Idempotent on
+ * `requestId`: a retry after a dropped connection resolves to the movement the
+ * first attempt made rather than taking the stock twice.
+ *
+ * A withdrawal larger than what is on hand is refused rather than clamped —
+ * with one exception. `correction` is the admin saying the *count* is wrong, so
+ * it sets the level outright; every other reason describes a physical event
+ * that cannot have removed more than there was.
+ */
+function adjustCafeStock_(doc, configSheet, payload, actor) {
+  var requestId = String((payload && payload.requestId) || "").trim();
+  if (!requestId || requestId.length > 128) {
+    return jsonOutput_({ status: "error", message: "requestId talab qilinadi." });
+  }
+
+  var inventoryId = String((payload && payload.inventoryId) || "").trim();
+  if (!inventoryId) return jsonOutput_({ status: "error", message: "Mahsulot tanlanmagan." });
+
+  var reason = String((payload && payload.reason) || "").trim();
+  if (!CAFE_MOVEMENT_REASONS[reason]) {
+    return jsonOutput_({ status: "error", message: "Sabab tanlanmagan." });
+  }
+
+  var direction = String((payload && payload.direction) || "").trim();
+  if (direction !== "in" && direction !== "out") {
+    return jsonOutput_({ status: "error", message: "Yo'nalish noto'g'ri." });
+  }
+
+  var qty = Number(payload && payload.qty);
+  if (!isFinite(qty) || qty <= 0) {
+    return jsonOutput_({ status: "error", message: "Miqdor musbat bo'lishi kerak." });
+  }
+  if (qty > 1e9) return jsonOutput_({ status: "error", message: "Miqdor juda katta." });
+  qty = cafeRoundQty_(qty);
+
+  var note = String((payload && payload.note) || "").trim().slice(0, 300);
+  // A reason code says what kind of thing happened; the note says which thing.
+  // Requiring one for anything that is not a plain purchase is what makes the
+  // history readable a year later.
+  if (reason !== "purchase" && !note) {
+    return jsonOutput_({ status: "error", message: "Qisqacha sabab yozing." });
+  }
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var sheet = cafeMovementsSheet_(doc);
+    var already = findCafeMovementByRequestId_(sheet, requestId);
+    if (already) {
+      var current = cafeCatalogue_(configSheet);
+      return jsonOutput_({
+        status: "success", duplicate: true,
+        inventory: current.inventory, inventoryRev: cafeInventoryRev_(configSheet)
+      });
+    }
+
+    var state = cafeCatalogue_(configSheet);
+    var index = cafeInventoryIndex_(state.inventory);
+    var item = index[inventoryId];
+    if (!item) return jsonOutput_({ status: "error", message: "Mahsulot topilmadi." });
+
+    var have = Number(item.qty) || 0;
+    var unitCost = Number(item.unitCost) || 0;
+
+    if (direction === "out" && reason !== "correction" && have + CAFE_STOCK_EPSILON < qty) {
+      return jsonOutput_({
+        status: "error",
+        message: "Omborda yetarli emas — " + String(item.name || "") + ": " +
+          cafeRoundQty_(have) + " " + String(item.unit || "")
+      });
+    }
+
+    // How much money the movement takes with it. An intake may name the price
+    // of the batch it arrived in; anything else is valued at what the stock on
+    // the shelf cost us, which is what the next sale would have been charged.
+    var costDelta;
+    if (direction === "in" && Number(payload.cost) > 0) {
+      costDelta = Math.round(Number(payload.cost));
+    } else {
+      costDelta = Math.round(qty * unitCost);
+    }
+
+    var nextQty = direction === "in"
+      ? cafeRoundQty_(have + qty)
+      : cafeRoundQty_(Math.max(0, have - qty));
+    var nextTotal = direction === "in"
+      ? Math.round((Number(item.totalCost) || 0) + costDelta)
+      : Math.max(0, Math.round((Number(item.totalCost) || 0) - costDelta));
+
+    item.qty = nextQty;
+    item.totalCost = nextTotal;
+    // Recomputed from what is left, exactly as a sale does, so the next sale is
+    // charged what the remaining stock actually cost.
+    item.unitCost = nextQty > 0 ? Math.round(nextTotal / nextQty) : 0;
+    if (nextQty <= 0) { item.qty = 0; item.totalCost = 0; item.unitCost = 0; }
+
+    var inventoryRev = writeCafeInventory_(configSheet, state.inventory);
+
+    sheet.appendRow([
+      new Date().toISOString(), direction, reason, inventoryId, String(item.name || ""),
+      qty, String(item.unit || ""), costDelta, item.qty, note,
+      String(actor || "").slice(0, 120), requestId
+    ]);
+    bumpDataRevision_(CACHE_SCOPE_CAFE);
+    appendAuditRow_(doc, "cafe_stock_" + direction,
+      inventoryId + " " + reason + " " + qty + (note ? " — " + note : ""));
+
+    return jsonOutput_({
+      status: "success", duplicate: false,
+      inventory: state.inventory, inventoryRev: inventoryRev,
+      movement: {
+        direction: direction, reason: reason, qty: qty,
+        inventoryId: inventoryId, remaining: item.qty
+      }
+    });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** The most recent movements, newest first, and how many there are. */
+function readCafeStockMovements_(doc, limit) {
+  var sheet = doc.getSheetByName(CAFE_MOVEMENTS_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) return { rows: [], total: 0 };
+
+  var want = Math.min(200, Math.max(1, Number(limit) || CAFE_MOVEMENTS_PAGE));
+  var data = sheet.getDataRange().getValues();
+  var start = Math.max(1, data.length - want);
+  var rows = [];
+  for (var i = start; i < data.length; i++) {
+    rows.push({
+      date: data[i][0], direction: String(data[i][1] || ""), reason: String(data[i][2] || ""),
+      reasonLabel: CAFE_MOVEMENT_REASONS[String(data[i][2] || "")] || String(data[i][2] || ""),
+      inventoryId: String(data[i][3] || ""), name: String(data[i][4] || ""),
+      qty: Number(data[i][5]) || 0, unit: String(data[i][6] || ""),
+      cost: Number(data[i][7]) || 0, remaining: Number(data[i][8]) || 0,
+      note: String(data[i][9] || ""), by: String(data[i][10] || "")
+    });
+  }
+  rows.reverse();
+  return { rows: rows, total: data.length - 1 };
+}
+
+/**
+ * Records a movement that some other code path has already applied.
+ *
+ * Close-day writes a counted level straight to the inventory — a physical count
+ * is a measurement, not an edit — and that used to leave no trace of a
+ * quantity changing. The count itself is still authoritative; this only says it
+ * happened.
+ */
+function recordCafeRecount_(doc, before, after, actor) {
+  try {
+    var previous = cafeInventoryIndex_(Array.isArray(before) ? before : []);
+    var counted = Array.isArray(after) ? after : [];
+    var sheet = null;
+    var stamp = new Date().toISOString();
+
+    for (var i = 0; i < counted.length; i++) {
+      var item = counted[i] || {};
+      var id = String(item.id || "");
+      if (!id || !previous[id]) continue;
+      var was = Number(previous[id].qty) || 0;
+      var now = Number(item.qty) || 0;
+      if (Math.abs(now - was) <= CAFE_STOCK_EPSILON) continue;
+
+      if (!sheet) sheet = cafeMovementsSheet_(doc);
+      sheet.appendRow([
+        stamp, now > was ? "in" : "out", "recount", id, String(item.name || ""),
+        cafeRoundQty_(Math.abs(now - was)), String(item.unit || ""),
+        Math.round(Math.abs(now - was) * (Number(item.unitCost) || 0)), cafeRoundQty_(now),
+        "Kun yakuni sanog'i", String(actor || "").slice(0, 120),
+        "recount_" + stamp + "_" + id
+      ]);
+    }
+  } catch (error) {
+    // A close-day that is already stored must never fail because its audit
+    // trail could not be written.
+    debugLog_(doc, "cafe_recount_log_failed", String(error));
+  }
 }
 
 // ----- apps-script/13_migration.gs ---------------------------------------------
@@ -9235,6 +10388,17 @@ function normalizeTaskInput_(payload, existing) {
     if (deadlineTime && !isTaskTimeKey_(deadlineTime)) return { error: "Muddat vaqti noto'g'ri." };
     task.deadlineKey = isTaskDateKey_(deadlineKey) ? String(deadlineKey) : "";
     task.deadlineTime = isTaskTimeKey_(deadlineTime) ? String(deadlineTime) : "";
+    // Reminders on a task with no deadline day have exactly one reading that
+    // does anything: every day until it is done. `taskReminderDatesFor_`
+    // returns nothing at all for an undated occurrence that is not rolling, so
+    // "reminders set, daily off, no deadline" is not a configuration — it is
+    // reminders that silently never fire.
+    //
+    // Three clients build this payload (the web board, the Mini App and the
+    // /yangi wizard) and all three show the choice as locked. Deciding it here
+    // as well is what makes it a property of the engine rather than of three
+    // screens remembering the same rule.
+    if (!task.deadlineKey && task.reminderTimes.length > 0) task.remindDaily = true;
   } else if (type === "routine") {
     // An edit that does not mention the cadence keeps the cadence. Sending
     // `recurrence` explicitly still replaces it, so the web editor is
@@ -10811,10 +11975,23 @@ function doPost(e) {
     // business's private data, and the two reads are gated differently: a café
     // seller has no business reading the ledger, and could previously do so by
     // editing one localStorage value.
-    if (action === 'get_omad_data') {
+    if (action === 'get_omad_data' || action === 'get_omad_history') {
       var omadReadAuth = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
       if (!omadReadAuth.ok) return authRefusal_(omadReadAuth);
-      return jsonOutput_(readOmadPayload_(doc, configSheet));
+      if (action === 'get_omad_history') return jsonOutput_(readOmadHistoryPage_(doc, payload));
+      return jsonOutput_(readOmadPayload_(doc, configSheet, payload));
+    }
+
+    // ---- The derived read model -------------------------------------------
+    // Reading is what everything else does implicitly; these two exist so an
+    // operator can check the summary against the ledger and rebuild it.
+    if (action === 'verify_omad_read_model' || action === 'rebuild_omad_read_model') {
+      var modelAuth = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+      if (!modelAuth.ok) return authRefusal_(modelAuth);
+      if (action === 'verify_omad_read_model') {
+        return jsonOutput_({ status: "success", readModel: verifyOmadReadModel_(doc, configSheet) });
+      }
+      return jsonOutput_(rebuildOmadReadModel_(doc, configSheet));
     }
 
     if (action === 'get_cafe_data') {
@@ -11072,7 +12249,10 @@ function telegramAdminAction_(action, payload) {
  * before the dashboard can decide whether the ledger is live. It is four
  * Script Property reads, so it rides along.
  */
-function readOmadPayload_(doc, configSheet) {
+function readOmadPayload_(doc, configSheet, payload) {
+  if (String((payload && payload.scope) || "") === "dashboard") {
+    return readOmadDashboardPayload_(doc, configSheet);
+  }
   return {
     status: "success",
     transactions: readOmadTransactions_(doc),
@@ -11081,6 +12261,109 @@ function readOmadPayload_(doc, configSheet) {
     templateExpenses: normalizeTemplateExpenses_(
       safeParseJSON_(getConfig(configSheet, "Omad_Template_Expenses"), [])),
     migration: getMigrationStatus_(doc)
+  };
+}
+
+/**
+ * What the dashboard needs, without the ledger.
+ *
+ * The whole transaction history used to travel to the browser on every load so
+ * that four figures and a tenant list could be derived from it there — hundreds
+ * of rows down the wire, and a full pass over the ledger sheet to produce them,
+ * for a screen that shows totals. The totals come from the read model instead;
+ * the history arrives page by page when somebody opens Tarix.
+ *
+ * Before cutover this still answers with the whole list, because the legacy
+ * save path submits it back: a screen that may have to write the list must be
+ * holding all of it. That path is dormant while V2 is live and exists for a
+ * rollback, and this is the one place that difference is decided.
+ */
+function readOmadDashboardPayload_(doc, configSheet) {
+  var body = {
+    status: "success",
+    scope: "dashboard",
+    tenants: normalizeTenantList_(safeParseJSON_(getConfigOnce_(configSheet, "Omad_Tenants"), [])),
+    rates: safeParseJSON_(getConfigOnce_(configSheet, "Omad_Rates"), { "Fevral": 12500 }),
+    templateExpenses: normalizeTemplateExpenses_(
+      safeParseJSON_(getConfigOnce_(configSheet, "Omad_Template_Expenses"), [])),
+    migration: getMigrationStatus_(doc)
+  };
+
+  if (!isLedgerActive_(doc)) {
+    body.historyMode = "full";
+    body.transactions = readOmadTransactions_(doc);
+    return body;
+  }
+
+  var model = omadReadModel_(doc, configSheet);
+  body.historyMode = "paged";
+  body.summary = {
+    builtAt: model.builtAt,
+    rows: model.rows,
+    balances: model.balances,
+    allTime: model.allTime,
+    periods: model.periods,
+    periodList: model.periodList
+  };
+  body.recent = omadRecentForPeriod_(doc, model, "", OMAD_READ_MODEL_RECENT);
+  return body;
+}
+
+/** How many business actions one history page carries. */
+var OMAD_HISTORY_PAGE_GROUPS = 40;
+
+/**
+ * One page of history, as whole business actions.
+ *
+ * Paged by *group* rather than by row, because a group is what the screen
+ * draws and what an edit and a cancellation both operate on: handing back half
+ * of a tenant-paid pair would let one side of it be edited alone. Every row of
+ * every group on the page is returned, so the client's existing grouping,
+ * editing and cancellation code is unchanged — it simply holds a page of the
+ * ledger instead of all of it.
+ */
+function readOmadHistoryPage_(doc, payload) {
+  var options = payload || {};
+  var period = isCanonicalPeriod_(options.period) ? String(options.period) : "";
+  var offset = Math.max(0, Math.floor(Number(options.offset) || 0));
+  var limit = Math.min(200, Math.max(1, Math.floor(Number(options.limit) || OMAD_HISTORY_PAGE_GROUPS)));
+
+  var transactions = readOmadTransactions_(doc);
+  var order = [];
+  var groups = {};
+  for (var i = 0; i < transactions.length; i++) {
+    var t = transactions[i];
+    if (period && transactionPeriod_(t) !== period) continue;
+    var key = String(t.groupId || "");
+    if (!groups[key]) { groups[key] = []; order.push(key); }
+    groups[key].push(t);
+  }
+
+  // Newest first: the later period wins, and within a period the later id.
+  order.sort(function (a, b) {
+    var rowsA = groups[a][0];
+    var rowsB = groups[b][0];
+    var periodOrder = String(transactionPeriod_(rowsB)).localeCompare(String(transactionPeriod_(rowsA)));
+    if (periodOrder !== 0) return periodOrder;
+    return (Number(String(rowsB.id).split("_")[0]) || 0) - (Number(String(rowsA.id).split("_")[0]) || 0);
+  });
+
+  var page = order.slice(offset, offset + limit);
+  var rows = [];
+  for (var g = 0; g < page.length; g++) {
+    var groupRows = groups[page[g]];
+    for (var r = 0; r < groupRows.length; r++) rows.push(groupRows[r]);
+  }
+
+  return {
+    status: "success",
+    period: period,
+    offset: offset,
+    limit: limit,
+    groupTotal: order.length,
+    groupCount: page.length,
+    hasMore: offset + page.length < order.length,
+    transactions: rows
   };
 }
 
@@ -11584,7 +12867,8 @@ function miniOmadSnapshot_(doc, configSheet, requestedPeriod) {
         status: "success", authorized: true,
         omad: buildMiniOmadSummary_(ctx),
         tenants: buildMiniTenantStatus_(ctx),
-        transactions: buildMiniRecentEntries_(ctx)
+        transactions: omadRecentForPeriod_(doc, ctx.model, requestedPeriod, MINI_APP_RECENT_TRANSACTIONS),
+        readModelAt: String(ctx.model.builtAt || "")
       };
     });
 }
@@ -11594,26 +12878,30 @@ function miniOmadSnapshot_(doc, configSheet, requestedPeriod) {
  *
  * The three builders below each used to call `readOmadTransactions_` for
  * themselves, so answering one Mini App request read the whole ledger three
- * times over — and the tenant list and the rate table with it. They are the
- * same rows every time inside a single request, so they are read once here and
- * passed down.
+ * times over. Then it read it once. Now it usually reads it not at all: the
+ * period figures and what each tenant paid come from the materialised read
+ * model (`01d_read_model.gs`), which is the same arithmetic stored against the
+ * ledger's own revision. Opening the app between two entries costs no ledger
+ * pass whatsoever; the first open after an entry rebuilds the model.
  */
 function miniOmadContext_(doc, configSheet, requestedPeriod) {
   var period = isCanonicalPeriod_(requestedPeriod) ? String(requestedPeriod) : currentPeriod_();
-  var transactions = readOmadTransactions_(doc);
+  var model = omadReadModel_(doc, configSheet);
+  var figures = omadPeriodFigures_(model, period);
   return {
     doc: doc,
     // Resolved once here so the summary, the tenant list and the pre-aggregated
     // totals cannot end up describing different months.
     period: period,
     requestedPeriod: requestedPeriod,
-    transactions: transactions,
-    tenants: normalizeTenantList_(safeParseJSON_(getConfig(configSheet, "Omad_Tenants"), [])),
+    model: model,
+    figures: figures,
+    tenants: normalizeTenantList_(safeParseJSON_(getConfigOnce_(configSheet, "Omad_Tenants"), [])),
     rates: getOmadRates_(),
-    // The summary and the per-tenant list both need what each tenant paid, and
-    // each was walking the ledger once per tenant to find out. One pass here
-    // serves both.
-    paidTotals: tenantPaidTotals_(transactions, period),
+    // The summary and the per-tenant list both need what each tenant paid; the
+    // model already holds it, bucketed by the same `tenantPaidTotals_` the
+    // full-ledger path uses.
+    paidTotals: figures.paid,
     ledgerActive: isLedgerActive_(doc)
   };
 }
@@ -11621,17 +12909,17 @@ function miniOmadContext_(doc, configSheet, requestedPeriod) {
 /** The month figures, the balances and the tenant debt total, for one period. */
 function buildMiniOmadSummary_(ctx) {
   var period = ctx.period;
-  var transactions = ctx.transactions;
   var tenants = ctx.tenants;
   var rates = ctx.rates;
-  var actuals = calculateActuals_(transactions, period);
+  var actuals = ctx.figures;
 
   // calculateTenantBalance_ reports a signed difference: negative is owed.
   // Debt and surplus are derived here rather than re-deriving the rent rules.
+  // The pre-aggregated totals are supplied, so no row list is needed.
   var debt = 0;
   var paidTenants = 0;
   for (var i = 0; i < tenants.length; i++) {
-    var balance = calculateTenantBalance_(transactions, tenants[i], period, ctx.paidTotals);
+    var balance = calculateTenantBalance_(null, tenants[i], period, ctx.paidTotals);
     if (balance.difference < 0) debt += -balance.difference;
     else if (balance.expected > 0) paidTenants++;
   }
@@ -11657,13 +12945,12 @@ function buildMiniOmadSummary_(ctx) {
 /** Per-tenant expected / paid / debt for the period, smallest debt last. */
 function buildMiniTenantStatus_(ctx) {
   var period = ctx.period;
-  var transactions = ctx.transactions;
   var tenants = ctx.tenants;
 
   var rows = [];
   for (var i = 0; i < tenants.length; i++) {
     if (tenants[i].active === false) continue;
-    var balance = calculateTenantBalance_(transactions, tenants[i], period, ctx.paidTotals);
+    var balance = calculateTenantBalance_(null, tenants[i], period, ctx.paidTotals);
     rows.push({
       name: tenants[i].name,
       expected: Math.round(balance.expected),
@@ -11674,71 +12961,6 @@ function buildMiniTenantStatus_(ctx) {
   }
   rows.sort(function (a, b) { return b.debt - a.debt; });
   return rows;
-}
-
-/**
- * Recent activity as *business actions* rather than rows.
- *
- * The Mini App shows the same thing the history tab does: a tenant-paid pair
- * is one entry, and the several lines of one payment are one entry with a
- * total, so the reader is never asked to pair rows up themselves.
- */
-function buildMiniRecentEntries_(ctx) {
-  var transactions = ctx.transactions;
-  // Unlike the summary, an unrecognised period here means "no filter" rather
-  // than "this month", so the list is never silently empty.
-  var period = isCanonicalPeriod_(ctx.requestedPeriod) ? String(ctx.requestedPeriod) : "";
-  var rates = ctx.rates;
-
-  var order = [];
-  var groups = {};
-  for (var i = 0; i < transactions.length; i++) {
-    var t = transactions[i];
-    if (period && transactionPeriod_(t) !== period) continue;
-    var key = String(t.groupId || "");
-    if (!groups[key]) { groups[key] = []; order.push(key); }
-    groups[key].push(t);
-  }
-
-  var entries = [];
-  for (var g = 0; g < order.length; g++) {
-    var rows = groups[order[g]];
-    var first = rows[0];
-    var total = 0;
-    for (var r = 0; r < rows.length; r++) {
-      if (rows[r].type === "Income") total += transactionUZS_(rows[r], rates);
-    }
-    var tenantPaid = isTenantPaidGroup_(rows);
-    var income = null;
-    for (var q = 0; q < rows.length; q++) if (rows[q].type === "Income") { income = rows[q]; break; }
-    var lead = tenantPaid ? (income || first) : first;
-    if (!tenantPaid) {
-      total = 0;
-      for (var s = 0; s < rows.length; s++) total += transactionUZS_(rows[s], rates);
-    }
-
-    entries.push({
-      groupId: order[g],
-      id: lead.id,
-      kind: tenantPaid ? ENTRY_KIND_TENANT_PAID : "",
-      type: lead.type,
-      tenant: lead.tenant,
-      period: transactionPeriod_(lead),
-      periodLabel: formatPeriodLabel_(transactionPeriod_(lead)),
-      date: typeof lead.date === "object" && lead.date ? formatLedgerDate_(lead.date) : String(lead.date || ""),
-      amountUZS: Math.round(total),
-      currency: lead.currency,
-      amount: lead.amount,
-      lines: rows.length,
-      comment: String(lead.comment || "").slice(0, 300)
-    });
-  }
-
-  // Newest first, by the timestamp the ids encode.
-  entries.sort(function (a, b) {
-    return (Number(String(b.id).split("_")[0]) || 0) - (Number(String(a.id).split("_")[0]) || 0);
-  });
-  return entries.slice(0, MINI_APP_RECENT_TRANSACTIONS);
 }
 
 /**
@@ -11802,16 +13024,17 @@ function buildMiniCafeSummary_(doc, configSheet) {
   closings.reverse();
 
   var inventoryValue = 0;
-  var lowStock = [];
   for (var v = 0; v < inventory.length; v++) {
     var item = inventory[v];
     var qty = Number(item.qty) || 0;
     var value = Number(item.totalCost);
     inventoryValue += isFinite(value) && value > 0 ? value : qty * (Number(item.unitCost) || 0);
-    if (item.type === "product" && qty <= 3) {
-      lowStock.push({ name: String(item.name || ""), qty: qty, unit: String(item.unit || "") });
-    }
   }
+  // The same rule the admin screen shows, from the same function: the item's
+  // own threshold, then the café's setting, then the default. This used to be a
+  // hardcoded `qty <= 3` on products only, so the phone and the manager's
+  // screen could disagree about what "running out" meant.
+  var lowStock = buildCafeLowStock_(inventory, settings);
 
   var target = Number((settings || {}).dailyTarget) || 0;
   return {

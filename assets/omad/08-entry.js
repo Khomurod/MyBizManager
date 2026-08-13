@@ -113,6 +113,7 @@ function setType(type) {
 function cancelEdit() {
     cart = []; renderCart();
     editingTenantPaidGroupId = "";
+    editingGroupRows = { groupId: '', rows: [] };
     document.getElementById('editId').value = "";
     document.getElementById('msgId').value = "";
     document.getElementById('entryComment').value = "";
@@ -220,10 +221,29 @@ function isTenantPaidRow(t) {
     return String((t && t.entryKind) || "") === 'tenant_paid_expense';
 }
 
-/** Every loaded row of one business action, in cart order. */
+/**
+ * The rows of the entry currently loaded into the form.
+ *
+ * Captured when the edit is opened, not looked up when it is submitted. Since
+ * history is fetched a page at a time, `app.transactions` is a *page* and a
+ * refresh empties it — and an edit that could not find its own rows would stop
+ * correcting them and start creating new ones instead, which is the entry
+ * recorded twice. The form holds what it is editing.
+ */
+let editingGroupRows = { groupId: '', rows: [] };
+
+function rememberEditingGroup(groupId, rows) {
+    editingGroupRows = { groupId: String(groupId || ''), rows: (rows || []).slice() };
+}
+
+/** Every known row of one business action, in cart order. */
 function entryGroupRows(groupId) {
-    return app.transactions
-        .filter(t => txGroupId(t) === groupId)
+    const key = String(groupId || '');
+    const source = (editingGroupRows.groupId === key && editingGroupRows.rows.length)
+        ? editingGroupRows.rows
+        : app.transactions.filter(t => txGroupId(t) === key);
+    return source
+        .slice()
         .sort((a, b) => (Number(String(a.id).split('_')[1]) || 0) - (Number(String(b.id).split('_')[1]) || 0));
 }
 
@@ -256,6 +276,10 @@ async function submitAll() {
 
 function clearEntryForm() {
     cart = [];
+    // The edit is over, so the rows it was holding go with it. Keeping them
+    // would leave the next save aimed at records a correction has already
+    // replaced.
+    editingGroupRows = { groupId: '', rows: [] };
     document.getElementById('entryComment').value = "";
     document.getElementById('editId').value = "";
     document.getElementById('msgId').value = "";
@@ -340,6 +364,7 @@ function editTenantPaid(groupId, rows) {
 
     setType('TenantPaid');
     editingTenantPaidGroupId = groupId;
+    rememberEditingGroup(groupId, rows);
 
     document.getElementById('entryTenant').value = income.tenant;
     document.getElementById('entryMonth').value = recordPeriod(income);
@@ -390,6 +415,7 @@ async function submitTenantPaid() {
 
         clearPendingRequest();
         editingTenantPaidGroupId = "";
+        editingGroupRows = { groupId: '', rows: [] };
         document.getElementById('tempAmount').value = "";
         document.getElementById('entryComment').value = "";
         document.getElementById('cancelEditBtn').classList.add('hidden');
@@ -407,8 +433,19 @@ async function submitTenantPaid() {
     }
 }
 
-/** The group id of the entry currently being edited. */
+/**
+ * The group id of the entry currently being edited.
+ *
+ * The remembered rows answer first, for the same reason `entryGroupRows` reads
+ * them: `app.transactions` is a page of history and a refresh empties it. The
+ * fallback derivation — `grp_legacy_<baseId>` — is right only for rows written
+ * before the column existed, so reaching it for a modern entry names a group
+ * nothing belongs to, and the correction that should have followed becomes a
+ * second entry instead.
+ */
 function editingGroupId(editId) {
+    const remembered = editingGroupRows.rows.some(t => String(t.id) === String(editId));
+    if (remembered) return editingGroupRows.groupId;
     const tx = app.transactions.find(t => String(t.id) === String(editId));
     return tx ? txGroupId(tx) : `grp_legacy_${getTxBaseId(editId)}`;
 }
@@ -476,8 +513,7 @@ async function submitViaWholeListSave() {
 }
 
 function editTx(id) {
-    const target = app.transactions.find(t => String(t.id) === String(id));
-    const groupId = target ? txGroupId(target) : `grp_legacy_${getTxBaseId(id)}`;
+    const groupId = editingGroupId(id);
     const grouped = entryGroupRows(groupId);
 
     const tx = grouped[0];
@@ -489,6 +525,9 @@ function editTx(id) {
     if(grouped.every(isTenantPaidRow)) return editTenantPaid(groupId, grouped);
 
     setType(tx.type);
+    // After setType, never before: switching *into* tenant-paid mode calls
+    // cancelEdit, which is what clears this.
+    rememberEditingGroup(groupId, grouped);
     document.getElementById('entryTenant').value = tx.tenant;
     document.getElementById('entryMonth').value = recordPeriod(tx);
     document.getElementById('entryComment').value = tx.comment || "";
@@ -510,8 +549,9 @@ function editTx(id) {
  * live the rows stay put with status Cancelled and remain in the audit trail.
  */
 async function deleteTx(id) {
-    const target = app.transactions.find(t => String(t.id) === String(id));
-    const groupId = target ? txGroupId(target) : `grp_legacy_${getTxBaseId(id)}`;
+    // Through the same resolver an edit uses, so cancelling from a page of
+    // history that has since been refreshed still names the real group.
+    const groupId = editingGroupId(id);
 
     // Both halves of a tenant-paid expense go together. Removing one would
     // leave a tenant credited for a bill nobody paid, or an expense with no
