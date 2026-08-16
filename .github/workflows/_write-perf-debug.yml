@@ -19,23 +19,45 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Rebuild generated bundle
-        run: npm run build
-      - name: Capture failing test context
+      - name: Restore and adjust performance regression
         run: |
-          set +e
-          npm test > /tmp/write-perf-full.txt 2>&1
-          code=$?
-          {
-            echo "EXIT_CODE=$code"
-            echo "--- FAILURE CONTEXT ---"
-            grep -B25 -A35 -E "not ok [0-9]+" /tmp/write-perf-full.txt || true
-            echo "--- SUMMARY ---"
-            tail -20 /tmp/write-perf-full.txt
-          } > WRITE_PERF_TEST_OUTPUT_TMP.txt
+          git fetch origin main
+          git show origin/main:tests/read-efficiency.test.js > tests/read-efficiency.test.js
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('tests/read-efficiency.test.js')
+          s = p.read_text()
+          s = s.replace("test('a café sale reads the sales sheet once', () => {", "test('a café sale avoids a full sales-sheet pass', () => {", 1)
+          old = "  assert.strictEqual(counts.Cafe_Sales, 1,\n    'the idempotency scan is the only pass; pricing reads the catalogue from config');"
+          new = "  assert.ok(!counts.Cafe_Sales,\n    'idempotency reads only the receipt-details column; pricing reads the catalogue from config');"
+          if old not in s:
+              raise SystemExit('expected café assertion not found')
+          p.write_text(s.replace(old, new, 1))
+          PY
+      - name: Update app brief
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('docs/APP_BRIEF.md')
+          s = p.read_text()
+          old = "- **Entry (`Yangi`)** — a cart of lines (amount + currency + method) saved as\n  one business action. Three shapes: ordinary income, ordinary expense, and the\n  **tenant-paid expense pair**.\n"
+          new = "- **Entry (`Yangi`)** — a cart of lines (amount + currency + method) saved as\n  one business action. Three shapes: ordinary income, ordinary expense, and the\n  **tenant-paid expense pair**. A new multi-line ledger entry is committed by\n  one batch action and one ledger write; the single-row API remains the safe\n  rollout fallback and the edit/correction path.\n"
+          if old in s:
+              s = s.replace(old, new, 1)
+          old2 = "- **Fast saving:** a write returns as soon as the record is stored; at most\n  **one** queued job drains inline (`JOB_QUEUE_INLINE_BATCH = 1`), so response\n  time does not grow with the backlog. `deferReports: true` skips the inline\n  drain. **Failing to *queue* a report never fails a save that already\n  succeeded** — the enqueue is wrapped and logged.\n"
+          new2 = "- **Fast saving:** a write returns as soon as the record is stored. Web\n  accounting writes send `deferReports: true`, so Telegram never runs before\n  the browser receives confirmation; the dashboard refresh then happens in the\n  background. Other callers may drain at most **one** queued job inline\n  (`JOB_QUEUE_INLINE_BATCH = 1`), and the time-driven trigger is the durable\n  sender. **Failing to *queue* a report never fails a save that already\n  succeeded** — the enqueue is wrapped and logged.\n"
+          if old2 in s:
+              s = s.replace(old2, new2, 1)
+          p.write_text(s)
+          PY
+      - name: Build and test
+        run: |
+          npm run build
+          npm test
+      - name: Commit finalized files
+        run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add WRITE_PERF_TEST_OUTPUT_TMP.txt
-          git commit -m "Capture failing write-performance test context" || true
+          git add script.gs docs/APP_BRIEF.md tests/read-efficiency.test.js
+          git commit -m "Finalize write-performance bundle and regressions" || exit 0
           git push origin HEAD:perf/write-path-responsiveness-clean
-          exit 0
