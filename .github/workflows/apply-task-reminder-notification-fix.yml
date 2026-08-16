@@ -1,0 +1,51 @@
+name: Apply task reminder notification fix
+
+on:
+  push:
+    branches:
+      - fix/task-reminder-notification-timing
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Apply deterministic source, tests, and docs changes
+        run: python3 scripts/apply-task-reminder-notification-fix.py
+
+      - name: Regenerate Apps Script bundle
+        run: npm run build
+
+      - name: Validate generated bundle and source
+        run: |
+          npm run build:check
+          npm run lint
+
+      - name: Run unit and integration tests
+        run: npm test
+
+      - name: Scan changed tree for secrets
+        run: npm run scan:secrets
+
+      - name: Remove one-off migration helpers
+        run: git rm scripts/apply-task-reminder-notification-fix.py .github/workflows/apply-task-reminder-notification-fix.yml
+
+      - name: Commit the verified fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps-script/19_tasks_scheduler.gs tests/task-trigger-cycle.test.js tests/task-reminders.test.js docs/TASKS.md docs/APP_BRIEF.md script.gs
+          git diff --cached --check
+          git commit -m "Use reminder times as the task notification schedule"
+          git push origin HEAD:fix/task-reminder-notification-timing
