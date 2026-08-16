@@ -1,0 +1,105 @@
+name: Final write-performance audit pass
+
+on:
+  push:
+    branches:
+      - fix/write-performance-audit-hardening
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Apply final audit refinements
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('apps-script/14a_ledger_write_performance.gs')
+          text = path.read_text()
+          old = '''/**\n * Finds any rows already written by the old line-by-line browser during a\n * frontend/backend rollout. One narrow Request_ID-column read answers every\n * expected line, so recovering a partial legacy submission does not re-create\n * the full-ledger scan this module removes.\n */\nfunction batchRequestId_(requestBase, count, index) {\n'''
+          new = '''/** Stable per-line id that also records the original cart size. */\nfunction batchRequestId_(requestBase, count, index) {\n'''
+          if old not in text:
+              raise SystemExit('stale batch comment anchor missing')
+          text = text.replace(old, new, 1)
+
+          old = '''    var requestedGroupId = String(payload.groupId || "").trim();\n    var groupId = requestedGroupId || (firstExisting ? firstExisting.groupId : newEntryGroupId_());\n'''
+          new = '''    if (existingCount > 1) {\n      for (var r = 0; r < existingLines.length; r++) {\n        if (!existingLines[r] || existingLines[r] === firstExisting) continue;\n        if (Number(existingLines[r].rateBuy) !== Number(firstExisting.rateBuy) ||\n            Number(existingLines[r].rateSell) !== Number(firstExisting.rateSell)) {\n          return {\n            status: "error",\n            code: "batch_retry_conflict",\n            message: "Qayta urinish avval saqlangan kurslar bilan mos kelmadi. Ma'lumot o'zgartirilmadi."\n          };\n        }\n      }\n    }\n\n    var requestedGroupId = String(payload.groupId || "").trim();\n    var groupId = requestedGroupId || (firstExisting ? firstExisting.groupId : newEntryGroupId_());\n'''
+          if old not in text:
+              raise SystemExit('rate consistency insertion anchor missing')
+          path.write_text(text.replace(old, new, 1))
+
+          path = Path('tests/write-performance.test.js')
+          text = path.read_text()
+          marker = "test('legacy uncounted rollout rows are accepted only when the whole retry already exists', () => {"
+          if marker not in text:
+              raise SystemExit('rate conflict test anchor missing')
+          added = r'''test('a partial rollout with conflicting frozen rates fails closed', () => {
+            const gas = boot();
+            const payload = batchPayload();
+            const first = payload.lines[0];
+            const second = payload.lines[1];
+
+            assert.strictEqual(post(gas, {
+              action: 'create_transaction', requestId: payload.requestId + '__n3_0',
+              groupId: payload.groupId, period: payload.period, tenant: payload.tenant,
+              type: payload.type, comment: payload.comment, source: payload.source,
+              createdBy: payload.createdBy, amount: first.amount, currency: first.currency,
+              method: first.method, deferReports: true
+            }).status, 'success');
+
+            const config = gas.__spreadsheet.getSheetByName('System_Config');
+            config.getRange(1, 2).setValue(JSON.stringify({ '2026-08': { buy: 13100, sell: 14000 } }));
+
+            assert.strictEqual(post(gas, {
+              action: 'create_transaction', requestId: payload.requestId + '__n3_1',
+              groupId: payload.groupId, period: payload.period, tenant: payload.tenant,
+              type: payload.type, comment: payload.comment, source: payload.source,
+              createdBy: payload.createdBy, amount: second.amount, currency: second.currency,
+              method: second.method, deferReports: true
+            }).status, 'success');
+
+            const retry = post(gas, payload);
+            assert.strictEqual(retry.status, 'error');
+            assert.strictEqual(retry.code, 'batch_retry_conflict');
+            assert.strictEqual(gas.__spreadsheet.getSheetByName('Omad_Transactions_V2').data.length - 1, 2,
+              'the missing third line is not guessed into an inconsistent group');
+          });
+
+          '''
+          path.write_text(text.replace(marker, added + marker, 1))
+
+          path = Path('tests/static-analysis.test.js')
+          text = path.read_text()
+          old = '''test('the App Brief lists every Apps Script backend module', () => {\n  const brief = fs.readFileSync(path.join(ROOT, 'docs', 'APP_BRIEF.md'), 'utf8');\n  const modules = fs.readdirSync(path.join(ROOT, 'apps-script'))\n    .filter(name => name.endsWith('.gs'))\n    .sort();\n  const missing = modules.filter(name => !brief.includes('`' + name + '`'));\n  assert.deepStrictEqual(missing, [],\n    `APP_BRIEF.md backend module map is missing: ${missing.join(', ')}`);\n});\n'''
+          new = '''test('the App Brief lists every Apps Script backend module in its module map', () => {\n  const brief = fs.readFileSync(path.join(ROOT, 'docs', 'APP_BRIEF.md'), 'utf8');\n  const start = brief.indexOf('### Backend modules');\n  const end = brief.indexOf('## 4. Main features and workflows', start);\n  assert.ok(start >= 0 && end > start, 'the App Brief backend module map exists');\n  const moduleMap = brief.slice(start, end);\n  const modules = fs.readdirSync(path.join(ROOT, 'apps-script'))\n    .filter(name => name.endsWith('.gs'))\n    .sort();\n  const missing = modules.filter(name => !moduleMap.includes('`' + name + '`'));\n  assert.deepStrictEqual(missing, [],\n    `APP_BRIEF.md backend module map is missing: ${missing.join(', ')}`);\n});\n'''
+          if old not in text:
+              raise SystemExit('module-map guard anchor missing')
+          path.write_text(text.replace(old, new, 1))
+          PY
+      - name: Regenerate and verify
+        shell: bash
+        run: |
+          npm run build
+          npm run build:check
+          npm run lint
+          npm test
+          git diff --check
+      - name: Commit final audit refinements
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/write-audit-final-pass.yml
+          git add apps-script/14a_ledger_write_performance.gs tests/write-performance.test.js tests/static-analysis.test.js script.gs
+          git commit -m "Fail closed on inconsistent batch rate snapshots"
+          git push
