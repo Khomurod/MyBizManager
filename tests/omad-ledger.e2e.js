@@ -3,8 +3,9 @@
 /**
  * The Omad admin against the append-only ledger, in a real browser.
  *
- * Before cutover the app keeps using the whole-list save; after cutover entry,
- * edit and delete go through create/correct/cancel and carry request ids.
+ * Before cutover the app keeps using the whole-list save; after cutover new
+ * entries are submitted as one batch while edits/deletes keep their existing
+ * correct/create/cancel semantics. Every write carries stable request ids.
  */
 
 const test = require('node:test');
@@ -122,6 +123,18 @@ describe('Omad admin ledger (browser)', () => {
               activeSheet: ledgerActive ? 'Omad_Transactions_V2' : 'Omad_Transactions'
             }
           };
+        } else if (payload.action === 'create_transaction_batch') {
+          body = {
+            status: 'success',
+            transactions: (payload.lines || []).map((line, index) => tx(`created_${index}`, {
+              amount: line.amount,
+              currency: line.currency,
+              method: line.method,
+              requestId: `${payload.requestId}_${index}`,
+              groupId: payload.groupId
+            })),
+            reportJobId: 'job_1'
+          };
         } else if (payload.action === 'create_transaction' || payload.action === 'correct_transaction') {
           body = { status: 'success', transaction: tx('created_0'), reportJobId: 'job_1' };
         } else {
@@ -152,27 +165,29 @@ describe('Omad admin ledger (browser)', () => {
 
   // --------------------------------------------------------------- create
 
-  test('a new entry becomes a create_transaction with a request id', async () => {
+  test('a new entry becomes one create_transaction_batch with a stable request id', async () => {
     const { page, context, requests, pageErrors } = await openAdmin();
 
     await fillEntry(page);
     await page.evaluate(() => submitAll());
 
-    const creates = requests.filter(r => r.action === 'create_transaction');
-    assert.strictEqual(creates.length, 1);
-    assert.strictEqual(creates[0].period, '2026-01');
-    assert.strictEqual(creates[0].amount, 500000);
-    assert.strictEqual(creates[0].source, 'Web');
-    assert.strictEqual(creates[0].createdBy, 'tester');
-    assert.ok(/^web_\d+_[a-z0-9]+_0$/.test(creates[0].requestId), creates[0].requestId);
+    const batches = requests.filter(r => r.action === 'create_transaction_batch');
+    assert.strictEqual(batches.length, 1);
+    assert.strictEqual(batches[0].period, '2026-01');
+    assert.deepStrictEqual(batches[0].lines.map(line => line.amount), [500000]);
+    assert.strictEqual(batches[0].source, 'Web');
+    assert.strictEqual(batches[0].createdBy, 'tester');
+    assert.strictEqual(batches[0].deferReports, true);
+    assert.ok(/^web_\d+_[a-z0-9]+$/.test(batches[0].requestId), batches[0].requestId);
 
-    // The whole-list save is not used once the ledger is live.
+    // The whole-list and per-line create paths are not used on the normal live path.
+    assert.deepStrictEqual(requests.filter(r => r.action === 'create_transaction'), []);
     assert.deepStrictEqual(requests.filter(r => r.action === 'save_omad'), []);
     assert.deepStrictEqual(pageErrors, []);
     await context.close();
   });
 
-  test('each cart line becomes its own transaction with its own request id', async () => {
+  test('all cart lines travel in one batch request', async () => {
     const { page, context, requests } = await openAdmin();
 
     await page.evaluate(async () => {
@@ -185,15 +200,16 @@ describe('Omad admin ledger (browser)', () => {
       await submitAll();
     });
 
-    const creates = requests.filter(r => r.action === 'create_transaction');
-    assert.deepStrictEqual(creates.map(c => c.amount), [100000, 200000, 300000]);
-    assert.strictEqual(new Set(creates.map(c => c.requestId)).size, 3);
-    // All three share one submission prefix.
-    assert.strictEqual(new Set(creates.map(c => c.requestId.replace(/_\d+$/, ''))).size, 1);
+    const batches = requests.filter(r => r.action === 'create_transaction_batch');
+    assert.strictEqual(batches.length, 1);
+    assert.deepStrictEqual(batches[0].lines.map(line => line.amount), [100000, 200000, 300000]);
+    assert.ok(batches[0].requestId);
+    assert.ok(batches[0].groupId);
+    assert.deepStrictEqual(requests.filter(r => r.action === 'create_transaction'), []);
     await context.close();
   });
 
-  test('a double click cannot submit twice', async () => {
+  test('a double click cannot submit the batch twice', async () => {
     const { page, context, requests } = await openAdmin();
 
     await fillEntry(page);
@@ -205,17 +221,17 @@ describe('Omad admin ledger (browser)', () => {
       await first;
     });
 
-    assert.strictEqual(requests.filter(r => r.action === 'create_transaction').length, 1);
+    assert.strictEqual(requests.filter(r => r.action === 'create_transaction_batch').length, 1);
     await context.close();
   });
 
-  test('a retry after a failure reuses the same request id', async () => {
+  test('a retry after a failure reuses the same batch request id', async () => {
     let failNext = true;
     const { page, context, requests } = await openAdmin({
       respond: payload => {
-        if (payload.action !== 'create_transaction') return null;
+        if (payload.action !== 'create_transaction_batch') return null;
         if (failNext) { failNext = false; return { status: 'error', message: 'temporary' }; }
-        return { status: 'success', transaction: tx('created_0') };
+        return { status: 'success', transactions: [] };
       }
     });
 
@@ -223,24 +239,25 @@ describe('Omad admin ledger (browser)', () => {
     await page.evaluate(() => submitAll());
     await page.evaluate(() => submitAll());
 
-    const creates = requests.filter(r => r.action === 'create_transaction');
-    assert.strictEqual(creates.length, 2, 'the submission was retried');
-    assert.strictEqual(creates[0].requestId, creates[1].requestId,
+    const batches = requests.filter(r => r.action === 'create_transaction_batch');
+    assert.strictEqual(batches.length, 2, 'the submission was retried');
+    assert.strictEqual(batches[0].requestId, batches[1].requestId,
       'the retry carries the same request id, so the server de-duplicates it');
+    assert.strictEqual(batches[0].groupId, batches[1].groupId,
+      'the retry remains the same business entry');
     await context.close();
   });
 
-  test('a browser refresh mid-save resubmits with the same request id', async () => {
-    // The first submit never gets a response - the tab is reloaded first.
+  test('a browser refresh after a failed batch resubmits with the same request id', async () => {
     const { page, context, requests } = await openAdmin({
-      respond: payload => (payload.action === 'create_transaction'
+      respond: payload => (payload.action === 'create_transaction_batch'
         ? { status: 'error', message: 'connection lost' }
         : null)
     });
 
     await fillEntry(page);
     await page.evaluate(() => submitAll());
-    const firstRequestId = requests.filter(r => r.action === 'create_transaction')[0].requestId;
+    const firstRequestId = requests.filter(r => r.action === 'create_transaction_batch')[0].requestId;
 
     // Reload. The pending request id survives in sessionStorage.
     await page.reload();
@@ -249,26 +266,46 @@ describe('Omad admin ledger (browser)', () => {
     await fillEntry(page);
     await page.evaluate(() => submitAll());
 
-    const retried = requests.filter(r => r.action === 'create_transaction');
+    const retried = requests.filter(r => r.action === 'create_transaction_batch');
     assert.strictEqual(retried[retried.length - 1].requestId, firstRequestId,
       'the server sees the same request id and de-duplicates it');
     await context.close();
   });
 
-  test('a successful save clears the pending request id', async () => {
+  test('a successful batch save clears the pending request id', async () => {
     const { page, context, requests } = await openAdmin();
 
     await fillEntry(page);
     await page.evaluate(() => submitAll());
-    const first = requests.filter(r => r.action === 'create_transaction')[0].requestId;
+    const first = requests.filter(r => r.action === 'create_transaction_batch')[0].requestId;
 
     await fillEntry(page, { amount: '700000', comment: 'second' });
     await page.evaluate(() => submitAll());
-    const second = requests.filter(r => r.action === 'create_transaction')[1].requestId;
+    const second = requests.filter(r => r.action === 'create_transaction_batch')[1].requestId;
 
     assert.notStrictEqual(first, second, 'the next entry is a new request');
     const stored = await page.evaluate(() => sessionStorage.getItem('omad_pending_request'));
     assert.strictEqual(stored, null);
+    await context.close();
+  });
+
+  test('an older backend falls back to the proven per-line create path', async () => {
+    const { page, context, requests } = await openAdmin({
+      respond: payload => {
+        if (payload.action === 'create_transaction_batch') {
+          return { status: 'error', message: 'Unknown action: create_transaction_batch' };
+        }
+        return null;
+      }
+    });
+
+    await fillEntry(page);
+    await page.evaluate(() => submitAll());
+
+    assert.strictEqual(requests.filter(r => r.action === 'create_transaction_batch').length, 1);
+    const creates = requests.filter(r => r.action === 'create_transaction');
+    assert.strictEqual(creates.length, 1);
+    assert.ok(/_0$/.test(creates[0].requestId));
     await context.close();
   });
 
@@ -361,6 +398,7 @@ describe('Omad admin ledger (browser)', () => {
     await page.evaluate(() => submitAll());
 
     assert.deepStrictEqual(requests.filter(r => r.action === 'create_transaction'), []);
+    assert.deepStrictEqual(requests.filter(r => r.action === 'create_transaction_batch'), []);
     const saves = requests.filter(r => r.action === 'save_omad');
     assert.strictEqual(saves.length, 1);
     assert.strictEqual(saves[0].telegramReport.operation, 'transaction_upsert');
