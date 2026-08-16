@@ -274,6 +274,7 @@ Secrets and configuration that must never reach the browser.
 | `TELEGRAM_WEBHOOK_URL` | no | Last configured webhook URL (without the secret) |
 | `TELEGRAM_WEBHOOK_SECRET` | **yes** | Random value embedded in the webhook URL; every inbound update must present it |
 | `TELEGRAM_WEBHOOK_SECRET_PREVIOUS` | **yes, transient** | Accepted only during a webhook-secret rotation, then cleared |
+| `TELEGRAM_WEBHOOK_ROTATED_AT` | no | Timestamp of the last successfully verified webhook-secret rotation |
 | `TELEGRAM_WEBHOOK_STATUS` | no | JSON status snapshot |
 | `TELEGRAM_LAST_SUCCESS` | no | `{ action, at }` |
 | `TELEGRAM_LAST_ERROR` | no | `{ action, message, at }` — redacted |
