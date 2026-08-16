@@ -1,0 +1,36 @@
+name: Capture write performance tests
+
+on:
+  push:
+    branches: ["perf/write-path-responsiveness-clean"]
+
+permissions:
+  contents: write
+
+jobs:
+  capture:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: perf/write-path-responsiveness-clean
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Rebuild generated bundle
+        run: npm run build
+      - name: Capture automated test output
+        run: |
+          set +e
+          npm test > WRITE_PERF_TEST_OUTPUT_TMP.txt 2>&1
+          code=$?
+          echo "" >> WRITE_PERF_TEST_OUTPUT_TMP.txt
+          echo "EXIT_CODE=$code" >> WRITE_PERF_TEST_OUTPUT_TMP.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add WRITE_PERF_TEST_OUTPUT_TMP.txt
+          git commit -m "Capture temporary write-performance test output" || true
+          git push origin HEAD:perf/write-path-responsiveness-clean
+          exit 0
