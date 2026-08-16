@@ -206,6 +206,38 @@ test('a counted partial rollout resumes with the rates frozen by its first line'
   assert.strictEqual(rows[1][15], 250000, 'the resumed USD line uses the original sell rate');
 });
 
+test('a partial rollout with conflicting frozen rates fails closed', () => {
+  const gas = boot();
+  const payload = batchPayload();
+  const first = payload.lines[0];
+  const second = payload.lines[1];
+
+  assert.strictEqual(post(gas, {
+    action: 'create_transaction', requestId: payload.requestId + '__n3_0',
+    groupId: payload.groupId, period: payload.period, tenant: payload.tenant,
+    type: payload.type, comment: payload.comment, source: payload.source,
+    createdBy: payload.createdBy, amount: first.amount, currency: first.currency,
+    method: first.method, deferReports: true
+  }).status, 'success');
+
+  const config = gas.__spreadsheet.getSheetByName('System_Config');
+  config.getRange(1, 2).setValue(JSON.stringify({ '2026-08': { buy: 13100, sell: 14000 } }));
+
+  assert.strictEqual(post(gas, {
+    action: 'create_transaction', requestId: payload.requestId + '__n3_1',
+    groupId: payload.groupId, period: payload.period, tenant: payload.tenant,
+    type: payload.type, comment: payload.comment, source: payload.source,
+    createdBy: payload.createdBy, amount: second.amount, currency: second.currency,
+    method: second.method, deferReports: true
+  }).status, 'success');
+
+  const retry = post(gas, payload);
+  assert.strictEqual(retry.status, 'error');
+  assert.strictEqual(retry.code, 'batch_retry_conflict');
+  assert.strictEqual(gas.__spreadsheet.getSheetByName('Omad_Transactions_V2').data.length - 1, 2,
+    'the missing third line is not guessed into an inconsistent group');
+});
+
 test('legacy uncounted rollout rows are accepted only when the whole retry already exists', () => {
   const gas = boot();
   const payload = batchPayload();

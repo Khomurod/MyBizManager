@@ -7896,12 +7896,7 @@ function appendTransactionCreatedAuditsBatch_(doc, transactions) {
   } catch (error) {}
 }
 
-/**
- * Finds any rows already written by the old line-by-line browser during a
- * frontend/backend rollout. One narrow Request_ID-column read answers every
- * expected line, so recovering a partial legacy submission does not re-create
- * the full-ledger scan this module removes.
- */
+/** Stable per-line id that also records the original cart size. */
 function batchRequestId_(requestBase, count, index) {
   return String(requestBase) + "__n" + String(count) + "_" + String(index);
 }
@@ -8119,6 +8114,20 @@ function createTransactionBatch_(doc, input) {
       if (!existingLines[e]) continue;
       existingCount++;
       if (!firstExisting) firstExisting = existingLines[e];
+    }
+
+    if (existingCount > 1) {
+      for (var r = 0; r < existingLines.length; r++) {
+        if (!existingLines[r] || existingLines[r] === firstExisting) continue;
+        if (Number(existingLines[r].rateBuy) !== Number(firstExisting.rateBuy) ||
+            Number(existingLines[r].rateSell) !== Number(firstExisting.rateSell)) {
+          return {
+            status: "error",
+            code: "batch_retry_conflict",
+            message: "Qayta urinish avval saqlangan kurslar bilan mos kelmadi. Ma'lumot o'zgartirilmadi."
+          };
+        }
+      }
     }
 
     var requestedGroupId = String(payload.groupId || "").trim();

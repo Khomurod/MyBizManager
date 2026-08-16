@@ -93,12 +93,16 @@ test('the task wizard never reaches into accounting data', () => {
     `19a_tasks_wizard.gs must not touch accounting data: ${offenders.join(', ')}`);
 });
 
-test('the App Brief lists every Apps Script backend module', () => {
+test('the App Brief lists every Apps Script backend module in its module map', () => {
   const brief = fs.readFileSync(path.join(ROOT, 'docs', 'APP_BRIEF.md'), 'utf8');
+  const start = brief.indexOf('### Backend modules');
+  const end = brief.indexOf('## 4. Main features and workflows', start);
+  assert.ok(start >= 0 && end > start, 'the App Brief backend module map exists');
+  const moduleMap = brief.slice(start, end);
   const modules = fs.readdirSync(path.join(ROOT, 'apps-script'))
     .filter(name => name.endsWith('.gs'))
     .sort();
-  const missing = modules.filter(name => !brief.includes('`' + name + '`'));
+  const missing = modules.filter(name => !moduleMap.includes('`' + name + '`'));
   assert.deepStrictEqual(missing, [],
     `APP_BRIEF.md backend module map is missing: ${missing.join(', ')}`);
 });
