@@ -1,84 +1,84 @@
 EXIT_CODE=1
 --- FAILURE CONTEXT ---
-# Subtest: the café tab does not parse every receipt ever written
-ok 428 - the café tab does not parse every receipt ever written
+ok 420 - selected months are de-duplicated, sorted and range-checked
   ---
-  duration_ms: 9.698222
+  duration_ms: 3.724943
   type: 'test'
   ...
-# Subtest: the café summary still totals the whole history
-ok 429 - the café summary still totals the whole history
+# Subtest: the schedule is described in plain Uzbek
+ok 421 - the schedule is described in plain Uzbek
   ---
-  duration_ms: 8.351033
+  duration_ms: 4.845649
   type: 'test'
   ...
-# Subtest: composing a transaction report reads the legacy sheet twice at most
-ok 430 - composing a transaction report reads the legacy sheet twice at most
+# /home/runner/work/MyBizManager/MyBizManager/tests/read-efficiency.test.js:1
+# PLACEHOLDER
+# ^
+# ReferenceError: PLACEHOLDER is not defined
+#     at Object.<anonymous> (/home/runner/work/MyBizManager/MyBizManager/tests/read-efficiency.test.js:1:1)
+#     at Module._compile (node:internal/modules/cjs/loader:1781:14)
+#     at Object..js (node:internal/modules/cjs/loader:1913:10)
+#     at Module.load (node:internal/modules/cjs/loader:1505:32)
+#     at Function._load (node:internal/modules/cjs/loader:1309:12)
+#     at wrapModuleLoad (node:internal/modules/cjs/loader:254:19)
+#     at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:171:5)
+#     at node:internal/main/run_main_module:36:49
+# Node.js v22.23.2
+# Subtest: tests/read-efficiency.test.js
+not ok 24 - tests/read-efficiency.test.js
   ---
-  duration_ms: 28.89009
+  duration_ms: 37.00312
   type: 'test'
-  ...
-# Subtest: composing a report on the ledger reads it once, writing back by row number
-ok 431 - composing a report on the ledger reads it once, writing back by row number
-  ---
-  duration_ms: 10.959563
-  type: 'test'
-  ...
-# Subtest: a café sale reads the sales sheet once
-not ok 432 - a café sale reads the sales sheet once
-  ---
-  duration_ms: 10.847165
-  type: 'test'
-  location: '/home/runner/work/MyBizManager/MyBizManager/tests/read-efficiency.test.js:384:1'
+  location: '/home/runner/work/MyBizManager/MyBizManager/tests/read-efficiency.test.js:1:1'
   failureType: 'testCodeFailure'
-  error: |-
-    the idempotency scan is the only pass; pricing reads the catalogue from config
-    
-    undefined !== 1
-    
-  code: 'ERR_ASSERTION'
-  name: 'AssertionError'
-  expected: 1
-  operator: 'strictEqual'
-  stack: |-
-    TestContext.<anonymous> (/home/runner/work/MyBizManager/MyBizManager/tests/read-efficiency.test.js:403:10)
-    Test.runInAsyncScope (node:async_hooks:214:14)
-    Test.run (node:internal/test_runner/test:1047:25)
-    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
-    Test.postRun (node:internal/test_runner/test:1173:19)
-    Test.run (node:internal/test_runner/test:1101:12)
-    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  exitCode: 1
+  signal: ~
+  error: 'test failed'
+  code: 'ERR_TEST_FAILURE'
   ...
-# Subtest: a café void reads the sales sheet once
-ok 433 - a café void reads the sales sheet once
+# Subtest: save_omad stores transactions, tenants, rates and template expenses
+ok 423 - save_omad stores transactions, tenants, rates and template expenses
   ---
-  duration_ms: 5.225077
+  duration_ms: 21.82605
   type: 'test'
   ...
-# Subtest: verifying the migration reads the ledger once
-ok 434 - verifying the migration reads the ledger once
+# Subtest: save_omad takes a backup snapshot before writing
+ok 424 - save_omad takes a backup snapshot before writing
   ---
-  duration_ms: 8.318544
+  duration_ms: 8.093143
   type: 'test'
   ...
+# Subtest: save_omad refuses to wipe existing transactions with an empty payload
+ok 425 - save_omad refuses to wipe existing transactions with an empty payload
+  ---
+  duration_ms: 7.985702
+  type: 'test'
+  ...
+# Subtest: changed transactions are archived before being overwritten
+ok 426 - changed transactions are archived before being overwritten
+  ---
+  duration_ms: 8.107264
+  type: 'test'
+  ...
+# Subtest: USD converts with the sell rate by default; UZS is unchanged
 --- SUMMARY ---
-ok 904 - cafe duplicate lookup reads only receipt details, not the whole sales history
+ok 888 - cafe duplicate lookup reads only receipt details, not the whole sales history
   ---
-  duration_ms: 5.609984
+  duration_ms: 5.326638
   type: 'test'
   ...
 # Subtest: the Omad browser batches new carts, defers Telegram, and has old-backend fallback
-ok 905 - the Omad browser batches new carts, defers Telegram, and has old-backend fallback
+ok 889 - the Omad browser batches new carts, defers Telegram, and has old-backend fallback
   ---
-  duration_ms: 0.636188
+  duration_ms: 0.494035
   type: 'test'
   ...
-1..905
-# tests 905
+1..889
+# tests 889
 # suites 0
-# pass 904
+# pass 888
 # fail 1
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 4307.710577
+# duration_ms 4579.551711
