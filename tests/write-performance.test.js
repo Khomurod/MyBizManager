@@ -35,7 +35,7 @@ function post(gas, body) {
 
 function batchPayload(overrides = {}) {
   return {
-    action: 'create_transaction',
+    action: 'create_transaction_batch',
     requestId: 'batch_req_1',
     groupId: 'grp_write_perf_1',
     period: '2026-08',
@@ -126,7 +126,7 @@ test('ordinary single-row creates no longer full-scan the ledger to dedupe or mi
   };
 
   const result = post(gas, {
-    action: 'create_transaction', adminKey: ADMIN_KEY, requestId: 'single_fast',
+    action: 'create_transaction', requestId: 'single_fast',
     period: '2026-08', tenant: 'Tehnopark', type: 'Income', amount: 50000,
     currency: 'UZS', method: 'Naqd', deferReports: true
   });
@@ -167,9 +167,13 @@ test('cafe duplicate lookup reads only receipt details, not the whole sales hist
   assert.strictEqual(fullPasses, 0, 'sale dedupe must not transfer all sale columns');
 });
 
-test('the Omad browser sends a new cart as one batch and settles follow-up work in background', () => {
+test('the Omad browser batches new carts, defers Telegram, and has old-backend fallback', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'assets', 'omad', '12-app.js'), 'utf8');
+  assert.match(source, /create_transaction_batch/);
   assert.match(source, /lines:\s*cart\.map/);
   assert.match(source, /deferReports\s*=\s*true/);
+  assert.match(source, /unknown action/i);
+  assert.match(source, /submitNewLedgerEntryLegacyFallback_/);
   assert.match(source, /settleOmadWriteInBackground_/);
+  assert.doesNotMatch(source, /action:\s*['"]process_jobs['"]/);
 });
