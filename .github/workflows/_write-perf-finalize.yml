@@ -1,0 +1,73 @@
+name: Finalize write performance branch
+
+on:
+  push:
+    branches: ["perf/write-path-responsiveness-clean"]
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: perf/write-path-responsiveness-clean
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Update the living app brief
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('docs/APP_BRIEF.md')
+          s = p.read_text()
+          old = """- **Entry (`Yangi`)** — a cart of lines (amount + currency + method) saved as
+  one business action. Three shapes: ordinary income, ordinary expense, and the
+  **tenant-paid expense pair**.
+"""
+          new = """- **Entry (`Yangi`)** — a cart of lines (amount + currency + method) saved as
+  one business action. Three shapes: ordinary income, ordinary expense, and the
+  **tenant-paid expense pair**. A new multi-line ledger entry is committed by
+  one batch action and one ledger write; the single-row API remains the safe
+  rollout fallback and the edit/correction path.
+"""
+          if old not in s:
+              raise SystemExit('Entry paragraph not found; refusing blind doc edit')
+          s = s.replace(old, new, 1)
+          old2 = """- **Fast saving:** a write returns as soon as the record is stored; at most
+  **one** queued job drains inline (`JOB_QUEUE_INLINE_BATCH = 1`), so response
+  time does not grow with the backlog. `deferReports: true` skips the inline
+  drain. **Failing to *queue* a report never fails a save that already
+  succeeded** — the enqueue is wrapped and logged.
+"""
+          new2 = """- **Fast saving:** a write returns as soon as the record is stored. Web
+  accounting writes send `deferReports: true`, so Telegram never runs before
+  the browser receives confirmation; the dashboard refresh then happens in the
+  background. Other callers may drain at most **one** queued job inline
+  (`JOB_QUEUE_INLINE_BATCH = 1`), and the time-driven trigger is the durable
+  sender. **Failing to *queue* a report never fails a save that already
+  succeeded** — the enqueue is wrapped and logged.
+"""
+          if old2 not in s:
+              raise SystemExit('Fast-saving paragraph not found; refusing blind doc edit')
+          s = s.replace(old2, new2, 1)
+          p.write_text(s)
+          PY
+      - name: Rebuild Apps Script bundle
+        run: npm run build
+      - name: Run automated tests
+        run: npm test
+      - name: Commit generated bundle and brief
+        run: |
+          if git diff --quiet -- script.gs docs/APP_BRIEF.md; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add script.gs docs/APP_BRIEF.md
+          git commit -m "Finalize write-performance bundle and documentation"
+          git push origin HEAD:perf/write-path-responsiveness-clean
