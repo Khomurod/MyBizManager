@@ -119,6 +119,163 @@ function initSelectors() {
 // buildOmadGroupReportMessage_ in script.gs), so there is exactly one
 // implementation of the report format.
 
+// ------------------------------------------------------- write responsiveness
+// Financial writes are complete the moment the backend confirms the ledger row
+// is stored. A fresh dashboard and the Telegram group card are useful follow-up
+// work, but neither is a reason to keep the Save button blocked after that
+// confirmation.
+
+/**
+ * Financial report jobs stay durable in Omad_Job_Queue. This merely asks for a
+ * prompt flush after the UI has already been released; the five-minute trigger
+ * remains the fallback if this best-effort request is lost.
+ */
+function settleOmadWriteInBackground_() {
+    setTimeout(() => {
+        syncData();
+    }, 0);
+    setTimeout(() => {
+        callBackend({ action: 'process_jobs' }).catch(error => {
+            console.warn('Queued report flush deferred to trigger', error);
+        });
+    }, 400);
+}
+
+/**
+ * Never make an accounting save wait for Telegram. The queue is written before
+ * the response, and settleOmadWriteInBackground_ asks for a flush afterwards.
+ */
+var callBackendBeforeWritePerf_ = callBackend;
+callBackend = async function(payload) {
+    const body = { ...(payload || {}) };
+    const action = String(body.action || '');
+    if (action === 'create_transaction' || action === 'correct_transaction' ||
+        action === 'cancel_transaction' || action === 'tenant_paid_expense' ||
+        action === 'save_omad') {
+        body.deferReports = true;
+    }
+    return callBackendBeforeWritePerf_(body);
+};
+
+/**
+ * New ledger entries are one business action, so send their cart lines as one
+ * backend operation. Edits keep the proven correct/cancel semantics line by
+ * line, but they also stop waiting for Telegram and the post-save refresh.
+ */
+submitViaLedger = async function() {
+    const requestBase = nextRequestBase();
+    const common = currentEntryCommon();
+    const editId = document.getElementById('editId').value;
+    const groupId = editId ? editingGroupId(editId) : nextEntryGroupId();
+    const existingIds = editId ? entryGroupRows(groupId).map(t => t.id) : [];
+
+    showLoader(true);
+    try {
+        if (!editId) {
+            const response = await callBackend({
+                action: 'create_transaction',
+                requestId: requestBase,
+                groupId,
+                ...common,
+                lines: cart.map(item => ({
+                    amount: Number(item.amount) || 0,
+                    currency: item.currency,
+                    method: item.method
+                }))
+            });
+            if (!response || response.status !== 'success') {
+                throw new Error((response && response.message) || 'save failed');
+            }
+        } else {
+            for(let i = 0; i < cart.length; i++) {
+                const line = {
+                    requestId: `${requestBase}_${i}`,
+                    groupId,
+                    ...common,
+                    amount: Number(cart[i].amount) || 0,
+                    currency: cart[i].currency,
+                    method: cart[i].method
+                };
+
+                const response = i < existingIds.length
+                    ? await callBackend({ action: 'correct_transaction', transactionId: existingIds[i], ...line })
+                    : await callBackend({ action: 'create_transaction', ...line });
+
+                if(!response || response.status !== 'success') {
+                    throw new Error((response && response.message) || 'save failed');
+                }
+            }
+
+            for(let i = cart.length; i < existingIds.length; i++) {
+                const response = await callBackend({
+                    action: 'cancel_transaction',
+                    transactionId: existingIds[i],
+                    requestId: `${requestBase}_cancel_${i}`,
+                    reason: 'entry edited'
+                });
+                if(!response || response.status !== 'success') {
+                    throw new Error((response && response.message) || 'save failed');
+                }
+            }
+        }
+    } finally {
+        showLoader(false);
+    }
+
+    settleOmadWriteInBackground_();
+};
+
+/** Tenant-paid is already atomic on the backend; release the UI before refresh/reporting. */
+submitTenantPaid = async function() {
+    const amount = parseMoneyInput(document.getElementById('tempAmount').value);
+    if(!Number.isFinite(amount) || amount <= 0) return alert("To'g'ri summa kiriting");
+
+    const purpose = document.getElementById('entryComment').value.trim();
+    if(!purpose) return alert("Chiqim maqsadini kiriting (masalan: Elektrik xizmati)");
+
+    const btn = document.getElementById('submitBtn');
+    if(btn.disabled) return;
+    btn.disabled = true; btn.innerText = "Bajarilmoqda...";
+    showLoader(true);
+
+    try {
+        const response = await callBackend({
+            action: 'tenant_paid_expense',
+            requestId: nextRequestBase(),
+            groupId: nextEntryGroupId(),
+            replaceGroupId: editingTenantPaidGroupId,
+            tenant: normalizeTenantName(document.getElementById('entryTenant').value),
+            period: document.getElementById('entryMonth').value,
+            amount,
+            currency: document.getElementById('tempCurr').value,
+            method: document.getElementById('tempMethod').value,
+            comment: purpose,
+            source: 'Web',
+            createdBy: localStorage.getItem('omad_user') || 'web'
+        });
+
+        if(!response || response.status !== 'success') {
+            throw new Error((response && response.message) || SAVE_FAILED_MESSAGE);
+        }
+
+        clearPendingRequest();
+        editingTenantPaidGroupId = "";
+        editingGroupRows = { groupId: '', rows: [] };
+        document.getElementById('tempAmount').value = "";
+        document.getElementById('entryComment').value = "";
+        document.getElementById('cancelEditBtn').classList.add('hidden');
+        switchTab('dash');
+        settleOmadWriteInBackground_();
+    } catch (error) {
+        console.error(error);
+        alert((error && error.message) || SAVE_FAILED_MESSAGE);
+    } finally {
+        showLoader(false);
+        btn.disabled = false;
+        btn.innerText = "IJARACHI TO'LOVINI SAQLASH";
+    }
+};
+
 window.onload = () => {
     initSelectors();
     attachMoneyFormatting();
