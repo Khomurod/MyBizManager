@@ -22,7 +22,9 @@ jobs:
           node-version: "22"
 
       - name: Apply deterministic source, tests, and docs changes
-        run: python3 scripts/apply-task-reminder-notification-fix.py
+        run: |
+          python3 scripts/apply-task-reminder-notification-fix.py
+          python3 scripts/fix-task-trigger-cycle-fixture.py
 
       - name: Regenerate Apps Script bundle
         run: npm run build
@@ -51,7 +53,7 @@ jobs:
         run: npm run scan:secrets
 
       - name: Remove one-off migration helpers
-        run: git rm scripts/apply-task-reminder-notification-fix.py .github/workflows/apply-task-reminder-notification-fix.yml
+        run: git rm scripts/apply-task-reminder-notification-fix.py scripts/fix-task-trigger-cycle-fixture.py .github/workflows/apply-task-reminder-notification-fix.yml
 
       - name: Commit the verified fix
         run: |
