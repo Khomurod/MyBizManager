@@ -531,6 +531,102 @@ describe('The Telegram Mini App', () => {
     await context.close();
   });
 
+  test('task create and edit sheets stay mobile-friendly at 320px', async () => {
+    const { page, context } = await openMini('auth_date=1&hash=x', defaultHandlers);
+    await page.setViewportSize({ width: 320, height: 568 });
+    await page.waitForFunction(() => document.getElementById('miniTenantList'));
+    await page.locator('#nav-tasks').click();
+    await page.waitForFunction(() => document.getElementById('tab-tasks').innerText.includes('Bugungi ish'));
+
+    await page.locator('#tab-tasks button:has-text("+ Yangi")').click();
+    await page.waitForSelector('.task-editor-sheet #tSubmit');
+    await page.selectOption('#tType', 'routine');
+    await page.selectOption('#tFreq', 'weekly');
+    await page.check('#tRemindOn');
+    await page.click('#tReminderAdd');
+    await page.fill('#tReminderList input[type="time"]', '09:00');
+
+    const createLayout = await page.evaluate(() => {
+      const sheet = document.querySelector('.task-editor-sheet');
+      const body = sheet.querySelector('.task-editor-body');
+      const actions = sheet.querySelector('.task-editor-actions');
+      const sheetBox = sheet.getBoundingClientRect();
+      const actionBox = actions.getBoundingClientRect();
+      const checks = [...sheet.querySelectorAll('input[type="checkbox"]')]
+        .filter(el => el.offsetParent !== null)
+        .map(el => {
+          const r = el.getBoundingClientRect();
+          return { width: r.width, height: r.height };
+        });
+      const time = sheet.querySelector('input[type="time"]').getBoundingClientRect();
+      const remove = sheet.querySelector('#tReminderList button').getBoundingClientRect();
+      return {
+        sheetOverflow: sheet.scrollWidth - sheet.clientWidth,
+        bodyOverflow: body.scrollWidth - body.clientWidth,
+        checks,
+        timeRight: time.right,
+        removeRight: remove.right,
+        bodyRight: body.getBoundingClientRect().right,
+        actionsTop: actionBox.top,
+        actionsBottom: actionBox.bottom,
+        sheetTop: sheetBox.top,
+        sheetBottom: sheetBox.bottom
+      };
+    });
+
+    assert.ok(createLayout.sheetOverflow <= 1, `create sheet overflows by ${createLayout.sheetOverflow}px`);
+    assert.ok(createLayout.bodyOverflow <= 1, `create body overflows by ${createLayout.bodyOverflow}px`);
+    assert.ok(createLayout.checks.length >= 8, 'toggle plus seven weekday checkboxes are visible');
+    assert.deepEqual(createLayout.checks.filter(r => r.width < 18 || r.width > 24 || r.height < 18 || r.height > 24), []);
+    assert.ok(createLayout.timeRight <= createLayout.bodyRight + 1, 'time picker stays inside the form');
+    assert.ok(createLayout.removeRight <= createLayout.bodyRight + 1, 'remove button stays inside the form');
+    assert.ok(createLayout.actionsTop >= createLayout.sheetTop - 1);
+    assert.ok(createLayout.actionsBottom <= createLayout.sheetBottom + 1, 'save actions stay inside the sheet');
+
+    // A shrinking viewport is the browser-level proxy for Telegram/iOS
+    // making room for the keyboard. The action row must remain reachable.
+    await page.focus('#tTitle');
+    await page.setViewportSize({ width: 320, height: 360 });
+    const compact = await page.evaluate(() => {
+      const sheet = document.querySelector('.task-editor-sheet').getBoundingClientRect();
+      const actions = document.querySelector('.task-editor-actions').getBoundingClientRect();
+      return { sheetBottom: sheet.bottom, actionBottom: actions.bottom, viewport: innerHeight };
+    });
+    assert.ok(compact.sheetBottom <= compact.viewport + 1, 'sheet follows the dynamic viewport');
+    assert.ok(compact.actionBottom <= compact.viewport + 1, 'save remains above the reduced viewport');
+
+    await page.setViewportSize({ width: 320, height: 568 });
+    await page.evaluate(() => closeSheet());
+    await page.evaluate(() => {
+      const task = state.tasks.tasks.find(t => t.title === 'Har kungi tekshiruv');
+      openTaskSheet(task.id);
+    });
+    await page.waitForSelector('.task-editor-sheet #tSubmit');
+
+    const editLayout = await page.evaluate(() => {
+      const sheet = document.querySelector('.task-editor-sheet');
+      const body = sheet.querySelector('.task-editor-body');
+      const actions = sheet.querySelector('.task-editor-actions').getBoundingClientRect();
+      const box = sheet.getBoundingClientRect();
+      const toggle = sheet.querySelector('#tRemindOn').getBoundingClientRect();
+      return {
+        sheetOverflow: sheet.scrollWidth - sheet.clientWidth,
+        bodyOverflow: body.scrollWidth - body.clientWidth,
+        toggleWidth: toggle.width,
+        toggleHeight: toggle.height,
+        actionsBottom: actions.bottom,
+        sheetBottom: box.bottom
+      };
+    });
+    assert.ok(editLayout.sheetOverflow <= 1, `edit sheet overflows by ${editLayout.sheetOverflow}px`);
+    assert.ok(editLayout.bodyOverflow <= 1, `edit body overflows by ${editLayout.bodyOverflow}px`);
+    assert.ok(editLayout.toggleWidth >= 18 && editLayout.toggleWidth <= 24);
+    assert.ok(editLayout.toggleHeight >= 18 && editLayout.toggleHeight <= 24);
+    assert.ok(editLayout.actionsBottom <= editLayout.sheetBottom + 1);
+
+    await context.close();
+  });
+
   test('every tappable control is at least 36px in both directions', async () => {
     const { page, context } = await openMini('auth_date=1&hash=x', defaultHandlers);
     await page.waitForFunction(() => document.getElementById('miniTenantList'));

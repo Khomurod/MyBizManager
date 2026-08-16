@@ -128,13 +128,35 @@
       to stop it, which also took pinch-to-zoom away from anyone who needs it.
       One pixel here fixes the jump and gives the zoom back.
     */
-    input, select, textarea {
+    input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]), select, textarea {
       font: inherit; font-size: 16px; width: 100%; min-height: 46px; padding: 10px 12px;
       border-radius: 12px; border: 1px solid var(--line);
       background: var(--bg); color: var(--text);
     }
+    input[type="checkbox"], input[type="radio"] {
+      width: 20px; min-width: 20px; height: 20px; min-height: 20px;
+      flex: 0 0 20px; padding: 0; margin: 0; accent-color: var(--accent);
+    }
+    input[type="date"], input[type="time"] {
+      display: block; min-width: 0; max-width: 100%;
+    }
+    input[type="date"]::-webkit-date-and-time-value,
+    input[type="time"]::-webkit-date-and-time-value {
+      text-align: left; min-height: 1.4em;
+    }
     textarea { min-height: 76px; resize: vertical; }
     label { display: block; font-size: 12px; font-weight: 700; color: var(--muted); margin: 10px 0 4px; }
+
+    .task-toggle-row {
+      display: flex; align-items: center; gap: 10px; min-height: 44px;
+      color: var(--text); font-size: 14px; font-weight: 600;
+    }
+    .task-toggle-row span { min-width: 0; }
+    .mini-weekday {
+      display: inline-flex; align-items: center; gap: 6px; min-height: 40px;
+      margin: 0; padding: 8px 10px; border: 1px solid var(--line);
+      border-radius: 10px; color: var(--text); font-size: 13px; font-weight: 600;
+    }
 
     /* ------------------------------------------------------------ tab bar */
     nav {
@@ -166,6 +188,28 @@
       width: 40px; height: 4px; border-radius: 999px; background: var(--line);
       margin: 0 auto 12px;
     }
+
+    /* The task editor is a long phone form. Keep its header/actions fixed
+       inside the Telegram viewport and let only the fields scroll. */
+    .task-editor-sheet {
+      height: min(92dvh, calc(var(--tg-viewport-height, 100dvh) - 8px));
+      max-height: min(92dvh, calc(var(--tg-viewport-height, 100dvh) - 8px));
+      overflow: hidden; display: flex; flex-direction: column;
+      padding-bottom: 0;
+    }
+    .task-editor-sheet > .grabber,
+    .task-editor-sheet > .between { flex: 0 0 auto; }
+    .task-editor-body {
+      flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden;
+      overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+      scroll-padding-bottom: 16px; padding: 0 1px 12px;
+    }
+    .task-editor-actions {
+      flex: 0 0 auto; margin: 0 -16px;
+      padding: 10px 16px calc(12px + env(safe-area-inset-bottom));
+      border-top: 1px solid var(--line); background: var(--bg);
+    }
+    .task-editor-actions .btn-full + .btn-full { margin-top: 8px; }
 
     /* ---------------------------------------------------------- states */
     .screen-message {

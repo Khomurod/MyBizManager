@@ -332,6 +332,7 @@ function openTaskSheet(taskId) {
     const reminderTimes = (existing && existing.reminderTimes) || [];
 
     openSheet(existing ? 'Vazifani tahrirlash' : 'Yangi vazifa', `
+        <div class="task-editor-body">
         ${existing
             ? `<input type="hidden" id="tExistingType" value="${escapeHtml(type)}">
                <p class="tiny muted">Turi: ${escapeHtml(miniTypeLabel(type))} — o'zgartirib bo'lmaydi.</p>`
@@ -369,7 +370,7 @@ function openTaskSheet(taskId) {
                 <label>Kunlar</label>
                 <div class="row" style="flex-wrap:wrap;gap:6px">
                     ${MINI_WEEKDAYS.map(([label, wd]) =>
-                        `<label class="tiny"><input type="checkbox" class="mini-wd" data-wd="${wd}"> ${label}</label>`).join('')}
+                        `<label class="mini-weekday"><input type="checkbox" class="mini-wd" data-wd="${wd}"> ${label}</label>`).join('')}
                 </div>
             </div>`}
         </div>
@@ -383,7 +384,7 @@ function openTaskSheet(taskId) {
         <label for="tResponsible">Mas'ul</label>
         <input id="tResponsible" autocomplete="off" value="${escapeHtml(existing ? existing.responsible || '' : '')}">
 
-        <label class="row" style="gap:8px;margin-top:14px">
+        <label class="task-toggle-row" style="margin-top:14px">
             <input type="checkbox" id="tRemindOn" onchange="syncReminderControls()"
                    ${reminderTimes.length ? 'checked' : ''}>
             <span>🔔 Eslatma yuborilsin</span>
@@ -396,19 +397,25 @@ function openTaskSheet(taskId) {
             <button type="button" class="btn-sm" id="tReminderAdd" style="margin-top:6px"
                     onclick="addReminderTime()">＋ Vaqt qo'shish</button>
 
-            <label id="tRemindDailyRow" class="row hidden" style="gap:8px;margin-top:10px">
+            <label id="tRemindDailyRow" class="task-toggle-row hidden" style="margin-top:10px">
                 <input type="checkbox" id="tRemindDaily" onchange="syncReminderControls()"
                        ${existing && existing.remindDaily ? 'checked' : ''}>
                 <span>Har kuni takrorlansin</span>
             </label>
             <p id="tRemindNote" class="tiny muted"></p>
         </div>
+        </div>
 
-        <button class="btn-primary btn-full" style="margin-top:14px" id="tSubmit"
+        <div class="task-editor-actions">
+        <button class="btn-primary btn-full" id="tSubmit"
                 onclick="submitTask('${escapeHtml(taskId || '')}')">Saqlash</button>
-        ${existing ? `<button class="btn-danger btn-full" style="margin-top:8px"
+        ${existing ? `<button class="btn-danger btn-full"
                 onclick="cancelTask('${escapeHtml(taskId)}')">Bekor qilish</button>` : ''}
+        </div>
     `);
+
+    const taskSheet = document.querySelector('#sheetHost .sheet');
+    if (taskSheet) taskSheet.classList.add('task-editor-sheet');
 
     // Prefilled after the sheet exists, so an edit opens on the task's *actual*
     // configuration rather than on a default that a save would then store.
