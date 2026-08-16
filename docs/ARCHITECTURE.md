@@ -844,7 +844,11 @@ count is part of the durable idempotency contract: reusing one request base with
 a larger or smaller cart is refused. During a frontend/backend rollout, counted
 line ids let a later batch safely complete only missing lines. Older uncounted
 `<requestBase>_<index>` rows are accepted as a duplicate only when the full
-requested set already exists; an ambiguous partial legacy set fails closed.
+requested set already exists; an ambiguous partial legacy set fails closed. If
+the browser has fallen back to an **older backend** that treats those ids as
+opaque strings, it persists the exact fallback submission in `sessionStorage`
+and refuses a changed cart/business payload until that uncertain retry is
+resolved; otherwise an old server could not distinguish a modified request.
 The batch also freezes one buy/sell rate pair for the whole business action; a
 partial resume inherits the first stored line's pair, and inconsistent existing
 snapshots are refused rather than mixed.

@@ -309,6 +309,71 @@ describe('Omad admin ledger (browser)', () => {
     await context.close();
   });
 
+  test('an uncertain old-backend fallback refuses a changed cart before another line write', async () => {
+    let createAttempts = 0;
+    const { page, context, requests } = await openAdmin({
+      respond: payload => {
+        if (payload.action === 'create_transaction_batch') {
+          return { status: 'error', message: 'Unknown action: create_transaction_batch' };
+        }
+        if (payload.action === 'create_transaction') {
+          createAttempts++;
+          if (createAttempts === 1) return { status: 'error', message: 'connection lost' };
+          return { status: 'success', transaction: {} };
+        }
+        return null;
+      }
+    });
+
+    await fillEntry(page);
+    await page.evaluate(() => submitAll());
+    const firstCreate = requests.filter(r => r.action === 'create_transaction')[0];
+    assert.ok(firstCreate, 'the first fallback reaches the old single-row API');
+
+    await page.evaluate(() => {
+      cart[0].amount = Number(cart[0].amount) + 1;
+      renderCart();
+    });
+    await page.evaluate(() => submitAll());
+
+    assert.strictEqual(requests.filter(r => r.action === 'create_transaction_batch').length, 2,
+      'the harmless capability probe can repeat');
+    assert.strictEqual(requests.filter(r => r.action === 'create_transaction').length, 1,
+      'changed data never reaches the opaque old single-row idempotency API');
+    const stored = await page.evaluate(() => sessionStorage.getItem('omad_pending_legacy_fallback_fingerprint'));
+    assert.ok(stored, 'the uncertain fallback shape stays pinned for a safe retry');
+    await context.close();
+  });
+
+  test('an uncertain old-backend fallback can retry the exact same submission', async () => {
+    let createAttempts = 0;
+    const { page, context, requests } = await openAdmin({
+      respond: payload => {
+        if (payload.action === 'create_transaction_batch') {
+          return { status: 'error', message: 'Unknown action: create_transaction_batch' };
+        }
+        if (payload.action === 'create_transaction') {
+          createAttempts++;
+          if (createAttempts === 1) return { status: 'error', message: 'connection lost' };
+          return { status: 'success', transaction: {} };
+        }
+        return null;
+      }
+    });
+
+    await fillEntry(page);
+    await page.evaluate(() => submitAll());
+    await page.evaluate(() => submitAll());
+
+    const creates = requests.filter(r => r.action === 'create_transaction');
+    assert.strictEqual(creates.length, 2);
+    assert.strictEqual(creates[0].requestId, creates[1].requestId,
+      'the exact retry uses the same opaque id on the old backend');
+    const stored = await page.evaluate(() => sessionStorage.getItem('omad_pending_legacy_fallback_fingerprint'));
+    assert.strictEqual(stored, null, 'a successful retry clears the fallback fingerprint');
+    await context.close();
+  });
+
   // --------------------------------------------------------------- correct
 
   test('editing an entry corrects the existing transaction', async () => {
