@@ -132,10 +132,27 @@ OMAD_WRITE_ACTIONS.add('create_transaction_batch');
  * Refresh the confirmed view after releasing the entry form. Telegram needs no
  * browser nudge: its durable queue is drained by the existing time trigger.
  */
+let omadWriteRefreshInFlight_ = false;
+let omadWriteRefreshPending_ = false;
+
+async function runPendingOmadWriteRefresh_() {
+    if (omadWriteRefreshInFlight_) return;
+    omadWriteRefreshInFlight_ = true;
+    try {
+        // Coalesce rapid saves without losing the refresh for the latest one. If
+        // another save lands while a refresh is running, one more pass follows.
+        while (omadWriteRefreshPending_) {
+            omadWriteRefreshPending_ = false;
+            await syncData({ background: true });
+        }
+    } finally {
+        omadWriteRefreshInFlight_ = false;
+    }
+}
+
 function settleOmadWriteInBackground_() {
-    setTimeout(() => {
-        syncData();
-    }, 0);
+    omadWriteRefreshPending_ = true;
+    setTimeout(() => { runPendingOmadWriteRefresh_(); }, 0);
 }
 
 /**
