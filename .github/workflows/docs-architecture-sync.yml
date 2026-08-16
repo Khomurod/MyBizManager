@@ -1,0 +1,246 @@
+name: Synchronize architecture documentation
+
+on:
+  push:
+    branches:
+      - fix/write-performance-audit-hardening
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Synchronize detailed architecture reference
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          arch_path = Path('docs/ARCHITECTURE.md')
+          arch = arch_path.read_text()
+
+          # ---------------------------- backend module map: make it exhaustive/current
+          start = arch.index('| Module | Contents |', arch.index('### Backend modules'))
+          end = arch.index('\n\nThe task-management feature', start)
+          module_table = '''| Module | Contents |
+          |---|---|
+          | `01_shared_utils.gs` | JSON/HTML/date helpers, `getConfig`/`setConfig`, per-request config memo |
+          | `01a_periods.gs` | Canonical `YYYY-MM` periods, Uzbek labels, legacy period resolution |
+          | `01c_cache.gs` | Revision counters and read-only summary cache |
+          | `01d_read_model.gs` | Materialised Omad summary: build, verify, rebuild |
+          | `02_validation.gs` | Rate limiting, length limits, input validators |
+          | `02a_auth.gs` | Users, password hashes, signed sessions, roles, login throttling |
+          | `03_settings.gs` | Script Properties, secrets, `checkAdminKey_`, Telegram settings actions |
+          | `04_audit_history.gs` | Backups, transaction archive, audit and debug logs |
+          | `05_exchange_rates.gs` | Rate normalisation, `toUZS_`, balances |
+          | `05a_calculations.gs` | Every monetary rule, mirrored by `assets/omad/02b-calc.js` |
+          | `06_tenants.gs` | Tenants and effective-dated rent |
+          | `07_planned_expenses.gs` | Planned expenses and recurrence |
+          | `08_omad_transactions.gs` | Legacy sheet read/normalise/append/rewrite; shared Omad read compatibility |
+          | `08a_tenant_paid.gs` | Tenant-paid-on-our-behalf pair: create, replace, report |
+          | `09_telegram_service.gs` | Telegram API calls and the `/yangi` conversation |
+          | `10_retry_queue.gs` | `Omad_Job_Queue` worker |
+          | `11_report_jobs.gs` | Server-composed business reports |
+          | `12_cafe.gs` | Café catalogue, pricing, sales, voids, close-day |
+          | `12a_cafe_catalogue.gs` | Recipe costing, catalogue revision, health warnings, stock movements |
+          | `12b_cafe_write_performance.gs` | Narrow durable café sale retry lookup; stock/idempotency rules stay in `12_cafe.gs` |
+          | `13_migration.gs` | Legacy→V2 migration: preview, apply, verify, cutover, rollback |
+          | `14_ledger.gs` | Append-only ledger: create / correct / cancel / read / audit |
+          | `14a_ledger_write_performance.gs` | Narrow ledger request lookup / ID allocation and atomic multi-line entry creation |
+          | `15_system_status.gs` | Safe diagnostics for Sozlamalar → Tizim |
+          | `15a_maintenance.gs` | Operator repairs: dates, debug-log secrets, webhook rotation |
+          | `16_tasks_recurrence.gs` | Task module: pure Asia/Tashkent time + recurrence engine |
+          | `17_tasks_store.gs` | Task module: `Tasks` / `Task_Occurrences`, occurrences, views |
+          | `18_tasks_service.gs` | Task module: Telegram namespace (`t_done:`, photo proof, cards) |
+          | `19_tasks_scheduler.gs` | Task module: scheduler, queue jobs, edit reconciliation, web API |
+          | `19a_tasks_wizard.gs` | Task module: `📋 Vazifa` branch of `/yangi` |
+          | `20_api.gs` | `doPost` / `doGet` routing and server-side auth gates |
+          | `20a_write_performance_api.gs` | Batch-ledger API extension and one-report-per-group integration |
+          | `21_miniapp_auth.gs` | Telegram Mini App `initData` verification and authorization |
+          | `22_miniapp_api.gs` | Mini App summaries and write actions |
+          | `23_health.gs` | Mini App Bot API configuration and system health check |'''
+          module_table = '\n'.join(line.strip() for line in module_table.splitlines())
+          arch = arch[:start] + module_table + arch[end:]
+
+          # ---------------------------- System_Config keys added by read/café revisions
+          anchor = '| `Omad_Template_Expenses` | `[{ id, name, amount, currency, startPeriod, month, frequency, intervalMonths, selectedMonths, ending: {type, untilPeriod, occurrences}, active, description }]` |\n'
+          replacement = anchor + '| `Omad_Read_Model` | derived, revision-keyed dashboard summary; safe to rebuild from the live ledger |\n'
+          if anchor not in arch:
+              raise SystemExit('System_Config Omad anchor missing')
+          arch = arch.replace(anchor, replacement, 1)
+
+          anchor = '| `Cafe_Inventory` | café inventory array |\n'
+          replacement = anchor + '| `Cafe_Inventory_Rev` | optimistic-concurrency revision for inventory/admin saves |\n'
+          if anchor not in arch:
+              raise SystemExit('Cafe inventory config anchor missing')
+          arch = arch.replace(anchor, replacement, 1)
+
+          anchor = '| `Cafe_Categories` | `string[]` |\n'
+          replacement = anchor + '| `Cafe_Catalogue_Rev` | catalogue revision, independent from inventory sales |\n'
+          if anchor not in arch:
+              raise SystemExit('Cafe catalogue config anchor missing')
+          arch = arch.replace(anchor, replacement, 1)
+
+          # ---------------------------- script properties used by tasks/health/rotation
+          anchor = '| `TELEGRAM_GROUP_CHAT_ID` | no | Reporting group |\n'
+          replacement = anchor + '| `TELEGRAM_TASKS_GROUP_CHAT_ID` | no | Task cards, reminders and proof prompts group |\n'
+          if anchor not in arch:
+              raise SystemExit('Telegram group property anchor missing')
+          arch = arch.replace(anchor, replacement, 1)
+
+          anchor = '| `TELEGRAM_WEBHOOK_SECRET` | **yes** | Random value embedded in the webhook URL; every inbound update must present it |\n'
+          replacement = anchor + '| `TELEGRAM_WEBHOOK_SECRET_PREVIOUS` | **yes, transient** | Accepted only during a webhook-secret rotation, then cleared |\n'
+          if anchor not in arch:
+              raise SystemExit('Webhook secret property anchor missing')
+          arch = arch.replace(anchor, replacement, 1)
+
+          anchor = '| `TELEGRAM_LAST_ERROR` | no | `{ action, message, at }` — redacted |\n'
+          # This row already exists; no replacement needed beyond ensuring the table carries it.
+          if anchor not in arch:
+              raise SystemExit('Telegram last error property row missing')
+
+          # ---------------------------- API table semantics + current write action
+          old = '| Action | Admin key | Notes |\n|---|---|---|\n'
+          new = '| Action | Break-glass admin key accepted? | Notes |\n|---|---|---|\n'
+          if old not in arch:
+              raise SystemExit('API table header missing')
+          arch = arch.replace(old, new, 1)
+
+          api_intro = 'Routing order in `20_api.gs` is load-bearing, because a name matched earlier is\ngated differently: `mini_*` first, then tasks, then reads, then the rest; a café\naction is matched last. Check it before adding an action name.\n\n'
+          api_intro_new = api_intro + '**Normal web calls use signed role-bearing sessions.** The middle column below only\nrecords whether the internal `OMAD_ADMIN_KEY` break-glass credential can stand in\nfor an `omad_admin` session; it does not mean the browser normally sends that key.\nCafé actions additionally accept the café roles described in the permissions section.\n\n'
+          if api_intro not in arch:
+              raise SystemExit('API introduction anchor missing')
+          arch = arch.replace(api_intro, api_intro_new, 1)
+
+          anchor = '| `save_omad` / `migrate_omad` | **yes** | Whole-list save. Its **transaction half is refused while V2 is live** (`saveOmadSettingsOnly_` runs instead); tenants, rates and planned expenses still save through it. Optional `telegramReport: {operation, groupId, baseId, messageId}` queues a server-composed report |\n'
+          replacement = '| `login` | no | The only unauthenticated web action; validates username/password and returns a signed session |\n' + \
+              '| `verify_access` / `change_password` | **yes** | Validate the current signed web identity; password changes revoke older tokens through `pwv` |\n' + \
+              '| `list_users` / `set_user_password` | **yes** | `omad_admin` account management |\n' + anchor
+          if anchor not in arch:
+              raise SystemExit('API save_omad anchor missing')
+          arch = arch.replace(anchor, replacement, 1)
+
+          old = '| `verify_access` | **yes** | Checks a key at login and returns nothing else |\n'
+          if old in arch:
+              arch = arch.replace(old, '', 1)
+
+          old = '| `create_transaction` / `correct_transaction` / `cancel_transaction` / `list_transactions` / `get_transaction` / `get_transaction_history` | **yes** | The append-only ledger, below |\n'
+          new = '| `create_transaction_batch` / `create_transaction` / `correct_transaction` / `cancel_transaction` / `list_transactions` / `get_transaction` / `get_transaction_history` | **yes** | Append-only V2 ledger actions. New multi-line web entries use the batch action; edits deliberately keep the single-row correction/cancel path |\n'
+          if old not in arch:
+              raise SystemExit('API ledger action row missing')
+          arch = arch.replace(old, new, 1)
+
+          # ---------------------------- V2 schema: 24 columns / Entry_Kind
+          anchor = '| 23 | `Entry_Group_ID` | the business action this row belongs to |\n'
+          replacement = anchor + '| 24 | `Entry_Kind` | `""` or `tenant_paid_expense`; what kind of business action the group represents |\n'
+          if anchor not in arch:
+              raise SystemExit('Architecture V2 schema row 23 missing')
+          arch = arch.replace(anchor, replacement, 1)
+
+          old = '''`Entry_Group_ID` was added while `Omad_Transactions_V2` had never existed in\nany spreadsheet, so there is no earlier shape of this schema in the wild and\nthe version stays at 2. `ledgerSheet_` upgrades a 22-column header in place\nanyway, and reads fall back to the deterministic derivation, so a sheet created\nby an older build keeps working.\n'''
+          new = '''The grouping columns were added without changing the ledger's semantic schema\nversion, which remains 2. `ledgerSheet_` rewrites an older/truncated header in\nplace without touching row values; reads derive a missing `Entry_Group_ID`\ndeterministically and normalize a missing `Entry_Kind` to ordinary (`""`).\n'''
+          if old not in arch:
+              raise SystemExit('Architecture schema compatibility paragraph missing')
+          arch = arch.replace(old, new, 1)
+
+          anchor = '| `create_transaction` | Appends one `Active` row. Idempotent on `Request_ID` |\n'
+          replacement = '| `create_transaction_batch` | New multi-line business action: validates every line first, writes missing rows together under one lock, and is idempotent on a request id bound to the original line count |\n' + anchor
+          if anchor not in arch:
+              raise SystemExit('Architecture ledger operations anchor missing')
+          arch = arch.replace(anchor, replacement, 1)
+
+          ops_tail = 'All writes take the script lock. Correcting an already-corrected or cancelled\nrecord is refused rather than silently applied. Cancelling twice is the same\noutcome as cancelling once.\n'
+          ops_tail_new = ops_tail + '''\nA batch stores per-line request ids as `<requestBase>__n<count>_<index>`. The\ncount is part of the durable idempotency contract: reusing one request base with\na larger or smaller cart is refused. During a frontend/backend rollout, counted\nline ids let a later batch safely complete only missing lines. Older uncounted\n`<requestBase>_<index>` rows are accepted as a duplicate only when the full\nrequested set already exists; an ambiguous partial legacy set fails closed.\nThe batch also freezes one buy/sell rate pair for the whole business action; a\npartial resume inherits the first stored line's pair, and inconsistent existing\nsnapshots are refused rather than mixed.\n'''
+          if ops_tail not in arch:
+              raise SystemExit('Architecture ledger write tail missing')
+          arch = arch.replace(ops_tail, ops_tail_new, 1)
+
+          # ---------------------------- reporting and fast-save flow
+          anchor = '| Telegram `/yangi` | Saves the transaction, then queues its own report |\n'
+          replacement = '| `create_transaction_batch` / `create_transaction` / `correct_transaction` / `cancel_transaction` | Queues one server-composed report for the affected business group after the ledger change succeeds |\n' + anchor
+          if anchor not in arch:
+              raise SystemExit('Architecture Telegram reporting table anchor missing')
+          arch = arch.replace(anchor, replacement, 1)
+
+          old = '''### Fast saving\n\nA save returns as soon as the financial record is safely stored. At most\n**one** queued job rides along inline (`JOB_QUEUE_INLINE_BATCH = 1`), so\nresponse time does not grow with the size of the backlog; the trigger picks up\neverything else. Passing `deferReports: true` on a request skips the inline\ndrain entirely.\n\nFailing to *queue* a report never undoes a save the caller is about to be told\nsucceeded — the enqueue is wrapped, and the failure is logged rather than\nraised.\n'''
+          new = '''### Fast saving\n\nA save returns when the financial record is safely stored, not when Telegram or\na dashboard refresh finishes. Web accounting writes force `deferReports: true`,\nso no Telegram network call rides on the response path; the durable queue is\ndrained by the existing time trigger. The browser releases the entry form and\nrefreshes the confirmed dashboard in the background. Rapid saves coalesce those\nrefreshes, and a background refresh never rehydrates a stale snapshot that would\nblock an immediate second save.\n\nOther callers may still drain at most **one** queued job inline\n(`JOB_QUEUE_INLINE_BATCH = 1`). The Mini App separately starts\n`mini_flush_reports` without awaiting it so its card usually arrives before the\nnext trigger tick. Failing to *queue* a report never undoes a save the caller is\nabout to be told succeeded — the enqueue is wrapped and logged.\n'''
+          if old not in arch:
+              raise SystemExit('Architecture fast-saving section missing')
+          arch = arch.replace(old, new, 1)
+
+          idempotency_tail = '''The web id survives a mid-save refresh, so the resubmission carries the\noriginal id and the server recognises it. It is cleared only once the\nsubmission succeeds. A second click while a save is in flight is ignored.\n'''
+          idempotency_new = idempotency_tail + '''\nFor a new multi-line web entry, that stable base id is bound to the original\nline count and each stored line carries the count-qualified form described in\nthe ledger section. This makes an uncertain retry with a changed cart a\nconflict, not a mutation of the first request.\n'''
+          if idempotency_tail not in arch:
+              raise SystemExit('Architecture idempotency paragraph missing')
+          arch = arch.replace(idempotency_tail, idempotency_new, 1)
+
+          arch_path.write_text(arch)
+
+          # ---------------------------- small stale code comment found in audit
+          ledger_path = Path('apps-script/14_ledger.gs')
+          ledger = ledger_path.read_text()
+          old = '''  // Upgrades a sheet written before Entry_Group_ID in place. Existing rows keep\n  // their values and read back through the deterministic backfill until\n  // backfill_entry_group_ids is run against them.\n'''
+          new = '''  // Upgrades a sheet written before the trailing grouping columns in place.\n  // Existing row values are untouched: a missing group id derives\n  // deterministically and a missing entry kind normalizes to ordinary.\n'''
+          if old not in ledger:
+              raise SystemExit('ledger header-upgrade comment anchor missing')
+          ledger_path.write_text(ledger.replace(old, new, 1))
+
+          # ---------------------------- live-state wording: remove an already-false claim
+          brief_path = Path('docs/APP_BRIEF.md')
+          brief = brief_path.read_text()
+          old = 'Verified 2026-08-12 and unchanged in the repository since:\n'
+          new = 'Operational state snapshot, rechecked read-only on **2026-08-17**:\n'
+          if old not in brief:
+              raise SystemExit('App Brief live-state timestamp anchor missing')
+          brief = brief.replace(old, new, 1)
+          brief_path.write_text(brief)
+
+          # ---------------------------- permanent documentation guards
+          test_path = Path('tests/static-analysis.test.js')
+          tests = test_path.read_text()
+
+          old = '''test('the App Brief lists every Apps Script backend module in its module map', () => {\n  const brief = fs.readFileSync(path.join(ROOT, 'docs', 'APP_BRIEF.md'), 'utf8');\n  const start = brief.indexOf('### Backend modules');\n  const end = brief.indexOf('## 4. Main features and workflows', start);\n  assert.ok(start >= 0 && end > start, 'the App Brief backend module map exists');\n  const moduleMap = brief.slice(start, end);\n  const modules = fs.readdirSync(path.join(ROOT, 'apps-script'))\n    .filter(name => name.endsWith('.gs'))\n    .sort();\n  const missing = modules.filter(name => !moduleMap.includes('`' + name + '`'));\n  assert.deepStrictEqual(missing, [],\n    `APP_BRIEF.md backend module map is missing: ${missing.join(', ')}`);\n});\n'''
+          new = '''test('both canonical documentation module maps list every Apps Script backend module', () => {\n  const modules = fs.readdirSync(path.join(ROOT, 'apps-script'))\n    .filter(name => name.endsWith('.gs'))\n    .sort();\n  const documents = [\n    ['APP_BRIEF.md', '## 4. Main features and workflows'],\n    ['ARCHITECTURE.md', '### Frontend modules']\n  ];\n  for (const [name, endMarker] of documents) {\n    const doc = fs.readFileSync(path.join(ROOT, 'docs', name), 'utf8');\n    const start = doc.indexOf('### Backend modules');\n    const end = doc.indexOf(endMarker, start);\n    assert.ok(start >= 0 && end > start, `${name} backend module map exists`);\n    const moduleMap = doc.slice(start, end);\n    const missing = modules.filter(module => !moduleMap.includes('`' + module + '`'));\n    assert.deepStrictEqual(missing, [], `${name} backend module map is missing: ${missing.join(', ')}`);\n  }\n});\n'''
+          if old not in tests:
+              raise SystemExit('existing App Brief module guard anchor missing')
+          tests = tests.replace(old, new, 1)
+
+          marker = "test('the App Brief ledger schema mirrors LEDGER_HEADER', () => {"
+          if marker not in tests:
+              raise SystemExit('App Brief ledger schema guard anchor missing')
+          # Add a parallel detailed-reference schema guard after the existing test.
+          insert_after = '''  for (const header of headers) {\n    assert.ok(section.includes(header), `APP_BRIEF.md V2 schema is missing ${header}`);\n  }\n});\n'''
+          addition = insert_after + '''\ntest('the Architecture V2 ledger schema mirrors LEDGER_HEADER', () => {\n  const architecture = fs.readFileSync(path.join(ROOT, 'docs', 'ARCHITECTURE.md'), 'utf8');\n  const ledger = fs.readFileSync(path.join(ROOT, 'apps-script', '14_ledger.gs'), 'utf8');\n  const headerBlock = ledger.match(/var LEDGER_HEADER = \\[([\\s\\S]*?)\\n\\];/);\n  assert.ok(headerBlock, 'LEDGER_HEADER is readable');\n  const headers = [...headerBlock[1].matchAll(/\"([^\"]+)\"/g)].map(match => match[1]);\n  const start = architecture.indexOf('## Append-only ledger (`Omad_Transactions_V2`, schema version 2)');\n  const end = architecture.indexOf('### Operations', start);\n  assert.ok(start >= 0 && end > start, 'the Architecture V2 ledger schema section exists');\n  const section = architecture.slice(start, end);\n  for (let i = 0; i < headers.length; i++) {\n    assert.ok(section.includes(`| ${i + 1} | \\`${headers[i]}\\``),\n      `ARCHITECTURE.md V2 schema row ${i + 1} must be ${headers[i]}`);\n  }\n});\n\ntest('the detailed Architecture documents the batch write and non-blocking save path', () => {\n  const architecture = fs.readFileSync(path.join(ROOT, 'docs', 'ARCHITECTURE.md'), 'utf8');\n  assert.match(architecture, /`create_transaction_batch`/);\n  assert.match(architecture, /<requestBase>__n<count>_<index>/);\n  assert.match(architecture, /Web accounting writes force `deferReports: true`/);\n  assert.match(architecture, /dashboard in the background/);\n});\n'''
+          if insert_after not in tests:
+              raise SystemExit('App Brief schema guard end anchor missing')
+          tests = tests.replace(insert_after, addition, 1)
+          test_path.write_text(tests)
+          PY
+
+      - name: Regenerate and verify all non-browser checks
+        shell: bash
+        run: |
+          npm run build
+          npm run build:check
+          npm run lint
+          npm test
+          git diff --check
+
+      - name: Commit synchronized documentation
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/docs-architecture-sync.yml
+          git add docs/ARCHITECTURE.md docs/APP_BRIEF.md apps-script/14_ledger.gs tests/static-analysis.test.js script.gs
+          git commit -m "Synchronize detailed architecture with live write path"
+          git push
