@@ -217,12 +217,3 @@ function createTransactionBatch_(doc, input) {
     lock.releaseLock();
   }
 }
-
-/** Preserve every existing single-row caller; only the explicit `lines` shape batches. */
-var createTransactionBeforeWritePerf_ = createTransaction_;
-createTransaction_ = function (doc, input) {
-  if (input && Array.isArray(input.lines) && input.lines.length > 0) {
-    return createTransactionBatch_(doc, input);
-  }
-  return createTransactionBeforeWritePerf_(doc, input);
-};
