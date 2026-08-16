@@ -2,13 +2,13 @@ EXIT_CODE=1
 --- FAILURE CONTEXT ---
 ok 420 - selected months are de-duplicated, sorted and range-checked
   ---
-  duration_ms: 3.724943
+  duration_ms: 5.998728
   type: 'test'
   ...
 # Subtest: the schedule is described in plain Uzbek
 ok 421 - the schedule is described in plain Uzbek
   ---
-  duration_ms: 4.845649
+  duration_ms: 8.437533
   type: 'test'
   ...
 # /home/runner/work/MyBizManager/MyBizManager/tests/read-efficiency.test.js:1
@@ -27,7 +27,7 @@ ok 421 - the schedule is described in plain Uzbek
 # Subtest: tests/read-efficiency.test.js
 not ok 24 - tests/read-efficiency.test.js
   ---
-  duration_ms: 37.00312
+  duration_ms: 46.736673
   type: 'test'
   location: '/home/runner/work/MyBizManager/MyBizManager/tests/read-efficiency.test.js:1:1'
   failureType: 'testCodeFailure'
@@ -39,38 +39,38 @@ not ok 24 - tests/read-efficiency.test.js
 # Subtest: save_omad stores transactions, tenants, rates and template expenses
 ok 423 - save_omad stores transactions, tenants, rates and template expenses
   ---
-  duration_ms: 21.82605
+  duration_ms: 22.855219
   type: 'test'
   ...
 # Subtest: save_omad takes a backup snapshot before writing
 ok 424 - save_omad takes a backup snapshot before writing
   ---
-  duration_ms: 8.093143
+  duration_ms: 7.98191
   type: 'test'
   ...
 # Subtest: save_omad refuses to wipe existing transactions with an empty payload
 ok 425 - save_omad refuses to wipe existing transactions with an empty payload
   ---
-  duration_ms: 7.985702
+  duration_ms: 7.890318
   type: 'test'
   ...
 # Subtest: changed transactions are archived before being overwritten
 ok 426 - changed transactions are archived before being overwritten
   ---
-  duration_ms: 8.107264
+  duration_ms: 7.545263
   type: 'test'
   ...
 # Subtest: USD converts with the sell rate by default; UZS is unchanged
 --- SUMMARY ---
 ok 888 - cafe duplicate lookup reads only receipt details, not the whole sales history
   ---
-  duration_ms: 5.326638
+  duration_ms: 5.401771
   type: 'test'
   ...
 # Subtest: the Omad browser batches new carts, defers Telegram, and has old-backend fallback
 ok 889 - the Omad browser batches new carts, defers Telegram, and has old-backend fallback
   ---
-  duration_ms: 0.494035
+  duration_ms: 0.461223
   type: 'test'
   ...
 1..889
@@ -81,4 +81,4 @@ ok 889 - the Omad browser batches new carts, defers Telegram, and has old-backen
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 4579.551711
+# duration_ms 4529.819328
