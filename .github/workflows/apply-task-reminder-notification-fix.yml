@@ -32,7 +32,19 @@ jobs:
           npm run build:check
           npm run lint
 
-      - name: Run unit and integration tests
+      - name: Test reminder scheduler behavior
+        run: node --test tests/task-reminders.test.js
+
+      - name: Test trigger-cycle behavior
+        run: node --test tests/task-trigger-cycle.test.js
+
+      - name: Test one-time task reminders
+        run: node --test tests/task-once-reminders.test.js
+
+      - name: Test goal reminders
+        run: node --test tests/task-goals.test.js
+
+      - name: Run full unit and integration suite
         run: npm test
 
       - name: Scan changed tree for secrets
@@ -45,7 +57,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add apps-script/19_tasks_scheduler.gs tests/task-trigger-cycle.test.js tests/task-reminders.test.js docs/TASKS.md docs/APP_BRIEF.md script.gs
+          git add apps-script/19_tasks_scheduler.gs tests/task-trigger-cycle.test.js tests/task-reminders.test.js tests/task-goals.test.js docs/TASKS.md docs/APP_BRIEF.md script.gs
           git diff --cached --check
           git commit -m "Use reminder times as the task notification schedule"
           git push origin HEAD:fix/task-reminder-notification-timing
