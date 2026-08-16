@@ -1,0 +1,45 @@
+name: Clean up live-state documentation
+
+on:
+  push:
+    branches:
+      - fix/write-performance-audit-hardening
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Remove stale one-time account setup claim
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('docs/APP_BRIEF.md')
+          text = path.read_text()
+          old = '''**One manual step is outstanding after this change is deployed:** the owner\nsigns in as `omad_admin` with the value of `OMAD_ADMIN_KEY` (the bootstrap\ndescribed in [§5](#setting-a-password)) and sets a real password for\n`omad_admin`, `cafe_admin` and `cafe_seller` in Sozlamalar → 🗄️ Tizim →\nFoydalanuvchilar. Until that is done the café accounts cannot sign in at all,\nand `OMAD_USERS` / `OMAD_SESSION_SECRET` do not exist yet — the latter is\ngenerated on first use and needs no manual value.\n'''
+          new = '''Account records and the session-signing secret are live Script Properties, not\nrepository state, so this document does not claim whether a one-time password\nsetup is pending. Sozlamalar → 🗄️ Tizim → Foydalanuvchilar is the operator\nsurface for account setup/rotation. A code deployment never rewrites\n`OMAD_USERS` or `OMAD_SESSION_SECRET`.\n'''
+          if old not in text:
+              raise SystemExit('stale live-state account setup block not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          npm run lint
+          npm test
+          git diff --check
+      - name: Commit cleanup
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/docs-live-state-cleanup.yml
+          git add docs/APP_BRIEF.md
+          git commit -m "Remove stale account-setup state from the brief"
+          git push
