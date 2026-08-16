@@ -1,0 +1,62 @@
+name: Finalize write performance
+
+on:
+  push:
+    branches: ["perf/write-path-responsiveness-clean"]
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: github.event.head_commit.message != 'Fix background refresh write race'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: perf/write-path-responsiveness-clean
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Patch background refresh safely
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          api = Path('assets/omad/06-api.js')
+          text = api.read_text()
+          old = """async function syncData() {\n    const hadSnapshot = hydrateFromSnapshot();\n    showLoader(!hadSnapshot);"""
+          new = """async function syncData(options = {}) {\n    // A post-save refresh starts from a live, server-confirmed screen. Re-hydrating\n    // the stored snapshot here would temporarily mark that live screen stale and\n    // refuse a second save while the refresh is in flight. Background refreshes\n    // therefore keep the current confirmed state visible and simply replace it\n    // when the fresh answer arrives. Normal page loads keep snapshot hydration.\n    const background = !!(options && options.background);\n    const hadSnapshot = background ? false : hydrateFromSnapshot();\n    if (!background) showLoader(!hadSnapshot);"""
+          if old not in text:
+              raise SystemExit('syncData start anchor not found')
+          text = text.replace(old, new, 1)
+          old_end = """    renderAll();\n    showLoader(false);\n    // A sync after a save dropped the loaded history page"""
+          new_end = """    renderAll();\n    if (!background) showLoader(false);\n    // A sync after a save dropped the loaded history page"""
+          if old_end not in text:
+              raise SystemExit('syncData end anchor not found')
+          api.write_text(text.replace(old_end, new_end, 1))
+
+          app = Path('assets/omad/12-app.js')
+          text = app.read_text()
+          old = """function settleOmadWriteInBackground_() {\n    setTimeout(() => {\n        syncData();\n    }, 0);\n}"""
+          new = """let omadWriteRefreshInFlight_ = false;\nlet omadWriteRefreshPending_ = false;\n\nasync function runPendingOmadWriteRefresh_() {\n    if (omadWriteRefreshInFlight_) return;\n    omadWriteRefreshInFlight_ = true;\n    try {\n        // Coalesce rapid saves without losing the refresh for the latest one. If\n        // another save lands while a refresh is running, one more pass follows.\n        while (omadWriteRefreshPending_) {\n            omadWriteRefreshPending_ = false;\n            await syncData({ background: true });\n        }\n    } finally {\n        omadWriteRefreshInFlight_ = false;\n    }\n}\n\nfunction settleOmadWriteInBackground_() {\n    omadWriteRefreshPending_ = true;\n    setTimeout(() => { runPendingOmadWriteRefresh_(); }, 0);\n}"""
+          if old not in text:
+              raise SystemExit('settle refresh anchor not found')
+          app.write_text(text.replace(old, new, 1))
+
+          wf = Path('.github/workflows/write-perf-finalize.yml')
+          wf.unlink()
+          PY
+      - name: Verify generated bundle and tests
+        run: |
+          npm run build:check
+          npm run lint
+          npm test
+      - name: Commit final fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Fix background refresh write race"
+          git push origin HEAD:perf/write-path-responsiveness-clean
