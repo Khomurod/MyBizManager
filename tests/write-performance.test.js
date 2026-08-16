@@ -73,7 +73,7 @@ test('one multi-line Omad entry lands atomically in one backend request', () => 
 
   const rows = ledger.data.slice(1);
   assert.strictEqual(rows.length, 3);
-  assert.deepStrictEqual(rows.map(row => row[1]), ['batch_req_1_0', 'batch_req_1_1', 'batch_req_1_2']);
+  assert.deepStrictEqual(rows.map(row => row[1]), ['batch_req_1__n3_0', 'batch_req_1__n3_1', 'batch_req_1__n3_2']);
   assert.ok(rows.every(row => row[22] === 'grp_write_perf_1'));
   assert.strictEqual(rows[0][15], 100000);
   assert.strictEqual(rows[1][15], 250000, 'USD freezes the current sell rate');
@@ -106,7 +106,7 @@ test('a partial old-backend fallback is completed rather than mistaken for a ful
 
   const firstLine = post(gas, {
     action: 'create_transaction',
-    requestId: payload.requestId + '_0',
+    requestId: payload.requestId + '__n3_0',
     groupId: payload.groupId,
     period: payload.period,
     tenant: payload.tenant,
@@ -128,7 +128,152 @@ test('a partial old-backend fallback is completed rather than mistaken for a ful
   assert.strictEqual(resumed.resumed, true);
   assert.strictEqual(resumed.transactions.length, 3);
   assert.deepStrictEqual(ledger.data.slice(1).map(row => row[1]).sort(),
-    ['batch_req_1_0', 'batch_req_1_1', 'batch_req_1_2']);
+    ['batch_req_1__n3_0', 'batch_req_1__n3_1', 'batch_req_1__n3_2']);
+});
+
+test('a completed batch cannot be retried with fewer lines', () => {
+  const gas = boot();
+  const first = post(gas, batchPayload());
+  const shorter = batchPayload({ lines: batchPayload().lines.slice(0, 2) });
+  const retry = post(gas, shorter);
+  const ledger = gas.__spreadsheet.getSheetByName('Omad_Transactions_V2');
+
+  assert.strictEqual(first.status, 'success');
+  assert.strictEqual(retry.status, 'error');
+  assert.strictEqual(retry.code, 'batch_retry_conflict');
+  assert.strictEqual(ledger.data.length - 1, 3, 'the original three rows stay untouched');
+});
+
+test('a completed batch cannot be expanded by reusing its request id', () => {
+  const gas = boot();
+  const twoLines = batchPayload({ lines: batchPayload().lines.slice(0, 2) });
+  const first = post(gas, twoLines);
+  const retry = post(gas, batchPayload());
+  const ledger = gas.__spreadsheet.getSheetByName('Omad_Transactions_V2');
+
+  assert.strictEqual(first.status, 'success');
+  assert.strictEqual(retry.status, 'error');
+  assert.strictEqual(retry.code, 'batch_retry_conflict');
+  assert.strictEqual(ledger.data.length - 1, 2, 'no third row is appended');
+});
+
+test('a retry cannot change the financial rate type of an existing USD line', () => {
+  const gas = boot();
+  const usd = batchPayload({
+    lines: [{ amount: 20, currency: 'USD', method: 'Bank', rateType: 'sell' }]
+  });
+  const first = post(gas, usd);
+  const retry = post(gas, {
+    ...usd,
+    lines: [{ amount: 20, currency: 'USD', method: 'Bank', rateType: 'buy' }]
+  });
+
+  assert.strictEqual(first.status, 'success');
+  assert.strictEqual(retry.status, 'error');
+  assert.strictEqual(retry.code, 'batch_retry_conflict');
+  assert.strictEqual(gas.__spreadsheet.getSheetByName('Omad_Transactions_V2').data.length - 1, 1);
+});
+
+test('a counted partial rollout resumes with the rates frozen by its first line', () => {
+  const gas = boot();
+  const payload = batchPayload();
+  const firstLine = post(gas, {
+    action: 'create_transaction',
+    requestId: payload.requestId + '__n3_0',
+    groupId: payload.groupId,
+    period: payload.period,
+    tenant: payload.tenant,
+    type: payload.type,
+    comment: payload.comment,
+    source: payload.source,
+    createdBy: payload.createdBy,
+    amount: payload.lines[0].amount,
+    currency: payload.lines[0].currency,
+    method: payload.lines[0].method,
+    deferReports: true
+  });
+  assert.strictEqual(firstLine.status, 'success');
+
+  const config = gas.__spreadsheet.getSheetByName('System_Config');
+  config.getRange(1, 2).setValue(JSON.stringify({ '2026-08': { buy: 13100, sell: 14000 } }));
+
+  const resumed = post(gas, payload);
+  const rows = gas.__spreadsheet.getSheetByName('Omad_Transactions_V2').data.slice(1);
+  assert.strictEqual(resumed.status, 'success');
+  assert.strictEqual(resumed.resumed, true);
+  assert.ok(rows.every(row => row[11] === 12100 && row[12] === 12500),
+    'every line keeps the same original period rate snapshot');
+  assert.strictEqual(rows[1][15], 250000, 'the resumed USD line uses the original sell rate');
+});
+
+test('a partial rollout with conflicting frozen rates fails closed', () => {
+  const gas = boot();
+  const payload = batchPayload();
+  const first = payload.lines[0];
+  const second = payload.lines[1];
+
+  assert.strictEqual(post(gas, {
+    action: 'create_transaction', requestId: payload.requestId + '__n3_0',
+    groupId: payload.groupId, period: payload.period, tenant: payload.tenant,
+    type: payload.type, comment: payload.comment, source: payload.source,
+    createdBy: payload.createdBy, amount: first.amount, currency: first.currency,
+    method: first.method, deferReports: true
+  }).status, 'success');
+
+  const config = gas.__spreadsheet.getSheetByName('System_Config');
+  config.getRange(1, 2).setValue(JSON.stringify({ '2026-08': { buy: 13100, sell: 14000 } }));
+
+  assert.strictEqual(post(gas, {
+    action: 'create_transaction', requestId: payload.requestId + '__n3_1',
+    groupId: payload.groupId, period: payload.period, tenant: payload.tenant,
+    type: payload.type, comment: payload.comment, source: payload.source,
+    createdBy: payload.createdBy, amount: second.amount, currency: second.currency,
+    method: second.method, deferReports: true
+  }).status, 'success');
+
+  const retry = post(gas, payload);
+  assert.strictEqual(retry.status, 'error');
+  assert.strictEqual(retry.code, 'batch_retry_conflict');
+  assert.strictEqual(gas.__spreadsheet.getSheetByName('Omad_Transactions_V2').data.length - 1, 2,
+    'the missing third line is not guessed into an inconsistent group');
+});
+
+test('legacy uncounted rollout rows are accepted only when the whole retry already exists', () => {
+  const gas = boot();
+  const payload = batchPayload();
+  for (let i = 0; i < payload.lines.length; i++) {
+    const line = payload.lines[i];
+    const result = post(gas, {
+      action: 'create_transaction', requestId: `${payload.requestId}_${i}`,
+      groupId: payload.groupId, period: payload.period, tenant: payload.tenant,
+      type: payload.type, comment: payload.comment, source: payload.source,
+      createdBy: payload.createdBy, amount: line.amount, currency: line.currency,
+      method: line.method, deferReports: true
+    });
+    assert.strictEqual(result.status, 'success');
+  }
+  const retry = post(gas, payload);
+  assert.strictEqual(retry.status, 'success');
+  assert.strictEqual(retry.duplicate, true);
+  assert.strictEqual(gas.__spreadsheet.getSheetByName('Omad_Transactions_V2').data.length - 1, 3);
+});
+
+test('legacy uncounted partial rollout is refused rather than guessing the original cart size', () => {
+  const gas = boot();
+  const payload = batchPayload();
+  const line = payload.lines[0];
+  assert.strictEqual(post(gas, {
+    action: 'create_transaction', requestId: payload.requestId + '_0',
+    groupId: payload.groupId, period: payload.period, tenant: payload.tenant,
+    type: payload.type, comment: payload.comment, source: payload.source,
+    createdBy: payload.createdBy, amount: line.amount, currency: line.currency,
+    method: line.method, deferReports: true
+  }).status, 'success');
+
+  const retry = post(gas, payload);
+  assert.strictEqual(retry.status, 'error');
+  assert.strictEqual(retry.code, 'batch_retry_conflict');
+  assert.strictEqual(gas.__spreadsheet.getSheetByName('Omad_Transactions_V2').data.length - 1, 1);
 });
 
 test('request ids remain case-sensitive after the fast lookup change', () => {
@@ -217,6 +362,7 @@ test('the Omad browser batches new carts, defers Telegram, and has old-backend f
   assert.match(source, /deferReports\s*=\s*true/);
   assert.match(source, /unknown action/i);
   assert.match(source, /submitNewLedgerEntryLegacyFallback_/);
+  assert.match(source, /__n\$\{cart\.length\}_\$\{i\}/);
   assert.match(source, /settleOmadWriteInBackground_/);
   assert.doesNotMatch(source, /action:\s*['"]process_jobs['"]/);
 });

@@ -442,7 +442,11 @@ bills and it comes off what they owe:
 Apps Script answers HTTP 200 for almost everything, including its own errors. A
 save counts as successful only when the body parses **and** says
 `status: "success"`. On anything else the client keeps the form, the cart and
-the request id so the entry can be retried without duplicating.
+the request id so the entry can be retried without duplicating. For a multi-line
+Omad entry, that request id is also bound to the original **line count**; reusing
+it with a larger or smaller cart is refused rather than silently changing a
+financial request after an uncertain response. Counted per-line ids let a
+partial frontend/backend rollout resume only the missing lines safely.
 
 ## 7. Data other features depend on
 
@@ -457,11 +461,11 @@ the request id so the entry can be retried without duplicating.
 not a fact about it, and `CACHE_DERIVED_CONFIG_KEYS` keeps writing it from
 bumping the revision it is keyed by. Deleting the row costs one rebuild.
 
-**`Omad_Transactions_V2`** — the live append-only ledger (schema version 2, 23
+**`Omad_Transactions_V2`** — the live append-only ledger (schema version 2, 24
 columns): `ID, Request_ID, Created_At, Updated_At, Created_By, Source, Period,
 Tenant, Type, Amount, Currency, Rate_Buy, Rate_Sell, Rate_Used, Rate_Type,
 Amount_UZS, Method, Comment, Status, Related_ID, Telegram_Msg_ID,
-Schema_Version, Entry_Group_ID`.
+Schema_Version, Entry_Group_ID, Entry_Kind`.
 
 **`Omad_Transactions`** — the legacy 13-column sheet, kept intact so
 `rollback_omad_migration` stays one action. Still the write path if a rollback
@@ -815,7 +819,7 @@ npm run bench            # sheet passes / bytes / ms per screen (see below)
 
 ## 14. Live state
 
-Verified 2026-08-12 and unchanged in the repository since:
+Operational state snapshot, rechecked read-only on **2026-08-17**:
 
 | | |
 |---|---|
@@ -828,13 +832,11 @@ Verified 2026-08-12 and unchanged in the repository since:
 | Mini App | menu button installed and verified |
 | Web sign-in | username + password, server-verified, 30-day signed session |
 
-**One manual step is outstanding after this change is deployed:** the owner
-signs in as `omad_admin` with the value of `OMAD_ADMIN_KEY` (the bootstrap
-described in [§5](#setting-a-password)) and sets a real password for
-`omad_admin`, `cafe_admin` and `cafe_seller` in Sozlamalar → 🗄️ Tizim →
-Foydalanuvchilar. Until that is done the café accounts cannot sign in at all,
-and `OMAD_USERS` / `OMAD_SESSION_SECRET` do not exist yet — the latter is
-generated on first use and needs no manual value.
+Account records and the session-signing secret are live Script Properties, not
+repository state, so this document does not claim whether a one-time password
+setup is pending. Sozlamalar → 🗄️ Tizim → Foydalanuvchilar is the operator
+surface for account setup/rotation. A code deployment never rewrites
+`OMAD_USERS` or `OMAD_SESSION_SECRET`.
 
 Hosting, project ids and the deployment id are in `docs/DEPLOYMENT.md` — the
 one place that records them. If a change makes any of this untrue, update it

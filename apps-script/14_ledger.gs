@@ -83,9 +83,9 @@ function ledgerSheet_(doc) {
     sheet.appendRow(LEDGER_HEADER);
     return sheet;
   }
-  // Upgrades a sheet written before Entry_Group_ID in place. Existing rows keep
-  // their values and read back through the deterministic backfill until
-  // backfill_entry_group_ids is run against them.
+  // Upgrades a sheet written before the trailing grouping columns in place.
+  // Existing row values are untouched: a missing group id derives
+  // deterministically and a missing entry kind normalizes to ordinary.
   var firstRow = sheet.getRange(1, 1, 1, LEDGER_HEADER.length).getValues()[0];
   if (firstRow[LEDGER_HEADER.length - 1] !== LEDGER_HEADER[LEDGER_HEADER.length - 1]) {
     sheet.getRange(1, 1, 1, LEDGER_HEADER.length).setValues([LEDGER_HEADER]);

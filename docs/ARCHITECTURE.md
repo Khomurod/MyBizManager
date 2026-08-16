@@ -45,34 +45,41 @@ file for file. See [DEPLOYMENT.md](DEPLOYMENT.md).
 
 | Module | Contents |
 |---|---|
-| `01_shared_utils.gs` | JSON/HTML/date helpers, `setConfig`/`getConfig` |
-| `01a_periods.gs` | Canonical `YYYY-MM` periods, Uzbek labels, period resolution |
-| `02_validation.gs` | Rate limiting, length limits, every input validator |
-| `03_settings.gs` | Script Properties, secrets, the Telegram settings actions |
+| `01_shared_utils.gs` | JSON/HTML/date helpers, `getConfig`/`setConfig`, per-request config memo |
+| `01a_periods.gs` | Canonical `YYYY-MM` periods, Uzbek labels, legacy period resolution |
+| `01c_cache.gs` | Revision counters and read-only summary cache |
+| `01d_read_model.gs` | Materialised Omad summary: build, verify, rebuild |
+| `02_validation.gs` | Rate limiting, length limits, input validators |
+| `02a_auth.gs` | Users, password hashes, signed sessions, roles, login throttling |
+| `03_settings.gs` | Script Properties, secrets, `checkAdminKey_`, Telegram settings actions |
 | `04_audit_history.gs` | Backups, transaction archive, audit and debug logs |
 | `05_exchange_rates.gs` | Rate normalisation, `toUZS_`, balances |
 | `05a_calculations.gs` | Every monetary rule, mirrored by `assets/omad/02b-calc.js` |
-| `06_tenants.gs` | Tenant records |
-| `07_planned_expenses.gs` | Template expenses |
-| `08_omad_transactions.gs` | The ledger: read/normalise/append/rewrite, entry groups |
-| `08a_tenant_paid.gs` | The tenant-paid-on-our-behalf pair: create, replace, report |
+| `06_tenants.gs` | Tenants and effective-dated rent |
+| `07_planned_expenses.gs` | Planned expenses and recurrence |
+| `08_omad_transactions.gs` | Legacy sheet read/normalise/append/rewrite; shared Omad read compatibility |
+| `08a_tenant_paid.gs` | Tenant-paid-on-our-behalf pair: create, replace, report |
 | `09_telegram_service.gs` | Telegram API calls and the `/yangi` conversation |
 | `10_retry_queue.gs` | `Omad_Job_Queue` worker |
 | `11_report_jobs.gs` | Server-composed business reports |
-| `12_cafe.gs` | Café inventory, sales, voids, close-day |
-| `13_migration.gs` | Period migration: preview, apply, verify, cutover, rollback |
+| `12_cafe.gs` | Café catalogue, pricing, sales, voids, close-day |
+| `12a_cafe_catalogue.gs` | Recipe costing, catalogue revision, health warnings, stock movements |
+| `12b_cafe_write_performance.gs` | Narrow durable café sale retry lookup; stock/idempotency rules stay in `12_cafe.gs` |
+| `13_migration.gs` | Legacy→V2 migration: preview, apply, verify, cutover, rollback |
 | `14_ledger.gs` | Append-only ledger: create / correct / cancel / read / audit |
-| `15_system_status.gs` | Backups, queue, migration state, audit tail, safe diagnostics |
-| `15a_maintenance.gs` | Operator repairs: historical dates, debug-log secrets, webhook secret rotation |
-| `16_tasks_recurrence.gs` | Task module: Asia/Tashkent time + recurrence engine (pure) |
-| `17_tasks_store.gs` | Task module: `Tasks`/`Task_Occurrences` sheets, occurrences, views |
-| `18_tasks_service.gs` | Task module: isolated Telegram namespace (`t_done:`, photo proof) |
-| `19_tasks_scheduler.gs` | Task module: reminder scheduler, queue jobs, edit reconciliation, web API |
-| `19a_tasks_wizard.gs` | Task module: the `📋 Vazifa` branch of `/yangi` — state machine, keyboards, task creation |
-| `21_miniapp_auth.gs` | Telegram Mini App: `initData` signature verification and the authorization gate |
-| `22_miniapp_api.gs` | Telegram Mini App: server-computed summaries and the write actions |
-| `23_health.gs` | Mini App configuration through the Bot API, and the system health check |
-| `20_api.gs` | `doPost` / `doGet` routing only |
+| `14a_ledger_write_performance.gs` | Narrow ledger request lookup / ID allocation and atomic multi-line entry creation |
+| `15_system_status.gs` | Safe diagnostics for Sozlamalar → Tizim |
+| `15a_maintenance.gs` | Operator repairs: dates, debug-log secrets, webhook rotation |
+| `16_tasks_recurrence.gs` | Task module: pure Asia/Tashkent time + recurrence engine |
+| `17_tasks_store.gs` | Task module: `Tasks` / `Task_Occurrences`, occurrences, views |
+| `18_tasks_service.gs` | Task module: Telegram namespace (`t_done:`, photo proof, cards) |
+| `19_tasks_scheduler.gs` | Task module: scheduler, queue jobs, edit reconciliation, web API |
+| `19a_tasks_wizard.gs` | Task module: `📋 Vazifa` branch of `/yangi` |
+| `20_api.gs` | `doPost` / `doGet` routing and server-side auth gates |
+| `20a_write_performance_api.gs` | Batch-ledger API extension and one-report-per-group integration |
+| `21_miniapp_auth.gs` | Telegram Mini App `initData` verification and authorization |
+| `22_miniapp_api.gs` | Mini App summaries and write actions |
+| `23_health.gs` | Mini App Bot API configuration and system health check |
 
 The task-management feature (`/tasks`) is documented separately in
 **[TASKS.md](TASKS.md)**. It is an isolated module: dedicated `Tasks` and
@@ -122,9 +129,12 @@ Column A = key, column B = a JSON string.
 | `Omad_Active_Transactions_Sheet` | which sheet reads and writes go to — the cutover switch |
 | `Omad_Migration_Status` | `{ state, appliedAt, cutoverAt, rolledBackAt, fallbackYear, ... }` |
 | `Omad_Template_Expenses` | `[{ id, name, amount, currency, startPeriod, month, frequency, intervalMonths, selectedMonths, ending: {type, untilPeriod, occurrences}, active, description }]` |
+| `Omad_Read_Model` | derived, revision-keyed dashboard summary; safe to rebuild from the live ledger |
 | `Cafe_Inventory` | café inventory array |
+| `Cafe_Inventory_Rev` | optimistic-concurrency revision for inventory/admin saves |
 | `Cafe_Recipes` | café recipe array |
 | `Cafe_Categories` | `string[]` |
+| `Cafe_Catalogue_Rev` | catalogue revision, independent from inventory sales |
 | `Cafe_Settings` | `{ dailyTarget: number }` |
 
 ### `Omad_Transactions` — row-per-transaction
@@ -260,8 +270,10 @@ Secrets and configuration that must never reach the browser.
 | `OMAD_REV_OMAD` / `OMAD_REV_CAFE` / `OMAD_REV_TASKS` | no | Cache revision counters. Bumped by every write; part of every summary cache key |
 | `TELEGRAM_AUTHORIZED_USER_ID` | no | The only user allowed to run `/yangi` |
 | `TELEGRAM_GROUP_CHAT_ID` | no | Reporting group |
+| `TELEGRAM_TASKS_GROUP_CHAT_ID` | no | Task cards, reminders and proof prompts group |
 | `TELEGRAM_WEBHOOK_URL` | no | Last configured webhook URL (without the secret) |
 | `TELEGRAM_WEBHOOK_SECRET` | **yes** | Random value embedded in the webhook URL; every inbound update must present it |
+| `TELEGRAM_WEBHOOK_SECRET_PREVIOUS` | **yes, transient** | Accepted only during a webhook-secret rotation, then cleared |
 | `TELEGRAM_WEBHOOK_STATUS` | no | JSON status snapshot |
 | `TELEGRAM_LAST_SUCCESS` | no | `{ action, at }` |
 | `TELEGRAM_LAST_ERROR` | no | `{ action, message, at }` — redacted |
@@ -272,8 +284,16 @@ Routing order in `20_api.gs` is load-bearing, because a name matched earlier is
 gated differently: `mini_*` first, then tasks, then reads, then the rest; a café
 action is matched last. Check it before adding an action name.
 
-| Action | Admin key | Notes |
+**Normal web calls use signed role-bearing sessions.** The middle column below only
+records whether the internal `OMAD_ADMIN_KEY` break-glass credential can stand in
+for an `omad_admin` session; it does not mean the browser normally sends that key.
+Café actions additionally accept the café roles described in the permissions section.
+
+| Action | Break-glass admin key accepted? | Notes |
 |---|---|---|
+| `login` | no | The only unauthenticated web action; validates username/password and returns a signed session |
+| `verify_access` / `change_password` | **yes** | Validate the current signed web identity; password changes revoke older tokens through `pwv` |
+| `list_users` / `set_user_password` | **yes** | `omad_admin` account management |
 | `save_omad` / `migrate_omad` | **yes** | Whole-list save. Its **transaction half is refused while V2 is live** (`saveOmadSettingsOnly_` runs instead); tenants, rates and planned expenses still save through it. Optional `telegramReport: {operation, groupId, baseId, messageId}` queues a server-composed report |
 | `tenant_paid_expense` | **yes** | One tenant-paid expense: two linked rows, one group, one report. `replaceGroupId` edits an existing pair |
 | `get_telegram_settings` | **yes** | Never includes the token, but does carry the authorized user id and both chat ids |
@@ -289,7 +309,6 @@ action is matched last. Check it before adding an action name.
 | `save_inventory`, `save_recipe`, `save_categories`, `save_cafe_settings` | **yes** | Café admin. The last three quote `expectedCatalogueRev`; `save_recipe` recomputes every cost from the inventory and answers with the catalogue as it stored it |
 | `adjust_cafe_stock` | **yes** | One stock movement outside a sale — `{inventoryId, direction, reason, qty, note, cost?, requestId}` — applied under the script lock and written to `Cafe_Stock_Movements` |
 | `save_sale`, `void_sale`, `close_day` | **yes** | Café POS |
-| `verify_access` | **yes** | Checks a key at login and returns nothing else |
 | `get_omad_data` / `get_cafe_data` | **yes** | The authenticated replacements for the `doGet` reads. `get_omad_data` takes `scope: "dashboard"`, which answers with the read model's figures and a short recent list instead of the ledger (and with the whole list before cutover, because the legacy save submits it back) |
 | `get_omad_history` | **yes** | One page of history as whole business actions — `{period?, offset, limit}` — newest first, every row of each group on the page |
 | `verify_omad_read_model` / `rebuild_omad_read_model` | **yes** | Compare the stored summary against a fresh full-ledger build, and store a fresh one |
@@ -297,7 +316,7 @@ action is matched last. Check it before adding an action name.
 | `configure_mini_app` | **yes** | Installs and verifies the bot's Mini App menu button |
 | `get_migration_status` | **yes** | Which sheet is live; the frontend picks its entry path from this |
 | `preview_` / `apply_` / `verify_` / `cutover_` / `rollback_omad_migration` | **yes** | The migration sequence, above |
-| `create_transaction` / `correct_transaction` / `cancel_transaction` / `list_transactions` / `get_transaction` / `get_transaction_history` | **yes** | The append-only ledger, below |
+| `create_transaction_batch` / `create_transaction` / `correct_transaction` / `cancel_transaction` / `list_transactions` / `get_transaction` / `get_transaction_history` | **yes** | Append-only V2 ledger actions. New multi-line web entries use the batch action; edits deliberately keep the single-row correction/cancel path |
 | `get_tasks` (**POST only**) / `save_task` / `cancel_task` / `pause_routine` / `resume_routine` / `skip_occurrence` / `complete_occurrence` / `reopen_occurrence` | **yes** | The task board — reads included; see [TASKS.md](TASKS.md) |
 | `mini_home` / `mini_omad` / `mini_cafe` / `mini_tasks` | initData | Mini App reads — server-computed summaries |
 | `mini_save_transaction` / `mini_tenant_paid` / `mini_task_action` | initData | Mini App writes, through the shared implementations |
@@ -609,6 +628,7 @@ message from data it already stored:
 | `save_omad` + `telegramReport.operation = "transaction_upsert"` | Builds the group report from the stored transaction group (`buildOmadGroupReportMessage_`), sends or edits it, and writes the message id back onto the rows |
 | `save_omad` + `telegramReport.operation = "transaction_delete"` | Deletes the previously sent group message |
 | `close_day` | Builds the café close-day report (`buildCafeCloseDayMessage_`) from the stored close-day payload |
+| `create_transaction_batch` / `create_transaction` / `correct_transaction` / `cancel_transaction` | Queues one server-composed report for the affected business group after the ledger change succeeds |
 | Telegram `/yangi` | Saves the transaction, then queues its own report |
 
 Every one of those becomes a **job on `Omad_Job_Queue`**, so a Telegram outage
@@ -635,15 +655,19 @@ wait for ever for a photo prompt that was never delivered.
 
 ### Fast saving
 
-A save returns as soon as the financial record is safely stored. At most
-**one** queued job rides along inline (`JOB_QUEUE_INLINE_BATCH = 1`), so
-response time does not grow with the size of the backlog; the trigger picks up
-everything else. Passing `deferReports: true` on a request skips the inline
-drain entirely.
+A save returns when the financial record is safely stored, not when Telegram or
+a dashboard refresh finishes. Web accounting writes force `deferReports: true`,
+so no Telegram network call rides on the response path; the durable queue is
+drained by the existing time trigger. The browser releases the entry form and
+refreshes the confirmed dashboard in the background. Rapid saves coalesce those
+refreshes, and a background refresh never rehydrates a stale snapshot that would
+block an immediate second save.
 
-Failing to *queue* a report never undoes a save the caller is about to be told
-succeeded — the enqueue is wrapped, and the failure is logged rather than
-raised.
+Other callers may still drain at most **one** queued job inline
+(`JOB_QUEUE_INLINE_BATCH = 1`). The Mini App separately starts
+`mini_flush_reports` without awaiting it so its card usually arrives before the
+next trigger tick. Failing to *queue* a report never undoes a save the caller is
+about to be told succeeded — the enqueue is wrapped and logged.
 
 ### Idempotency
 
@@ -657,6 +681,11 @@ Every write carries a request id.
 The web id survives a mid-save refresh, so the resubmission carries the
 original id and the server recognises it. It is cleared only once the
 submission succeeds. A second click while a save is in flight is ignored.
+
+For a new multi-line web entry, that stable base id is bound to the original
+line count and each stored line carries the count-qualified form described in
+the ledger section. This makes an uncertain retry with a changed cart a
+conflict, not a mutation of the first request.
 
 On the `/yangi` side the `sessionId` is written to the transaction's
 `Request_ID`, and the insert looks that id up first, so a redelivered Telegram
@@ -787,17 +816,18 @@ Financial records are never rewritten in place and never deleted.
 | 21 | `Telegram_Msg_ID` | group message id |
 | 22 | `Schema_Version` | `2` |
 | 23 | `Entry_Group_ID` | the business action this row belongs to |
+| 24 | `Entry_Kind` | `""` or `tenant_paid_expense`; what kind of business action the group represents |
 
-`Entry_Group_ID` was added while `Omad_Transactions_V2` had never existed in
-any spreadsheet, so there is no earlier shape of this schema in the wild and
-the version stays at 2. `ledgerSheet_` upgrades a 22-column header in place
-anyway, and reads fall back to the deterministic derivation, so a sheet created
-by an older build keeps working.
+The grouping columns were added without changing the ledger's semantic schema
+version, which remains 2. `ledgerSheet_` rewrites an older/truncated header in
+place without touching row values; reads derive a missing `Entry_Group_ID`
+deterministically and normalize a missing `Entry_Kind` to ordinary (`""`).
 
 ### Operations
 
 | Action | Effect |
 |---|---|
+| `create_transaction_batch` | New multi-line business action: validates every line first, writes missing rows together under one lock, and is idempotent on a request id bound to the original line count |
 | `create_transaction` | Appends one `Active` row. Idempotent on `Request_ID` |
 | `correct_transaction` | Appends the replacement, then marks the original `Corrected`. The original's values are untouched |
 | `cancel_transaction` | Marks the row `Cancelled`. Nothing is removed |
@@ -808,6 +838,20 @@ by an older build keeps working.
 All writes take the script lock. Correcting an already-corrected or cancelled
 record is refused rather than silently applied. Cancelling twice is the same
 outcome as cancelling once.
+
+A batch stores per-line request ids as `<requestBase>__n<count>_<index>`. The
+count is part of the durable idempotency contract: reusing one request base with
+a larger or smaller cart is refused. During a frontend/backend rollout, counted
+line ids let a later batch safely complete only missing lines. Older uncounted
+`<requestBase>_<index>` rows are accepted as a duplicate only when the full
+requested set already exists; an ambiguous partial legacy set fails closed. If
+the browser has fallen back to an **older backend** that treats those ids as
+opaque strings, it persists the exact fallback submission in `sessionStorage`
+and refuses a changed cart/business payload until that uncertain retry is
+resolved; otherwise an old server could not distinguish a modified request.
+The batch also freezes one buy/sell rate pair for the whole business action; a
+partial resume inherits the first stored line's pair, and inconsistent existing
+snapshots are refused rather than mixed.
 
 #### Why a correction writes the replacement first
 

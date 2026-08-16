@@ -171,12 +171,66 @@ callBackend = async function(payload) {
     return callBackendBeforeWritePerf_(body);
 };
 
-/** An old Apps Script deployment can safely handle the same cart line by line. */
+// An old backend treats request ids as opaque strings. If a fallback starts and
+// its result becomes uncertain, changing the cart or business fields while
+// reusing those ids could duplicate a line or make the browser report success
+// for different data than the old backend actually stored. Persist the exact
+// fallback submission until it succeeds, including across a browser refresh.
+const OMAD_LEGACY_FALLBACK_FINGERPRINT_KEY = 'omad_pending_legacy_fallback_fingerprint';
+let omadLegacyFallbackFingerprint_ = '';
+
+function legacyFallbackFingerprint_(requestBase, groupId, common) {
+    return JSON.stringify({
+        requestId: String(requestBase || ''),
+        groupId: String(groupId || ''),
+        tenant: String((common && common.tenant) || ''),
+        period: String((common && common.period) || ''),
+        type: String((common && common.type) || ''),
+        comment: String((common && common.comment) || ''),
+        source: String((common && common.source) || ''),
+        createdBy: String((common && common.createdBy) || ''),
+        lines: cart.map(item => ({
+            amount: Number(item.amount) || 0,
+            currency: String(item.currency || ''),
+            method: String(item.method || '')
+        }))
+    });
+}
+
+function assertLegacyFallbackSubmissionUnchanged_(requestBase, groupId, common) {
+    const fingerprint = legacyFallbackFingerprint_(requestBase, groupId, common);
+    if(!omadLegacyFallbackFingerprint_) {
+        try {
+            omadLegacyFallbackFingerprint_ = sessionStorage.getItem(OMAD_LEGACY_FALLBACK_FINGERPRINT_KEY) || '';
+        } catch (e) { omadLegacyFallbackFingerprint_ = ''; }
+    }
+    if(omadLegacyFallbackFingerprint_ && omadLegacyFallbackFingerprint_ !== fingerprint) {
+        throw new Error(
+            "Oldingi saqlash urinishining natijasi noma'lum. Dublikat bo'lmasligi uchun ma'lumotni o'zgartirmang; asl holatini tiklab qayta urinib ko'ring."
+        );
+    }
+    if(!omadLegacyFallbackFingerprint_) {
+        omadLegacyFallbackFingerprint_ = fingerprint;
+        try { sessionStorage.setItem(OMAD_LEGACY_FALLBACK_FINGERPRINT_KEY, fingerprint); } catch (e) {}
+    }
+}
+
+// Successful saves and explicit form resets already clear the pending request;
+// clear the fallback fingerprint at exactly the same boundary.
+var clearPendingRequestBeforeLegacyFallbackGuard_ = clearPendingRequest;
+clearPendingRequest = function() {
+    omadLegacyFallbackFingerprint_ = '';
+    try { sessionStorage.removeItem(OMAD_LEGACY_FALLBACK_FINGERPRINT_KEY); } catch (e) {}
+    return clearPendingRequestBeforeLegacyFallbackGuard_();
+};
+
+/** An old Apps Script deployment can safely handle the same unchanged cart line by line. */
 async function submitNewLedgerEntryLegacyFallback_(requestBase, groupId, common) {
+    assertLegacyFallbackSubmissionUnchanged_(requestBase, groupId, common);
     for(let i = 0; i < cart.length; i++) {
         const response = await callBackend({
             action: 'create_transaction',
-            requestId: `${requestBase}_${i}`,
+            requestId: `${requestBase}__n${cart.length}_${i}`,
             groupId,
             ...common,
             amount: Number(cart[i].amount) || 0,
