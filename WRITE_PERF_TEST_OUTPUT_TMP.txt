@@ -1,99 +1,76 @@
 EXIT_CODE=1
---- FAILURE MATCHES ---
-2593:not ok 432 - a café sale reads the sales sheet once
-2604:  code: 'ERR_ASSERTION'
-2605:  name: 'AssertionError'
-5459:# fail 1
---- FINAL 100 LINES ---
-  ...
-# Subtest: a correct password costs nothing from the login allowance
-ok 891 - a correct password costs nothing from the login allowance
+--- FAILURE CONTEXT ---
+# Subtest: the café tab does not parse every receipt ever written
+ok 428 - the café tab does not parse every receipt ever written
   ---
-  duration_ms: 35.524281
+  duration_ms: 9.698222
   type: 'test'
   ...
-# Subtest: every wrong password is counted, not just the ones that finish first
-ok 892 - every wrong password is counted, not just the ones that finish first
+# Subtest: the café summary still totals the whole history
+ok 429 - the café summary still totals the whole history
   ---
-  duration_ms: 12.413389
+  duration_ms: 8.351033
   type: 'test'
   ...
-# Subtest: a global login flood does not also fill one account's own allowance
-ok 893 - a global login flood does not also fill one account's own allowance
+# Subtest: composing a transaction report reads the legacy sheet twice at most
+ok 430 - composing a transaction report reads the legacy sheet twice at most
   ---
-  duration_ms: 11.067712
+  duration_ms: 28.89009
   type: 'test'
   ...
-# Subtest: a signed-in user is never throttled by somebody else failing
-ok 894 - a signed-in user is never throttled by somebody else failing
+# Subtest: composing a report on the ledger reads it once, writing back by row number
+ok 431 - composing a report on the ledger reads it once, writing back by row number
   ---
-  duration_ms: 14.121653
+  duration_ms: 10.959563
   type: 'test'
   ...
-# Subtest: a wrong admin key still exhausts its own strict allowance
-ok 895 - a wrong admin key still exhausts its own strict allowance
+# Subtest: a café sale reads the sales sheet once
+not ok 432 - a café sale reads the sales sheet once
   ---
-  duration_ms: 3.463893
+  duration_ms: 10.847165
+  type: 'test'
+  location: '/home/runner/work/MyBizManager/MyBizManager/tests/read-efficiency.test.js:384:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    the idempotency scan is the only pass; pricing reads the catalogue from config
+    
+    undefined !== 1
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 1
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (/home/runner/work/MyBizManager/MyBizManager/tests/read-efficiency.test.js:403:10)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: a café void reads the sales sheet once
+ok 433 - a café void reads the sales sheet once
+  ---
+  duration_ms: 5.225077
   type: 'test'
   ...
-# Subtest: one till does not spend another user's request allowance
-ok 896 - one till does not spend another user's request allowance
+# Subtest: verifying the migration reads the ledger once
+ok 434 - verifying the migration reads the ledger once
   ---
-  duration_ms: 15.226493
+  duration_ms: 8.318544
   type: 'test'
   ...
-# Subtest: no rate-limit bucket key contains a credential
-ok 897 - no rate-limit bucket key contains a credential
-  ---
-  duration_ms: 12.17956
-  type: 'test'
-  ...
-# Subtest: the maintenance key signs the owner in only until they set a password
-ok 898 - the maintenance key signs the owner in only until they set a password
-  ---
-  duration_ms: 6.477201
-  type: 'test'
-  ...
-# Subtest: the admin key still authorizes maintenance, as omad_admin
-ok 899 - the admin key still authorizes maintenance, as omad_admin
-  ---
-  duration_ms: 10.942152
-  type: 'test'
-  ...
-# Subtest: the Mini App gate is untouched by any of this
-ok 900 - the Mini App gate is untouched by any of this
-  ---
-  duration_ms: 10.298999
-  type: 'test'
-  ...
-# Subtest: one multi-line Omad entry lands atomically in one backend request
-ok 901 - one multi-line Omad entry lands atomically in one backend request
-  ---
-  duration_ms: 22.086044
-  type: 'test'
-  ...
-# Subtest: retrying the same multi-line entry returns the original result without duplicates
-ok 902 - retrying the same multi-line entry returns the original result without duplicates
-  ---
-  duration_ms: 7.49678
-  type: 'test'
-  ...
-# Subtest: ordinary single-row creates no longer full-scan the ledger to dedupe or mint an id
-ok 903 - ordinary single-row creates no longer full-scan the ledger to dedupe or mint an id
-  ---
-  duration_ms: 7.455794
-  type: 'test'
-  ...
-# Subtest: cafe duplicate lookup reads only receipt details, not the whole sales history
+--- SUMMARY ---
 ok 904 - cafe duplicate lookup reads only receipt details, not the whole sales history
   ---
-  duration_ms: 7.816639
+  duration_ms: 5.609984
   type: 'test'
   ...
 # Subtest: the Omad browser batches new carts, defers Telegram, and has old-backend fallback
 ok 905 - the Omad browser batches new carts, defers Telegram, and has old-backend fallback
   ---
-  duration_ms: 0.825751
+  duration_ms: 0.636188
   type: 'test'
   ...
 1..905
@@ -104,4 +81,4 @@ ok 905 - the Omad browser batches new carts, defers Telegram, and has old-backen
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 4408.981056
+# duration_ms 4307.710577
