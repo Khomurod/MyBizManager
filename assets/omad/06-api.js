@@ -131,9 +131,15 @@ function hydrateFromSnapshot() {
 }
 
 // --- CLOUD ---
-async function syncData() {
-    const hadSnapshot = hydrateFromSnapshot();
-    showLoader(!hadSnapshot);
+async function syncData(options = {}) {
+    // A post-save refresh starts from a live, server-confirmed screen. Re-hydrating
+    // the stored snapshot here would temporarily mark that live screen stale and
+    // refuse a second save while the refresh is in flight. Background refreshes
+    // therefore keep the current confirmed state visible and simply replace it
+    // when the fresh answer arrives. Normal page loads keep snapshot hydration.
+    const background = !!(options && options.background);
+    const hadSnapshot = background ? false : hydrateFromSnapshot();
+    if (!background) showLoader(!hadSnapshot);
     try {
         // An authenticated POST, not the old anonymous GET: a GET puts its
         // parameters in the URL, which is where a credential must never be.
@@ -244,7 +250,7 @@ async function syncData() {
         app.loadError = (e && e.message) || SAVE_FAILED_MESSAGE;
     }
     renderAll();
-    showLoader(false);
+    if (!background) showLoader(false);
     // A sync after a save dropped the loaded history page, because it was built
     // from rows the save has moved. If somebody is looking at Tarix, fetch the
     // first page again rather than leaving them in front of a button.

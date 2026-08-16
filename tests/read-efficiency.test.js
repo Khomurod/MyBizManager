@@ -381,7 +381,7 @@ test('composing a report on the ledger reads it once, writing back by row number
 
 // --------------------------------------------------------------------- café
 
-test('a café sale reads the sales sheet once', () => {
+test('a café sale avoids a full sales-sheet pass', () => {
   const gas = boot();
   // One sale already on the sheet, so the idempotency scan is a real pass
   // rather than an early return on an empty sheet.
@@ -400,8 +400,8 @@ test('a café sale reads the sales sheet once', () => {
     assert.strictEqual(answer.status, 'success');
   });
 
-  assert.strictEqual(counts.Cafe_Sales, 1,
-    'the idempotency scan is the only pass; pricing reads the catalogue from config');
+  assert.ok(!counts.Cafe_Sales,
+    'idempotency reads only the receipt-details column; pricing reads the catalogue from config');
 });
 
 test('a café void reads the sales sheet once', () => {
