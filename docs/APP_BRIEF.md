@@ -491,7 +491,8 @@ Other sheets: `Omad_Backups`, `Omad_Transaction_Archive`, `Omad_Audit_Log`,
 **Script Properties** (secrets never reach the browser): `TELEGRAM_BOT_TOKEN`*,
 `OMAD_ADMIN_KEY`*, `OMAD_USERS`*, `OMAD_SESSION_SECRET`*,
 `OMAD_REV_OMAD` / `OMAD_REV_CAFE` / `OMAD_REV_TASKS` (cache revision counters,
-not secrets), `TELEGRAM_WEBHOOK_SECRET`*, `TELEGRAM_AUTHORIZED_USER_ID`,
+not secrets), `TELEGRAM_WEBHOOK_SECRET`*, `TELEGRAM_WEBHOOK_SECRET_PREVIOUS`* (transient
+during rotation), `TELEGRAM_WEBHOOK_ROTATED_AT`, `TELEGRAM_AUTHORIZED_USER_ID`,
 `TELEGRAM_GROUP_CHAT_ID`, `TELEGRAM_TASKS_GROUP_CHAT_ID`,
 `TELEGRAM_WEBHOOK_URL`, `TELEGRAM_WEBHOOK_STATUS`, `TELEGRAM_LAST_SUCCESS`,
 `TELEGRAM_LAST_ERROR` (`*` = secret). They are project state, not code — the
@@ -505,6 +506,7 @@ deploy never touches them.
 | **Google Apps Script** web app `/exec` | the entire backend; one deployment id, never recreated |
 | **Telegram Bot API** | `/yangi` entry, task cards and reminders, group reports, the Mini App menu button and its `initData` signature |
 | **Cloudflare Pages** (`mybizmanager.pages.dev`) | serves the static frontend from `main`, no build step; serves `/mini` and `/tasks` as clean paths with no config |
+| **GitHub Actions + clasp** | the backend deployment pipeline |
 
 **Netlify is not one of them.** The repository carries no Netlify
 configuration and `tests/static-analysis.test.js` keeps it that way. The old
@@ -512,7 +514,6 @@ configuration and `tests/static-analysis.test.js` keeps it that way. The old
 posts three neutral preview checks per pull request; they mean nothing about
 this application. Removing it is a browser step — `docs/DEPLOYMENT.md` names
 exactly which.
-| **GitHub Actions + clasp** | the backend deployment pipeline |
 
 **The `/exec` URL is hardcoded in five places, which must always agree:**
 `assets/omad/00-config.js`, `assets/mini/00-config.js`, `login.html`,
