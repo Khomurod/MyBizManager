@@ -125,42 +125,62 @@ function initSelectors() {
 // work, but neither is a reason to keep the Save button blocked after that
 // confirmation.
 
+/** The batch action is a write too, so a stale dashboard may never submit it. */
+OMAD_WRITE_ACTIONS.add('create_transaction_batch');
+
 /**
- * Financial report jobs stay durable in Omad_Job_Queue. This merely asks for a
- * prompt flush after the UI has already been released; the five-minute trigger
- * remains the fallback if this best-effort request is lost.
+ * Refresh the confirmed view after releasing the entry form. Telegram needs no
+ * browser nudge: its durable queue is drained by the existing time trigger.
  */
 function settleOmadWriteInBackground_() {
     setTimeout(() => {
         syncData();
     }, 0);
-    setTimeout(() => {
-        callBackend({ action: 'process_jobs' }).catch(error => {
-            console.warn('Queued report flush deferred to trigger', error);
-        });
-    }, 400);
 }
 
 /**
  * Never make an accounting save wait for Telegram. The queue is written before
- * the response, and settleOmadWriteInBackground_ asks for a flush afterwards.
+ * the response and the existing trigger sends it independently afterwards.
  */
 var callBackendBeforeWritePerf_ = callBackend;
 callBackend = async function(payload) {
     const body = { ...(payload || {}) };
     const action = String(body.action || '');
-    if (action === 'create_transaction' || action === 'correct_transaction' ||
-        action === 'cancel_transaction' || action === 'tenant_paid_expense' ||
-        action === 'save_omad') {
+    if (action === 'create_transaction_batch' || action === 'create_transaction' ||
+        action === 'correct_transaction' || action === 'cancel_transaction' ||
+        action === 'tenant_paid_expense' || action === 'save_omad') {
         body.deferReports = true;
     }
     return callBackendBeforeWritePerf_(body);
 };
 
+/** An old Apps Script deployment can safely handle the same cart line by line. */
+async function submitNewLedgerEntryLegacyFallback_(requestBase, groupId, common) {
+    for(let i = 0; i < cart.length; i++) {
+        const response = await callBackend({
+            action: 'create_transaction',
+            requestId: `${requestBase}_${i}`,
+            groupId,
+            ...common,
+            amount: Number(cart[i].amount) || 0,
+            currency: cart[i].currency,
+            method: cart[i].method
+        });
+        if(!response || response.status !== 'success') {
+            throw new Error((response && response.message) || 'save failed');
+        }
+    }
+}
+
 /**
  * New ledger entries are one business action, so send their cart lines as one
- * backend operation. Edits keep the proven correct/cancel semantics line by
- * line, but they also stop waiting for Telegram and the post-save refresh.
+ * backend operation. During a deployment Cloudflare can briefly update before
+ * Apps Script; only an explicit "Unknown action" falls back to the old proven
+ * line-by-line API. Any real validation/write error is surfaced and never
+ * retried through a different path.
+ *
+ * Edits keep the existing correct/cancel semantics line by line, but they also
+ * stop waiting for Telegram and the post-save dashboard refresh.
  */
 submitViaLedger = async function() {
     const requestBase = nextRequestBase();
@@ -173,7 +193,7 @@ submitViaLedger = async function() {
     try {
         if (!editId) {
             const response = await callBackend({
-                action: 'create_transaction',
+                action: 'create_transaction_batch',
                 requestId: requestBase,
                 groupId,
                 ...common,
@@ -183,7 +203,11 @@ submitViaLedger = async function() {
                     method: item.method
                 }))
             });
-            if (!response || response.status !== 'success') {
+
+            if (response && response.status === 'error' &&
+                /unknown action/i.test(String(response.message || ''))) {
+                await submitNewLedgerEntryLegacyFallback_(requestBase, groupId, common);
+            } else if (!response || response.status !== 'success') {
                 throw new Error((response && response.message) || 'save failed');
             }
         } else {
