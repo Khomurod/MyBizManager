@@ -1,0 +1,436 @@
+name: Finalize write-performance audit hardening
+
+on:
+  push:
+    branches:
+      - fix/write-performance-audit-hardening
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Apply audited safety hardening
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          # ------------------------------------------------ ledger batch safety
+          path = Path('apps-script/14a_ledger_write_performance.gs')
+          text = path.read_text()
+
+          start = text.index('function findExistingBatchLines_(')
+          end = text.index('/** True when an already-written rollout line', start)
+          replacement = r'''function batchRequestId_(requestBase, count, index) {
+            return String(requestBase) + "__n" + String(count) + "_" + String(index);
+          }
+
+          /**
+           * Parses request ids that belong to one batch submission.
+           *
+           * Counted ids bind an idempotency key to the cart shape itself. The
+           * legacy <base>_<line> shape is still recognised so a request written
+           * by the immediately previous deployment can be answered safely, but
+           * it is never resumed because it does not say how many lines the
+           * original request intended to contain.
+           */
+          function parseBatchRequestId_(requestId, requestBase) {
+            var value = String(requestId || "");
+            var countedPrefix = String(requestBase) + "__n";
+            if (value.indexOf(countedPrefix) === 0) {
+              var tail = value.slice(countedPrefix.length);
+              var separator = tail.indexOf("_");
+              if (separator <= 0) return { format: "invalid", count: 0, index: -1 };
+              var countText = tail.slice(0, separator);
+              var indexText = tail.slice(separator + 1);
+              if (!/^\d+$/.test(countText) || !/^\d+$/.test(indexText)) {
+                return { format: "invalid", count: 0, index: -1 };
+              }
+              var declaredCount = Number(countText);
+              var countedIndex = Number(indexText);
+              if (!isFinite(declaredCount) || !isFinite(countedIndex) ||
+                  declaredCount < 1 || declaredCount > 50 || countedIndex < 0 ||
+                  countedIndex >= declaredCount) {
+                return { format: "invalid", count: 0, index: -1 };
+              }
+              return { format: "counted", count: declaredCount, index: countedIndex };
+            }
+
+            var legacyPrefix = String(requestBase) + "_";
+            if (value.indexOf(legacyPrefix) === 0) {
+              var legacyText = value.slice(legacyPrefix.length);
+              if (/^\d+$/.test(legacyText)) {
+                return { format: "legacy", count: 0, index: Number(legacyText) };
+              }
+            }
+            return null;
+          }
+
+          /**
+           * Finds rows already written for this submission using one narrow
+           * Request_ID-column pass.
+           *
+           * A counted request may be a partial rollout fallback and can safely
+           * resume because every stored line says the original total line count.
+           * A legacy request may only be accepted when every requested line is
+           * already present; otherwise changing the cart size could silently
+           * expand or shrink a financial request after an uncertain response.
+           */
+          function findExistingBatchLines_(sheet, requestBase, count) {
+            var result = {
+              lines: new Array(count),
+              format: "",
+              storedCount: 0,
+              conflict: false
+            };
+            if (!sheet || sheet.getLastRow() < 2) return result;
+
+            var values = sheet.getRange(2, 2, sheet.getLastRow() - 1, 1).getValues();
+            for (var i = 0; i < values.length; i++) {
+              var requestId = String(values[i][0] || "");
+              var parsed = parseBatchRequestId_(requestId, requestBase);
+              if (!parsed) continue;
+              if (parsed.format === "invalid") {
+                result.conflict = true;
+                continue;
+              }
+              if (result.format && result.format !== parsed.format) {
+                result.conflict = true;
+                continue;
+              }
+              result.format = parsed.format;
+              if (parsed.format === "counted" && parsed.count !== count) {
+                result.conflict = true;
+                continue;
+              }
+              if (parsed.index < 0 || parsed.index >= count) {
+                result.conflict = true;
+                continue;
+              }
+
+              var rowNumber = i + 2;
+              var raw = sheet.getRange(rowNumber, 1, 1, LEDGER_HEADER.length).getValues()[0];
+              var transaction = ledgerRowToTransaction_(raw, rowNumber);
+              if (transaction.status === TX_STATUS_VOID) continue;
+              if (result.lines[parsed.index] &&
+                  result.lines[parsed.index].requestId !== transaction.requestId) {
+                result.conflict = true;
+                continue;
+              }
+              result.lines[parsed.index] = transaction;
+            }
+
+            for (var j = 0; j < result.lines.length; j++) {
+              if (result.lines[j]) result.storedCount++;
+            }
+            if (result.format === "legacy" && result.storedCount > 0 && result.storedCount !== count) {
+              result.conflict = true;
+            }
+            return result;
+          }
+
+          '''
+          text = text[:start] + replacement + text[end:]
+
+          start = text.index('function batchLineMatches_(')
+          end = text.index('/** Next suffix for a group', start)
+          replacement = r'''function batchLineMatches_(transaction, item, groupId, entryKind) {
+            if (!transaction || transaction.status !== TX_STATUS_ACTIVE) return false;
+            var expectedRateType = item.currency === "USD"
+              ? (item.rateType === "buy" ? "buy" : "sell")
+              : "none";
+            return transaction.groupId === groupId &&
+              transaction.entryKind === entryKind &&
+              transaction.period === String(item.period) &&
+              transaction.tenant === String(item.tenant).trim() &&
+              transaction.type === item.type &&
+              Number(transaction.amount) === Number(item.amount) &&
+              transaction.currency === item.currency &&
+              transaction.method === item.method &&
+              transaction.rateType === expectedRateType &&
+              String(transaction.comment || "") === String(item.comment || "").slice(0, 2000) &&
+              transaction.source === (TX_SOURCES[item.source] ? item.source : TX_SOURCE_WEB) &&
+              String(transaction.createdBy || "") === String(item.createdBy || "").slice(0, 120);
+          }
+
+          /** Uses one frozen pair of period rates for every line of one business action. */
+          function batchRateSnapshot_(item, frozenRates) {
+            var appliedType = item.rateType === "buy" ? "buy" : "sell";
+            var buy = Number(frozenRates.rateBuy) || 0;
+            var sell = Number(frozenRates.rateSell) || 0;
+            return {
+              rateBuy: buy,
+              rateSell: sell,
+              rateUsed: item.currency === "USD" ? (appliedType === "buy" ? buy : sell) : 1,
+              rateType: item.currency === "USD" ? appliedType : "none"
+            };
+          }
+
+          '''
+          text = text[:start] + replacement + text[end:]
+
+          old = '''    var sheet = ledgerSheet_(doc);\n    var existingLines = findExistingBatchLines_(sheet, requestBase, prepared.length);\n    var existingCount = 0;\n'''
+          new = '''    var sheet = ledgerSheet_(doc);\n    var existingLookup = findExistingBatchLines_(sheet, requestBase, prepared.length);\n    if (existingLookup.conflict) {\n      return {\n        status: "error",\n        code: "batch_retry_conflict",\n        message: "Qayta urinish avval saqlangan yozuv shakli bilan mos kelmadi. Ma'lumot o'zgartirilmadi."\n      };\n    }\n    var existingLines = existingLookup.lines;\n    var existingCount = 0;\n'''
+          if old not in text:
+              raise SystemExit('batch lookup anchor missing')
+          text = text.replace(old, new, 1)
+
+          old = '''    var stamp = String(new Date().getTime());\n    var startIndex = nextBatchIdIndex_(sheet, stamp);\n    var createdAt = new Date().toISOString();\n    var newTransactions = [];\n'''
+          new = '''    var stamp = String(new Date().getTime());\n    var startIndex = nextBatchIdIndex_(sheet, stamp);\n    var createdAt = firstExisting ? firstExisting.createdAt : new Date().toISOString();\n    var frozenRates;\n    if (firstExisting) {\n      frozenRates = { rateBuy: firstExisting.rateBuy, rateSell: firstExisting.rateSell };\n    } else {\n      var initialRates = buildRateSnapshot_(prepared[0].period, "UZS", "sell");\n      frozenRates = { rateBuy: initialRates.rateBuy, rateSell: initialRates.rateSell };\n    }\n    var newTransactions = [];\n'''
+          if old not in text:
+              raise SystemExit('batch creation anchor missing')
+          text = text.replace(old, new, 1)
+
+          text = text.replace(
+              '      var snapshot = buildRateSnapshot_(item.period, item.currency, item.rateType);',
+              '      var snapshot = batchRateSnapshot_(item, frozenRates);',
+              1
+          )
+          text = text.replace(
+              '        requestId: requestBase + "_" + i,',
+              '        requestId: batchRequestId_(requestBase, prepared.length, i),',
+              1
+          )
+
+          text = text.replace(
+              ' * rows use <requestId>_<line>, so a lost response can be retried without\n * duplicating any part of the entry.',
+              ' * rows use <requestId>__n<count>_<line>, binding the idempotency key to\n * the cart shape so a lost response can be retried without duplicating,\n * expanding or shrinking any part of the entry.',
+              1
+          )
+          path.write_text(text)
+
+          # ------------------------------------------------ frontend rollout fallback
+          path = Path('assets/omad/12-app.js')
+          text = path.read_text()
+          old = '            requestId: `${requestBase}_${i}`,\n'
+          new = '            requestId: `${requestBase}__n${cart.length}_${i}`,\n'
+          if old not in text:
+              raise SystemExit('frontend fallback request id anchor missing')
+          path.write_text(text.replace(old, new, 1))
+
+          # ------------------------------------------------ tests
+          path = Path('tests/write-performance.test.js')
+          text = path.read_text()
+          text = text.replace(
+              "['batch_req_1_0', 'batch_req_1_1', 'batch_req_1_2']",
+              "['batch_req_1__n3_0', 'batch_req_1__n3_1', 'batch_req_1__n3_2']"
+          )
+          text = text.replace(
+              "requestId: payload.requestId + '_0',",
+              "requestId: payload.requestId + '__n3_0',",
+              1
+          )
+
+          marker = "test('request ids remain case-sensitive after the fast lookup change', () => {"
+          if marker not in text:
+              raise SystemExit('write performance test insertion anchor missing')
+          added = r'''test('a completed batch cannot be retried with fewer lines', () => {
+            const gas = boot();
+            const first = post(gas, batchPayload());
+            const shorter = batchPayload({ lines: batchPayload().lines.slice(0, 2) });
+            const retry = post(gas, shorter);
+            const ledger = gas.__spreadsheet.getSheetByName('Omad_Transactions_V2');
+
+            assert.strictEqual(first.status, 'success');
+            assert.strictEqual(retry.status, 'error');
+            assert.strictEqual(retry.code, 'batch_retry_conflict');
+            assert.strictEqual(ledger.data.length - 1, 3, 'the original three rows stay untouched');
+          });
+
+          test('a completed batch cannot be expanded by reusing its request id', () => {
+            const gas = boot();
+            const twoLines = batchPayload({ lines: batchPayload().lines.slice(0, 2) });
+            const first = post(gas, twoLines);
+            const retry = post(gas, batchPayload());
+            const ledger = gas.__spreadsheet.getSheetByName('Omad_Transactions_V2');
+
+            assert.strictEqual(first.status, 'success');
+            assert.strictEqual(retry.status, 'error');
+            assert.strictEqual(retry.code, 'batch_retry_conflict');
+            assert.strictEqual(ledger.data.length - 1, 2, 'no third row is appended');
+          });
+
+          test('a retry cannot change the financial rate type of an existing USD line', () => {
+            const gas = boot();
+            const usd = batchPayload({
+              lines: [{ amount: 20, currency: 'USD', method: 'Bank', rateType: 'sell' }]
+            });
+            const first = post(gas, usd);
+            const retry = post(gas, {
+              ...usd,
+              lines: [{ amount: 20, currency: 'USD', method: 'Bank', rateType: 'buy' }]
+            });
+
+            assert.strictEqual(first.status, 'success');
+            assert.strictEqual(retry.status, 'error');
+            assert.strictEqual(retry.code, 'batch_retry_conflict');
+            assert.strictEqual(gas.__spreadsheet.getSheetByName('Omad_Transactions_V2').data.length - 1, 1);
+          });
+
+          test('a counted partial rollout resumes with the rates frozen by its first line', () => {
+            const gas = boot();
+            const payload = batchPayload();
+            const firstLine = post(gas, {
+              action: 'create_transaction',
+              requestId: payload.requestId + '__n3_0',
+              groupId: payload.groupId,
+              period: payload.period,
+              tenant: payload.tenant,
+              type: payload.type,
+              comment: payload.comment,
+              source: payload.source,
+              createdBy: payload.createdBy,
+              amount: payload.lines[0].amount,
+              currency: payload.lines[0].currency,
+              method: payload.lines[0].method,
+              deferReports: true
+            });
+            assert.strictEqual(firstLine.status, 'success');
+
+            const config = gas.__spreadsheet.getSheetByName('System_Config');
+            config.getRange(1, 2).setValue(JSON.stringify({ '2026-08': { buy: 13100, sell: 14000 } }));
+
+            const resumed = post(gas, payload);
+            const rows = gas.__spreadsheet.getSheetByName('Omad_Transactions_V2').data.slice(1);
+            assert.strictEqual(resumed.status, 'success');
+            assert.strictEqual(resumed.resumed, true);
+            assert.ok(rows.every(row => row[11] === 12100 && row[12] === 12500),
+              'every line keeps the same original period rate snapshot');
+            assert.strictEqual(rows[1][15], 250000, 'the resumed USD line uses the original sell rate');
+          });
+
+          test('legacy uncounted rollout rows are accepted only when the whole retry already exists', () => {
+            const gas = boot();
+            const payload = batchPayload();
+            for (let i = 0; i < payload.lines.length; i++) {
+              const line = payload.lines[i];
+              const result = post(gas, {
+                action: 'create_transaction', requestId: `${payload.requestId}_${i}`,
+                groupId: payload.groupId, period: payload.period, tenant: payload.tenant,
+                type: payload.type, comment: payload.comment, source: payload.source,
+                createdBy: payload.createdBy, amount: line.amount, currency: line.currency,
+                method: line.method, deferReports: true
+              });
+              assert.strictEqual(result.status, 'success');
+            }
+            const retry = post(gas, payload);
+            assert.strictEqual(retry.status, 'success');
+            assert.strictEqual(retry.duplicate, true);
+            assert.strictEqual(gas.__spreadsheet.getSheetByName('Omad_Transactions_V2').data.length - 1, 3);
+          });
+
+          test('legacy uncounted partial rollout is refused rather than guessing the original cart size', () => {
+            const gas = boot();
+            const payload = batchPayload();
+            const line = payload.lines[0];
+            assert.strictEqual(post(gas, {
+              action: 'create_transaction', requestId: payload.requestId + '_0',
+              groupId: payload.groupId, period: payload.period, tenant: payload.tenant,
+              type: payload.type, comment: payload.comment, source: payload.source,
+              createdBy: payload.createdBy, amount: line.amount, currency: line.currency,
+              method: line.method, deferReports: true
+            }).status, 'success');
+
+            const retry = post(gas, payload);
+            assert.strictEqual(retry.status, 'error');
+            assert.strictEqual(retry.code, 'batch_retry_conflict');
+            assert.strictEqual(gas.__spreadsheet.getSheetByName('Omad_Transactions_V2').data.length - 1, 1);
+          });
+
+          '''
+          text = text.replace(marker, added + marker, 1)
+
+          # Make the rollout test explicitly assert the counted request ids.
+          old_assert = "  assert.deepStrictEqual(ledger.data.slice(1).map(row => row[1]).sort(),\n    ['batch_req_1__n3_0', 'batch_req_1__n3_1', 'batch_req_1__n3_2']);\n});"
+          if old_assert not in text:
+              raise SystemExit('rollout expected ids anchor missing')
+
+          # Browser-source contract now includes the count-bound fallback form.
+          text = text.replace(
+              "  assert.match(source, /submitNewLedgerEntryLegacyFallback_/);\n",
+              "  assert.match(source, /submitNewLedgerEntryLegacyFallback_/);\n  assert.match(source, /__n\\$\\{cart\\.length\\}_\\$\\{i\\}/);\n",
+              1
+          )
+          path.write_text(text)
+
+          # ------------------------------------------------ permanent doc guards
+          path = Path('tests/static-analysis.test.js')
+          text = path.read_text()
+          marker = '// --------------------------------------------------------- the deployment gate\n'
+          if marker not in text:
+              raise SystemExit('static analysis doc guard anchor missing')
+          guard = r'''test('the App Brief lists every Apps Script backend module', () => {
+            const brief = fs.readFileSync(path.join(ROOT, 'docs', 'APP_BRIEF.md'), 'utf8');
+            const modules = fs.readdirSync(path.join(ROOT, 'apps-script'))
+              .filter(name => name.endsWith('.gs'))
+              .sort();
+            const missing = modules.filter(name => !brief.includes('`' + name + '`'));
+            assert.deepStrictEqual(missing, [],
+              `APP_BRIEF.md backend module map is missing: ${missing.join(', ')}`);
+          });
+
+          test('the App Brief ledger schema mirrors LEDGER_HEADER', () => {
+            const brief = fs.readFileSync(path.join(ROOT, 'docs', 'APP_BRIEF.md'), 'utf8');
+            const ledger = fs.readFileSync(path.join(ROOT, 'apps-script', '14_ledger.gs'), 'utf8');
+            const headerBlock = ledger.match(/var LEDGER_HEADER = \[([\s\S]*?)\n\];/);
+            assert.ok(headerBlock, 'LEDGER_HEADER is readable');
+            const headers = [...headerBlock[1].matchAll(/"([^"]+)"/g)].map(match => match[1]);
+            const start = brief.indexOf('**`Omad_Transactions_V2`**');
+            const end = brief.indexOf('**`Omad_Transactions`**', start + 1);
+            assert.ok(start >= 0 && end > start, 'the V2 schema section exists in APP_BRIEF.md');
+            const section = brief.slice(start, end).replace(/\s+/g, ' ');
+            assert.ok(section.includes(`schema version 2, ${headers.length} columns`),
+              `APP_BRIEF.md must say the V2 ledger has ${headers.length} columns`);
+            for (const header of headers) {
+              assert.ok(section.includes(header), `APP_BRIEF.md V2 schema is missing ${header}`);
+            }
+          });
+
+          '''
+          path.write_text(text.replace(marker, guard + marker, 1))
+
+          # ------------------------------------------------ App Brief corrections
+          path = Path('docs/APP_BRIEF.md')
+          text = path.read_text()
+          old = '''**`Omad_Transactions_V2`** — the live append-only ledger (schema version 2, 23\ncolumns): `ID, Request_ID, Created_At, Updated_At, Created_By, Source, Period,\nTenant, Type, Amount, Currency, Rate_Buy, Rate_Sell, Rate_Used, Rate_Type,\nAmount_UZS, Method, Comment, Status, Related_ID, Telegram_Msg_ID,\nSchema_Version, Entry_Group_ID`.\n'''
+          new = '''**`Omad_Transactions_V2`** — the live append-only ledger (schema version 2, 24\ncolumns): `ID, Request_ID, Created_At, Updated_At, Created_By, Source, Period,\nTenant, Type, Amount, Currency, Rate_Buy, Rate_Sell, Rate_Used, Rate_Type,\nAmount_UZS, Method, Comment, Status, Related_ID, Telegram_Msg_ID,\nSchema_Version, Entry_Group_ID, Entry_Kind`.\n'''
+          if old not in text:
+              raise SystemExit('App Brief ledger schema anchor missing')
+          text = text.replace(old, new, 1)
+
+          old = '''**Saving, everywhere**\n\nApps Script answers HTTP 200 for almost everything, including its own errors. A\nsave counts as successful only when the body parses **and** says\n`status: "success"`. On anything else the client keeps the form, the cart and\nthe request id so the entry can be retried without duplicating.\n'''
+          new = '''**Saving, everywhere**\n\nApps Script answers HTTP 200 for almost everything, including its own errors. A\nsave counts as successful only when the body parses **and** says\n`status: "success"`. On anything else the client keeps the form, the cart and\nthe request id so the entry can be retried without duplicating. For a multi-line\nOmad entry, that request id is also bound to the original **line count**; reusing\nit with a larger or smaller cart is refused rather than silently changing a\nfinancial request after an uncertain response. Counted per-line ids let a\npartial frontend/backend rollout resume only the missing lines safely.\n'''
+          if old not in text:
+              raise SystemExit('App Brief saving rule anchor missing')
+          path.write_text(text.replace(old, new, 1))
+          PY
+
+      - name: Regenerate bundle and verify locally
+        shell: bash
+        run: |
+          npm run build
+          npm run build:check
+          npm run lint
+          npm test
+          git diff --check
+
+      - name: Commit audited fixes
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/write-audit-hardening.yml
+          git add apps-script/14a_ledger_write_performance.gs assets/omad/12-app.js tests/write-performance.test.js tests/static-analysis.test.js docs/APP_BRIEF.md script.gs
+          git commit -m "Harden write retries and documentation integrity"
+          git push
