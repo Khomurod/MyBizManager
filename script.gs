@@ -7902,28 +7902,120 @@ function appendTransactionCreatedAuditsBatch_(doc, transactions) {
  * expected line, so recovering a partial legacy submission does not re-create
  * the full-ledger scan this module removes.
  */
-function findExistingBatchLines_(sheet, requestBase, count) {
-  var found = new Array(count);
-  if (!sheet || sheet.getLastRow() < 2) return found;
+function batchRequestId_(requestBase, count, index) {
+  return String(requestBase) + "__n" + String(count) + "_" + String(index);
+}
 
-  var wanted = {};
-  for (var w = 0; w < count; w++) wanted[requestBase + "_" + w] = w;
+/**
+ * Parses request ids that belong to one batch submission.
+ *
+ * Counted ids bind an idempotency key to the cart shape itself. The
+ * legacy <base>_<line> shape is still recognised so a request written
+ * by the immediately previous deployment can be answered safely, but
+ * it is never resumed because it does not say how many lines the
+ * original request intended to contain.
+ */
+function parseBatchRequestId_(requestId, requestBase) {
+  var value = String(requestId || "");
+  var countedPrefix = String(requestBase) + "__n";
+  if (value.indexOf(countedPrefix) === 0) {
+    var tail = value.slice(countedPrefix.length);
+    var separator = tail.indexOf("_");
+    if (separator <= 0) return { format: "invalid", count: 0, index: -1 };
+    var countText = tail.slice(0, separator);
+    var indexText = tail.slice(separator + 1);
+    if (!/^\d+$/.test(countText) || !/^\d+$/.test(indexText)) {
+      return { format: "invalid", count: 0, index: -1 };
+    }
+    var declaredCount = Number(countText);
+    var countedIndex = Number(indexText);
+    if (!isFinite(declaredCount) || !isFinite(countedIndex) ||
+        declaredCount < 1 || declaredCount > 50 || countedIndex < 0 ||
+        countedIndex >= declaredCount) {
+      return { format: "invalid", count: 0, index: -1 };
+    }
+    return { format: "counted", count: declaredCount, index: countedIndex };
+  }
+
+  var legacyPrefix = String(requestBase) + "_";
+  if (value.indexOf(legacyPrefix) === 0) {
+    var legacyText = value.slice(legacyPrefix.length);
+    if (/^\d+$/.test(legacyText)) {
+      return { format: "legacy", count: 0, index: Number(legacyText) };
+    }
+  }
+  return null;
+}
+
+/**
+ * Finds rows already written for this submission using one narrow
+ * Request_ID-column pass.
+ *
+ * A counted request may be a partial rollout fallback and can safely
+ * resume because every stored line says the original total line count.
+ * A legacy request may only be accepted when every requested line is
+ * already present; otherwise changing the cart size could silently
+ * expand or shrink a financial request after an uncertain response.
+ */
+function findExistingBatchLines_(sheet, requestBase, count) {
+  var result = {
+    lines: new Array(count),
+    format: "",
+    storedCount: 0,
+    conflict: false
+  };
+  if (!sheet || sheet.getLastRow() < 2) return result;
 
   var values = sheet.getRange(2, 2, sheet.getLastRow() - 1, 1).getValues();
   for (var i = 0; i < values.length; i++) {
     var requestId = String(values[i][0] || "");
-    if (wanted[requestId] === undefined) continue;
+    var parsed = parseBatchRequestId_(requestId, requestBase);
+    if (!parsed) continue;
+    if (parsed.format === "invalid") {
+      result.conflict = true;
+      continue;
+    }
+    if (result.format && result.format !== parsed.format) {
+      result.conflict = true;
+      continue;
+    }
+    result.format = parsed.format;
+    if (parsed.format === "counted" && parsed.count !== count) {
+      result.conflict = true;
+      continue;
+    }
+    if (parsed.index < 0 || parsed.index >= count) {
+      result.conflict = true;
+      continue;
+    }
+
     var rowNumber = i + 2;
     var raw = sheet.getRange(rowNumber, 1, 1, LEDGER_HEADER.length).getValues()[0];
     var transaction = ledgerRowToTransaction_(raw, rowNumber);
-    if (transaction.status !== TX_STATUS_VOID) found[wanted[requestId]] = transaction;
+    if (transaction.status === TX_STATUS_VOID) continue;
+    if (result.lines[parsed.index] &&
+        result.lines[parsed.index].requestId !== transaction.requestId) {
+      result.conflict = true;
+      continue;
+    }
+    result.lines[parsed.index] = transaction;
   }
-  return found;
+
+  for (var j = 0; j < result.lines.length; j++) {
+    if (result.lines[j]) result.storedCount++;
+  }
+  if (result.format === "legacy" && result.storedCount > 0 && result.storedCount !== count) {
+    result.conflict = true;
+  }
+  return result;
 }
 
 /** True when an already-written rollout line is exactly the line being retried. */
 function batchLineMatches_(transaction, item, groupId, entryKind) {
   if (!transaction || transaction.status !== TX_STATUS_ACTIVE) return false;
+  var expectedRateType = item.currency === "USD"
+    ? (item.rateType === "buy" ? "buy" : "sell")
+    : "none";
   return transaction.groupId === groupId &&
     transaction.entryKind === entryKind &&
     transaction.period === String(item.period) &&
@@ -7932,9 +8024,23 @@ function batchLineMatches_(transaction, item, groupId, entryKind) {
     Number(transaction.amount) === Number(item.amount) &&
     transaction.currency === item.currency &&
     transaction.method === item.method &&
+    transaction.rateType === expectedRateType &&
     String(transaction.comment || "") === String(item.comment || "").slice(0, 2000) &&
     transaction.source === (TX_SOURCES[item.source] ? item.source : TX_SOURCE_WEB) &&
     String(transaction.createdBy || "") === String(item.createdBy || "").slice(0, 120);
+}
+
+/** Uses one frozen pair of period rates for every line of one business action. */
+function batchRateSnapshot_(item, frozenRates) {
+  var appliedType = item.rateType === "buy" ? "buy" : "sell";
+  var buy = Number(frozenRates.rateBuy) || 0;
+  var sell = Number(frozenRates.rateSell) || 0;
+  return {
+    rateBuy: buy,
+    rateSell: sell,
+    rateUsed: item.currency === "USD" ? (appliedType === "buy" ? buy : sell) : 1,
+    rateType: item.currency === "USD" ? appliedType : "none"
+  };
 }
 
 /** Next suffix for a group of rows written together right now. */
@@ -7952,8 +8058,9 @@ function nextBatchIdIndex_(sheet, stamp) {
 /**
  * Creates every line of one new business entry under one lock and normally one
  * ledger setValues call. The request id is one stable submission id; stored
- * rows use <requestId>_<line>, so a lost response can be retried without
- * duplicating any part of the entry.
+ * rows use <requestId>__n<count>_<line>, binding the idempotency key to
+ * the cart shape so a lost response can be retried without duplicating,
+ * expanding or shrinking any part of the entry.
  *
  * There is one deliberate recovery exception to the one-write rule. During a
  * deployment the new frontend can briefly meet the old backend and fall back
@@ -7997,7 +8104,15 @@ function createTransactionBatch_(doc, input) {
   lock.waitLock(30000);
   try {
     var sheet = ledgerSheet_(doc);
-    var existingLines = findExistingBatchLines_(sheet, requestBase, prepared.length);
+    var existingLookup = findExistingBatchLines_(sheet, requestBase, prepared.length);
+    if (existingLookup.conflict) {
+      return {
+        status: "error",
+        code: "batch_retry_conflict",
+        message: "Qayta urinish avval saqlangan yozuv shakli bilan mos kelmadi. Ma'lumot o'zgartirilmadi."
+      };
+    }
+    var existingLines = existingLookup.lines;
     var existingCount = 0;
     var firstExisting = null;
     for (var e = 0; e < existingLines.length; e++) {
@@ -8037,7 +8152,14 @@ function createTransactionBatch_(doc, input) {
 
     var stamp = String(new Date().getTime());
     var startIndex = nextBatchIdIndex_(sheet, stamp);
-    var createdAt = new Date().toISOString();
+    var createdAt = firstExisting ? firstExisting.createdAt : new Date().toISOString();
+    var frozenRates;
+    if (firstExisting) {
+      frozenRates = { rateBuy: firstExisting.rateBuy, rateSell: firstExisting.rateSell };
+    } else {
+      var initialRates = buildRateSnapshot_(prepared[0].period, "UZS", "sell");
+      frozenRates = { rateBuy: initialRates.rateBuy, rateSell: initialRates.rateSell };
+    }
     var newTransactions = [];
     var newRows = [];
     var outputByLine = new Array(prepared.length);
@@ -8050,11 +8172,11 @@ function createTransactionBatch_(doc, input) {
       }
 
       var item = prepared[i];
-      var snapshot = buildRateSnapshot_(item.period, item.currency, item.rateType);
+      var snapshot = batchRateSnapshot_(item, frozenRates);
       var amount = Number(item.amount);
       var transaction = {
         id: stamp + "_" + (startIndex + newCounter),
-        requestId: requestBase + "_" + i,
+        requestId: batchRequestId_(requestBase, prepared.length, i),
         createdAt: createdAt,
         updatedAt: "",
         createdBy: String(item.createdBy || "").slice(0, 120),

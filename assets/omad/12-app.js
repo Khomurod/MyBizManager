@@ -176,7 +176,7 @@ async function submitNewLedgerEntryLegacyFallback_(requestBase, groupId, common)
     for(let i = 0; i < cart.length; i++) {
         const response = await callBackend({
             action: 'create_transaction',
-            requestId: `${requestBase}_${i}`,
+            requestId: `${requestBase}__n${cart.length}_${i}`,
             groupId,
             ...common,
             amount: Number(cart[i].amount) || 0,

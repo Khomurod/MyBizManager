@@ -93,6 +93,33 @@ test('the task wizard never reaches into accounting data', () => {
     `19a_tasks_wizard.gs must not touch accounting data: ${offenders.join(', ')}`);
 });
 
+test('the App Brief lists every Apps Script backend module', () => {
+  const brief = fs.readFileSync(path.join(ROOT, 'docs', 'APP_BRIEF.md'), 'utf8');
+  const modules = fs.readdirSync(path.join(ROOT, 'apps-script'))
+    .filter(name => name.endsWith('.gs'))
+    .sort();
+  const missing = modules.filter(name => !brief.includes('`' + name + '`'));
+  assert.deepStrictEqual(missing, [],
+    `APP_BRIEF.md backend module map is missing: ${missing.join(', ')}`);
+});
+
+test('the App Brief ledger schema mirrors LEDGER_HEADER', () => {
+  const brief = fs.readFileSync(path.join(ROOT, 'docs', 'APP_BRIEF.md'), 'utf8');
+  const ledger = fs.readFileSync(path.join(ROOT, 'apps-script', '14_ledger.gs'), 'utf8');
+  const headerBlock = ledger.match(/var LEDGER_HEADER = \[([\s\S]*?)\n\];/);
+  assert.ok(headerBlock, 'LEDGER_HEADER is readable');
+  const headers = [...headerBlock[1].matchAll(/"([^"]+)"/g)].map(match => match[1]);
+  const start = brief.indexOf('**`Omad_Transactions_V2`**');
+  const end = brief.indexOf('**`Omad_Transactions`**', start + 1);
+  assert.ok(start >= 0 && end > start, 'the V2 schema section exists in APP_BRIEF.md');
+  const section = brief.slice(start, end).replace(/\s+/g, ' ');
+  assert.ok(section.includes(`schema version 2, ${headers.length} columns`),
+    `APP_BRIEF.md must say the V2 ledger has ${headers.length} columns`);
+  for (const header of headers) {
+    assert.ok(section.includes(header), `APP_BRIEF.md V2 schema is missing ${header}`);
+  }
+});
+
 // --------------------------------------------------------- the deployment gate
 
 /**

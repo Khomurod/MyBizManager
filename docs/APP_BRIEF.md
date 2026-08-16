@@ -442,7 +442,11 @@ bills and it comes off what they owe:
 Apps Script answers HTTP 200 for almost everything, including its own errors. A
 save counts as successful only when the body parses **and** says
 `status: "success"`. On anything else the client keeps the form, the cart and
-the request id so the entry can be retried without duplicating.
+the request id so the entry can be retried without duplicating. For a multi-line
+Omad entry, that request id is also bound to the original **line count**; reusing
+it with a larger or smaller cart is refused rather than silently changing a
+financial request after an uncertain response. Counted per-line ids let a
+partial frontend/backend rollout resume only the missing lines safely.
 
 ## 7. Data other features depend on
 
@@ -457,11 +461,11 @@ the request id so the entry can be retried without duplicating.
 not a fact about it, and `CACHE_DERIVED_CONFIG_KEYS` keeps writing it from
 bumping the revision it is keyed by. Deleting the row costs one rebuild.
 
-**`Omad_Transactions_V2`** — the live append-only ledger (schema version 2, 23
+**`Omad_Transactions_V2`** — the live append-only ledger (schema version 2, 24
 columns): `ID, Request_ID, Created_At, Updated_At, Created_By, Source, Period,
 Tenant, Type, Amount, Currency, Rate_Buy, Rate_Sell, Rate_Used, Rate_Type,
 Amount_UZS, Method, Comment, Status, Related_ID, Telegram_Msg_ID,
-Schema_Version, Entry_Group_ID`.
+Schema_Version, Entry_Group_ID, Entry_Kind`.
 
 **`Omad_Transactions`** — the legacy 13-column sheet, kept intact so
 `rollback_omad_migration` stays one action. Still the write path if a rollback
