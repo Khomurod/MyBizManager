@@ -93,10 +93,53 @@ test('retrying the same multi-line entry returns the original result without dup
   assert.strictEqual(first.status, 'success');
   assert.strictEqual(second.status, 'success');
   assert.strictEqual(second.duplicate, true);
+  assert.strictEqual(second.transactions.length, 3);
   assert.strictEqual(ledger.data.length - 1, 3);
 
   const queue = gas.__spreadsheet.getSheetByName('Omad_Job_Queue');
   assert.strictEqual(queue.data.length - 1, 1, 'retry queues no second Telegram report');
+});
+
+test('a partial old-backend fallback is completed rather than mistaken for a full batch', () => {
+  const gas = boot();
+  const payload = batchPayload();
+
+  const firstLine = post(gas, {
+    action: 'create_transaction',
+    requestId: payload.requestId + '_0',
+    groupId: payload.groupId,
+    period: payload.period,
+    tenant: payload.tenant,
+    type: payload.type,
+    comment: payload.comment,
+    source: payload.source,
+    createdBy: payload.createdBy,
+    amount: payload.lines[0].amount,
+    currency: payload.lines[0].currency,
+    method: payload.lines[0].method,
+    deferReports: true
+  });
+  assert.strictEqual(firstLine.status, 'success');
+
+  const resumed = post(gas, payload);
+  const ledger = gas.__spreadsheet.getSheetByName('Omad_Transactions_V2');
+  assert.strictEqual(resumed.status, 'success');
+  assert.strictEqual(resumed.duplicate, false);
+  assert.strictEqual(resumed.resumed, true);
+  assert.strictEqual(resumed.transactions.length, 3);
+  assert.deepStrictEqual(ledger.data.slice(1).map(row => row[1]).sort(),
+    ['batch_req_1_0', 'batch_req_1_1', 'batch_req_1_2']);
+});
+
+test('request ids remain case-sensitive after the fast lookup change', () => {
+  const gas = boot();
+  const common = {
+    action: 'create_transaction', period: '2026-08', tenant: 'Tehnopark',
+    type: 'Income', amount: 50000, currency: 'UZS', method: 'Naqd', deferReports: true
+  };
+  assert.strictEqual(post(gas, { ...common, requestId: 'CaseSensitive' }).status, 'success');
+  assert.strictEqual(post(gas, { ...common, requestId: 'casesensitive' }).status, 'success');
+  assert.strictEqual(gas.__spreadsheet.getSheetByName('Omad_Transactions_V2').data.length - 1, 2);
 });
 
 test('ordinary single-row creates no longer full-scan the ledger to dedupe or mint an id', () => {
