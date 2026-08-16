@@ -152,7 +152,9 @@ Cloudflare Pages (static HTML/JS)         Google Apps Script web app        Goog
   from them without a round trip.
 - **Entry (`Yangi`)** — a cart of lines (amount + currency + method) saved as
   one business action. Three shapes: ordinary income, ordinary expense, and the
-  **tenant-paid expense pair**.
+  **tenant-paid expense pair**. A new multi-line ledger entry is committed by
+  one batch action and one ledger write; the single-row API remains the safe
+  rollout fallback and the edit/correction path.
 - **History (`Tarix`)** — entries grouped by `Entry_Group_ID`, editable and
   cancellable **as a group**. Fetched a page of 40 business actions at a time
   (`get_omad_history`) when the tab is opened, never with the dashboard. A page
@@ -531,10 +533,12 @@ composes the message from data it already stored.
 - A permanently failed job gets one `onJobPermanentlyFailed_` call so it can
   clean up state — `task_proof_prompt` uses it to release an occurrence that
   would otherwise wait forever for a prompt that was never delivered.
-- **Fast saving:** a write returns as soon as the record is stored; at most
-  **one** queued job drains inline (`JOB_QUEUE_INLINE_BATCH = 1`), so response
-  time does not grow with the backlog. `deferReports: true` skips the inline
-  drain. **Failing to *queue* a report never fails a save that already
+- **Fast saving:** a write returns as soon as the record is stored. Web
+  accounting writes send `deferReports: true`, so Telegram never runs before
+  the browser receives confirmation; the dashboard refresh then happens in the
+  background. Other callers may drain at most **one** queued job inline
+  (`JOB_QUEUE_INLINE_BATCH = 1`), and the time-driven trigger is the durable
+  sender. **Failing to *queue* a report never fails a save that already
   succeeded** — the enqueue is wrapped and logged.
 - The Mini App calls `mini_flush_reports` after a write **without awaiting it**,
   so the group card appears in seconds instead of at the next tick. Losing that
