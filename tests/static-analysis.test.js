@@ -93,18 +93,23 @@ test('the task wizard never reaches into accounting data', () => {
     `19a_tasks_wizard.gs must not touch accounting data: ${offenders.join(', ')}`);
 });
 
-test('the App Brief lists every Apps Script backend module in its module map', () => {
-  const brief = fs.readFileSync(path.join(ROOT, 'docs', 'APP_BRIEF.md'), 'utf8');
-  const start = brief.indexOf('### Backend modules');
-  const end = brief.indexOf('## 4. Main features and workflows', start);
-  assert.ok(start >= 0 && end > start, 'the App Brief backend module map exists');
-  const moduleMap = brief.slice(start, end);
+test('both canonical documentation module maps list every Apps Script backend module', () => {
   const modules = fs.readdirSync(path.join(ROOT, 'apps-script'))
     .filter(name => name.endsWith('.gs'))
     .sort();
-  const missing = modules.filter(name => !moduleMap.includes('`' + name + '`'));
-  assert.deepStrictEqual(missing, [],
-    `APP_BRIEF.md backend module map is missing: ${missing.join(', ')}`);
+  const documents = [
+    ['APP_BRIEF.md', '## 4. Main features and workflows'],
+    ['ARCHITECTURE.md', '### Frontend modules']
+  ];
+  for (const [name, endMarker] of documents) {
+    const doc = fs.readFileSync(path.join(ROOT, 'docs', name), 'utf8');
+    const start = doc.indexOf('### Backend modules');
+    const end = doc.indexOf(endMarker, start);
+    assert.ok(start >= 0 && end > start, `${name} backend module map exists`);
+    const moduleMap = doc.slice(start, end);
+    const missing = modules.filter(module => !moduleMap.includes('`' + module + '`'));
+    assert.deepStrictEqual(missing, [], `${name} backend module map is missing: ${missing.join(', ')}`);
+  }
 });
 
 test('the App Brief ledger schema mirrors LEDGER_HEADER', () => {
@@ -122,6 +127,30 @@ test('the App Brief ledger schema mirrors LEDGER_HEADER', () => {
   for (const header of headers) {
     assert.ok(section.includes(header), `APP_BRIEF.md V2 schema is missing ${header}`);
   }
+});
+
+test('the Architecture V2 ledger schema mirrors LEDGER_HEADER', () => {
+  const architecture = fs.readFileSync(path.join(ROOT, 'docs', 'ARCHITECTURE.md'), 'utf8');
+  const ledger = fs.readFileSync(path.join(ROOT, 'apps-script', '14_ledger.gs'), 'utf8');
+  const headerBlock = ledger.match(/var LEDGER_HEADER = \[([\s\S]*?)\n\];/);
+  assert.ok(headerBlock, 'LEDGER_HEADER is readable');
+  const headers = [...headerBlock[1].matchAll(/"([^"]+)"/g)].map(match => match[1]);
+  const start = architecture.indexOf('## Append-only ledger (`Omad_Transactions_V2`, schema version 2)');
+  const end = architecture.indexOf('### Operations', start);
+  assert.ok(start >= 0 && end > start, 'the Architecture V2 ledger schema section exists');
+  const section = architecture.slice(start, end);
+  for (let i = 0; i < headers.length; i++) {
+    assert.ok(section.includes(`| ${i + 1} | \`${headers[i]}\``),
+      `ARCHITECTURE.md V2 schema row ${i + 1} must be ${headers[i]}`);
+  }
+});
+
+test('the detailed Architecture documents the batch write and non-blocking save path', () => {
+  const architecture = fs.readFileSync(path.join(ROOT, 'docs', 'ARCHITECTURE.md'), 'utf8');
+  assert.match(architecture, /`create_transaction_batch`/);
+  assert.match(architecture, /<requestBase>__n<count>_<index>/);
+  assert.match(architecture, /Web accounting writes force `deferReports: true`/);
+  assert.match(architecture, /dashboard in the background/);
 });
 
 // --------------------------------------------------------- the deployment gate

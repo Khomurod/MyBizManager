@@ -819,7 +819,7 @@ npm run bench            # sheet passes / bytes / ms per screen (see below)
 
 ## 14. Live state
 
-Verified 2026-08-12 and unchanged in the repository since:
+Operational state snapshot, rechecked read-only on **2026-08-17**:
 
 | | |
 |---|---|
