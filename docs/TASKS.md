@@ -329,13 +329,14 @@ as ticking it off would.
 
 ## Goals
 
-> A goal's steps are ordinary deadline-less task-occurrences. Each is announced
-> to the Tasks group once, with a completion button and the goal's photo-proof
-> rule (a step may override it). Reminder times set on a goal repeat **daily**
-> while a step is still open, because a step has no deadline of its own to hang
-> a single reminder on — that is what makes the setting mean something instead
-> of nothing. Goal steps stay in the **Maqsadlar** tab and do not appear in
-> Bugun, which is reserved for dated work.
+> A goal's steps are ordinary deadline-less task-occurrences. A step with no
+> reminder schedule is announced to the Tasks group once; a step with reminder
+> times stays silent until its first reminder, which becomes its first group
+> card. Reminder times set on a goal repeat **daily** while a step is still open,
+> because a step has no deadline of its own to hang a single reminder on — that
+> is what makes the setting mean something instead of nothing. Goal steps stay
+> in the **Maqsadlar** tab and do not appear in Bugun, which is reserved for
+> dated work.
 
 Progress counts the current steps only: cancelled, skipped and removed steps
 are excluded.
@@ -362,6 +363,20 @@ are excluded.
 | One-time, no deadline | off | never — there is no day to attach a time to |
 | Routine | either | the occurrence's own day; each day is its own occurrence |
 | Goal step | derived | every day while the step is open, whenever the goal has reminder times |
+
+**Reminder times are the notification schedule, not an extra notification.** If
+an occurrence has one or more reminder times, materialising it is silent — no
+midnight or immediate `Yangi vazifa` is posted. Its first due reminder is its
+first Telegram card; later configured times remain additional reminders. An
+occurrence with no reminder times keeps the ordinary one-time `Yangi vazifa`
+announcement.
+
+A task created after an earlier reminder time does not receive a burst of missed
+messages: if a later configured time was still ahead when it was created, the
+old slot is consumed quietly and the system waits for that later time. If the
+task was created after all of today's configured times, exactly the latest one
+is sent once as a catch-up so the task is not invisible. Existing tasks still
+use the normal three-hour catch-up rule after scheduler downtime.
 
 Reminders stop the instant the occurrence becomes `Completed`, `Cancelled` or
 `Skipped`: `runTaskScheduler_` only considers `Open` rows, and
@@ -397,13 +412,17 @@ claim-under-lock, exponential backoff and dedup. Job types: `task_notify`,
 
 1. materialises due occurrences for active tasks (today + a 14-day horizon;
    idempotent on `(taskId, dateKey)` / `(taskId, stepIndex)`),
-2. enqueues **one** `task_notify` per new occurrence (once-tasks and goal steps
-   immediately; routines on their due day), marking `Notified_At` so it never
-   repeats,
+2. enqueues **one** `task_notify` only for an occurrence with **no reminder
+   times** (once-tasks and goal steps immediately; routines on their due day),
+   marking `Notified_At` so it never repeats. Reminder-configured occurrences
+   stay silent here,
 3. enqueues `task_reminder` jobs for reminder times that have come due,
    marking the slot sent **at enqueue time** so a second pass — or one that
-   overlaps — cannot enqueue it again. Reminders missed by more than 3 hours
-   are suppressed (marked handled, logged) rather than blasted after downtime.
+   overlaps — cannot enqueue it again. The first successful reminder stores the
+   Telegram message id and becomes the occurrence's primary editable card.
+   Existing tasks still suppress reminders missed by more than 3 hours after
+   downtime; only slots that were already past when a task was newly created
+   use the one-message late-creation rule above.
 
 ### One trigger, the whole cycle
 
@@ -430,8 +449,10 @@ which is what makes a pause immediate even for days already on the sheet.
 One pass reads `Task_Occurrences` **once** and appends everything it creates in
 a single write, rather than a full scan per task.
 
-The web mutation path also calls the scheduler inline and drains one job, so a
-new task appears in the group promptly; the trigger handles the rest.
+The web mutation path also calls the scheduler inline and drains one job. A task
+with no reminders can therefore appear in the group promptly; a task with
+reminder times deliberately waits for that schedule (subject only to the
+late-creation catch-up rule above). The trigger handles the rest.
 
 ## Web API
 

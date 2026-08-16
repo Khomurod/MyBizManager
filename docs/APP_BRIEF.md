@@ -407,6 +407,15 @@ bills and it comes off what they owe:
   `"<dateKey> <HH:mm>"`, so a scheduler pass that runs twice inside one slot
   cannot send twice. Nothing about the phone's or the browser's timezone enters
   it — both editors say so on the field.
+- **Reminder times are the notification schedule, not an extra ping.** An
+  occurrence with reminder times does not also send an immediate/midnight
+  `Yangi vazifa`; its first due reminder is its first group card. If the task is
+  created after an earlier reminder but another configured time was still ahead,
+  the missed slot is consumed quietly and the later time is used. If it is
+  created after all of today's reminder times, exactly the latest one is sent
+  once as catch-up. Existing tasks keep the normal three-hour stale-reminder
+  suppression after scheduler downtime. Occurrences with no reminder times keep
+  the ordinary `Yangi vazifa` card.
 - **An edit that does not mention a field leaves it alone**, which is what lets
   the Mini App's small sheet be safe: editing a title or a reminder there keeps
   the cadence, the start date, the end date, the due time and the photo rule.
@@ -531,9 +540,13 @@ composes the message from data it already stored.
   so the group card appears in seconds instead of at the next tick. Losing that
   request costs a delay, never a report.
 - The task scheduler materialises occurrences for today + a 14-day horizon,
-  idempotent on `(taskId, dateKey)` / `(taskId, stepIndex)`, marks each reminder
-  slot **at enqueue time**, and suppresses reminders missed by more than 3 hours
-  rather than blasting them after downtime.
+  idempotent on `(taskId, dateKey)` / `(taskId, stepIndex)`, and marks each
+  reminder slot **at enqueue time**. Reminder-configured occurrences stay silent
+  until a reminder is due; the first successful reminder becomes the editable
+  group card. Existing tasks suppress reminders missed by more than 3 hours
+  after downtime. A newly created task never blasts slots that were already in
+  the past at creation: it waits for the next configured time, or sends only the
+  latest once when every time for today was already past.
 - **`System_Config` reads are memoised for one request** (`getConfigOnce_`).
   `resetRequestMemos_()` runs at the top of `doPost` and `doGet`, and `setConfig`
   drops the entry it overwrites so a read-after-write in the same request sees

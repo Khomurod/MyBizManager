@@ -5,9 +5,9 @@
  *
  * The rule this file defends, decided in the remediation spec and documented
  * in TASKS.md: a goal's steps are ordinary deadline-less task-occurrences.
- * Each is announced to the Tasks group once, with a completion button and the
- * goal's photo-proof rule (a step may override it). Reminder times set on a
- * goal repeat DAILY while a step is still open, because a step has no
+ * A step with no reminders is announced to the Tasks group once; a step with
+ * reminders first appears at its configured reminder time. Reminder times set
+ * on a goal repeat DAILY while a step is still open, because a step has no
  * deadline of its own to hang a single reminder on - that is what makes the
  * setting mean something instead of nothing. Goal steps stay in the Maqsadlar
  * tab and do not appear in Bugun, which is reserved for dated work.
