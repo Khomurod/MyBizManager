@@ -832,13 +832,11 @@ Operational state snapshot, rechecked read-only on **2026-08-17**:
 | Mini App | menu button installed and verified |
 | Web sign-in | username + password, server-verified, 30-day signed session |
 
-**One manual step is outstanding after this change is deployed:** the owner
-signs in as `omad_admin` with the value of `OMAD_ADMIN_KEY` (the bootstrap
-described in [§5](#setting-a-password)) and sets a real password for
-`omad_admin`, `cafe_admin` and `cafe_seller` in Sozlamalar → 🗄️ Tizim →
-Foydalanuvchilar. Until that is done the café accounts cannot sign in at all,
-and `OMAD_USERS` / `OMAD_SESSION_SECRET` do not exist yet — the latter is
-generated on first use and needs no manual value.
+Account records and the session-signing secret are live Script Properties, not
+repository state, so this document does not claim whether a one-time password
+setup is pending. Sozlamalar → 🗄️ Tizim → Foydalanuvchilar is the operator
+surface for account setup/rotation. A code deployment never rewrites
+`OMAD_USERS` or `OMAD_SESSION_SECRET`.
 
 Hosting, project ids and the deployment id are in `docs/DEPLOYMENT.md` — the
 one place that records them. If a change makes any of this untrue, update it
