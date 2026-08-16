@@ -21,21 +21,21 @@ jobs:
           node-version: "22"
       - name: Rebuild generated bundle
         run: npm run build
-      - name: Capture concise automated test output
+      - name: Capture failing test context
         run: |
           set +e
           npm test > /tmp/write-perf-full.txt 2>&1
           code=$?
           {
             echo "EXIT_CODE=$code"
-            echo "--- FAILURE MATCHES ---"
-            grep -n -E "not ok|AssertionError|ERR_ASSERTION|# fail|Error:" /tmp/write-perf-full.txt || true
-            echo "--- FINAL 100 LINES ---"
-            tail -100 /tmp/write-perf-full.txt
+            echo "--- FAILURE CONTEXT ---"
+            grep -B25 -A35 -E "not ok [0-9]+" /tmp/write-perf-full.txt || true
+            echo "--- SUMMARY ---"
+            tail -20 /tmp/write-perf-full.txt
           } > WRITE_PERF_TEST_OUTPUT_TMP.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add WRITE_PERF_TEST_OUTPUT_TMP.txt
-          git commit -m "Capture concise write-performance test output" || true
+          git commit -m "Capture failing write-performance test context" || true
           git push origin HEAD:perf/write-path-responsiveness-clean
           exit 0
