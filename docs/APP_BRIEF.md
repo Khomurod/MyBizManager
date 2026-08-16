@@ -128,8 +128,10 @@ Cloudflare Pages (static HTML/JS)         Google Apps Script web app        Goog
 | `11_report_jobs.gs` | Server-composed business reports |
 | `12_cafe.gs` | Café catalogue, pricing, sales, voids, close-day |
 | `12a_cafe_catalogue.gs` | Recipe costing, catalogue revision, health warnings, stock movements |
+| `12b_cafe_write_performance.gs` | Faster durable café sale retry lookup without changing stock or idempotency rules |
 | `13_migration.gs` | Legacy→V2 migration: preview / apply / verify / cutover / rollback |
 | `14_ledger.gs` | Append-only ledger: create / correct / cancel / read / audit |
+| `14a_ledger_write_performance.gs` | Fast ledger request lookup / ID allocation and atomic multi-line entry creation |
 | `15_system_status.gs` | Safe diagnostics for the Sozlamalar → Tizim panel |
 | `15a_maintenance.gs` | Operator repairs (dates, debug-log secrets, webhook rotation) |
 | `16_tasks_recurrence.gs` | Pure Asia/Tashkent time + recurrence engine |
@@ -138,6 +140,7 @@ Cloudflare Pages (static HTML/JS)         Google Apps Script web app        Goog
 | `19_tasks_scheduler.gs` | Scheduler, task queue jobs, edit reconciliation, web API |
 | `19a_tasks_wizard.gs` | The `📋 Vazifa` branch of `/yangi` |
 | `20_api.gs` | `doPost` / `doGet` routing and the auth gates only |
+| `20a_write_performance_api.gs` | Batch-ledger API extension with rollout-safe fallback semantics |
 | `21_miniapp_auth.gs` | Mini App `initData` signature verification |
 | `22_miniapp_api.gs` | Mini App summaries and write actions |
 | `23_health.gs` | Mini App configuration via Bot API, and the system health check |
