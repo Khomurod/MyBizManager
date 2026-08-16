@@ -138,9 +138,21 @@ function runTaskReminderJob_(doc, job) {
   var remindTask = findTask_(doc, occ.taskId);
   if (remindTask && (remindTask.status === TASK_DEF_PAUSED || remindTask.status === TASK_DEF_CANCELLED)) return;
 
-  sendTelegramMessage_(chatId,
+  var sent = sendTelegramMessage_(chatId,
     buildTaskReminderMessage_(occ, remindTask ? remindTask.description : ""),
     taskDoneMarkup_(occ.id), "HTML");
+
+  // An occurrence with reminder times has no separate "Yangi vazifa" card.
+  // Its first successful reminder is therefore the primary group card: keep
+  // that message id so completion/proof/cancellation can edit it in place.
+  if (!occ.msgId) {
+    var reminderMsgId = extractTelegramMessageId_(sent);
+    if (reminderMsgId) {
+      occ.msgId = String(reminderMsgId);
+      if (!occ.notifiedAt) occ.notifiedAt = new Date().toISOString();
+      writeOccurrenceRow_(doc, occ);
+    }
+  }
 }
 
 function runTaskUpdateMessageJob_(doc, job) {
@@ -289,8 +301,9 @@ function runTaskScheduler_(doc, nowMs) {
         }
       }
 
-      // Announce.
-      if (!occ.notifiedAt && occ.status === TASK_STATUS_OPEN) {
+      // Announce only when there is no reminder schedule. Reminder times
+      // are the notification schedule, not an extra notification channel.
+      if (!occ.notifiedAt && occ.status === TASK_STATUS_OPEN && !occ.reminderTimes.length) {
         // A goal step and a deadline-less one-time task are the same thing to
         // the group: something to do now, with no date attached.
         var due = occ.taskType === "once" || occ.taskType === "goal" ||
@@ -309,15 +322,64 @@ function runTaskScheduler_(doc, nowMs) {
         // A rolling occurrence accumulates a marker a day; trim the ones no
         // date list will ever name again before adding today's.
         var changed = taskRemindsDaily_(occ) ? pruneReminderMarkers_(occ, todayKey) : false;
+
+        // A task created after one or more of today's reminder times must not
+        // immediately blast every already-missed slot. Slots that were still
+        // ahead when the occurrence was created keep normal behaviour; slots
+        // already behind it are silent. If *all* of today's slots were already
+        // behind it, send only the latest one once so a late-created task is
+        // visible instead of waiting until tomorrow (or forever for a routine).
+        //
+        // The `createdMs <= now` guard matters to deterministic tests and also
+        // makes this explicitly a creation-time rule, never a host-clock guess.
+        var createdMs = Date.parse(occ.createdAt || "") || 0;
+        var creationRuleApplies = createdMs > 0 && createdMs <= now;
+        var creationInfoByDate = {};
+        if (creationRuleApplies) {
+          for (var scanD = 0; scanD < dates.length; scanD++) {
+            var scanDate = dates[scanD];
+            if (scanDate !== todayKey) continue;
+            var latestBeforeCreation = "";
+            var hasSlotAfterCreation = false;
+            for (var scanR = 0; scanR < occ.reminderTimes.length; scanR++) {
+              var scanSlot = scanDate + " " + occ.reminderTimes[scanR];
+              if (occ.remindersSent[scanSlot]) continue;
+              var scanInstant = taskInstantMs_(scanDate, occ.reminderTimes[scanR]);
+              if (!isFinite(scanInstant)) continue;
+              if (scanInstant < createdMs) latestBeforeCreation = scanSlot;
+              else hasSlotAfterCreation = true;
+            }
+            creationInfoByDate[scanDate] = {
+              latestBeforeCreation: latestBeforeCreation,
+              hasSlotAfterCreation: hasSlotAfterCreation
+            };
+          }
+        }
+
         for (var d = 0; d < dates.length; d++) {
           for (var r = 0; r < occ.reminderTimes.length; r++) {
             var slotKey = dates[d] + " " + occ.reminderTimes[r];
             if (occ.remindersSent[slotKey]) continue;
             var instant = taskInstantMs_(dates[d], occ.reminderTimes[r]);
             if (!isFinite(instant) || now < instant) continue;
-            if (now - instant <= TASK_REMINDER_MAX_LATE_MS) {
+
+            var shouldSend = now - instant <= TASK_REMINDER_MAX_LATE_MS;
+            var creationInfo = creationInfoByDate[dates[d]];
+            var existedBeforeSlot = !creationInfo || instant >= createdMs;
+            if (!existedBeforeSlot) {
+              // This reminder time had already passed when the occurrence was
+              // created. Wait for a later configured time when one existed at
+              // creation; otherwise exactly the latest missed time is the
+              // single catch-up message, even outside the ordinary 3h window.
+              shouldSend = !creationInfo.hasSlotAfterCreation &&
+                slotKey === creationInfo.latestBeforeCreation;
+            }
+
+            if (shouldSend) {
               enqueueTaskJob_(doc, "task_reminder", occ.id, { occurrenceId: occ.id, slot: slotKey });
               reminders++;
+            } else if (!existedBeforeSlot) {
+              debugLog_(doc, "task_reminder_skipped_before_creation", occ.id + " " + slotKey);
             } else {
               debugLog_(doc, "task_reminder_skipped_stale", occ.id + " " + slotKey);
             }

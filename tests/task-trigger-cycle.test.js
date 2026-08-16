@@ -89,16 +89,16 @@ test('the existing trigger scans, enqueues and sends in a single call', () => {
   // No scheduler call of any kind before this line: the trigger does it all.
   gas.processPendingTelegramJobs();
 
-  assert.strictEqual(notifySends(gas).length, 1, 'the task was announced');
-  assert.strictEqual(reminderSends(gas).length, 1, 'and its due reminder went out');
+  assert.strictEqual(notifySends(gas).length, 0, 'a reminder-led task has no separate announcement');
+  assert.strictEqual(reminderSends(gas).length, 1, 'its due reminder is the first group message');
 });
 
 test('the trigger still returns the number of jobs it processed', () => {
   const { gas, doc } = setup();
   makeDueTask(gas, doc, recentlyDueTime(gas));
 
-  // A notify and a reminder, both enqueued and drained by the same tick.
-  assert.strictEqual(gas.processPendingTelegramJobs(), 2);
+  // The reminder itself is the only first-contact job.
+  assert.strictEqual(gas.processPendingTelegramJobs(), 1);
   assert.strictEqual(gas.processPendingTelegramJobs(), 0, 'nothing is left to do');
 });
 
@@ -115,7 +115,7 @@ test('running both entry points cannot duplicate a reminder', () => {
   gas.processPendingTelegramJobs();
 
   assert.strictEqual(reminderSends(gas).length, 1, 'five passes, one reminder');
-  assert.strictEqual(notifySends(gas).length, 1, 'and one announcement');
+  assert.strictEqual(notifySends(gas).length, 0, 'and no duplicate announcement channel');
 });
 
 test('the manual entry point first is equally safe', () => {
@@ -127,18 +127,27 @@ test('the manual entry point first is equally safe', () => {
   gas.processTaskSchedules();
 
   assert.strictEqual(reminderSends(gas).length, 1);
-  assert.strictEqual(notifySends(gas).length, 1);
+  assert.strictEqual(notifySends(gas).length, 0);
 });
 
 test('completing between two ticks stops the reminder that was not sent yet', () => {
   const { gas, doc } = setup();
-  const parts = gas.taskTzParts_(Date.now() + 6 * 3600000); // hours away
-  makeDueTask(gas, doc, parts.timeKey);
+  // Use tomorrow rather than "six hours from now": near midnight, +6h wraps
+  // to an early clock time today and makes the supposedly future reminder due.
+  const tomorrow = gas.taskDateKeyAddDays_(gas.taskTodayKey_(Date.now()), 1);
+  const result = gas.normalizeTaskInput_({
+    type: 'once', title: 'Ertangi hisobot',
+    deadlineKey: tomorrow, deadlineTime: '09:00',
+    reminderTimes: ['09:00'], remindDaily: false
+  }, null);
+  gas.appendTaskRow_(doc, result.task);
 
-  gas.processPendingTelegramJobs();            // announces, nothing due yet
+  gas.processPendingTelegramJobs();            // tomorrow's reminder is not due
   assert.strictEqual(reminderSends(gas).length, 0);
+  assert.strictEqual(notifySends(gas).length, 0);
 
   const occ = gas.readOccurrenceRows_(doc)[0];
+  assert.ok(occ, 'tomorrow occurrence was materialised');
   gas.completeTaskOccurrence_(doc, occ, { byName: 'Ali', source: 'telegram' });
 
   gas.processPendingTelegramJobs();
