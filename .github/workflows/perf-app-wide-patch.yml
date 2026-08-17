@@ -1,0 +1,35 @@
+name: Temporary app-wide performance patch
+
+on:
+  push:
+    branches: ["perf/app-wide-responsiveness-pass"]
+    paths: [".github/workflows/perf-app-wide-patch.yml"]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: perf/app-wide-responsiveness-pass
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install browser test runtime
+        run: |
+          npm install --no-save --package-lock=false playwright@1.56.1
+          npx playwright install --with-deps chromium
+
+      - name: Configure commit identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Apply and test each performance point
+        run: python3 scripts/apply_app_perf_pass.py
