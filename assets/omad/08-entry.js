@@ -232,6 +232,9 @@ function isTenantPaidRow(t) {
  */
 let editingGroupRows = { groupId: '', rows: [] };
 
+/** True while a group cancellation is in flight. See `deleteTx`. */
+let cancellingEntry = false;
+
 function rememberEditingGroup(groupId, rows) {
     editingGroupRows = { groupId: String(groupId || ''), rows: (rows || []).slice() };
 }
@@ -567,6 +570,12 @@ async function deleteTx(id) {
     const baseId = getTxBaseId(id);
 
     if(app.ledgerActive) {
+        // One cancellation at a time. The loader is what used to stop a second
+        // click landing on rows the first is already cancelling, and it is kept
+        // here because a cancellation genuinely is something to wait for — but
+        // the guard is said out loud rather than left to an overlay.
+        if(cancellingEntry) return;
+        cancellingEntry = true;
         const requestBase = `web_cancel_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         showLoader(true);
         try {
@@ -581,8 +590,13 @@ async function deleteTx(id) {
             }
         } finally {
             showLoader(false);
+            cancellingEntry = false;
         }
-        await syncData();
+        // Background, like every other confirmed write. A foreground `syncData`
+        // re-hydrates the stored snapshot first, which marks this live screen
+        // stale and makes `callBackend` refuse the next write until the refresh
+        // returns — the same trap the entry path already avoids.
+        settleOmadWriteInBackground_();
         return;
     }
 

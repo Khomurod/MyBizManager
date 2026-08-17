@@ -53,6 +53,11 @@
         .hdr__t { margin: 0; font-size: 18px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.2; }
         .hdr__sub { margin: 1px 0 0; font-size: 12.5px; color: var(--muted); line-height: 1.3; }
         .hdr__tools { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+        /* The local busy state for one action. It lives in the sticky header so
+           it is visible wherever the board is scrolled to, and it deliberately
+           does not cover anything: the list stays readable while a card saves. */
+        .hdr__busy { font-size: 12px; font-weight: 700; color: var(--muted); white-space: nowrap; }
+        .hdr__busy.hidden { display: none; }
         .icon-btn {
             width: 42px; height: 42px; border-radius: 12px; border: 1px solid var(--line);
             background: #fff; color: var(--muted); font-size: 17px; text-decoration: none;
@@ -278,6 +283,7 @@
                 <p id="nowStamp" class="hdr__sub"></p>
             </div>
             <div class="hdr__tools">
+                <span id="busy" class="hdr__busy hidden" role="status" aria-live="polite">Bajarilmoqda...</span>
                 <button onclick="signOut()" class="icon-btn" aria-label="Chiqish">🚪</button>
                 <a href="omad_admin.html" class="icon-btn" aria-label="Omad paneliga qaytish">🏠</a>
             </div>

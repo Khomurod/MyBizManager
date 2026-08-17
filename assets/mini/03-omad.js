@@ -201,7 +201,9 @@ async function submitEntry(type) {
         closeSheet();
         toast('Saqlandi');
         flushReports();
-        await loadOmad();
+        // The record is stored; the figures are a fresh read of it. Neither the
+        // Telegram card nor that read is a reason to keep this form busy.
+        refreshOmadInBackground();
     } catch (error) {
         if (error.unauthorized) return failAuth(error);
         // The ids are kept, so pressing save again resolves to the same record
@@ -254,7 +256,7 @@ async function submitTenantPaid() {
         closeSheet();
         toast('Saqlandi');
         flushReports();
-        await loadOmad();
+        refreshOmadInBackground();
     } catch (error) {
         if (error.unauthorized) return failAuth(error);
         toast(error.message, true);
@@ -264,9 +266,46 @@ async function submitTenantPaid() {
     }
 }
 
+// ------------------------------------------------------- refreshing the tab
+//
+// Two Omad reads can genuinely be in flight at once — a post-save refresh and a
+// period switch a second later — and the one that *started* last is the one
+// still true. Without a sequence guard the slower earlier answer paints over the
+// newer one, and `writeMiniSnapshot` stores the wrong month's figures for the
+// next open. The counter is what makes "last request wins" rather than "last
+// response wins".
+let miniOmadLoadSeq = 0;
+
+let miniOmadRefreshInFlight = false;
+let miniOmadRefreshPending = false;
+
+async function runPendingOmadRefresh() {
+    if (miniOmadRefreshInFlight) return;
+    miniOmadRefreshInFlight = true;
+    try {
+        // Coalesce rapid saves without losing the refresh for the latest one.
+        while (miniOmadRefreshPending) {
+            miniOmadRefreshPending = false;
+            await loadOmad();
+        }
+    } finally {
+        miniOmadRefreshInFlight = false;
+    }
+}
+
+/** The same background-refresh model the web Omad app uses after a write. */
+function refreshOmadInBackground() {
+    miniOmadRefreshPending = true;
+    setTimeout(() => { runPendingOmadRefresh(); }, 0);
+}
+
 async function loadOmad() {
+    const seq = ++miniOmadLoadSeq;
     try {
         const body = await api('mini_omad', { period: state.period });
+        // A superseded answer is dropped whole: it may name another period, and
+        // half-applying it would leave the figures and the label disagreeing.
+        if (seq !== miniOmadLoadSeq) return;
         state.omad = body.omad;
         state.period = body.omad.period;
         state.tenants = body.tenants || [];
@@ -285,7 +324,12 @@ async function loadOmad() {
         }
         renderOmad();
     } catch (error) {
+        // A refused signature ends the session whenever it arrives; it is not a
+        // stale figure, it is the gate closing.
         if (error.unauthorized) return failAuth(error);
+        // A superseded read's failure is not news: a newer one is still running,
+        // and its own outcome is the one worth telling anybody about.
+        if (seq !== miniOmadLoadSeq) return;
         toast(error.message, true);
     }
 }

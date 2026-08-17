@@ -252,6 +252,12 @@ async function submitNewLedgerEntryLegacyFallback_(requestBase, groupId, common)
  *
  * Edits keep the existing correct/cancel semantics line by line, but they also
  * stop waiting for Telegram and the post-save dashboard refresh.
+ *
+ * No full-screen loader: `submitAll` already disables the Save button and
+ * relabels it "Bajarilmoqda...", which says the same thing about the one control
+ * that matters without whiting out the dashboard behind the form. The disabled
+ * button is also the guard against a second submission, so nothing depends on
+ * the overlay being there.
  */
 submitViaLedger = async function() {
     const requestBase = nextRequestBase();
@@ -260,67 +266,66 @@ submitViaLedger = async function() {
     const groupId = editId ? editingGroupId(editId) : nextEntryGroupId();
     const existingIds = editId ? entryGroupRows(groupId).map(t => t.id) : [];
 
-    showLoader(true);
-    try {
-        if (!editId) {
-            const response = await callBackend({
-                action: 'create_transaction_batch',
-                requestId: requestBase,
+    if (!editId) {
+        const response = await callBackend({
+            action: 'create_transaction_batch',
+            requestId: requestBase,
+            groupId,
+            ...common,
+            lines: cart.map(item => ({
+                amount: Number(item.amount) || 0,
+                currency: item.currency,
+                method: item.method
+            }))
+        });
+
+        if (response && response.status === 'error' &&
+            /unknown action/i.test(String(response.message || ''))) {
+            await submitNewLedgerEntryLegacyFallback_(requestBase, groupId, common);
+        } else if (!response || response.status !== 'success') {
+            throw new Error((response && response.message) || 'save failed');
+        }
+    } else {
+        for(let i = 0; i < cart.length; i++) {
+            const line = {
+                requestId: `${requestBase}_${i}`,
                 groupId,
                 ...common,
-                lines: cart.map(item => ({
-                    amount: Number(item.amount) || 0,
-                    currency: item.currency,
-                    method: item.method
-                }))
-            });
+                amount: Number(cart[i].amount) || 0,
+                currency: cart[i].currency,
+                method: cart[i].method
+            };
 
-            if (response && response.status === 'error' &&
-                /unknown action/i.test(String(response.message || ''))) {
-                await submitNewLedgerEntryLegacyFallback_(requestBase, groupId, common);
-            } else if (!response || response.status !== 'success') {
+            const response = i < existingIds.length
+                ? await callBackend({ action: 'correct_transaction', transactionId: existingIds[i], ...line })
+                : await callBackend({ action: 'create_transaction', ...line });
+
+            if(!response || response.status !== 'success') {
                 throw new Error((response && response.message) || 'save failed');
             }
-        } else {
-            for(let i = 0; i < cart.length; i++) {
-                const line = {
-                    requestId: `${requestBase}_${i}`,
-                    groupId,
-                    ...common,
-                    amount: Number(cart[i].amount) || 0,
-                    currency: cart[i].currency,
-                    method: cart[i].method
-                };
+        }
 
-                const response = i < existingIds.length
-                    ? await callBackend({ action: 'correct_transaction', transactionId: existingIds[i], ...line })
-                    : await callBackend({ action: 'create_transaction', ...line });
-
-                if(!response || response.status !== 'success') {
-                    throw new Error((response && response.message) || 'save failed');
-                }
-            }
-
-            for(let i = cart.length; i < existingIds.length; i++) {
-                const response = await callBackend({
-                    action: 'cancel_transaction',
-                    transactionId: existingIds[i],
-                    requestId: `${requestBase}_cancel_${i}`,
-                    reason: 'entry edited'
-                });
-                if(!response || response.status !== 'success') {
-                    throw new Error((response && response.message) || 'save failed');
-                }
+        for(let i = cart.length; i < existingIds.length; i++) {
+            const response = await callBackend({
+                action: 'cancel_transaction',
+                transactionId: existingIds[i],
+                requestId: `${requestBase}_cancel_${i}`,
+                reason: 'entry edited'
+            });
+            if(!response || response.status !== 'success') {
+                throw new Error((response && response.message) || 'save failed');
             }
         }
-    } finally {
-        showLoader(false);
     }
 
     settleOmadWriteInBackground_();
 };
 
-/** Tenant-paid is already atomic on the backend; release the UI before refresh/reporting. */
+/**
+ * Tenant-paid is already atomic on the backend; release the UI before
+ * refresh/reporting. Like the entry form, its own Save button is the saving
+ * state and the guard, so no full-screen loader.
+ */
 submitTenantPaid = async function() {
     const amount = parseMoneyInput(document.getElementById('tempAmount').value);
     if(!Number.isFinite(amount) || amount <= 0) return alert("To'g'ri summa kiriting");
@@ -331,7 +336,6 @@ submitTenantPaid = async function() {
     const btn = document.getElementById('submitBtn');
     if(btn.disabled) return;
     btn.disabled = true; btn.innerText = "Bajarilmoqda...";
-    showLoader(true);
 
     try {
         const response = await callBackend({
@@ -365,7 +369,6 @@ submitTenantPaid = async function() {
         console.error(error);
         alert((error && error.message) || SAVE_FAILED_MESSAGE);
     } finally {
-        showLoader(false);
         btn.disabled = false;
         btn.innerText = "IJARACHI TO'LOVINI SAQLASH";
     }

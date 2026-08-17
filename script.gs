@@ -6450,6 +6450,90 @@ function recordCafeRecount_(doc, before, after, actor) {
 // progressively slower as history grew.
 // ============================================================
 
+/**
+ * Fast stock-movement duplicate detection.
+ *
+ * A purchase, a spillage or a correction is idempotent on `requestId`, which
+ * lives in the last column. The old lookup read all twelve columns of every
+ * movement ever recorded before applying one, so recording stock got slower for
+ * ever — and it runs under the script lock, which the till also needs.
+ *
+ * The full row is still returned for the exact match, because the caller reads
+ * it. Blank ids never match: an empty `requestId` is refused before this runs,
+ * and a row with none is not a retry of anything.
+ */
+var findCafeMovementByRequestIdBeforeWritePerf_ = findCafeMovementByRequestId_;
+findCafeMovementByRequestId_ = function (sheet, requestId) {
+  var wanted = String(requestId || "");
+  if (!sheet || !wanted || sheet.getLastRow() < 2) return null;
+
+  var lastRow = sheet.getLastRow();
+  var column = CAFE_MOVEMENTS_HEADER.length;
+  var idRange = sheet.getRange(2, column, lastRow - 1, 1);
+  var rowNumber = 0;
+
+  // Production Sheets can find the cell without transferring even the one
+  // column; the test harness has no TextFinder, so the bounded one-column
+  // fallback keeps the behaviour identical everywhere. Request ids are
+  // case-sensitive strings, so TextFinder is held to that rule.
+  if (typeof idRange.createTextFinder === "function") {
+    var finder = idRange.createTextFinder(wanted).matchEntireCell(true);
+    if (typeof finder.matchCase === "function") finder.matchCase(true);
+    var matches = finder.findAll();
+    for (var m = 0; m < matches.length; m++) {
+      var candidate = matches[m].getRow();
+      if (!rowNumber || candidate < rowNumber) rowNumber = candidate;
+    }
+  } else {
+    var ids = idRange.getValues();
+    for (var i = 0; i < ids.length; i++) {
+      if (String(ids[i][0]) !== wanted) continue;
+      rowNumber = i + 2;
+      break;
+    }
+  }
+
+  if (!rowNumber) return null;
+  return {
+    rowNumber: rowNumber,
+    row: sheet.getRange(rowNumber, 1, 1, CAFE_MOVEMENTS_HEADER.length).getValues()[0]
+  };
+};
+
+/**
+ * Only the movements a screen is going to show.
+ *
+ * The answer was always the last `limit` rows; it just used to arrive by reading
+ * the whole history and throwing all but the tail away. The tail is the same
+ * tail, and `total` is still the count of every movement recorded.
+ */
+var readCafeStockMovementsBeforeWritePerf_ = readCafeStockMovements_;
+readCafeStockMovements_ = function (doc, limit) {
+  var sheet = doc.getSheetByName(CAFE_MOVEMENTS_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) return { rows: [], total: 0 };
+
+  var want = Math.min(200, Math.max(1, Number(limit) || CAFE_MOVEMENTS_PAGE));
+  var lastRow = sheet.getLastRow();
+  var total = lastRow - 1;
+  var take = Math.min(want, total);
+  var startRow = lastRow - take + 1;
+  var data = sheet.getRange(startRow, 1, take, CAFE_MOVEMENTS_HEADER.length).getValues();
+
+  var rows = [];
+  for (var i = 0; i < data.length; i++) {
+    rows.push({
+      date: data[i][0], direction: String(data[i][1] || ""), reason: String(data[i][2] || ""),
+      reasonLabel: CAFE_MOVEMENT_REASONS[String(data[i][2] || "")] || String(data[i][2] || ""),
+      inventoryId: String(data[i][3] || ""), name: String(data[i][4] || ""),
+      qty: Number(data[i][5]) || 0, unit: String(data[i][6] || ""),
+      cost: Number(data[i][7]) || 0, remaining: Number(data[i][8]) || 0,
+      note: String(data[i][9] || ""), by: String(data[i][10] || "")
+    });
+  }
+  rows.reverse();
+  return { rows: rows, total: total };
+};
+
 var findCafeSaleByRequestIdBeforeWritePerf_ = findCafeSaleByRequestId_;
 findCafeSaleByRequestId_ = function (salesSheet, requestId) {
   var wanted = String(requestId || "");
@@ -7882,6 +7966,63 @@ findLedgerRowByRequestId_ = function (doc, requestId) {
     if (transaction.status !== TX_STATUS_VOID) return transaction;
   }
   return null;
+};
+
+/**
+ * Fast transaction-id lookup.
+ *
+ * A correction and a cancellation each need exactly one row, and the id is
+ * column A. The old lookup read all 24 columns of every historical row to find
+ * it, so editing or cancelling an entry got slower for ever as the ledger grew —
+ * and an edit of a three-line entry paid that cost three times over. Same shape
+ * as the Request_ID lookup above: one narrow column pass, then the full row for
+ * the exact match only.
+ *
+ * Status is deliberately *not* filtered here. Every caller inspects it itself —
+ * a correction refuses a row that is not Active, a cancellation answers
+ * `duplicate` for one already Cancelled or Void — so hiding a status would turn
+ * "already done" into "not found".
+ *
+ * Sheet order still decides. Ids are unique by construction, but the old reader
+ * answered with the first matching row and a duplicated id must not change which
+ * row an edit lands on.
+ */
+var findLedgerRowBeforeWritePerf_ = findLedgerRow_;
+findLedgerRow_ = function (doc, transactionId) {
+  var wanted = String(transactionId === null || transactionId === undefined ? "" : transactionId);
+  if (!wanted) return null;
+
+  var sheet = doc.getSheetByName(OMAD_TRANSACTIONS_V2_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) return null;
+
+  var lastRow = sheet.getLastRow();
+  var idRange = sheet.getRange(2, 1, lastRow - 1, 1);
+  var rowNumber = 0;
+
+  // Production Sheets can locate the cell without transferring even the one
+  // column. The test harness deliberately has no TextFinder, so the bounded
+  // one-column fallback keeps the behaviour identical everywhere. Ids have
+  // always been case-sensitive strings, so TextFinder is held to that rule.
+  if (typeof idRange.createTextFinder === "function") {
+    var finder = idRange.createTextFinder(wanted).matchEntireCell(true);
+    if (typeof finder.matchCase === "function") finder.matchCase(true);
+    var matches = finder.findAll();
+    for (var m = 0; m < matches.length; m++) {
+      var candidate = matches[m].getRow();
+      if (!rowNumber || candidate < rowNumber) rowNumber = candidate;
+    }
+  } else {
+    var ids = idRange.getValues();
+    for (var i = 0; i < ids.length; i++) {
+      if (String(ids[i][0] || "") !== wanted) continue;
+      rowNumber = i + 2;
+      break;
+    }
+  }
+
+  if (!rowNumber) return null;
+  var row = sheet.getRange(rowNumber, 1, 1, LEDGER_HEADER.length).getValues()[0];
+  return ledgerRowToTransaction_(row, rowNumber);
 };
 
 /**
@@ -10864,8 +11005,17 @@ function runTaskAction_(action, payload, doc) {
   if (result.status === "success") {
     recordLastOperation_(doc, action);
     // Announce/refresh promptly, then let the trigger handle the rest.
-    try { runTaskScheduler_(doc, Date.now()); } catch (error) { debugLog_(doc, "task_scheduler_inline_failed", String(error)); }
-    drainJobQueueQuietly_(doc, payload);
+    //
+    // `deferReports: true` is a client saying it will ask for that settling in
+    // its own follow-up request, so neither the schedule scan nor the Telegram
+    // drain belongs inside this response — the durable write and the occurrence
+    // reconciliation above are what the caller is actually waiting for, and the
+    // five-minute trigger runs the same cycle whether the follow-up arrives or
+    // not. A client that says nothing keeps the old inline behaviour exactly.
+    if (!payload || payload.deferReports !== true) {
+      try { runTaskScheduler_(doc, Date.now()); } catch (error) { debugLog_(doc, "task_scheduler_inline_failed", String(error)); }
+      drainJobQueueQuietly_(doc, payload);
+    }
     result.view = buildTaskViews_(doc, Date.now());
     result.config = { tasksGroupConfigured: !!getTasksGroupChatId_() };
   }
@@ -11030,11 +11180,27 @@ function saveTaskAction_(doc, payload) {
     appendAuditRow_(doc, "task_created", task.id + " " + task.type);
   }
 
-  materializeTaskOccurrences_(doc, task, nowMs);
+  materializeTaskOccurrencesOnce_(doc, task, nowMs);
   // Removing the last unfinished step is a completion just as much as ticking
   // it off is.
   if (task.type === "goal") maybeCompleteGoal_(doc, task.id, nowMs);
   return { status: "success", taskId: task.id };
+}
+
+/**
+ * One materialisation pass with one occurrence read and one append.
+ *
+ * `materializeTaskOccurrences_` without a `ctx` appends a row at a time, and a
+ * new daily routine has fourteen of them — fourteen `appendRow` calls, fourteen
+ * text-format applications and fourteen cache-revision bumps to create one
+ * task. The scheduler already batches this way; the mutation path now does too.
+ * The rows created, and their order, are identical either way.
+ */
+function materializeTaskOccurrencesOnce_(doc, task, nowMs) {
+  var ctx = { occurrences: readOccurrenceRows_(doc), pending: [] };
+  var created = materializeTaskOccurrences_(doc, task, nowMs, ctx);
+  if (ctx.pending.length) appendOccurrenceRows_(doc, ctx.pending);
+  return created;
 }
 
 /**
@@ -11223,8 +11389,28 @@ function deleteOccurrenceRowsWhere_(doc, predicate) {
   var toDelete = [];
   for (var i = 0; i < rows.length; i++) if (predicate(rows[i])) toDelete.push(rows[i].rowNumber);
   toDelete.sort(function (a, b) { return b - a; }); // bottom-up so row numbers stay valid
-  for (var d = 0; d < toDelete.length; d++) sheet.deleteRow(toDelete[d]);
-  return toDelete.length;
+
+  // The rows a pause or a routine edit removes are a run of consecutive
+  // generated days, so one `deleteRows` replaces up to fourteen `deleteRow`
+  // calls. Still bottom-up, so the row numbers below a deleted block are
+  // untouched — which is also why every caller re-reads the sheet afterwards
+  // rather than reusing row numbers across this call.
+  var deleted = 0;
+  var index = 0;
+  while (index < toDelete.length) {
+    var end = index;
+    while (end + 1 < toDelete.length && toDelete[end + 1] === toDelete[end] - 1) end++;
+    var count = end - index + 1;
+    sheet.deleteRows(toDelete[end], count);
+    deleted += count;
+    index = end + 1;
+  }
+
+  // Deleting occurrences changes every task summary derived from them. The
+  // callers happen to bump as well, through `updateTaskRow_`; the rule is that a
+  // sheet write path bumps its own scope rather than relying on its callers.
+  if (deleted > 0) bumpDataRevision_(CACHE_SCOPE_TASKS);
+  return deleted;
 }
 
 function cancelTaskAction_(doc, payload) {
@@ -11262,6 +11448,12 @@ function setRoutinePausedAction_(doc, payload, paused) {
     // it the moment the guard is bypassed. Announced days, completed days and
     // skipped days are history and stay exactly as they are.
     pruneReplaceableRoutineOccurrences_(doc, task.id, taskTodayKey_(Date.now()));
+  } else {
+    // Resuming has to put the horizon back, and it is the *reconciliation* half
+    // of the mutation rather than settling: without it the answer says the
+    // routine is active while "Kelgusi" is empty. This used to be done for it,
+    // as a side effect, by the schedule scan that ran inside every response.
+    materializeTaskOccurrencesOnce_(doc, task, Date.now());
   }
 
   appendAuditRow_(doc, paused ? "routine_paused" : "routine_resumed", task.id);
@@ -12431,6 +12623,162 @@ function handleWizardSave_(state, chatId, key, cache, doc, fromId) {
   }
 }
 
+// ----- apps-script/19b_tasks_write_performance.gs ------------------------------
+
+// ============================================================
+// Task write performance
+// ------------------------------------------------------------
+// A task mutation is two different pieces of work wearing one response:
+//
+//   the durable part   — write the row, reconcile the occurrences it owns,
+//                        answer the board. This stays in the foreground; it is
+//                        what the person pressing the button is waiting for.
+//   the settling part  — scan every schedule and push the Telegram group cards.
+//                        Nobody is waiting for that, and the five-minute
+//                        `processPendingTelegramJobs` trigger already guarantees
+//                        it happens whether or not anyone asks.
+//
+// This module makes the durable part proportional to the one record being
+// changed, and gives the settling part its own request so it stops sitting
+// inside the response. Nothing about recurrence, reminder rules, attribution or
+// the group cards changes — only when the scan runs, and the trigger remains the
+// reliability fallback exactly as before.
+// ============================================================
+
+/**
+ * Locates one row by an exact id in column A, and reads only that row.
+ *
+ * `readTaskRows_` / `readOccurrenceRows_` exist to answer questions about the
+ * whole sheet, and finding one record is not one of them: completing a single
+ * occurrence read every column of every occurrence ever created, and an edit
+ * paid it twice. Sheet order still decides, because the readers answered with
+ * the first matching row.
+ *
+ * Production Sheets can find the cell without transferring even the one column;
+ * the test harness deliberately has no TextFinder, so the bounded one-column
+ * fallback keeps the behaviour identical everywhere. Ids are case-sensitive
+ * strings, so TextFinder is held to that rule.
+ */
+function taskRowNumberById_(sheet, wantedId) {
+  if (!sheet || !wantedId || sheet.getLastRow() < 2) return 0;
+
+  var idRange = sheet.getRange(2, 1, sheet.getLastRow() - 1, 1);
+  var rowNumber = 0;
+
+  if (typeof idRange.createTextFinder === "function") {
+    var finder = idRange.createTextFinder(wantedId).matchEntireCell(true);
+    if (typeof finder.matchCase === "function") finder.matchCase(true);
+    var matches = finder.findAll();
+    for (var m = 0; m < matches.length; m++) {
+      var candidate = matches[m].getRow();
+      if (!rowNumber || candidate < rowNumber) rowNumber = candidate;
+    }
+    return rowNumber;
+  }
+
+  var ids = idRange.getValues();
+  for (var i = 0; i < ids.length; i++) {
+    if (String(ids[i][0] || "") !== wantedId) continue;
+    return i + 2;
+  }
+  return 0;
+}
+
+var findTaskBeforeWritePerf_ = findTask_;
+findTask_ = function (doc, taskId) {
+  var wanted = String(taskId === null || taskId === undefined ? "" : taskId);
+  if (!wanted) return null;
+
+  var sheet = doc.getSheetByName(TASKS_SHEET);
+  var rowNumber = taskRowNumberById_(sheet, wanted);
+  if (!rowNumber) return null;
+
+  var task = taskFromRow_(sheet.getRange(rowNumber, 1, 1, TASKS_HEADER.length).getValues()[0]);
+  task.rowNumber = rowNumber;
+  return task;
+};
+
+var findOccurrenceBeforeWritePerf_ = findOccurrence_;
+findOccurrence_ = function (doc, occurrenceId) {
+  var wanted = String(occurrenceId === null || occurrenceId === undefined ? "" : occurrenceId);
+  if (!wanted) return null;
+
+  var sheet = doc.getSheetByName(TASK_OCCURRENCES_SHEET);
+  var rowNumber = taskRowNumberById_(sheet, wanted);
+  if (!rowNumber) return null;
+
+  var occ = occurrenceFromRow_(sheet.getRange(rowNumber, 1, 1, TASK_OCC_HEADER.length).getValues()[0]);
+  occ.rowNumber = rowNumber;
+  return occ;
+};
+
+// ------------------------------------------------------------------ settling
+
+/** The action a client calls, without waiting, to settle what it just changed. */
+var TASK_SETTLE_ACTION = "settle_tasks";
+
+/**
+ * One trigger tick, on demand.
+ *
+ * Exactly what `processPendingTelegramJobs` does for the task side: scan the
+ * schedules so anything now due is enqueued, then drain the queue so the group
+ * cards go out. It is called from a request nobody is waiting on, so it drains
+ * the full manual batch rather than the single inline job a response could
+ * afford — a cancelled routine with ten announced days used to leave nine cards
+ * to the next tick.
+ *
+ * Neither half may throw into the caller: losing this costs a delay, never a
+ * card, because the trigger runs the same cycle every five minutes. If a
+ * concurrent settle already holds the script lock, the scan gives up quietly and
+ * the trigger picks it up.
+ */
+function settleTaskSchedules_(doc) {
+  var scan = { notified: 0, reminders: 0, generated: 0 };
+  try {
+    scan = runTaskScheduler_(doc, Date.now());
+  } catch (error) {
+    debugLog_(doc, "task_scheduler_settle_failed", String(error));
+  }
+
+  var sent = 0;
+  try {
+    sent = processPendingJobs_(doc, JOB_QUEUE_MANUAL_BATCH);
+  } catch (error) {
+    debugLog_(doc, "task_settle_drain_failed", String(error));
+  }
+
+  return {
+    notified: scan.notified || 0,
+    reminders: scan.reminders || 0,
+    generated: scan.generated || 0,
+    sent: sent
+  };
+}
+
+/**
+ * `settle_tasks` joins the task namespace rather than the top-level router, so
+ * it keeps the board's own gate: omad_admin, checked on the server, like every
+ * other task action.
+ */
+var isTaskActionBeforeWritePerf_ = isTaskAction_;
+isTaskAction_ = function (action) {
+  return action === TASK_SETTLE_ACTION || isTaskActionBeforeWritePerf_(action);
+};
+
+var handleTaskActionBeforeWritePerf_ = handleTaskAction_;
+handleTaskAction_ = function (action, payload, doc) {
+  if (action !== TASK_SETTLE_ACTION) {
+    return handleTaskActionBeforeWritePerf_(action, payload, doc);
+  }
+
+  var auth = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+  if (!auth.ok) return authRefusal_(auth);
+
+  var settled = settleTaskSchedules_(doc);
+  settled.status = "success";
+  return jsonOutput_(settled);
+};
+
 // ----- apps-script/20_api.gs ---------------------------------------------------
 
 // ============================================================
@@ -13460,6 +13808,18 @@ function handleMiniAppAction_(action, payload, doc) {
   // request costs nothing: the job stays queued and the trigger sends it.
   if (action === 'mini_flush_reports') {
     return jsonOutput_({ status: "success", authorized: true, sent: drainJobQueueQuietly_(doc, null) });
+  }
+
+  // The task equivalent, for the same reason and with the same contract. A task
+  // card is only queued once the schedule scan has seen the occurrence come due,
+  // so flushing the queue alone would send nothing for a task created a second
+  // ago. This runs one trigger cycle — scan, then drain — for a client that has
+  // already been told its write is stored and is not waiting for the answer.
+  if (action === 'mini_settle_tasks') {
+    var settled = settleTaskSchedules_(doc);
+    settled.status = "success";
+    settled.authorized = true;
+    return jsonOutput_(settled);
   }
 
   return jsonOutput_({ status: "error", message: "Unknown action" });

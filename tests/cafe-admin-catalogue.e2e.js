@@ -263,9 +263,11 @@ describe('Café Admin catalogue (browser)', () => {
     await page.fill('#removeStockNote', "to'kildi");
     await page.selectOption('#removeStockReason', 'waste');
     await page.click('#removeStockModal button.bg-red-600');
-    // The screen reloads from the server after a movement, so the stock it ends
-    // up showing is the server's answer rather than the optimistic one. What is
-    // being asserted is what was *sent*.
+    // The stock the screen ends up showing is the server's answer: the movement
+    // response carries the authoritative inventory and it is applied at once,
+    // and a further `get_cafe_data` follows in the background for the movement
+    // list and the low-stock card. What is being asserted here is what was
+    // *sent*.
     await page.waitForFunction(() =>
       document.getElementById('removeStockModal').classList.contains('hidden'));
 

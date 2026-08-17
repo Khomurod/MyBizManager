@@ -9,6 +9,22 @@ function taskLoader(show) {
     if (el) el.style.display = show ? 'flex' : 'none';
 }
 
+/**
+ * A local, non-blocking busy state for one action.
+ *
+ * `taskLoader` covers the whole board, which is the right answer while the first
+ * load has nothing to show yet and the wrong one for ticking off a single card:
+ * it freezes the list somebody is reading and hides what they just pressed.
+ * Ordinary mutations show this instead — the board stays readable, and
+ * `taskMutationInFlight` rather than an overlay is what stops a second click.
+ */
+function taskBusy(show) {
+    const el = document.getElementById('busy');
+    if (!el) return;
+    if (show) el.classList.remove('hidden');
+    else el.classList.add('hidden');
+}
+
 let taskToastTimer = null;
 function taskToast(text, isError) {
     const el = document.getElementById('toast');

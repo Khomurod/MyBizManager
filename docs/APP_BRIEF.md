@@ -128,10 +128,10 @@ Cloudflare Pages (static HTML/JS)         Google Apps Script web app        Goog
 | `11_report_jobs.gs` | Server-composed business reports |
 | `12_cafe.gs` | Café catalogue, pricing, sales, voids, close-day |
 | `12a_cafe_catalogue.gs` | Recipe costing, catalogue revision, health warnings, stock movements |
-| `12b_cafe_write_performance.gs` | Faster durable café sale retry lookup without changing stock or idempotency rules |
+| `12b_cafe_write_performance.gs` | Narrow café sale / stock-movement retry lookup and the recent-movements tail read, without changing stock or idempotency rules |
 | `13_migration.gs` | Legacy→V2 migration: preview / apply / verify / cutover / rollback |
 | `14_ledger.gs` | Append-only ledger: create / correct / cancel / read / audit |
-| `14a_ledger_write_performance.gs` | Fast ledger request lookup / ID allocation and atomic multi-line entry creation |
+| `14a_ledger_write_performance.gs` | Fast ledger request / transaction-id lookup, ID allocation and atomic multi-line entry creation |
 | `15_system_status.gs` | Safe diagnostics for the Sozlamalar → Tizim panel |
 | `15a_maintenance.gs` | Operator repairs (dates, debug-log secrets, webhook rotation) |
 | `16_tasks_recurrence.gs` | Pure Asia/Tashkent time + recurrence engine |
@@ -139,6 +139,7 @@ Cloudflare Pages (static HTML/JS)         Google Apps Script web app        Goog
 | `18_tasks_service.gs` | Task Telegram namespace (`t_done:`, photo proof, cards) |
 | `19_tasks_scheduler.gs` | Scheduler, task queue jobs, edit reconciliation, web API |
 | `19a_tasks_wizard.gs` | The `📋 Vazifa` branch of `/yangi` |
+| `19b_tasks_write_performance.gs` | Single-row task/occurrence lookup, and the on-demand `settle_tasks` / `mini_settle_tasks` schedule scan |
 | `20_api.gs` | `doPost` / `doGet` routing and the auth gates only |
 | `20a_write_performance_api.gs` | Batch-ledger API extension with rollout-safe fallback semantics |
 | `21_miniapp_auth.gs` | Mini App `initData` signature verification |
@@ -385,7 +386,9 @@ bills and it comes off what they owe:
   `Cafe_Stock_Movements` saying which reason (`purchase`, `spoilage`, `waste`,
   `internal`, `correction`, `recount`) and why. A withdrawal larger than the
   shelf is refused — except `correction`, which is the admin saying the *count*
-  was wrong.
+  was wrong. The retry check reads only the `Request_ID` column and then the one
+  matching row, and a screen asking for recent movements is handed only the tail
+  it will show — the whole history is never transferred to answer either.
 - **Close-day refuses two accidents once each**, and neither is blocked: a
   second report for a day that already has one (`duplicate_close`) and a report
   for a day with no recorded sales (`empty_close`). Each is re-sent with
@@ -548,6 +551,19 @@ composes the message from data it already stored.
   (`JOB_QUEUE_INLINE_BATCH = 1`), and the time-driven trigger is the durable
   sender. **Failing to *queue* a report never fails a save that already
   succeeded** — the enqueue is wrapped and logged.
+- **Task mutations defer their settling the same way.** A `deferReports: true`
+  task action does the durable write and the occurrence reconciliation it owns,
+  answers with the board view, and runs **neither** the schedule scan nor the
+  Telegram drain inside that response. The client then calls `settle_tasks`
+  (`mini_settle_tasks` from the Mini App) **without awaiting it**, which runs one
+  trigger cycle — scan, then drain — so a card still appears in seconds. Losing
+  that request costs a delay and never a card: the five-minute trigger runs the
+  same cycle. A client that sends nothing keeps the old inline behaviour exactly,
+  which is what makes a partial frontend/backend rollout safe.
+- **A café stock movement is complete when the backend confirms it.** The answer
+  carries the authoritative inventory and the screen applies it immediately; the
+  movement list and the low-stock card are a **background, coalesced** refresh
+  rather than something the person recording a delivery waits through.
 - The Mini App calls `mini_flush_reports` after a write **without awaiting it**,
   so the group card appears in seconds instead of at the next tick. Losing that
   request costs a delay, never a report.
@@ -704,6 +720,15 @@ composes the message from data it already stored.
     edit keeps the id and "delete" means `active: false`. The cost is
     recomputed from the inventory on every save, for the same reason the server
     prices a sale: the browser does not get to decide what something costs us.
+16. **A blocking loader is a statement that the whole screen must wait.** Initial
+    loads, migrations, cutover, backups, maintenance and the whole-list
+    `save_omad` keep one. An ordinary save does not: the form disables its own
+    button and relabels it, and the board or dashboard behind it stays readable.
+    The rule this replaced an overlay with is that **wherever the overlay was the
+    only thing preventing a second submission, an explicit in-flight guard takes
+    its place** — `taskMutationInFlight` on the task board, `selling` in the POS,
+    `cancellingEntry` for a group cancellation. Never fewer guards, only visible
+    ones.
 
 ## 12. Known limitations and intentional exceptions
 

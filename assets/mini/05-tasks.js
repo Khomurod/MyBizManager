@@ -165,13 +165,19 @@ async function taskAction(action, occurrenceId, taskId, extra) {
         taskAction: action,
         occurrenceId: OCCURRENCE_ACTIONS.indexOf(action) === -1 ? '' : (occurrenceId || ''),
         taskId: taskId || '',
-        id: taskId || ''
+        id: taskId || '',
+        // The durable write and the occurrence bookkeeping are what this call
+        // waits for. Scanning the schedules and pushing the group cards is
+        // settled by `settleTasksInBackground` below, and by the five-minute
+        // trigger if that request is lost. An older backend ignores the flag.
+        deferReports: true
     }, extra || {});
 
     try {
         const body = await api('mini_task_action', payload);
         if (body.view) state.tasks = body.view;
         renderTasks();
+        settleTasksInBackground();
         // A photo-required task is not finished by pressing a button: it moves
         // to "waiting" and the proof is asked for in the Tasks group, exactly
         // as it does from a group card.
@@ -459,6 +465,7 @@ async function submitTask(taskId) {
     try {
         const payload = {
             taskAction: 'save_task',
+            deferReports: true,
             title,
             description: document.getElementById('tDescription').value.trim(),
             priority: document.getElementById('tPriority').value,
@@ -504,6 +511,7 @@ async function submitTask(taskId) {
         closeSheet();
         renderTasks();
         toast('Saqlandi');
+        settleTasksInBackground();
     } catch (error) {
         if (error.unauthorized) return failAuth(error);
         toast(error.message, true);
@@ -516,11 +524,14 @@ async function submitTask(taskId) {
 async function cancelTask(taskId) {
     if (!await askConfirm('Vazifa bekor qilinsinmi?')) return;
     try {
-        const body = await api('mini_task_action', { taskAction: 'cancel_task', taskId, id: taskId });
+        const body = await api('mini_task_action', {
+            taskAction: 'cancel_task', taskId, id: taskId, deferReports: true
+        });
         if (body.view) state.tasks = body.view;
         closeSheet();
         renderTasks();
         toast('Bekor qilindi');
+        settleTasksInBackground();
     } catch (error) {
         if (error.unauthorized) return failAuth(error);
         toast(error.message, true);
