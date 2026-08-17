@@ -223,6 +223,36 @@ test('a void restores stock from the stored receipt', () => {
   assert.strictEqual(post(gas, { action: 'get_cafe_data' }).sales.length, 0);
 });
 
+test('a void restores the sale-time recipe consumption after the recipe is edited', () => {
+  const gas = boot();
+  const sale = sell(gas, [{ kind: 'recipe', recipeId: 'r1', qty: 2 }]);
+
+  assert.strictEqual(stock(gas, 'i2'), 4700, 'the sale used 300ml of milk');
+  assert.strictEqual(stock(gas, 'i3'), 1964, 'the sale used 36g of coffee');
+
+  // Change the live recipe after the receipt exists. Recomputing a void from
+  // this new recipe would incorrectly restore 600ml of milk and only 20g of coffee.
+  const catalogue = post(gas, { action: 'get_cafe_data', scope: 'admin' });
+  const changed = post(gas, {
+    action: 'save_recipe',
+    expectedCatalogueRev: catalogue.catalogueRev,
+    recipes: [{
+      id: 'r1', name: 'Kapuchino', sellPrice: 25000, baseCost: 1000,
+      ingredients: [
+        { inventoryId: 'i2', qty: 300 },
+        { inventoryId: 'i3', qty: 10 }
+      ]
+    }]
+  });
+  assert.strictEqual(changed.status, 'success', changed.message);
+
+  const voided = post(gas, { action: 'void_sale', id: sale.sale.id });
+  assert.strictEqual(voided.status, 'success');
+  assert.strictEqual(voided.stockRestored, true);
+  assert.strictEqual(stock(gas, 'i2'), 5000, 'only the 300ml actually sold came back');
+  assert.strictEqual(stock(gas, 'i3'), 2000, 'the exact 36g actually sold came back');
+});
+
 test('a void ignores any inventory the caller supplies', () => {
   const gas = boot();
   const sale = sell(gas, [{ kind: 'product', inventoryId: 'i1', qty: 1 }]);
