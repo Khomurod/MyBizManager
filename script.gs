@@ -5171,6 +5171,34 @@ function applyCafeStockMovement_(state, consumption, direction) {
   return state.inventory;
 }
 
+/**
+ * Returns the exact stock movement frozen into a sale receipt.
+ *
+ * Recipes and product serving sizes can be edited after a sale. A void must
+ * reverse what the sale actually consumed, not what today's catalogue says
+ * the same menu item would consume. Receipts written before this snapshot
+ * existed return null and keep the legacy re-resolution fallback below.
+ */
+function cafeStoredStockConsumption_(detail) {
+  if (!detail || typeof detail !== "object" ||
+      !Object.prototype.hasOwnProperty.call(detail, "stockConsumption")) return null;
+
+  var raw = detail.stockConsumption;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+
+  var clean = {};
+  var ids = Object.keys(raw);
+  for (var i = 0; i < ids.length; i++) {
+    var id = String(ids[i] || "").trim();
+    var movement = raw[ids[i]] || {};
+    var qty = Number(movement.qty);
+    var cost = Number(movement.cost);
+    if (!id || !isFinite(qty) || qty < 0 || !isFinite(cost) || cost < 0) return null;
+    clean[id] = { qty: qty, cost: cost };
+  }
+  return clean;
+}
+
 /** The stored sale with this request id, if the request has already run. */
 function findCafeSaleByRequestId_(salesSheet, requestId) {
   if (!salesSheet || !requestId || salesSheet.getLastRow() < 2) return null;
@@ -5247,7 +5275,13 @@ function saveCafeSale_(doc, configSheet, payload) {
 
     salesSheet.appendRow([
       saleDate, seller, resolved.total, resolved.profit,
-      JSON.stringify({ requestId: requestId, items: resolved.lines }),
+      JSON.stringify({
+      requestId: requestId,
+      items: resolved.lines,
+      // Freeze the exact quantity and cost removed from every inventory row.
+      // A later recipe/serving-size edit must not change what a void restores.
+      stockConsumption: resolved.consumption
+    }),
       saleId
     ]);
     // After the row, not before it: the inventory write bumped the revision
@@ -5302,7 +5336,10 @@ function voidCafeSale_(doc, configSheet, payload) {
     }
 
     var current = cafeCatalogue_(configSheet);
-    var restored = resolveCafeSaleLines_(current, cafeReceiptItems_(detail), { allowInactive: true });
+    var storedConsumption = cafeStoredStockConsumption_(detail);
+    var restored = storedConsumption !== null
+      ? { consumption: storedConsumption }
+      : resolveCafeSaleLines_(current, cafeReceiptItems_(detail), { allowInactive: true });
 
     var inventory = current.inventory;
     if (!restored.error) {

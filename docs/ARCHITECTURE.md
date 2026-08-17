@@ -251,7 +251,7 @@ half readable a year later.
 | `Omad_Transaction_Archive` | `[Timestamp, Reason, Transaction_ID, Transaction_JSON]` |
 | `Omad_Audit_Log` | `[Timestamp, Event, Details]` — append-only audit trail |
 | `Telegram_Debug_Log` | `[Timestamp, Event, Details]` — secrets redacted on write |
-| `Cafe_Sales` | `[Sana, Sotuvchi, Jami_Tushum, Sof_Foyda, Chek_Tafsilotlari, ID]` |
+| `Cafe_Sales` | `[Sana, Sotuvchi, Jami_Tushum, Sof_Foyda, Chek_Tafsilotlari, ID]`; new receipt JSON freezes the exact per-inventory quantity/cost consumed so a later recipe edit cannot change what a void restores. Legacy receipts without that snapshot retain the compatibility fallback. |
 | `Cafe_Kun_Yakuni` | `[Sana, Sotuvchi, Jami_Tushum, Sof_Foyda, Tafsilotlar_JSON]` |
 | `Cafe_Stock_Movements` | `[Sana, Yo'nalish, Sabab, Mahsulot_ID, Nomi, Miqdor, Birlik, Tannarx, Qoldiq, Izoh, Kim, Request_ID]` — every stock change that is not a sale |
 | `Omad_Transactions_V2` | **append-only ledger** (schema V2) — written by the migration, read after cutover |
