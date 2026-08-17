@@ -32,5 +32,5 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Apply and test each performance point
-        # The temporary runner self-deletes after the full green regression pass.
+        # Fourth run: preserve every existing auth/legacy task response contract.
         run: python3 scripts/run_app_perf_pass_fixed.py
