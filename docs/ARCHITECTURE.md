@@ -64,10 +64,10 @@ file for file. See [DEPLOYMENT.md](DEPLOYMENT.md).
 | `11_report_jobs.gs` | Server-composed business reports |
 | `12_cafe.gs` | Café catalogue, pricing, sales, voids, close-day |
 | `12a_cafe_catalogue.gs` | Recipe costing, catalogue revision, health warnings, stock movements |
-| `12b_cafe_write_performance.gs` | Narrow durable café sale retry lookup; stock/idempotency rules stay in `12_cafe.gs` |
+| `12b_cafe_write_performance.gs` | Narrow café sale / stock-movement retry lookup and movements tail read; stock/idempotency rules stay in `12_cafe.gs` / `12a_cafe_catalogue.gs` |
 | `13_migration.gs` | Legacy→V2 migration: preview, apply, verify, cutover, rollback |
 | `14_ledger.gs` | Append-only ledger: create / correct / cancel / read / audit |
-| `14a_ledger_write_performance.gs` | Narrow ledger request lookup / ID allocation and atomic multi-line entry creation |
+| `14a_ledger_write_performance.gs` | Narrow ledger request / transaction-id lookup, ID allocation and atomic multi-line entry creation |
 | `15_system_status.gs` | Safe diagnostics for Sozlamalar → Tizim |
 | `15a_maintenance.gs` | Operator repairs: dates, debug-log secrets, webhook rotation |
 | `16_tasks_recurrence.gs` | Task module: pure Asia/Tashkent time + recurrence engine |
@@ -75,6 +75,7 @@ file for file. See [DEPLOYMENT.md](DEPLOYMENT.md).
 | `18_tasks_service.gs` | Task module: Telegram namespace (`t_done:`, photo proof, cards) |
 | `19_tasks_scheduler.gs` | Task module: scheduler, queue jobs, edit reconciliation, web API |
 | `19a_tasks_wizard.gs` | Task module: `📋 Vazifa` branch of `/yangi` |
+| `19b_tasks_write_performance.gs` | Task module: exact-id row lookup, and `settleTaskSchedules_` behind `settle_tasks` / `mini_settle_tasks` |
 | `20_api.gs` | `doPost` / `doGet` routing and server-side auth gates |
 | `20a_write_performance_api.gs` | Batch-ledger API extension and one-report-per-group integration |
 | `21_miniapp_auth.gs` | Telegram Mini App `initData` verification and authorization |
@@ -669,6 +670,46 @@ Other callers may still drain at most **one** queued job inline
 `mini_flush_reports` without awaiting it so its card usually arrives before the
 next trigger tick. Failing to *queue* a report never undoes a save the caller is
 about to be told succeeded — the enqueue is wrapped and logged.
+
+A **task** mutation splits the same way. `deferReports: true` keeps the row
+write, the per-type occurrence reconciliation and the board view in the response,
+and takes the whole-board schedule scan and the Telegram drain out of it. Both
+clients then start `settle_tasks` / `mini_settle_tasks` without awaiting it;
+`settleTaskSchedules_` runs one trigger cycle (`runTaskScheduler_` then
+`processPendingJobs_(doc, JOB_QUEUE_MANUAL_BATCH)`), each half individually
+wrapped so neither can throw into the caller. The follow-up request is coalesced
+per client, so a burst of taps settles once. Nothing depends on it arriving: the
+five-minute trigger runs the identical cycle, and the scan takes the script lock
+and marks each reminder slot at enqueue time, so no number of entry points can
+duplicate a card. An older backend that does not know the flag simply behaves as
+it always did, which is what makes the two deploys independent.
+
+Because the scan no longer runs behind every response, anything it used to
+rebuild as a side effect has to be explicit: `resume_routine` now materialises
+its own horizon (`materializeTaskOccurrencesOnce_`), which is reconciliation
+rather than settling. `tests/task-write-performance.test.js` asserts that every
+mutation leaves byte-identical rows deferred or not.
+
+A **café stock movement** is complete when `adjust_cafe_stock` confirms it. The
+response already carries the authoritative inventory, so the admin screen applies
+that at once and the movement list / low-stock refresh becomes a background,
+coalesced `get_cafe_data` rather than something the response waits for. A refresh
+requested while one is running is queued instead of dropped.
+
+The **café POS** keeps its one-request architecture and adds the guard it was
+missing: `Sotish` is disabled and relabelled `Sotilmoqda...` for the length of
+the request, so a double tap can no longer count one receipt twice locally — or,
+worse, mint a second request id after the first cleared and ring up a real second
+sale. Backend idempotency on `requestId` is unchanged and is still what makes a
+genuine retry safe.
+
+**Full-screen loaders are for work that genuinely needs the screen.** Initial
+loads, migrations, cutover, backups, maintenance and the whole-list `save_omad`
+keep theirs. An ordinary save whose form already disables its own button and
+relabels it does not: the Omad entry and tenant-paid forms, the `/tasks` board
+(a header `Bajarilmoqda...` plus an explicit `taskMutationInFlight` guard) and
+the POS all show local state instead. Where an overlay was the *only* thing
+stopping a second submission, the guard is now written down rather than implied.
 
 ### Idempotency
 

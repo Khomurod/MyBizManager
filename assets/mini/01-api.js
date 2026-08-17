@@ -209,6 +209,45 @@ function flushReports() {
 }
 
 /**
+ * The task equivalent of `flushReports`, and not awaited for the same reason.
+ *
+ * A task card is only queued once the schedule scan has seen the occurrence come
+ * due, so draining the queue alone would send nothing for a task created a
+ * second ago — the scan has to run too, which is why this is its own action
+ * rather than a second `flushReports`. It used to run *inside* the mutation
+ * response: a full pass over every schedule, a Telegram round trip and a lock
+ * wait, all before the phone was told its task was saved.
+ *
+ * Coalesced, so a burst of taps settles once rather than queueing a scan per
+ * tap, and swallowed on failure: the five-minute trigger runs the same cycle, so
+ * losing this request costs a delay and never a card.
+ */
+let miniTaskSettleInFlight = false;
+let miniTaskSettlePending = false;
+
+async function runPendingTaskSettle() {
+    if (miniTaskSettleInFlight) return;
+    miniTaskSettleInFlight = true;
+    try {
+        while (miniTaskSettlePending) {
+            miniTaskSettlePending = false;
+            try {
+                await api('mini_settle_tasks');
+            } catch (error) {
+                // The trigger is the durable sender; there is nothing to report.
+            }
+        }
+    } finally {
+        miniTaskSettleInFlight = false;
+    }
+}
+
+function settleTasksInBackground() {
+    miniTaskSettlePending = true;
+    setTimeout(() => { runPendingTaskSettle(); }, 0);
+}
+
+/**
  * A stable id for one submission, kept until it succeeds.
  *
  * The same reason the web app keeps one: a retry after a dropped connection

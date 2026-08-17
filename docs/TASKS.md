@@ -440,8 +440,22 @@ manual entry point.
 
 Running both, in any order and any number of times, cannot duplicate anything.
 The pass takes the script lock, marks each reminder slot before the job is
-queued, and `hasPendingJob_` refuses an identical pending job; the web mutation
-path calls the same scheduler inline for the same reason and is equally safe.
+queued, and `hasPendingJob_` refuses an identical pending job.
+
+There is a third entry point, `settle_tasks` (`mini_settle_tasks` from the Mini
+App), and it is the same cycle again: `settleTaskSchedules_` runs
+`runTaskScheduler_` and then drains the queue. A mutation that sends
+`deferReports: true` does **not** scan or drain inside its own response — the
+client starts this request afterwards without awaiting it, so the group card
+still arrives in seconds instead of at the next tick. Losing the request costs a
+delay and never a card. A mutation that sends nothing still scans inline, exactly
+as it always did, so a browser and a backend deployed minutes apart both behave.
+
+Because the scan is no longer guaranteed to run behind a mutation, anything that
+relied on it as a side effect is now explicit. `resume_routine` materialises its
+own horizon (`materializeTaskOccurrencesOnce_`): pausing deletes the unseen
+future days, and resuming has to put them back before it answers, or the client
+is told the routine is active while **Kelgusi** is empty.
 
 Nothing is announced or reminded for a task whose definition is not `active`,
 which is what makes a pause immediate even for days already on the sheet.

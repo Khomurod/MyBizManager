@@ -656,8 +656,11 @@
       if (Array.isArray(answer.inventory)) state.inventory = answer.inventory;
       renderInventory();
       hydrateIngredientSelect();
-      // The movement list and the low-stock card both come from the server.
-      await syncData();
+      // The stock levels above are the server's own answer to this movement, so
+      // they are already authoritative and already on screen. The movement list
+      // and the low-stock card are a second round trip for the same event —
+      // useful, and no reason to hold the person who recorded the delivery.
+      refreshCafeInBackground();
     }
 
     /** What is at or under its low-stock level, emptiest first. */
@@ -1278,15 +1281,37 @@
     }
 
     /**
+     * A refresh asked for while one was already running.
+     *
+     * Dropping it was right while every refresh was somebody pressing Retry and
+     * wrong once a write asks for one: two quick stock movements would leave the
+     * movement list and the low-stock card describing only the first. The second
+     * request is queued instead of discarded, and runs once the first finishes.
+     * It is one bit, deliberately: several requests during one pass collapse into
+     * exactly one follow-up, which is all it takes for the screen to end up
+     * showing the state after the last of them.
+     */
+    let cafeRefreshQueued = false;
+
+    /** A refresh nobody is waiting for. Coalesced by `syncData` itself. */
+    function refreshCafeInBackground() {
+      setTimeout(() => { syncData(); }, 0);
+    }
+
+    /**
      * Loads the café state without ever destroying what is already on screen.
      *
      * A rate limit, a dropped connection or an unparsable answer used to empty
      * the catalogue and reset the settings, which reads as "everything has been
      * deleted". Only the server saying the session has expired sends anybody
      * back to the login page; everything else keeps the screen and offers Retry.
+     *
+     * A caller may await this to know a refresh *will* happen, not that it has:
+     * a call made while one is already running is queued rather than performed,
+     * which is still strictly more than the nothing it used to do.
      */
     async function syncData() {
-      if (state.refreshing) return;
+      if (state.refreshing) { cafeRefreshQueued = true; return; }
       state.refreshing = true;
 
       if (!state.loaded) {
@@ -1314,6 +1339,10 @@
       } finally {
         state.refreshing = false;
         renderCafeAdmin();
+        if (cafeRefreshQueued) {
+          cafeRefreshQueued = false;
+          setTimeout(() => { syncData(); }, 0);
+        }
       }
     }
 

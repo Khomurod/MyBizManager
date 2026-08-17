@@ -62,6 +62,50 @@ async function loadTasks() {
     renderAllTasks();
 }
 
+// ------------------------------------------------------- write responsiveness
+//
+// A task mutation is finished, as far as the person pressing the button is
+// concerned, the moment the backend confirms the row is stored and the
+// occurrences it owns are reconciled. Scanning every schedule and pushing the
+// Telegram group cards is useful follow-up work that used to happen inside that
+// same response, so ticking off one card paid for a full scheduler pass, a
+// Telegram round trip and a lock wait before the board came back.
+//
+// `deferReports: true` tells the backend to leave both to the settle request
+// below. Losing that request costs a delay and nothing else: the jobs are
+// queued and the five-minute `processPendingTelegramJobs` trigger runs the same
+// cycle regardless. An older backend ignores the flag and behaves exactly as it
+// did before, so a mid-deployment client is never worse off than it was.
+
+/** One mutation at a time. Without the overlay, this is the only such guard. */
+let taskMutationInFlight = false;
+
+let taskSettleInFlight = false;
+let taskSettlePending = false;
+
+async function runPendingTaskSettle() {
+    if (taskSettleInFlight) return;
+    taskSettleInFlight = true;
+    try {
+        // Coalesce a burst of actions without losing the settle for the last one.
+        while (taskSettlePending) {
+            taskSettlePending = false;
+            try {
+                await tasksApiCall({ action: 'settle_tasks' });
+            } catch (e) {
+                // Nothing to tell anybody: the trigger is the durable sender.
+            }
+        }
+    } finally {
+        taskSettleInFlight = false;
+    }
+}
+
+function settleTasksInBackground() {
+    taskSettlePending = true;
+    setTimeout(() => { runPendingTaskSettle(); }, 0);
+}
+
 /**
  * A mutation rides the session, like every other request the app makes.
  *
@@ -69,9 +113,14 @@ async function loadTasks() {
  * is a message beside the board, with the board still showing what it showed.
  */
 async function taskMutation(payload, okMessage) {
-    taskLoader(true);
+    // The full-screen loader used to be what stopped a second click. Replacing
+    // it with a local indicator means the guard has to be said out loud rather
+    // than implied by an overlay covering the board.
+    if (taskMutationInFlight) return null;
+    taskMutationInFlight = true;
+    taskBusy(true);
     try {
-        const data = await tasksApiCall(payload);
+        const data = await tasksApiCall(Object.assign({ deferReports: true }, payload));
         if (tasksAuthExpired(data)) { signOut(); return null; }
         if (!data || data.status !== 'success') {
             taskToast((data && data.message) || 'Xatolik yuz berdi', true);
@@ -80,12 +129,14 @@ async function taskMutation(payload, okMessage) {
         if (data.view) { TASKS_STATE.view = data.view; TASKS_STATE.config = data.config; }
         taskToast(okMessage || 'Bajarildi');
         renderAllTasks();
+        settleTasksInBackground();
         return data;
     } catch (e) {
         taskToast("Server bilan bog'lanib bo'lmadi", true);
         return null;
     } finally {
-        taskLoader(false);
+        taskMutationInFlight = false;
+        taskBusy(false);
     }
 }
 

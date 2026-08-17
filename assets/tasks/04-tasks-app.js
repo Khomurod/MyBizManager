@@ -326,7 +326,15 @@ function submitTaskForm() {
         if (!payload.steps.length) { taskFormMsg('Kamida bitta bosqich kiriting.', true); return; }
     }
 
-    tasksSave(payload).then(result => { if (result) closeTaskForm(); });
+    // The form says it is saving, on the button that was pressed, instead of a
+    // sheet of white over the whole board. Restored on every outcome, because a
+    // refusal leaves the form open with the entry still in it.
+    const button = document.getElementById('taskSaveBtn');
+    const label = button ? button.innerHTML : '';
+    if (button) { button.disabled = true; button.innerHTML = 'Saqlanmoqda...'; }
+    tasksSave(payload)
+        .then(result => { if (result) closeTaskForm(); })
+        .finally(() => { if (button) { button.disabled = false; button.innerHTML = label; } });
 }
 
 // ---------------------------------------------------------------- bootstrap

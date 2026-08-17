@@ -105,6 +105,18 @@ function handleMiniAppAction_(action, payload, doc) {
     return jsonOutput_({ status: "success", authorized: true, sent: drainJobQueueQuietly_(doc, null) });
   }
 
+  // The task equivalent, for the same reason and with the same contract. A task
+  // card is only queued once the schedule scan has seen the occurrence come due,
+  // so flushing the queue alone would send nothing for a task created a second
+  // ago. This runs one trigger cycle — scan, then drain — for a client that has
+  // already been told its write is stored and is not waiting for the answer.
+  if (action === 'mini_settle_tasks') {
+    var settled = settleTaskSchedules_(doc);
+    settled.status = "success";
+    settled.authorized = true;
+    return jsonOutput_(settled);
+  }
+
   return jsonOutput_({ status: "error", message: "Unknown action" });
 }
 

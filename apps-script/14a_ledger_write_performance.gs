@@ -54,6 +54,63 @@ findLedgerRowByRequestId_ = function (doc, requestId) {
 };
 
 /**
+ * Fast transaction-id lookup.
+ *
+ * A correction and a cancellation each need exactly one row, and the id is
+ * column A. The old lookup read all 24 columns of every historical row to find
+ * it, so editing or cancelling an entry got slower for ever as the ledger grew —
+ * and an edit of a three-line entry paid that cost three times over. Same shape
+ * as the Request_ID lookup above: one narrow column pass, then the full row for
+ * the exact match only.
+ *
+ * Status is deliberately *not* filtered here. Every caller inspects it itself —
+ * a correction refuses a row that is not Active, a cancellation answers
+ * `duplicate` for one already Cancelled or Void — so hiding a status would turn
+ * "already done" into "not found".
+ *
+ * Sheet order still decides. Ids are unique by construction, but the old reader
+ * answered with the first matching row and a duplicated id must not change which
+ * row an edit lands on.
+ */
+var findLedgerRowBeforeWritePerf_ = findLedgerRow_;
+findLedgerRow_ = function (doc, transactionId) {
+  var wanted = String(transactionId === null || transactionId === undefined ? "" : transactionId);
+  if (!wanted) return null;
+
+  var sheet = doc.getSheetByName(OMAD_TRANSACTIONS_V2_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) return null;
+
+  var lastRow = sheet.getLastRow();
+  var idRange = sheet.getRange(2, 1, lastRow - 1, 1);
+  var rowNumber = 0;
+
+  // Production Sheets can locate the cell without transferring even the one
+  // column. The test harness deliberately has no TextFinder, so the bounded
+  // one-column fallback keeps the behaviour identical everywhere. Ids have
+  // always been case-sensitive strings, so TextFinder is held to that rule.
+  if (typeof idRange.createTextFinder === "function") {
+    var finder = idRange.createTextFinder(wanted).matchEntireCell(true);
+    if (typeof finder.matchCase === "function") finder.matchCase(true);
+    var matches = finder.findAll();
+    for (var m = 0; m < matches.length; m++) {
+      var candidate = matches[m].getRow();
+      if (!rowNumber || candidate < rowNumber) rowNumber = candidate;
+    }
+  } else {
+    var ids = idRange.getValues();
+    for (var i = 0; i < ids.length; i++) {
+      if (String(ids[i][0] || "") !== wanted) continue;
+      rowNumber = i + 2;
+      break;
+    }
+  }
+
+  if (!rowNumber) return null;
+  var row = sheet.getRange(rowNumber, 1, 1, LEDGER_HEADER.length).getValues()[0];
+  return ledgerRowToTransaction_(row, rowNumber);
+};
+
+/**
  * IDs are append-only, so only the last ledger row can collide with the
  * millisecond we are minting now. Reading the whole ledger just to choose the
  * suffix made every write slower as history grew.

@@ -495,8 +495,17 @@ function runTaskAction_(action, payload, doc) {
   if (result.status === "success") {
     recordLastOperation_(doc, action);
     // Announce/refresh promptly, then let the trigger handle the rest.
-    try { runTaskScheduler_(doc, Date.now()); } catch (error) { debugLog_(doc, "task_scheduler_inline_failed", String(error)); }
-    drainJobQueueQuietly_(doc, payload);
+    //
+    // `deferReports: true` is a client saying it will ask for that settling in
+    // its own follow-up request, so neither the schedule scan nor the Telegram
+    // drain belongs inside this response — the durable write and the occurrence
+    // reconciliation above are what the caller is actually waiting for, and the
+    // five-minute trigger runs the same cycle whether the follow-up arrives or
+    // not. A client that says nothing keeps the old inline behaviour exactly.
+    if (!payload || payload.deferReports !== true) {
+      try { runTaskScheduler_(doc, Date.now()); } catch (error) { debugLog_(doc, "task_scheduler_inline_failed", String(error)); }
+      drainJobQueueQuietly_(doc, payload);
+    }
     result.view = buildTaskViews_(doc, Date.now());
     result.config = { tasksGroupConfigured: !!getTasksGroupChatId_() };
   }
@@ -661,11 +670,27 @@ function saveTaskAction_(doc, payload) {
     appendAuditRow_(doc, "task_created", task.id + " " + task.type);
   }
 
-  materializeTaskOccurrences_(doc, task, nowMs);
+  materializeTaskOccurrencesOnce_(doc, task, nowMs);
   // Removing the last unfinished step is a completion just as much as ticking
   // it off is.
   if (task.type === "goal") maybeCompleteGoal_(doc, task.id, nowMs);
   return { status: "success", taskId: task.id };
+}
+
+/**
+ * One materialisation pass with one occurrence read and one append.
+ *
+ * `materializeTaskOccurrences_` without a `ctx` appends a row at a time, and a
+ * new daily routine has fourteen of them — fourteen `appendRow` calls, fourteen
+ * text-format applications and fourteen cache-revision bumps to create one
+ * task. The scheduler already batches this way; the mutation path now does too.
+ * The rows created, and their order, are identical either way.
+ */
+function materializeTaskOccurrencesOnce_(doc, task, nowMs) {
+  var ctx = { occurrences: readOccurrenceRows_(doc), pending: [] };
+  var created = materializeTaskOccurrences_(doc, task, nowMs, ctx);
+  if (ctx.pending.length) appendOccurrenceRows_(doc, ctx.pending);
+  return created;
 }
 
 /**
@@ -854,8 +879,28 @@ function deleteOccurrenceRowsWhere_(doc, predicate) {
   var toDelete = [];
   for (var i = 0; i < rows.length; i++) if (predicate(rows[i])) toDelete.push(rows[i].rowNumber);
   toDelete.sort(function (a, b) { return b - a; }); // bottom-up so row numbers stay valid
-  for (var d = 0; d < toDelete.length; d++) sheet.deleteRow(toDelete[d]);
-  return toDelete.length;
+
+  // The rows a pause or a routine edit removes are a run of consecutive
+  // generated days, so one `deleteRows` replaces up to fourteen `deleteRow`
+  // calls. Still bottom-up, so the row numbers below a deleted block are
+  // untouched — which is also why every caller re-reads the sheet afterwards
+  // rather than reusing row numbers across this call.
+  var deleted = 0;
+  var index = 0;
+  while (index < toDelete.length) {
+    var end = index;
+    while (end + 1 < toDelete.length && toDelete[end + 1] === toDelete[end] - 1) end++;
+    var count = end - index + 1;
+    sheet.deleteRows(toDelete[end], count);
+    deleted += count;
+    index = end + 1;
+  }
+
+  // Deleting occurrences changes every task summary derived from them. The
+  // callers happen to bump as well, through `updateTaskRow_`; the rule is that a
+  // sheet write path bumps its own scope rather than relying on its callers.
+  if (deleted > 0) bumpDataRevision_(CACHE_SCOPE_TASKS);
+  return deleted;
 }
 
 function cancelTaskAction_(doc, payload) {
@@ -893,6 +938,12 @@ function setRoutinePausedAction_(doc, payload, paused) {
     // it the moment the guard is bypassed. Announced days, completed days and
     // skipped days are history and stay exactly as they are.
     pruneReplaceableRoutineOccurrences_(doc, task.id, taskTodayKey_(Date.now()));
+  } else {
+    // Resuming has to put the horizon back, and it is the *reconciliation* half
+    // of the mutation rather than settling: without it the answer says the
+    // routine is active while "Kelgusi" is empty. This used to be done for it,
+    // as a side effect, by the schedule scan that ran inside every response.
+    materializeTaskOccurrencesOnce_(doc, task, Date.now());
   }
 
   appendAuditRow_(doc, paused ? "routine_paused" : "routine_resumed", task.id);
