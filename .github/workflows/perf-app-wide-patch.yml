@@ -32,4 +32,4 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Apply and test each performance point
-        run: python3 scripts/apply_app_perf_pass.py
+        run: python3 scripts/run_app_perf_pass_fixed.py
