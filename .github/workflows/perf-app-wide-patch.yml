@@ -32,5 +32,5 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Apply and test each performance point
-        # Fourth run: preserve every existing auth/legacy task response contract.
-        run: python3 scripts/run_app_perf_pass_fixed.py
+        # Fifth run: corrected wrapper quoting; temporary tooling self-cleans after green.
+        run: python3 scripts/run_app_perf_pass_fixed2.py
