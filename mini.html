@@ -94,6 +94,9 @@
     .pill.ok { background: color-mix(in srgb, var(--success) 18%, transparent); color: var(--success); }
     .pill.warn { background: color-mix(in srgb, var(--warning) 20%, transparent); color: var(--warning); }
     .pill.info { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+    /* Finished-with-a-decision: cancelled and skipped work is history, and reads
+       as history rather than competing with the live rows above it. */
+    .pill.muted { background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--muted); }
 
     .bar { height: 8px; border-radius: 999px; background: var(--line); overflow: hidden; margin-top: 8px; }
     .bar > span { display: block; height: 100%; background: var(--accent); border-radius: 999px; }

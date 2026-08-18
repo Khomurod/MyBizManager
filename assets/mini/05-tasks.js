@@ -65,28 +65,90 @@ function priorityPill(priority) {
     return '';
 }
 
+/**
+ * The one place a row decides what it is, so no two lists can disagree.
+ *
+ * `displayStatus` is the server's reading — `Overdue` is derived there from the
+ * clock and is never stored — and `dateKey > todayKey` is what makes an
+ * occurrence future work. Reading both here is what stops a card offering an
+ * action the engine is certain to refuse.
+ */
+function occurrenceState(o, todayKey) {
+    const status = o.displayStatus || o.status;
+    return {
+        completed: o.status === 'Completed',
+        waitingProof: o.status === 'WaitingProof',
+        cancelled: o.status === 'Cancelled',
+        skipped: o.status === 'Skipped',
+        overdue: status === 'Overdue',
+        future: !!o.dateKey && !!todayKey && o.dateKey > todayKey
+    };
+}
+
+/** The badge that says what a row is, in the words /tasks already uses. */
+function statusPill(o, s) {
+    if (s.cancelled) return '<span class="pill muted">Bekor</span>';
+    if (s.skipped) return '<span class="pill muted">O\'tkazilgan</span>';
+    if (s.waitingProof) return '<span class="pill warn">Rasm kutilmoqda</span>';
+    if (s.completed) return '<span class="pill ok">Bajarildi</span>';
+    if (s.overdue) return '<span class="pill debt">Kechikdi</span>';
+    if (s.future) return '<span class="pill info">Kelgusi</span>';
+    return '';
+}
+
+/**
+ * What this row may actually do.
+ *
+ * - Completed → undo it, nothing else.
+ * - Cancelled / skipped → history. Offering "Bajarildi" on one only produced a
+ *   red toast, because the engine refuses both.
+ * - WaitingProof → somebody has claimed it and been asked for the photo. The
+ *   button used to still be here, and pressing it a second time completed the
+ *   task with no photo at all. Only the group photo finishes it now.
+ * - Future → skip, deliberately confirmed, and never "Bajarildi": the engine
+ *   refuses early completion, so advertising it was advertising a failure.
+ * - Otherwise → complete (a photo task starts the proof claim, because the Mini
+ *   App has a verified Telegram identity to ask) and skip.
+ */
+function occurrenceActions(o, s) {
+    const id = escapeHtml(o.id);
+    if (s.completed) {
+        return `<button class="btn-sm" onclick="taskAction('reopen_occurrence','${id}')">Qaytarish</button>`;
+    }
+    if (s.cancelled || s.skipped) return '';
+    const skip = `<button class="btn-sm" onclick="taskAction('skip_occurrence','${id}')">O'tkazish</button>`;
+    if (s.waitingProof) return skip;
+    if (s.future) return skip;
+    return `<button class="btn-sm btn-primary" onclick="taskAction('complete_occurrence','${id}')">Bajarildi</button>
+            ${skip}`;
+}
+
 function occurrenceRows(list) {
     if (!list.length) return emptyRow("Bu ro'yxat bo'sh");
+    const todayKey = (state.tasks && state.tasks.todayKey) || '';
     return list.map(o => {
-        const done = o.status === 'Completed';
+        const s = occurrenceState(o, todayKey);
         const clock = dueClock(o.dueLabel);
-        const actions = done
-            ? `<button class="btn-sm" onclick="taskAction('reopen_occurrence','${escapeHtml(o.id)}')">Qaytarish</button>`
-            : `<button class="btn-sm btn-primary" onclick="taskAction('complete_occurrence','${escapeHtml(o.id)}')">Bajarildi</button>
-               <button class="btn-sm" onclick="taskAction('skip_occurrence','${escapeHtml(o.id)}')">O'tkazish</button>`;
+        const actions = occurrenceActions(o, s);
+        // Who finished it and how late, which the phone never showed before.
+        const credit = s.completed
+            ? (o.completedByName ? ' · ✓ ' + escapeHtml(o.completedByName) : '') +
+              (o.lateLabel ? ' · ' + escapeHtml(o.lateLabel) + ' kech' : ' · o\'z vaqtida')
+            : '';
         return `
         <div class="item" style="flex-direction:column;align-items:stretch;gap:8px">
             <div class="row" style="align-items:flex-start">
                 <div class="grow">
                     <p class="title">${escapeHtml(o.title)}</p>
                     <p class="tiny muted ellipsis">
-                        ${o.dateKey ? shortDate(o.dateKey) : 'Sanasiz'}${clock ? ' · ' + escapeHtml(clock) : ''}${o.responsible ? ' · ' + escapeHtml(o.responsible) : ''}
+                        ${o.dateKey ? shortDate(o.dateKey) : 'Sanasiz'}${clock ? ' · ' + escapeHtml(clock) : ''}${o.responsible ? ' · ' + escapeHtml(o.responsible) : ''}${credit}
                     </p>
                 </div>
                 ${priorityPill(o.priority)}
-                ${o.displayStatus === 'Overdue' ? '<span class="pill debt">Kechikdi</span>' : ''}
-                ${o.photoRequired ? '<span class="pill info">📷</span>' : ''}
+                ${statusPill(o, s)}
+                ${o.hasProof ? '<span class="pill ok">🖼</span>' : (o.photoRequired ? '<span class="pill info">📷</span>' : '')}
             </div>
+            ${s.waitingProof ? `<p class="tiny muted">📷 Guruhda so'ralgan xabarga rasm bilan javob berilishi kerak.</p>` : ''}
             <div class="row">${actions}
                 <button class="btn-sm" onclick="openTaskSheet('${escapeHtml(o.taskId)}')" aria-label="Tahrirlash">✎</button>
             </div>
@@ -155,6 +217,16 @@ function goalSection(view) {
 /** Occurrence-level actions take an occurrence; task-level ones take a task. */
 const OCCURRENCE_ACTIONS = ['complete_occurrence', 'reopen_occurrence', 'skip_occurrence'];
 
+/** What actually happened, per action, rather than "Bajarildi" for all of them. */
+const TASK_ACTION_DONE_TOAST = {
+    complete_occurrence: 'Bajarildi',
+    reopen_occurrence: 'Qayta ochildi',
+    skip_occurrence: "O'tkazib yuborildi",
+    pause_routine: "To'xtatildi",
+    resume_routine: 'Davom ettirildi',
+    cancel_task: 'Bekor qilindi'
+};
+
 async function taskAction(action, occurrenceId, taskId, extra) {
     haptic();
     // The engine names a task `id` and an occurrence `occurrenceId`. Sending
@@ -181,7 +253,12 @@ async function taskAction(action, occurrenceId, taskId, extra) {
         // A photo-required task is not finished by pressing a button: it moves
         // to "waiting" and the proof is asked for in the Tasks group, exactly
         // as it does from a group card.
-        toast(body.awaitingProof ? (body.message || '📷 Rasm kutilmoqda') : 'Bajarildi');
+        //
+        // Every action used to toast "Bajarildi", so skipping a day or resuming a
+        // routine both reported a completion that had not happened.
+        toast(body.awaitingProof
+            ? (body.message || '📷 Rasm kutilmoqda')
+            : (TASK_ACTION_DONE_TOAST[action] || 'Saqlandi'));
     } catch (error) {
         if (error.unauthorized) return failAuth(error);
         // Skipping a future day is legitimate but has to be deliberate, so the

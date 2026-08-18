@@ -978,9 +978,17 @@ function completeOccurrenceAction_(doc, payload) {
   if (!occ) return { status: "error", message: "Vazifa topilmadi." };
   if (occ.status === TASK_STATUS_COMPLETED) return { status: "success" }; // idempotent
   if (occ.status === TASK_STATUS_CANCELLED) return { status: "error", message: "Bekor qilingan vazifa." };
+  if (occ.status === TASK_STATUS_SKIPPED) return { status: "error", message: "Bu vazifa o'tkazib yuborilgan." };
   if (isFutureOccurrence_(occ, taskTodayKey_(Date.now()))) {
     return { status: "error",
       message: "Kelgusi kun uchun vazifani oldindan bajarilgan deb belgilab bo'lmaydi." };
+  }
+  // Somebody has already claimed this one and been asked for the photo. Pressing
+  // the button again is not how they deliver it, and it must not be a way round
+  // it either -- only a photo replying to the prompt finishes a claimed task.
+  if (occ.status === TASK_STATUS_WAITING) {
+    return { status: "error", awaitingProof: true,
+      message: "📷 Rasm kutilmoqda — guruhda so'ralgan xabarga rasm bilan javob bering." };
   }
 
   // A caller with a verified identity is recorded as themselves. The admin
@@ -991,10 +999,17 @@ function completeOccurrenceAction_(doc, payload) {
   var source = String(payload.completedSource || "web");
 
   // A task that asks for a photo does not become done because a button was
-  // pressed - that is the rule the group cards already enforce. Any client
-  // that can name a person can start the proof flow instead of bypassing it;
-  // one that cannot has no one to ask, so it completes as before.
-  if (occ.photoRequired && occ.status !== TASK_STATUS_WAITING && byId) {
+  // pressed - that is the rule the group cards already enforce, and
+  // `completeTaskOccurrence_` now enforces it for every caller. A client that
+  // can name a person starts the proof flow; one that cannot has nobody to ask
+  // for the photo, so it is refused here instead of completing without one.
+  // (It used to complete: `&& byId` meant the admin board, which sends no
+  // identity, marked photo-required work done with Proof_File_Id empty.)
+  if (occ.photoRequired && !byId) {
+    return { status: "error", needsProof: true,
+      message: "📷 Bu vazifa rasm bilan tasdiqlanadi — Telegram guruhida bajarilgan deb belgilang." };
+  }
+  if (occ.photoRequired) {
     occ.status = TASK_STATUS_WAITING;
     occ.proofAwaitingUserId = byId;
     occ.completedByName = byName;                  // provisional; confirmed on proof
@@ -1014,13 +1029,25 @@ function completeOccurrenceAction_(doc, payload) {
     };
   }
 
-  completeTaskOccurrence_(doc, occ, { byId: byId, byName: byName, source: source });
+  var completed = completeTaskOccurrence_(doc, occ, { byId: byId, byName: byName, source: source });
+  // The choke point refused it. Every reason it can refuse is already answered
+  // above, so this is the backstop rather than the guard: never report a
+  // completion that did not happen.
+  if (!completed) {
+    return { status: "error", needsProof: true,
+      message: "📷 Bu vazifa rasm bilan tasdiqlanadi." };
+  }
   return { status: "success" };
 }
 
 function reopenOccurrenceAction_(doc, payload) {
   var occ = findOccurrence_(doc, payload.occurrenceId);
   if (!occ) return { status: "error", message: "Vazifa topilmadi." };
+  // A cancelled occurrence is not unfinished work, it is a decision. Reopening
+  // one used to succeed and cleared its proof and attribution on the way past.
+  if (occ.status === TASK_STATUS_CANCELLED) {
+    return { status: "error", message: "Bekor qilingan vazifani qayta ochib bo'lmaydi." };
+  }
   occ.status = TASK_STATUS_OPEN;
   occ.completedById = "";
   occ.completedByName = "";

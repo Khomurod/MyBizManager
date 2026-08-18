@@ -381,3 +381,129 @@ test('a photo in the reporting group does not touch tasks', () => {
 
   assert.strictEqual(gas.findOccurrence_(doc, occ.id).status, gas.TASK_STATUS_WAITING);
 });
+
+// --------------------------------------------- the rule, at the choke point
+//
+// The photo rule used to live in one caller, `completeOccurrenceAction_`, and
+// be conditional on the caller naming a person. Two ways past it followed:
+//
+//   * the /tasks board sends no `completedById`, so the branch was skipped
+//     entirely and a photo-required occurrence was marked Completed on the
+//     first press with `Proof_File_Id` empty;
+//   * once an occurrence was already `WaitingProof`, the branch's own
+//     `status !== WaitingProof` condition failed, so a second press fell
+//     through and completed it — again with no photo.
+//
+// The rule now lives in `completeTaskOccurrence_`, which every completion path
+// funnels through, so these tests are about the engine and not about which
+// client happened to call it.
+
+test('a photo task is not completed by a caller that names nobody', () => {
+  const { gas, doc } = setup();
+  const occ = publish(gas, doc, 'Rasmli ish');
+
+  const answer = gas.completeOccurrenceAction_(doc, { occurrenceId: occ.id });
+  assert.strictEqual(answer.status, 'error');
+  assert.strictEqual(answer.needsProof, true);
+
+  const after = gas.findOccurrence_(doc, occ.id);
+  assert.strictEqual(after.status, 'Open', 'it stays open');
+  assert.strictEqual(after.proofFileId, '', 'and no proof was invented');
+  assert.strictEqual(after.completedAt, '');
+});
+
+test('a claimed photo task cannot be completed by pressing again', () => {
+  const { gas, doc } = setup();
+  const occ = publish(gas, doc, 'Rasmli ish');
+  claim(gas, doc, occ, { id: 111, first_name: 'Ali' });
+  assert.strictEqual(gas.findOccurrence_(doc, occ.id).status, 'WaitingProof');
+
+  // Exactly what a Mini App with a verified identity sends the second time.
+  const answer = gas.completeOccurrenceAction_(doc, {
+    occurrenceId: occ.id, completedById: '111', completedBy: 'Ali'
+  });
+  assert.strictEqual(answer.status, 'error');
+  assert.strictEqual(answer.awaitingProof, true);
+
+  const after = gas.findOccurrence_(doc, occ.id);
+  assert.strictEqual(after.status, 'WaitingProof', 'still waiting for the photo');
+  assert.strictEqual(after.proofFileId, '');
+  assert.strictEqual(String(after.proofAwaitingUserId), '111', 'and still theirs');
+});
+
+test('completeTaskOccurrence_ itself refuses a photo task with no proof', () => {
+  const { gas, doc } = setup();
+  const occ = publish(gas, doc, 'Rasmli ish');
+
+  const result = gas.completeTaskOccurrence_(doc, gas.findOccurrence_(doc, occ.id), {
+    byId: '111', byName: 'Ali', source: 'web', nowMs: FIXED_NOW
+  });
+  assert.strictEqual(result, null, 'the choke point refuses and writes nothing');
+  assert.strictEqual(gas.findOccurrence_(doc, occ.id).status, 'Open');
+});
+
+test('a task with no photo rule still completes without one', () => {
+  const { gas, doc } = setup();
+  const built = gas.normalizeTaskInput_({ type: 'once', title: 'Oddiy ish' }, null);
+  gas.appendTaskRow_(doc, built.task);
+  gas.materializeTaskOccurrences_(doc, built.task, FIXED_NOW);
+  const occ = gas.readOccurrenceRows_(doc).filter(o => o.taskId === built.task.id)[0];
+
+  const answer = gas.completeOccurrenceAction_(doc, { occurrenceId: occ.id });
+  assert.strictEqual(answer.status, 'success');
+  assert.strictEqual(gas.findOccurrence_(doc, occ.id).status, 'Completed');
+});
+
+test('the group photo is still the way a photo task finishes', () => {
+  const { gas, doc } = setup();
+  const occ = publish(gas, doc, 'Rasmli ish');
+  const prompt = claim(gas, doc, occ, { id: 111, first_name: 'Ali' });
+
+  photo(gas, { id: 111, first_name: 'Ali' }, 9001, ['small', 'AgACfile'], prompt);
+
+  const after = gas.findOccurrence_(doc, occ.id);
+  assert.strictEqual(after.status, 'Completed');
+  assert.strictEqual(after.proofFileId, 'AgACfile', 'the largest photo is the proof');
+  assert.strictEqual(String(after.completedById), '111');
+});
+
+test('a photo Telegram gave no file id for completes nothing', () => {
+  const { gas, doc } = setup();
+  const occ = publish(gas, doc, 'Rasmli ish');
+  const prompt = claim(gas, doc, occ, { id: 111, first_name: 'Ali' });
+
+  photo(gas, { id: 111, first_name: 'Ali' }, 9002, [''], prompt);
+
+  const after = gas.findOccurrence_(doc, occ.id);
+  assert.strictEqual(after.status, 'WaitingProof', 'unstorable proof is not proof');
+  assert.strictEqual(after.proofFileId, '');
+});
+
+// ------------------------------------------------------- reopen is not a undo
+// for a decision
+
+test('a cancelled occurrence cannot be reopened', () => {
+  const { gas, doc } = setup();
+  const occ = publish(gas, doc, 'Rasmli ish');
+  const cancelled = gas.findOccurrence_(doc, occ.id);
+  cancelled.status = 'Cancelled';
+  gas.writeOccurrenceRow_(doc, cancelled);
+
+  const answer = gas.reopenOccurrenceAction_(doc, { occurrenceId: occ.id });
+  assert.strictEqual(answer.status, 'error');
+  assert.strictEqual(gas.findOccurrence_(doc, occ.id).status, 'Cancelled');
+});
+
+test('a completed occurrence still reopens, and drops its proof', () => {
+  const { gas, doc } = setup();
+  const occ = publish(gas, doc, 'Rasmli ish');
+  const prompt = claim(gas, doc, occ, { id: 111, first_name: 'Ali' });
+  photo(gas, { id: 111, first_name: 'Ali' }, 9003, ['AgACfile'], prompt);
+  assert.strictEqual(gas.findOccurrence_(doc, occ.id).status, 'Completed');
+
+  const answer = gas.reopenOccurrenceAction_(doc, { occurrenceId: occ.id });
+  assert.strictEqual(answer.status, 'success');
+  const after = gas.findOccurrence_(doc, occ.id);
+  assert.strictEqual(after.status, 'Open');
+  assert.strictEqual(after.proofFileId, '', 'a reopened task has to be proved again');
+});
