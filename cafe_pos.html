@@ -790,9 +790,23 @@
           buildMenu();
           renderItems();
         }
-        alert(answer && answer.stockRestored === false
-          ? "Chek bekor qilindi. Ombor qoldig'ini qo'lda tekshiring."
-          : "Chek bekor qilindi va tovarlar omborga qaytarildi.");
+        // The money is voided either way -- that is the rule, and it does not
+        // depend on the shelf. But the answer used to say the goods were
+        // returned whenever the receipt carried a frozen snapshot, which was
+        // every modern receipt, whether or not the items still existed to
+        // return them to. It now says which lines could not be put back, so a
+        // shortfall gets counted instead of believed.
+        var unrestored = (answer && answer.unrestored) || [];
+        if (answer && answer.stockRestored === false) {
+          alert("Chek bekor qilindi. Ombor qoldig'ini qo'lda tekshiring" +
+            (unrestored.length
+              ? " — qaytarilmagan: " + unrestored.map(function (line) {
+                  return line.id + " (" + line.qty + ")";
+                }).join(", ")
+              : "") + ".");
+        } else {
+          alert("Chek bekor qilindi va tovarlar omborga qaytarildi.");
+        }
       } catch (e) {
         state.sales = previousState.sales;
         state.sessionSales = previousState.sessionSales;

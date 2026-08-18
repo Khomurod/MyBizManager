@@ -316,9 +316,14 @@ function cafeStockShortfall_(state, consumption) {
  */
 function applyCafeStockMovement_(state, consumption, direction) {
   var inventory = cafeInventoryIndex_(state.inventory);
+  var missing = [];
   Object.keys(consumption).forEach(function (id) {
     var item = inventory[id];
-    if (!item) return;
+    // An id the inventory no longer holds. This used to be a bare `return`: the
+    // movement was skipped in silence and the caller had no way to find out, so a
+    // void reported the stock restored while some of it had gone nowhere. The
+    // shelf is still not guessed at -- it is reported instead.
+    if (!item) { missing.push({ id: id, qty: consumption[id].qty, cost: consumption[id].cost }); return; }
     item.qty = cafeRoundQty_((Number(item.qty) || 0) + consumption[id].qty * direction);
     item.totalCost = Math.max(0, Math.round((Number(item.totalCost) || 0) + consumption[id].cost * direction));
     if (item.qty > 0) {
@@ -328,7 +333,16 @@ function applyCafeStockMovement_(state, consumption, direction) {
       item.unitCost = 0;
     }
   });
-  return state.inventory;
+  return { inventory: state.inventory, missing: missing };
+}
+
+/** "Kola 1 (i1) — 2 dona" per unrestored line, for a human reading a log. */
+function describeMissingStock_(missing) {
+  var parts = [];
+  for (var i = 0; i < missing.length; i++) {
+    parts.push(missing[i].id + " — " + missing[i].qty);
+  }
+  return parts.join("; ");
 }
 
 /**
@@ -426,7 +440,10 @@ function saveCafeSale_(doc, configSheet, payload) {
       return jsonOutput_({ status: "error", message: "Omborda yetarli emas — " + short.join("; ") });
     }
 
-    var inventory = applyCafeStockMovement_(current, resolved.consumption, -1);
+    // `cafeStockShortfall_` above already refused any id the inventory does not
+    // hold, so nothing can be missing here; taking the field rather than the
+    // return value keeps one contract for both directions.
+    var inventory = applyCafeStockMovement_(current, resolved.consumption, -1).inventory;
     writeCafeInventory_(configSheet, inventory);
 
     var saleId = String(payload.id || new Date().getTime());
@@ -502,14 +519,41 @@ function voidCafeSale_(doc, configSheet, payload) {
       : resolveCafeSaleLines_(current, cafeReceiptItems_(detail), { allowInactive: true });
 
     var inventory = current.inventory;
+    var missing = [];
     if (!restored.error) {
-      inventory = applyCafeStockMovement_(current, restored.consumption, 1);
+      var applied = applyCafeStockMovement_(current, restored.consumption, 1);
+      inventory = applied.inventory;
+      missing = applied.missing;
       writeCafeInventory_(configSheet, inventory);
+      if (missing.length > 0) {
+        // Every id in the frozen snapshot is checked against the inventory as it
+        // is now, because an item can be deleted between the sale and the void.
+        // The rest of the receipt *was* put back -- only these lines could not
+        // be -- and `stockRestored` used to be `!restored.error`, which on this
+        // path is `true` unconditionally: the snapshot branch has no `error`
+        // property at all. So the answer said the goods were returned and the
+        // POS told the operator so, whether or not any of them had been.
+        debugLog_(doc, "cafe_void_stock_unresolved",
+          saleId + ": omborda yo'q — " + describeMissingStock_(missing));
+      }
     } else {
       // The receipt names something the catalogue no longer has. The sale is
       // still voided -- the money is what matters -- but the stock cannot be
       // put back automatically, and saying so is better than guessing.
       debugLog_(doc, "cafe_void_stock_unresolved", saleId + ": " + restored.error);
+    }
+
+    var stockRestored = !restored.error && missing.length === 0;
+
+    // Recorded *before* the receipt row goes, because the row is the only place
+    // the frozen consumption lives: once it is deleted there is nothing left to
+    // say what should have been restored. Missing quantities are never guessed,
+    // so what the log holds is the whole record of the shortfall.
+    if (!stockRestored) {
+      appendAuditRow_(doc, "cafe_sale_void_stock_unrestored",
+        saleId + (missing.length > 0
+          ? " missing:" + describeMissingStock_(missing)
+          : " unresolved:" + restored.error));
     }
 
     salesSheet.deleteRow(rowNumber);
@@ -518,7 +562,9 @@ function voidCafeSale_(doc, configSheet, payload) {
 
     return jsonOutput_({
       status: "success", duplicate: false, inventory: inventory,
-      stockRestored: !restored.error
+      stockRestored: stockRestored,
+      // What the operator has to count by hand, named rather than implied.
+      unrestored: missing
     });
   } finally {
     lock.releaseLock();
