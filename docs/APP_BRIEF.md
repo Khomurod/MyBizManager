@@ -187,7 +187,14 @@ Cloudflare Pages (static HTML/JS)         Google Apps Script web app        Goog
 - The Telegram group receives a card per occurrence with a ✅ button; a
   photo-proof task is *claimed* by pressing, then completed only by a photo
   replying to the prompt from the claimant.
-- Board tabs: Bugun | Vazifalar | Muntazam | Maqsadlar | Bajarilgan.
+- **A photo-proof occurrence reaches `Completed` only through a valid group
+  photo, on every path.** The rule lives in `completeTaskOccurrence_`, the one
+  function every completion funnels through, so no client can forget it. A
+  caller that can name a person (the Mini App, a group card) starts the claim; a
+  caller that cannot (the `/tasks` board, which sends no identity) is refused,
+  because there is nobody to ask for the photo. Neither board offers a
+  completion it cannot deliver.
+- Board tabs: Bugun | Vazifalar | Muntazam | Maqsadlar | Tarix.
 
 ### Telegram bot (`/yangi`, private chat only)
 Guided entry of an income/expense transaction, or — via the **📋 Vazifa**
@@ -195,9 +202,20 @@ button — creation of a task. Wizard callbacks use the `bot_vz` prefix.
 
 ### Telegram Mini App (`/mini`)
 Phone-first, three tabs: 💰 Omad (figures, tenant debt, recent entries, and the
-three entry forms), ☕ Kafe (monitoring only), ✅ Vazifalar (the same task
-engine, including reminder times, the daily-repeat choice and editing). Rates, tenant schedules, planned expenses, migration and maintenance
-are **deliberately not** in the Mini App.
+three entry forms), ☕ Kafe (monitoring only), ✅ Vazifalar. Rates, tenant
+schedules, planned expenses, migration and maintenance are **deliberately not**
+in the Mini App.
+
+The Tasks tab is at **functional parity** with `/tasks`, phone-shaped rather
+than reduced: all three types, the photo rule, a one-time deadline date and
+time, every recurrence mode the engine supports (with its interval, start date,
+optional end date and due time), goals with their steps and per-step photo
+overrides, reminder times and the daily-repeat choice, pause/resume, cancel,
+skip, reopen, and a recent-completed history. It reaches all of it through
+`runTaskAction_` — the same engine the board and the bot use — and implements no
+task logic of its own. `tests/miniapp-tasks-parity.e2e.js` drives the real UI
+and asserts the persisted rows, because a backend test cannot tell a capability
+the API has from one the screen exposes.
 
 ## 5. Permissions and access rules
 
@@ -356,7 +374,15 @@ bills and it comes off what they owe:
   stock), and is keyed by `requestId` — a retry or double tap answers
   `duplicate: true` and moves stock once.
 - A **void restores stock from the stored receipt**, never from an inventory the
-  browser supplies; voiding twice is a no-op.
+  browser supplies; voiding twice is a no-op. **The financial void proceeds even
+  when the stock cannot be put back** — an item deleted since the sale has
+  nothing to restore on to — and in that case the answer says `stockRestored:
+  false`, **names the unrestored lines with their frozen quantities**, and writes
+  them to the audit and debug logs *before* the receipt row is deleted, because
+  the row is the only place the frozen consumption lives. A missing quantity is
+  reported, never reconstructed. (`stockRestored` was previously derived from the
+  *resolution* step, which on the frozen-snapshot path cannot fail, so it read
+  `true` for every modern receipt whether or not anything went back.)
 - A stored receipt has **two shapes**: `{ requestId, items: [...] }` since the
   café became server-authoritative, and a bare array before that. Every reader
   goes through `cafeReceiptItems_`, which resolves both. Handing the wrapper on
@@ -424,16 +450,31 @@ bills and it comes off what they owe:
   once as catch-up. Existing tasks keep the normal three-hour stale-reminder
   suppression after scheduler downtime. Occurrences with no reminder times keep
   the ordinary `Yangi vazifa` card.
-- **An edit that does not mention a field leaves it alone**, which is what lets
-  the Mini App's small sheet be safe: editing a title or a reminder there keeps
-  the cadence, the start date, the end date, the due time and the photo rule.
-  `reminderTimes` is therefore always sent explicitly, empty included — an
-  absent list would make reminders impossible to switch off.
+- **An edit that does not mention a field leaves it alone.** Every client
+  therefore sends explicitly what it *shows* and omits what it does not, so a
+  value on screen can always be changed — including cleared — and one off screen
+  is never rewritten by accident. `reminderTimes` is always sent explicitly,
+  empty included: an absent list would make reminders impossible to switch off.
+- **Reminder times, occurrence writes and the group card are also what
+  `updateOccurrenceFields_` exists for.** A queued Telegram send persists only
+  the fields it owns, merged on to a freshly re-read row, rather than writing
+  back the snapshot it read before the round trip. Whole-row writes belong to
+  callers that have just decided the whole state of an occurrence.
+- **A monthly routine must name its day.** A missing `monthDay` reads as the 1st,
+  and that default also runs on the read path, so it cannot be tightened without
+  changing what stored rows mean. `normalizeTaskInput_` refuses a newly supplied
+  `monthly` recurrence with no day instead, which is what stops a client creating
+  a day-1 routine by not asking.
 - **Pausing a routine stops everything**, including days already materialised;
   unseen future days are removed. Completed, skipped and already-announced days
   survive as history.
 - A removed goal step keeps its row (flagged `Meta_JSON.removedStep`) and drops
-  out of progress.
+  out of progress. A step's `id` is stable across edits, so a rename or a reorder
+  keeps its occurrence, its proof and who completed it; a step's `photoRequired`
+  is written **only** as a real override, because an explicit `false` is
+  indistinguishable from "inherit the goal's rule".
+- **`reopen_occurrence` refuses a cancelled occurrence.** A cancellation is a
+  decision, not unfinished work.
 - On an edit, **an absent field means "leave alone"; an explicitly empty one
   clears**. `startKey` is the deliberate exception — a routine must begin
   somewhere, so a blank keeps the stored value.
@@ -643,6 +684,9 @@ composes the message from data it already stored.
 | a café stock write outside a sale | it must go through `adjust_cafe_stock`, or the movement history stops explaining the quantity |
 | a Tailwind class on any page | run `npm run build:css` and commit `assets/css/app.css` |
 | anything a web page loads | it must come after `assets/session.js`, which owns the session and the transport |
+| the Mini App's Tasks tab | `tests/miniapp-tasks-parity.e2e.js` — it drives the real UI, which is the only thing that can catch a capability the API has and the screen does not |
+| a queued Telegram job's send/persist order | `tests/task-telegram-races.test.js` — stale overwrites, duplicate deliveries and obsolete announcements all live in that gap |
+| `assets/omad/12-app.js`'s `submitViaLedger` | it **overrides** the same-named function in `08-entry.js`; editing only `08-entry.js` changes nothing at runtime |
 
 ## 11. Decisions that must be preserved
 
@@ -726,9 +770,18 @@ composes the message from data it already stored.
     button and relabels it, and the board or dashboard behind it stays readable.
     The rule this replaced an overlay with is that **wherever the overlay was the
     only thing preventing a second submission, an explicit in-flight guard takes
-    its place** — `taskMutationInFlight` on the task board, `selling` in the POS,
-    `cancellingEntry` for a group cancellation. Never fewer guards, only visible
-    ones.
+    its place** — `taskMutationInFlight` on the task board *and in the Mini App*,
+    `selling` in the POS, `cancellingEntry` for a group cancellation, and
+    `entrySaveInFlight` for an Omad entry. Never fewer guards, only visible ones.
+
+    `entrySaveInFlight` is the one that had been missed. A multi-line **edit** is
+    one round trip per line, and only the Save button was disabled for it: `＋`,
+    every line's `✕` and `Bekor qilish` all stayed live, so the cart could move
+    under a sequence that was reading it — shifting corrections on to the wrong
+    originals and moving the cancellation boundary, which cancelled rows nobody
+    asked to remove. The lines are now frozen before the first request
+    (`submittedCartLines`) *and* the controls that describe them are locked:
+    **once Save starts, the business action being saved is immutable.**
 
 ## 12. Known limitations and intentional exceptions
 
@@ -816,6 +869,14 @@ npm run bench            # sheet passes / bytes / ms per screen (see below)
   getters. A test that does is not stable; one here passed only between 19:00
   and midnight UTC, and the café tab's assertions still fail on a host behind
   UTC for this reason.
+- **A backend test cannot prove a screen exposes anything.** The Mini App's task
+  gaps survived a passing suite for exactly that reason: `miniapp-tasks-integration`
+  drove the Mini *API* through `doPost` and proved the engine could set a photo
+  rule, a deadline time, a monthly day and a goal's steps, while the editor had no
+  control for any of them. Where a capability is meant to be *reachable*, the test
+  has to interact with the page and then assert the **persisted rows** —
+  `tests/miniapp-tasks-parity.e2e.js` and `tests/omad-entry-edit-race.e2e.js` are
+  both that shape.
 - CI (`.github/workflows/ci.yml`) runs static analysis, secret scans (tree *and*
   full history), unit tests and browser tests on **every branch and PR**. On
   `main` only, a green run then deploys: `clasp pull` (live manifest) → stage →

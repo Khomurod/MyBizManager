@@ -278,7 +278,44 @@ retries it with the queue's backoff. If it can **never** be delivered the claim
 is released back to `Open` — immediately by the queue's permanent-failure hook
 (`onJobPermanentlyFailed_` → `releaseStuckProofPrompt_`), or by a scheduler
 sweep 30 minutes on if the queue row itself is gone. An occurrence never sits
-waiting for a photo nobody was asked for.
+waiting for a photo nobody was asked for. A prompt that *was* delivered and only
+failed to be written down is not released: the job row records the delivery
+(see [Scheduling](#scheduling--the-retry-queue)), and releasing the claim beside
+a ForceReply message sitting in the group asking for the photo would be a lie.
+
+#### The rule is one function, not one caller
+
+**A `photoRequired` occurrence reaches `Completed` only with a `proofFileId`.**
+That is enforced in `completeTaskOccurrence_` — the single function every
+completion path funnels through — which refuses and writes nothing otherwise.
+Each caller then says what it wants about the refusal.
+
+> **This used to live in a caller, and leaked twice.**
+> `completeOccurrenceAction_` started the proof flow only when the payload
+> carried a `completedById`, and only when the occurrence was not already
+> `WaitingProof`. Both conditions were holes. The `/tasks` board sends no
+> identity, so the branch was skipped entirely and the **first** press marked a
+> photo-required occurrence `Completed` with `Proof_File_Id` empty. And once one
+> *was* `WaitingProof`, a second press failed the status condition and fell
+> through to the same completion — which the Mini App still offered, on the very
+> tab listing work waiting for photos.
+
+Consequently:
+
+| Caller | What it can do with a photo-proof occurrence |
+|---|---|
+| Group card (`t_done:`) | claim it; the photo completes it |
+| Mini App | claim it — the verified `initData` names who to ask |
+| `/tasks` board | **refused** (`needsProof`) — it has no Telegram identity, so there is nobody to ask for the photo. It offers no completion button for one |
+| Any caller, occurrence already `WaitingProof` | **refused** (`awaitingProof`) — the proof is somebody's to deliver |
+
+A photo Telegram gave no `file_id` for is not stored as proof either; the group
+is asked to send it again.
+
+`reopen_occurrence` undoes a completion and clears the proof, so the work has to
+be proved again. It **refuses a `Cancelled` occurrence**: a cancellation is a
+decision rather than unfinished work, and reopening one used to succeed and wipe
+its proof and attribution on the way past.
 
 Every completion records **who** (Telegram id + name), **when**, whether it was
 **on time or late** (and the late duration), and — for goals — recomputes the
@@ -320,6 +357,16 @@ Otherwise an edit is reconciled on to the occurrences, per type:
 | `once` | The live occurrence is moved: title, deadline, owner, priority, photo rule, reminders. A `Completed` / `Cancelled` / `Skipped` one is history and is left exactly as it was. A `WaitingProof` one keeps its status and its claimant — an edit is not a reason to drop somebody's pending proof. |
 | `goal` | Steps are matched to the existing ones by id, then by unchanged title, then by position; anything left over is genuinely new. A rename keeps its occurrence and its proof; an insert does not steal the next step's row. |
 | `routine` | Everything from today forward that nobody has seen is replaced outright, so a changed cadence, owner or due time takes effect. An announced day is refreshed in place and is only **cancelled** when the new schedule no longer contains it (its card is edited to "🚫 Bekor qilindi" rather than left hanging). The past is never rewritten. |
+
+**A monthly cadence must name its day.** `normalizeTaskRecurrence_` resolves a
+missing `monthDay` to the 1st, and it does that on the *read* path too, so the
+default cannot be tightened without rewriting what stored rows mean. So the save
+path asks the other question instead: a caller that supplies a `monthly`
+recurrence must name 1–31 or `last` (`isTaskMonthDayChoice_`) or the save is
+refused. An edit that never mentions `recurrence` keeps the stored cadence, day
+included. This is what stops a client creating a day-1 routine by not asking —
+the Mini App had no such control, so every monthly routine made on a phone fell
+due on the 1st.
 
 A **removed goal step** keeps its row — with its proof and who did it — flagged
 `Meta_JSON.removedStep`. If it was unfinished it is cancelled so the group card
@@ -424,6 +471,63 @@ claim-under-lock, exponential backoff and dedup. Job types: `task_notify`,
    downtime; only slots that were already past when a task was newly created
    use the one-message late-creation rule above.
 
+### A send is not finished until it is written down
+
+Every one of these jobs is "send something, then persist what came back", and
+the gap between the two halves is a network round trip. Three things live there,
+and all three are the difference between writing what the job *decided* and
+writing what the job *owns*.
+
+**It writes only what it owns.** `updateOccurrenceFields_` takes the script lock,
+re-reads the row, applies just the named fields and writes. Each job persists the
+message id it just learned (and `Notified_At` where it was still blank, and
+`Meta_JSON.proofPromptMsgId` for a prompt) — nothing else.
+
+> **This used to be a whole-row write of the pre-send snapshot.** All 27 columns,
+> from an object read before the send. A completion, cancellation, skip or edit
+> landing while the card was in flight was erased, taking `Status`,
+> `Completed_By_*`, `On_Time`, `Proof_File_Id` and `Reminders_Sent_JSON` with it.
+> The status checks at the top of each job do not cover this — they run *before*
+> the send. Somebody could complete a task off the back of the very card whose
+> job then reopened it.
+
+**A delivered message is never sent twice.** Immediately after a successful send
+and *before* the occurrence write, `markJobDelivered_` records the message id in
+the job's own `Payload_JSON` — one cell. A retry sees `payload.deliveredMsgId`,
+**skips the send** and only finishes the bookkeeping.
+
+> Without it, a Telegram success followed by a failed row write requeued the whole
+> job and re-sent the reminder, up to five times. The slot marker in
+> `Reminders_Sent_JSON` could not help: it is written at *enqueue* time and
+> deduplicates enqueues, not deliveries. The job was even handed
+> `payload.slot` and never read it.
+
+Mutating a claimed job's payload does mean `hasPendingJob_` — which matches on
+exact payload JSON — stops matching that row. That is acceptable because it was
+never what prevented a duplicate enqueue: the slot marker and `Notified_At` are,
+and both are written under the script lock before the job exists.
+
+**The announcement policy is re-read at execution time.** "An occurrence with
+reminder times gets no `Yangi vazifa`" was expressed only where the job is
+enqueued, so adding reminders before the queue drained still posted the card —
+and because that stamped the message id, the first reminder became an orphan
+second card that no completion could edit in place. `runTaskNotifyJob_` now
+checks the freshly-read `reminderTimes` and returns without sending, leaving
+`Notified_At` stamped so nothing re-enqueues it.
+
+**A card that can never be delivered is owed once more.** `Notified_At` is
+stamped at enqueue, and the scheduler will not announce an occurrence that
+carries one — so a `task_notify` that exhausted its retries used to silence the
+announcement for ever and lose the card in silence.
+`releaseUndeliveredTaskNotify_` (from `onJobPermanentlyFailed_`) clears the
+stamp so the next pass tries again, and records `Meta_JSON.notifyFailedAt` so it
+happens exactly once rather than at every tick for as long as the group stays
+misconfigured. It writes an audit row, `task_notify_undelivered`.
+
+Where a card's id is learned for work that finished while it was in flight, a
+`task_update_message` is queued now that there is something to edit — the
+completion could not queue one, because there was no id yet.
+
 ### One trigger, the whole cycle
 
 `processPendingTelegramJobs` — the trigger the project already had for the
@@ -505,9 +609,39 @@ authenticated replacements are `get_omad_data` / `get_cafe_data` over POST.
 
 `tasks.html` + `assets/session.js` + `assets/tasks/0{1..4}-*.js`, reusing
 `assets/omad/00-config.js` for the backend URL and the `omad_admin` session
-guard (so there is still one source of truth for the URL). Tabs: **Bugun | Vazifalar | Muntazam | Maqsadlar |
-Bajarilgan**. The Today view separates overdue, due-now, waiting-for-proof,
-upcoming and completed-today.
+guard (so there is still one source of truth for the URL). Tabs: **Bugun |
+Vazifalar | Muntazam | Maqsadlar | Tarix**. The Today view separates overdue,
+due-now, waiting-for-proof, upcoming and completed-today.
+
+### The Mini App's Tasks tab
+
+`mini.html` + `assets/mini/05-tasks.js`, at **functional parity** with the board
+— phone-shaped, not reduced. All three types; the photo rule; a one-time
+deadline date *and* time, and the deadline-less case; every cadence above with
+its interval, start date, optional end date and due time; goals with their steps,
+per-step photo overrides and step completion; reminder times and the daily-repeat
+choice; pause, resume, cancel, skip, reopen; and a `Tarix` list fed by
+`view.recentCompleted`.
+
+Two rules make it safe to be small where it still is:
+
+- **It reaches the engine through `runTaskAction_`** and implements nothing of
+  its own, so the two surfaces cannot disagree about what a save means.
+- **Every field it shows, it sends explicitly; every field it does not show, it
+  omits** — and the engine's "absent means leave alone" rule keeps the rest. A
+  value on screen is therefore always a value that can be changed, including
+  cleared, and one off screen is never rewritten by accident.
+
+Rows are driven by the occurrence's real state, so a cancelled, skipped,
+waiting-for-proof or future occurrence is offered only the actions it has, and a
+cancelled definition shows its real status instead of `Faol`. `taskMutationInFlight`
+serialises mutations the way the board's guard does.
+
+`tests/miniapp-tasks-parity.e2e.js` drives the real UI and asserts the persisted
+rows. That distinction is the point: `tests/miniapp-tasks-integration.test.js`
+already proved the Mini *API* could set a photo rule, a deadline time, a monthly
+day and a goal's steps, while the *screen* exposed none of them — and a backend
+test cannot tell those two situations apart.
 
 ## Manual steps to deploy (operator)
 
@@ -553,7 +687,12 @@ tests/task-goals.test.js         step announcing, inherited photo rule, daily re
 tests/task-scheduler.test.js     one read + one batched write; future-work guards
 tests/task-card-format.test.js   card HTML: description, collapsing, escaping
 tests/task-telegram-wizard.test.js  the 📋 Vazifa wizard end to end, all three types
+tests/task-telegram-races.test.js   what happens to a row while a send is in
+                                 flight: no stale overwrite, no duplicate
+                                 delivery, no obsolete announcement
 tests/tasks-ui.e2e.js            the /tasks page in Chromium (auto-skips w/o Playwright)
+tests/miniapp-tasks-parity.e2e.js   the Mini App's Tasks tab driven through its
+                                 own UI, asserting the rows it stored
 ```
 
 `tests/telegram-authorization.test.js` gates the `bot_vz` family alongside the
