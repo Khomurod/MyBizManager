@@ -723,6 +723,17 @@ function normalizeTaskInput_(payload, existing) {
         ? normalizeTaskRecurrence_(existing.recurrence)
         : normalizeTaskRecurrence_(payload.recurrence));
 
+    // A monthly cadence with no chosen day silently becomes the 1st. Refusing it
+    // here is what stops a client creating one by not asking -- which is exactly
+    // what the Mini App did, having no monthly-day control at all, so every
+    // monthly routine made on a phone fell due on the 1st whatever was intended.
+    // Only a caller that actually supplied `recurrence` is held to this: an edit
+    // that does not mention the cadence keeps the stored one, day included.
+    if (taskFieldSupplied_(payload, "recurrence") && task.recurrence.freq === "monthly" &&
+        !isTaskMonthDayChoice_((payload.recurrence || {}).monthDay)) {
+      return { error: "Oylik vazifa uchun oy kunini tanlang." };
+    }
+
     task.startKey = isTaskDateKey_(payload.startKey) ? String(payload.startKey) : (existing && existing.startKey ? existing.startKey : taskTodayKey_(Date.now()));
 
     var endKey = keep("endKey", existing ? existing.endKey : "");

@@ -172,6 +172,21 @@ function taskDaysInMonth_(year, month) {
  *     monthDay: 1..31 | 'last', // monthly: which day of month
  *     intervalDays: >=1 }       // custom: every N days
  */
+/**
+ * Whether a caller actually said which day of the month it means.
+ *
+ * `normalizeTaskRecurrence_` resolves anything unusable to the 1st, and it does
+ * that on the read path as well as the write path, so the default cannot be
+ * tightened without rewriting what every stored row means. This is the
+ * save-time question instead: did the client choose, or is this monthly task
+ * about to become a day-1 task because nobody asked?
+ */
+function isTaskMonthDayChoice_(value) {
+  if (value === "last") return true;
+  var day = Number(value);
+  return isFinite(day) && day >= 1 && day <= 31 && Math.floor(day) === day;
+}
+
 function normalizeTaskRecurrence_(recurrence) {
   var r = recurrence && typeof recurrence === "object" ? recurrence : {};
   var freq = ["daily", "weekly", "monthly", "custom"].indexOf(String(r.freq)) !== -1 ? String(r.freq) : "daily";

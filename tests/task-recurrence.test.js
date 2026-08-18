@@ -108,3 +108,118 @@ test('late duration formats without going negative', () => {
   assert.strictEqual(gas.formatTaskDuration_((2 * 60 + 14) * 60000), '2h 14m');
   assert.strictEqual(gas.formatTaskDuration_((26 * 60) * 60000), '1d 2h 0m');
 });
+
+// ------------------------------------------- a monthly day is chosen, not guessed
+//
+// `normalizeTaskRecurrence_` resolves an unusable `monthDay` to the 1st, and it
+// does so on the read path as well as the write path — so the default cannot be
+// tightened without rewriting what stored rows mean. The save path asks the
+// different question instead: did the client actually choose?
+
+test('a month day is a real choice or it is not one', () => {
+  assert.strictEqual(gas.isTaskMonthDayChoice_('last'), true);
+  assert.strictEqual(gas.isTaskMonthDayChoice_(15), true);
+  assert.strictEqual(gas.isTaskMonthDayChoice_('15'), true);
+  assert.strictEqual(gas.isTaskMonthDayChoice_(1), true);
+  assert.strictEqual(gas.isTaskMonthDayChoice_(31), true);
+
+  assert.strictEqual(gas.isTaskMonthDayChoice_(undefined), false, 'not asked');
+  assert.strictEqual(gas.isTaskMonthDayChoice_(''), false, 'asked and left blank');
+  assert.strictEqual(gas.isTaskMonthDayChoice_(null), false);
+  assert.strictEqual(gas.isTaskMonthDayChoice_(0), false);
+  assert.strictEqual(gas.isTaskMonthDayChoice_(32), false);
+  assert.strictEqual(gas.isTaskMonthDayChoice_(-3), false);
+  assert.strictEqual(gas.isTaskMonthDayChoice_(15.5), false);
+  assert.strictEqual(gas.isTaskMonthDayChoice_('Last'), false, 'the sentinel is exact');
+  assert.strictEqual(gas.isTaskMonthDayChoice_('oxirgi'), false);
+});
+
+test('the stored default is untouched, so existing rows keep their meaning', () => {
+  // This is the read path, and it must keep answering 1 rather than refusing.
+  assert.strictEqual(normalizeTaskRecurrence('monthly', {}).monthDay, 1);
+  assert.strictEqual(normalizeTaskRecurrence('monthly', { monthDay: 'last' }).monthDay, 'last');
+  assert.strictEqual(normalizeTaskRecurrence('monthly', { monthDay: 20 }).monthDay, 20);
+
+  function normalizeTaskRecurrence(freq, extra) {
+    return gas.normalizeTaskRecurrence_(Object.assign({ freq: freq }, extra));
+  }
+});
+
+test('saving a monthly routine without a day is refused, not defaulted to the 1st', () => {
+  const refused = gas.normalizeTaskInput_({
+    type: 'routine', title: 'Oylik hisobot',
+    recurrence: { freq: 'monthly', interval: 1 }
+  }, null);
+  assert.ok(refused.error, 'refused');
+  assert.match(refused.error, /oy kunini/i);
+
+  const blank = gas.normalizeTaskInput_({
+    type: 'routine', title: 'Oylik hisobot',
+    recurrence: { freq: 'monthly', interval: 1, monthDay: '' }
+  }, null);
+  assert.ok(blank.error, 'a blank choice is not a choice either');
+});
+
+test('a chosen monthly day and the last-day sentinel both save', () => {
+  const day = gas.normalizeTaskInput_({
+    type: 'routine', title: 'Oylik hisobot',
+    recurrence: { freq: 'monthly', interval: 1, monthDay: 20 }
+  }, null);
+  assert.ok(!day.error, day.error);
+  assert.strictEqual(day.task.recurrence.monthDay, 20);
+
+  const last = gas.normalizeTaskInput_({
+    type: 'routine', title: 'Oylik hisobot',
+    recurrence: { freq: 'monthly', interval: 1, monthDay: 'last' }
+  }, null);
+  assert.ok(!last.error, last.error);
+  assert.strictEqual(last.task.recurrence.monthDay, 'last');
+});
+
+test('an edit that never mentions the cadence keeps the stored month day', () => {
+  const created = gas.normalizeTaskInput_({
+    type: 'routine', title: 'Oylik hisobot',
+    recurrence: { freq: 'monthly', interval: 1, monthDay: 20 }
+  }, null);
+
+  // Exactly what a client that only shows a title sends.
+  const edited = gas.normalizeTaskInput_({ id: created.task.id, title: 'Yangi nom' }, created.task);
+  assert.ok(!edited.error, edited.error);
+  assert.strictEqual(edited.task.recurrence.freq, 'monthly');
+  assert.strictEqual(edited.task.recurrence.monthDay, 20, 'the day survived an unrelated edit');
+});
+
+test('the other cadences are not affected by the monthly guard', () => {
+  for (const recurrence of [
+    { freq: 'daily', interval: 1 },
+    { freq: 'weekly', interval: 2, weekdays: [1, 4] },
+    { freq: 'custom', intervalDays: 10 }
+  ]) {
+    const built = gas.normalizeTaskInput_(
+      { type: 'routine', title: 'X', recurrence: recurrence }, null);
+    assert.ok(!built.error, recurrence.freq + ': ' + built.error);
+  }
+});
+
+test('the /yangi wizard always names a month day, so the guard never blocks it', () => {
+  // The wizard asks `vz_monthday` for every monthly task, and its draft carries
+  // a day from the moment it exists. Asserting it here is what stops the guard
+  // above and the wizard drifting apart: the wizard is the one client whose
+  // payload nobody can see on a screen.
+  const draft = gas.newWizardDraft_('routine');
+  draft.title = 'Oylik hisobot';
+  draft.recurrence.freq = 'monthly';
+
+  const payload = gas.wizardTaskPayload_(draft, 49328655, 'req_1');
+  assert.ok(gas.isTaskMonthDayChoice_(payload.recurrence.monthDay),
+    'the draft names a day even before the operator picks one');
+
+  const built = gas.normalizeTaskInput_(payload, null);
+  assert.ok(!built.error, built.error);
+
+  // And the day the operator actually picks reaches the engine.
+  draft.recurrence.monthDay = 'last';
+  const chosen = gas.normalizeTaskInput_(gas.wizardTaskPayload_(draft, 49328655, 'req_2'), null);
+  assert.ok(!chosen.error, chosen.error);
+  assert.strictEqual(chosen.task.recurrence.monthDay, 'last');
+});

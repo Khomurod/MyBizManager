@@ -9202,6 +9202,21 @@ function taskDaysInMonth_(year, month) {
  *     monthDay: 1..31 | 'last', // monthly: which day of month
  *     intervalDays: >=1 }       // custom: every N days
  */
+/**
+ * Whether a caller actually said which day of the month it means.
+ *
+ * `normalizeTaskRecurrence_` resolves anything unusable to the 1st, and it does
+ * that on the read path as well as the write path, so the default cannot be
+ * tightened without rewriting what every stored row means. This is the
+ * save-time question instead: did the client choose, or is this monthly task
+ * about to become a day-1 task because nobody asked?
+ */
+function isTaskMonthDayChoice_(value) {
+  if (value === "last") return true;
+  var day = Number(value);
+  return isFinite(day) && day >= 1 && day <= 31 && Math.floor(day) === day;
+}
+
 function normalizeTaskRecurrence_(recurrence) {
   var r = recurrence && typeof recurrence === "object" ? recurrence : {};
   var freq = ["daily", "weekly", "monthly", "custom"].indexOf(String(r.freq)) !== -1 ? String(r.freq) : "daily";
@@ -11337,6 +11352,17 @@ function normalizeTaskInput_(payload, existing) {
       : (existing && existing.recurrence && existing.recurrence.freq
         ? normalizeTaskRecurrence_(existing.recurrence)
         : normalizeTaskRecurrence_(payload.recurrence));
+
+    // A monthly cadence with no chosen day silently becomes the 1st. Refusing it
+    // here is what stops a client creating one by not asking -- which is exactly
+    // what the Mini App did, having no monthly-day control at all, so every
+    // monthly routine made on a phone fell due on the 1st whatever was intended.
+    // Only a caller that actually supplied `recurrence` is held to this: an edit
+    // that does not mention the cadence keeps the stored one, day included.
+    if (taskFieldSupplied_(payload, "recurrence") && task.recurrence.freq === "monthly" &&
+        !isTaskMonthDayChoice_((payload.recurrence || {}).monthDay)) {
+      return { error: "Oylik vazifa uchun oy kunini tanlang." };
+    }
 
     task.startKey = isTaskDateKey_(payload.startKey) ? String(payload.startKey) : (existing && existing.startKey ? existing.startKey : taskTodayKey_(Date.now()));
 
