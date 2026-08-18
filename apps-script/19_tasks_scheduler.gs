@@ -56,21 +56,31 @@ function runTaskProofPromptJob_(doc, job) {
   if (!chatId) throw new Error("Telegram Tasks group ID o'rnatilmagan.");
   var occ = findOccurrence_(doc, String(job.payload.occurrenceId || ""));
   if (!occ) return;
-  if (occ.status !== TASK_STATUS_WAITING) return;                                  // already resolved
-  if (String(occ.proofAwaitingUserId) !== String(job.payload.userId || "")) return; // superseded
 
-  var sent = sendTelegramMessage_(
-    chatId,
-    buildTaskProofPromptMessage_(occ, job.payload),
-    { force_reply: true, selective: true },
-    "HTML",
-    { replyToMessageId: occ.msgId }
-  );
-  var promptId = extractTelegramMessageId_(sent);
-  if (promptId) {
-    occ.meta = occ.meta || {};
-    occ.meta.proofPromptMsgId = String(promptId);
-    writeOccurrenceRow_(doc, occ);
+  // A previous attempt already delivered the prompt and failed only to write it
+  // down. Asking again would put a second ForceReply in the group for one claim.
+  var alreadySent = String(job.payload.deliveredMsgId || "");
+  if (!alreadySent) {
+    if (occ.status !== TASK_STATUS_WAITING) return;                                  // already resolved
+    if (String(occ.proofAwaitingUserId) !== String(job.payload.userId || "")) return; // superseded
+
+    var sent = sendTelegramMessage_(
+      chatId,
+      buildTaskProofPromptMessage_(occ, job.payload),
+      { force_reply: true, selective: true },
+      "HTML",
+      { replyToMessageId: occ.msgId }
+    );
+    alreadySent = String(extractTelegramMessageId_(sent) || "");
+    if (alreadySent) markJobDelivered_(job, { deliveredMsgId: alreadySent });
+  }
+
+  // The prompt's own message id is the only thing this send learned. Merging it
+  // on to a fresh read means a claim that was released, or an occurrence
+  // completed by a photo already sitting in the group, is not undone by writing
+  // back the snapshot this job read before the round trip.
+  if (alreadySent) {
+    updateOccurrenceFields_(doc, occ.id, { meta: { proofPromptMsgId: alreadySent } });
   }
 }
 
@@ -80,9 +90,14 @@ function runTaskProofPromptJob_(doc, job) {
  * lie the group cannot act on.
  */
 function releaseStuckProofPrompt_(doc, job) {
-  var occ = findOccurrence_(doc, String((job.payload || {}).occurrenceId || ""));
+  var payload = job.payload || {};
+  var occ = findOccurrence_(doc, String(payload.occurrenceId || ""));
   if (!occ || occ.status !== TASK_STATUS_WAITING) return;
   if (occ.meta && occ.meta.proofPromptMsgId) return;   // it did go out
+  // ...and so did this one, even though the row never got to hear about it.
+  // Releasing the claim here would tell the group nobody was asked, next to a
+  // ForceReply message that is sitting right there asking them.
+  if (payload.deliveredMsgId) return;
   occ.status = TASK_STATUS_OPEN;
   occ.proofAwaitingUserId = "";
   occ.completedByName = "";
@@ -100,10 +115,25 @@ function runTaskNotifyJob_(doc, job) {
   var occ = findOccurrence_(doc, String(job.payload.occurrenceId || ""));
   if (!occ) return; // deleted before it went out
 
+  // Already in the group; a previous attempt only failed to write down its id.
+  if (job.payload.deliveredMsgId) {
+    return finishTaskCardDelivery_(doc, occ, String(job.payload.deliveredMsgId));
+  }
+
   // The definition can be paused between enqueue and send; the queue must not
   // deliver a message the admin has already stopped.
   var notifyTask = findTask_(doc, occ.taskId);
   if (notifyTask && (notifyTask.status === TASK_DEF_PAUSED || notifyTask.status === TASK_DEF_CANCELLED)) return;
+
+  // Reminder times are the notification schedule, not an extra ping: an
+  // occurrence that has them gets no `Yangi vazifa` card, and its first reminder
+  // is its first card. That rule used to be applied only where the job was
+  // enqueued, so adding reminders to a task before the queue drained still
+  // posted the card -- and because that stamped the message id, the reminder
+  // then became an orphan second card no completion could edit in place.
+  // Deciding it here as well is what makes the queued job obsolete rather than
+  // merely early. `Notified_At` stays stamped, so nothing re-enqueues it.
+  if (occ.reminderTimes && occ.reminderTimes.length) return;
 
   // The card carries the task's brief; the lookup above already has it, so this
   // costs nothing extra. Cards are HTML so a long description can be collapsed.
@@ -114,15 +144,63 @@ function runTaskNotifyJob_(doc, job) {
   if (occ.status !== TASK_STATUS_OPEN) {
     var response = sendTelegramMessage_(chatId,
       buildTaskStatusMessage_(occ, Date.now(), notifyDescription), taskClearedMarkup_(), "HTML");
-    var doneId = extractTelegramMessageId_(response);
-    if (doneId && !occ.msgId) { occ.msgId = String(doneId); writeOccurrenceRow_(doc, occ); }
+    var doneId = String(extractTelegramMessageId_(response) || "");
+    if (doneId) {
+      markJobDelivered_(job, { deliveredMsgId: doneId });
+      updateOccurrenceFields_(doc, occ.id, { ifEmpty: { msgId: doneId } });
+    }
     return;
   }
 
   var sent = sendTelegramMessage_(chatId,
     buildTaskOccurrenceMessage_(occ, notifyDescription), taskDoneMarkup_(occ.id), "HTML");
-  var msgId = extractTelegramMessageId_(sent);
-  if (msgId) { occ.msgId = String(msgId); writeOccurrenceRow_(doc, occ); }
+  var msgId = String(extractTelegramMessageId_(sent) || "");
+  if (msgId) {
+    markJobDelivered_(job, { deliveredMsgId: msgId });
+    finishTaskCardDelivery_(doc, occ, msgId);
+  }
+}
+
+/**
+ * Stores the id of a card that is now in the group, and nothing else.
+ *
+ * Only the message id: the occurrence may have been completed, cancelled or
+ * skipped while the card was in flight, and that is newer than anything the job
+ * read before it. `ifEmpty` because a card that arrived first owns the id.
+ *
+ * If the work did finish in that window, the card in the group is still showing
+ * a live button. The completion could not queue an edit for it -- there was no
+ * message id to edit yet -- so this queues it now that there is one.
+ */
+function finishTaskCardDelivery_(doc, occ, msgId) {
+  var merged = updateOccurrenceFields_(doc, occ.id, { ifEmpty: { msgId: msgId } });
+  if (!merged) return;
+  if (merged.status !== TASK_STATUS_OPEN && String(merged.msgId) === String(msgId)) {
+    enqueueTaskJob_(doc, "task_update_message", occ.id, { occurrenceId: occ.id });
+  }
+}
+
+/**
+ * A `Yangi vazifa` card that will never be delivered.
+ *
+ * `Notified_At` is stamped when the job is enqueued, and the scheduler will not
+ * announce an occurrence that carries one. So a notify that exhausted its
+ * retries used to silence the announcement for ever: the card was lost and
+ * nothing said so. Clearing the stamp lets the next scheduler pass try once
+ * more; `notifyFailedAt` is what stops that becoming a card retried at every
+ * tick for as long as the group stays misconfigured.
+ */
+function releaseUndeliveredTaskNotify_(doc, job) {
+  var payload = job.payload || {};
+  if (payload.deliveredMsgId) return;               // it did go out
+  var occ = findOccurrence_(doc, String(payload.occurrenceId || ""));
+  if (!occ) return;
+  if (occ.meta && occ.meta.notifyFailedAt) return;  // it has already had its second chance
+  updateOccurrenceFields_(doc, occ.id, {
+    fields: { notifiedAt: "" },
+    meta: { notifyFailedAt: new Date().toISOString() }
+  });
+  appendAuditRow_(doc, "task_notify_undelivered", occ.id);
 }
 
 function runTaskReminderJob_(doc, job) {
@@ -130,6 +208,15 @@ function runTaskReminderJob_(doc, job) {
   if (!chatId) throw new Error("Telegram Tasks group ID o'rnatilmagan.");
   var occ = findOccurrence_(doc, String(job.payload.occurrenceId || ""));
   if (!occ) return;
+
+  // Telegram already accepted this reminder on an earlier attempt and only the
+  // row write failed. The group has the message; finish the bookkeeping and do
+  // not deliver it twice. The status checks below are about whether to *send*,
+  // and this has already been sent.
+  if (job.payload.deliveredMsgId) {
+    return finishTaskReminderDelivery_(doc, occ, String(job.payload.deliveredMsgId));
+  }
+
   // Completion (or cancellation/skip) between enqueue and send stops the ping.
   if (occ.status !== TASK_STATUS_OPEN) return;
 
@@ -141,17 +228,30 @@ function runTaskReminderJob_(doc, job) {
   var sent = sendTelegramMessage_(chatId,
     buildTaskReminderMessage_(occ, remindTask ? remindTask.description : ""),
     taskDoneMarkup_(occ.id), "HTML");
+  var reminderMsgId = String(extractTelegramMessageId_(sent) || "");
+  if (!reminderMsgId) return;
+  markJobDelivered_(job, { deliveredMsgId: reminderMsgId });
 
   // An occurrence with reminder times has no separate "Yangi vazifa" card.
   // Its first successful reminder is therefore the primary group card: keep
   // that message id so completion/proof/cancellation can edit it in place.
-  if (!occ.msgId) {
-    var reminderMsgId = extractTelegramMessageId_(sent);
-    if (reminderMsgId) {
-      occ.msgId = String(reminderMsgId);
-      if (!occ.notifiedAt) occ.notifiedAt = new Date().toISOString();
-      writeOccurrenceRow_(doc, occ);
-    }
+  //
+  // The card id and the stamp that says a card exists, and nothing else: the
+  // rest of the row belongs to whoever touched it while this reminder was in
+  // flight -- including the person who completed it off the back of this very
+  // card. Both go in `ifEmpty`, so a card that arrived first keeps the id and a
+  // later reminder does not restamp `Notified_At`.
+  finishTaskReminderDelivery_(doc, occ, reminderMsgId);
+}
+
+/** The bookkeeping half of a reminder, separable so a retry can finish it. */
+function finishTaskReminderDelivery_(doc, occ, msgId) {
+  var merged = updateOccurrenceFields_(doc, occ.id, {
+    ifEmpty: { msgId: msgId, notifiedAt: new Date().toISOString() }
+  });
+  if (!merged) return;
+  if (merged.status !== TASK_STATUS_OPEN && String(merged.msgId) === String(msgId)) {
+    enqueueTaskJob_(doc, "task_update_message", occ.id, { occurrenceId: occ.id });
   }
 }
 
