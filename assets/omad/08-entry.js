@@ -30,6 +30,7 @@ function renderEntryDropdowns() {
 
 // --- COMMON UI ---
 function addToCart() {
+    if(entrySaveInFlight) return;
     const amount = parseMoneyInput(document.getElementById('tempAmount').value);
     if(!Number.isFinite(amount) || amount <= 0) return alert("To'g'ri summa kiriting");
 
@@ -49,8 +50,23 @@ function renderCart() {
     box.innerHTML = cart.map((item, i) => `
         <div class="flex justify-between items-center text-xs border-b border-blue-200 last:border-0 pb-1 mb-1">
             <span class="font-bold text-slate-700">${item.amount.toLocaleString()} ${item.currency} <span class="text-slate-400 font-normal">(${item.method})</span></span>
-            <button onclick="cart.splice(${i},1); renderCart()" class="text-red-400"><i class="fas fa-times"></i></button>
+            <button onclick="removeCartLine(${i})" class="text-red-400"${entrySaveInFlight ? ' disabled' : ''}><i class="fas fa-times"></i></button>
         </div>`).join('');
+}
+
+/**
+ * Removes one line, unless a save is already reading the list.
+ *
+ * This was an inline `cart.splice(i,1); renderCart()` on the button itself, with
+ * no guard of any kind -- so a line could be spliced out from under an edit that
+ * was halfway through correcting the rows it named. Every later correction then
+ * addressed the wrong original, and the cancellation boundary moved down with
+ * `cart.length`, cancelling a row the person meant to keep.
+ */
+function removeCartLine(index) {
+    if(entrySaveInFlight) return;
+    cart.splice(index, 1);
+    renderCart();
 }
 
 /** Shows the controls this mode uses and hides the ones it does not. */
@@ -111,6 +127,9 @@ function setType(type) {
 }
 
 function cancelEdit() {
+    // Emptying the cart mid-save would have made the cancellation loop cancel
+    // every remaining row of the entry.
+    if(entrySaveInFlight) return;
     cart = []; renderCart();
     editingTenantPaidGroupId = "";
     editingGroupRows = { groupId: '', rows: [] };
@@ -235,6 +254,39 @@ let editingGroupRows = { groupId: '', rows: [] };
 /** True while a group cancellation is in flight. See `deleteTx`. */
 let cancellingEntry = false;
 
+/**
+ * True while a save is in flight, and the reason the cart cannot move under it.
+ *
+ * Editing a multi-line entry is several sequential backend calls -- one
+ * correction per line, then one cancellation per removed line -- and each one is
+ * a full round trip. The Save button has always been disabled for that whole
+ * time, but nothing else was: `＋` still added a line, every line's `✕` still
+ * spliced the array, and `Bekor qilish` still emptied it. Whatever happened to
+ * the cart landed in the middle of a sequence that was reading it.
+ *
+ * The submitted lines are frozen (see `submitViaLedger`), so the corrections
+ * themselves can no longer be redirected. This guard is the other half: once a
+ * business action is being saved, the controls that describe it stop accepting
+ * changes, so what is on the screen keeps matching what is being written. It is
+ * the same explicit guard `cancellingEntry`, `taskMutationInFlight` and the
+ * POS's `selling` already are -- the overlay that used to shield this form
+ * incidentally is deliberately gone.
+ */
+let entrySaveInFlight = false;
+
+/** Locks or releases every control that can change what is being saved. */
+function setEntryControlsLocked(locked) {
+    entrySaveInFlight = locked;
+    ['addToCartBtn', 'cancelEditBtn', 'tempAmount', 'tempCurr', 'tempMethod',
+     'entryTenant', 'entryMonth', 'entryComment'].forEach(id => {
+        const el = document.getElementById(id);
+        if(el) el.disabled = locked;
+    });
+    // The per-line remove buttons are generated, so the render is what knows
+    // whether they are live.
+    renderCart();
+}
+
 function rememberEditingGroup(groupId, rows) {
     editingGroupRows = { groupId: String(groupId || ''), rows: (rows || []).slice() };
 }
@@ -254,8 +306,10 @@ async function submitAll() {
     if(isTenantPaidMode()) return submitTenantPaid();
     if(cart.length === 0) return alert("Summani kiriting");
     const btn = document.getElementById('submitBtn');
-    if(btn.disabled) return;                       // a second click while saving
+    if(btn.disabled || entrySaveInFlight) return;  // a second click while saving
     btn.disabled = true; btn.innerText = "Bajarilmoqda...";
+    // From here until the answer, the business action being saved is immutable.
+    setEntryControlsLocked(true);
 
     try {
         if(app.ledgerActive) {
@@ -272,6 +326,7 @@ async function submitAll() {
         console.error(error);
         alert((error && error.message) || SAVE_FAILED_MESSAGE);
     } finally {
+        setEntryControlsLocked(false);
         btn.disabled = false;
         btn.innerText = currentType === 'Income' ? "KIRIMNI SAQLASH" : "CHIQIMNI SAQLASH";
     }
@@ -313,18 +368,13 @@ async function submitViaLedger() {
     // An edit stays inside the group it is editing; a new entry opens one.
     const groupId = editId ? editingGroupId(editId) : nextEntryGroupId();
     const existingIds = editId ? entryGroupRows(groupId).map(t => t.id) : [];
+    // Frozen before the first round trip. See the live override in 12-app.js.
+    const lines = submittedCartLines();
 
     showLoader(true);
     try {
-        for(let i = 0; i < cart.length; i++) {
-            const line = {
-                requestId: `${requestBase}_${i}`,
-                groupId,
-                ...common,
-                amount: Number(cart[i].amount) || 0,
-                currency: cart[i].currency,
-                method: cart[i].method
-            };
+        for(let i = 0; i < lines.length; i++) {
+            const line = { requestId: `${requestBase}_${i}`, groupId, ...common, ...lines[i] };
 
             const response = i < existingIds.length
                 ? await callBackend({ action: 'correct_transaction', transactionId: existingIds[i], ...line })
@@ -336,7 +386,7 @@ async function submitViaLedger() {
         }
 
         // Lines removed during the edit are cancelled, never deleted.
-        for(let i = cart.length; i < existingIds.length; i++) {
+        for(let i = lines.length; i < existingIds.length; i++) {
             await callBackend({
                 action: 'cancel_transaction',
                 transactionId: existingIds[i],
@@ -349,6 +399,31 @@ async function submitViaLedger() {
     }
 
     await syncData();
+}
+
+/**
+ * The lines being submitted, copied out of the cart once.
+ *
+ * The edit path is several sequential round trips, and it used to re-read the
+ * live `cart` on every iteration -- `i < cart.length` re-evaluated, `cart[i]`
+ * dereferenced after the previous `await` resumed. `existingIds` was already
+ * snapshotted, so the *targets* were frozen while the *source* moved, and that
+ * asymmetry is where the corruption lived: a line spliced out shifted every
+ * later correction on to the wrong original and pulled the cancellation
+ * boundary down with it, cancelling a row nobody asked to remove. A line added
+ * mid-save appended a `create_transaction` the person never confirmed.
+ *
+ * The new-entry path never had the bug, because it materialises `cart.map(...)`
+ * into one payload before its single await. This gives the edit path the same
+ * property: once Save starts, the submitted action is what it was when Save was
+ * pressed.
+ */
+function submittedCartLines() {
+    return cart.map(item => ({
+        amount: Number(item.amount) || 0,
+        currency: item.currency,
+        method: item.method
+    }));
 }
 
 /**

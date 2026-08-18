@@ -266,6 +266,121 @@ test('a void ignores any inventory the caller supplies', () => {
   assert.strictEqual(stock(gas, 'i1'), 10, 'restored from the receipt, not from the payload');
 });
 
+// ------------------------------- void when the frozen inventory is gone
+//
+// The receipt freezes exactly what the sale consumed, by inventory id. An item
+// can be deleted from the inventory between the sale and the void, and then
+// there is nothing to put its quantity back on to.
+//
+// `applyCafeStockMovement_` skipped a missing id with a bare `return` and told
+// nobody, and `stockRestored` was computed as `!restored.error` -- which on the
+// frozen-snapshot path is `true` unconditionally, because that branch builds
+// `{consumption}` and has no `error` property at all. So every modern receipt
+// reported its stock restored, and the POS said "tovarlar omborga qaytarildi",
+// whether or not any of it had gone back. The receipt row was then deleted,
+// taking the only record of what should have been restored with it.
+//
+// The money is still voided. That rule does not change: it is the shelf that
+// cannot be put back, not the sale that cannot be undone.
+
+/**
+ * Deletes items from the inventory the way the admin screen does.
+ *
+ * The *live* inventory is filtered, never the fixture constant: `save_inventory`
+ * writes what it is given wholesale, so passing the original quantities would
+ * quietly undo the sale these tests just made and the void would then look like
+ * it had over-restored.
+ */
+function deleteInventoryItems(gas, ids) {
+  const admin = post(gas, { action: 'get_cafe_data', scope: 'admin' });
+  return post(gas, {
+    action: 'save_inventory',
+    expectedRev: admin.inventoryRev,
+    inventory: admin.inventory.filter(item => ids.indexOf(item.id) === -1)
+  });
+}
+
+function auditRows(gas) {
+  const sheet = gas.__spreadsheet.getSheetByName('Omad_Audit_Log');
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  return sheet.getDataRange().getValues().slice(1)
+    .map(row => ({ event: String(row[1]), details: String(row[2]) }));
+}
+
+function debugRows(gas) {
+  const sheet = gas.__spreadsheet.getSheetByName('Telegram_Debug_Log');
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  return sheet.getDataRange().getValues().slice(1)
+    .map(row => ({ event: String(row[1]), details: String(row[2]) }));
+}
+
+test('a void whose frozen item was deleted does not claim the stock came back', () => {
+  const gas = boot();
+  const sale = sell(gas, [
+    { kind: 'product', inventoryId: 'i1', qty: 3 },
+    { kind: 'recipe', recipeId: 'r1', qty: 2 }
+  ]);
+  assert.strictEqual(stock(gas, 'i1'), 7);
+  assert.strictEqual(stock(gas, 'i2'), 4700);
+
+  // The manager deletes the Kola line. The receipt still names i1.
+  const saved = deleteInventoryItems(gas, ['i1']);
+  assert.strictEqual(saved.status, 'success', saved.message);
+
+  const voided = post(gas, { action: 'void_sale', id: sale.sale.id });
+  assert.strictEqual(voided.status, 'success', 'the money is voided regardless');
+  assert.strictEqual(voided.stockRestored, false, 'and it says so');
+
+  // Named, not implied: the operator has to know what to go and count.
+  assert.strictEqual(voided.unrestored.length, 1);
+  assert.strictEqual(voided.unrestored[0].id, 'i1');
+  assert.strictEqual(voided.unrestored[0].qty, 3, 'the frozen quantity, not a guess');
+
+  // Everything that could go back, did.
+  assert.strictEqual(stock(gas, 'i2'), 5000, 'the milk was still restored exactly');
+  assert.strictEqual(stock(gas, 'i3'), 2000, 'and the coffee');
+  assert.strictEqual(stock(gas, 'i1'), null, 'the deleted item was not resurrected');
+
+  // The sale is gone, so the log is the only remaining record of the shortfall.
+  assert.strictEqual(post(gas, { action: 'get_cafe_data' }).sales.length, 0);
+  const unrestoredAudit = auditRows(gas)
+    .filter(row => row.event === 'cafe_sale_void_stock_unrestored');
+  assert.strictEqual(unrestoredAudit.length, 1, 'an audit row records the shortfall');
+  assert.match(unrestoredAudit[0].details, /i1/);
+  assert.match(unrestoredAudit[0].details, /3/);
+  assert.ok(auditRows(gas).some(row => row.event === 'cafe_sale_voided'),
+    'alongside the ordinary void row');
+  assert.ok(debugRows(gas).some(row => row.event === 'cafe_void_stock_unresolved'),
+    'and the debug log says which ids');
+});
+
+test('a fully restorable void still reports success and writes no shortfall row', () => {
+  const gas = boot();
+  const sale = sell(gas, [{ kind: 'product', inventoryId: 'i1', qty: 2 }]);
+
+  const voided = post(gas, { action: 'void_sale', id: sale.sale.id });
+  assert.strictEqual(voided.stockRestored, true);
+  assert.deepStrictEqual(voided.unrestored, []);
+  assert.strictEqual(stock(gas, 'i1'), 10);
+  assert.deepStrictEqual(
+    auditRows(gas).filter(row => row.event === 'cafe_sale_void_stock_unrestored'), []);
+});
+
+test('a void that can restore nothing at all is still a void', () => {
+  const gas = boot();
+  const sale = sell(gas, [{ kind: 'product', inventoryId: 'i1', qty: 4 }]);
+
+  // Every id the receipt names is gone.
+  deleteInventoryItems(gas, ['i1']);
+
+  const voided = post(gas, { action: 'void_sale', id: sale.sale.id });
+  assert.strictEqual(voided.status, 'success', 'the financial void proceeds');
+  assert.strictEqual(voided.stockRestored, false);
+  assert.deepStrictEqual(voided.unrestored.map(line => line.id), ['i1']);
+  assert.strictEqual(post(gas, { action: 'get_cafe_data' }).sales.length, 0,
+    'and the receipt is gone, as it must be for the money to be off the books');
+});
+
 test('voiding the same receipt twice does not inflate stock', () => {
   const gas = boot();
   const sale = sell(gas, [{ kind: 'product', inventoryId: 'i1', qty: 2 }]);

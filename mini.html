@@ -94,8 +94,21 @@
     .pill.ok { background: color-mix(in srgb, var(--success) 18%, transparent); color: var(--success); }
     .pill.warn { background: color-mix(in srgb, var(--warning) 20%, transparent); color: var(--warning); }
     .pill.info { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+    /* Finished-with-a-decision: cancelled and skipped work is history, and reads
+       as history rather than competing with the live rows above it. */
+    .pill.muted { background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--muted); }
 
     .bar { height: 8px; border-radius: 999px; background: var(--line); overflow: hidden; margin-top: 8px; }
+
+    /* A goal's steps. Each row is one deadline-less occurrence with the single
+       action it actually has, so the phone can work a goal rather than only
+       watch its progress bar. 44px tall like every other control here. */
+    .steps { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
+    .step-row { display: flex; align-items: center; gap: 8px; min-height: 44px;
+      padding: 2px 0; border-top: 1px solid var(--line); }
+    .step-row:first-child { border-top: 0; }
+    .step-row .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+    .step-done { text-decoration: line-through; opacity: 0.62; }
     .bar > span { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
 
     /* -------------------------------------------------------------- controls
@@ -157,6 +170,15 @@
       margin: 0; padding: 8px 10px; border: 1px solid var(--line);
       border-radius: 10px; color: var(--text); font-size: 13px; font-weight: 600;
     }
+
+    /* One editable goal step: its name, whether it overrides the goal's photo
+       rule, and a way to drop it. The name takes the room; the two controls stay
+       at a thumb-sized minimum so 320px still works. */
+    .step-edit { display: flex; align-items: center; gap: 6px; }
+    .step-edit + .step-edit { margin-top: 8px; }
+    .step-edit .mini-step-title { flex: 1; min-width: 0; }
+    .step-edit .mini-step-photo { flex: 0 0 auto; width: auto; min-width: 88px; }
+    .step-edit .btn-sm { flex: 0 0 auto; }
 
     /* ------------------------------------------------------------ tab bar */
     nav {

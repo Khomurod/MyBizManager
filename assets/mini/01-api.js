@@ -16,6 +16,11 @@ const state = {
     entries: [],
     cafe: null,
     tasks: null,
+    // What the server says about the task integration, alongside the view: the
+    // Tasks group id has to be configured for a photo-proof claim to reach
+    // anybody, and the editor says so where the photo rule is set. The /tasks
+    // board has always shown this; the Mini App received it and dropped it.
+    tasksConfig: null,
     tab: 'omad',
     // When the figures on screen came from the stored snapshot rather than from
     // this session's verified answer. 0 means they are the server's own.

@@ -272,11 +272,7 @@ submitViaLedger = async function() {
             requestId: requestBase,
             groupId,
             ...common,
-            lines: cart.map(item => ({
-                amount: Number(item.amount) || 0,
-                currency: item.currency,
-                method: item.method
-            }))
+            lines: submittedCartLines()
         });
 
         if (response && response.status === 'error' &&
@@ -286,15 +282,25 @@ submitViaLedger = async function() {
             throw new Error((response && response.message) || 'save failed');
         }
     } else {
-        for(let i = 0; i < cart.length; i++) {
-            const line = {
-                requestId: `${requestBase}_${i}`,
-                groupId,
-                ...common,
-                amount: Number(cart[i].amount) || 0,
-                currency: cart[i].currency,
-                method: cart[i].method
-            };
+        // Frozen before the first round trip, and read from here on.
+        //
+        // This loop is several sequential requests, and it used to re-read the
+        // live `cart` between them: `i < cart.length` re-evaluated each pass and
+        // `cart[i]` dereferenced after the previous `await` resumed. `existingIds`
+        // was already a snapshot, so the targets were fixed while the source
+        // moved -- and a line removed from the form mid-save shifted every later
+        // correction on to the wrong original *and* pulled the cancellation
+        // boundary below down with it, cancelling a row nobody asked to remove.
+        // A line added mid-save appended a `create_transaction` for something
+        // that was never on screen when Save was pressed.
+        //
+        // The new-entry branch above never had this: it materialises the cart
+        // into one payload before its single await. Once Save starts, the
+        // business action being saved is the one that was submitted.
+        const lines = submittedCartLines();
+
+        for(let i = 0; i < lines.length; i++) {
+            const line = { requestId: `${requestBase}_${i}`, groupId, ...common, ...lines[i] };
 
             const response = i < existingIds.length
                 ? await callBackend({ action: 'correct_transaction', transactionId: existingIds[i], ...line })
@@ -305,7 +311,7 @@ submitViaLedger = async function() {
             }
         }
 
-        for(let i = cart.length; i < existingIds.length; i++) {
+        for(let i = lines.length; i < existingIds.length; i++) {
             const response = await callBackend({
                 action: 'cancel_transaction',
                 transactionId: existingIds[i],

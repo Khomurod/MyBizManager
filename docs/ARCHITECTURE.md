@@ -88,6 +88,24 @@ The task-management feature (`/tasks`) is documented separately in
 the `/yangi` handler, and its own frontend. It reuses the Telegram bot, the
 `Omad_Job_Queue` and the Telegram settings.
 
+An occurrence row has two writers, and the difference matters:
+
+| | When |
+|---|---|
+| `writeOccurrenceRow_` | the caller has just decided the whole state of the occurrence and holds a current copy of it |
+| `updateOccurrenceFields_` | the caller has been away — it takes the script lock, re-reads the row, applies only `fields` / `ifEmpty` / `meta`, and writes |
+
+A queued Telegram send is the away case: it reads the occurrence, spends a
+network round trip, and comes back owning exactly one fact (the message id, or
+the prompt's). Writing its pre-send snapshot back is how a completion,
+cancellation, skip or edit landing in that window used to be erased — the
+attribution, the proof file and the reminder markers with it. `ifEmpty` exists
+because a reminder becomes the occurrence's card only if it has none.
+
+Delivery itself is recorded on the *job's* row (`markJobDelivered_`, one cell of
+`Payload_JSON`) before the occurrence write is attempted, so a retry after a
+failed write finishes the bookkeeping instead of re-sending the message.
+
 The isolation is **one-way**:
 
 > Tasks never touch financial data. The private `/yangi` conversation may
@@ -477,6 +495,22 @@ true` and the stock moves once. A void restores stock from the receipt that was
 stored, never from an inventory the browser supplies, and voiding twice is a
 no-op rather than a second refund of stock.
 
+A void answers `{ stockRestored, unrestored: [{id, qty, cost}] }`.
+`applyCafeStockMovement_` returns `{ inventory, missing }`, so every id in the
+frozen `stockConsumption` is checked against the inventory as it is *now* — an
+item can be deleted between the sale and the void, and then there is nothing to
+restore its quantity on to. The money is voided regardless; the shortfall is
+named in the answer, written to `Omad_Audit_Log` as
+`cafe_sale_void_stock_unrestored` and to the debug log, and recorded **before**
+the receipt row is deleted, since that row is the only place the frozen
+consumption lives. Nothing is reconstructed: a missing quantity is reported.
+
+> `stockRestored` used to be `!restored.error`, and on the frozen-snapshot path
+> `restored` is `{consumption}` with no `error` property at all — so it read
+> `true` for every modern receipt whether or not any stock had moved, the
+> `debugLog_` branch beside it was unreachable, and the POS told the operator the
+> goods had been returned.
+
 Close-day accepts `countedInventory`, because a physical count is the one thing
 only a person can supply. It ignores any revenue or profit the till reports.
 
@@ -540,7 +574,7 @@ Three tabs and nothing else:
 |---|---|
 | 💰 Omad | the month's figures, balances, tenant debt, recent activity, and three entries: income, expense, tenant-paid |
 | ☕ Kafe | monitoring only — today, the month, the daily target, stock value, recent sales and closings |
-| ✅ Vazifalar | the existing task engine: today / overdue / upcoming / waiting / done, complete, skip, reopen, pause, create, edit |
+| ✅ Vazifalar | the existing task engine at functional parity with `/tasks`: today / overdue / upcoming / waiting-for-proof / completed-today / history, all three task types, the photo rule, deadline date and time, every recurrence mode with its interval, start, end and due time, goals with their steps, reminders, complete, skip, reopen, pause, resume, cancel, create, edit |
 
 The full web app remains the administration interface. Rates, tenant
 schedules, planned expenses, migration and the maintenance actions are
@@ -710,6 +744,23 @@ relabels it does not: the Omad entry and tenant-paid forms, the `/tasks` board
 (a header `Bajarilmoqda...` plus an explicit `taskMutationInFlight` guard) and
 the POS all show local state instead. Where an overlay was the *only* thing
 stopping a second submission, the guard is now written down rather than implied.
+
+That rule applies to the **Omad multi-line edit** and to the **Mini App's task
+actions**, which both had none. An edit issues one `correct_transaction` per
+line and then one `cancel_transaction` per removed line, sequentially, and the
+loop used to re-read the live `cart` between requests while `existingIds` was
+already snapshotted — targets fixed, source moving. So a line added or removed
+mid-save redirected later corrections and moved the cancellation boundary, which
+cancelled a row nobody asked to remove. Two changes: `submittedCartLines()`
+freezes the lines before the first await (the create path already worked this
+way, materialising the cart into one payload), and `entrySaveInFlight` disables
+`＋`, the per-line `✕`, `Bekor qilish` and the tenant/period/comment fields for
+the duration. The Mini App's `taskMutationInFlight` mirrors the board's, so
+repeated taps no longer race two rebuilt views against each other.
+
+Note the live `submitViaLedger` is the one in `assets/omad/12-app.js`, which
+overrides the same-named function in `08-entry.js` (loaded earlier). Both carry
+the fix so they cannot drift.
 
 ### Idempotency
 

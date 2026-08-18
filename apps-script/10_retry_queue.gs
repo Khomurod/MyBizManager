@@ -116,6 +116,33 @@ function writeJobField_(sheet, rowNumber, columnIndex, value) {
 }
 
 /**
+ * Records on the job's own row that its outward call already succeeded.
+ *
+ * A job is "send something, then write down what came back". If the send works
+ * and the write then fails, the whole job is retried — and the send goes out
+ * again. That is a duplicate Telegram card for a message the group already has,
+ * and no existing marker stops it: the reminder slot in `Reminders_Sent_JSON`
+ * and `Notified_At` are both stamped at *enqueue* time and deduplicate enqueues,
+ * not deliveries.
+ *
+ * One cell on the job's own row is the cheapest durable place to say "this went
+ * out". The retry reads it, skips the send, and only finishes the bookkeeping.
+ *
+ * The row is `Processing` while this happens, so `hasPendingJob_` — which
+ * matches on the exact payload JSON — stops matching it. That is acceptable
+ * precisely because it is not what prevents a duplicate enqueue: the slot marker
+ * and `Notified_At` are, and both are written under the script lock before the
+ * job is queued at all.
+ */
+function markJobDelivered_(job, facts) {
+  if (!job || !job.sheet || !job.rowNumber) return;
+  job.payload = job.payload || {};
+  var names = Object.keys(facts || {});
+  for (var i = 0; i < names.length; i++) job.payload[names[i]] = facts[names[i]];
+  writeJobField_(job.sheet, job.rowNumber, 4, JSON.stringify(job.payload));
+}
+
+/**
  * Claims a job by flipping it to Processing under the script lock, so two
  * concurrent workers can never run the same job twice.
  */
@@ -186,6 +213,7 @@ function failJob_(sheet, job, error, doc) {
 /** Last-chance cleanup when a job will never be attempted again. */
 function onJobPermanentlyFailed_(doc, job) {
   if (job.type === "task_proof_prompt") releaseStuckProofPrompt_(doc, job);
+  if (job.type === "task_notify") releaseUndeliveredTaskNotify_(doc, job);
 }
 
 function processPendingJobs_(doc, maxJobs) {

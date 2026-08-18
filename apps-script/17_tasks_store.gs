@@ -409,6 +409,60 @@ function writeOccurrenceRow_(doc, occ) {
   bumpDataRevision_(CACHE_SCOPE_TASKS);
 }
 
+/**
+ * Persists only the named fields, on to whatever the row says *now*.
+ *
+ * `writeOccurrenceRow_` writes all 27 columns from an in-memory object, which is
+ * right for a caller that has just decided the whole state of an occurrence and
+ * wrong for one that has been away. A Telegram send is away for a network round
+ * trip: the reminder job read an Open occurrence, sent the card, and wrote its
+ * pre-send snapshot back — so a completion, cancellation, skip or edit that
+ * landed in that window was erased, attribution, proof and reminder markers
+ * included. The job owns the message id it just learned and nothing else.
+ *
+ * So: take the lock, re-read the row, apply only what the caller owns, write.
+ * The read-modify-write is what makes it a merge rather than a replay, and the
+ * fresh read also fixes the row number, which a deleted or shifted row would
+ * otherwise have made stale. Returns the merged occurrence, or null if the row
+ * is gone.
+ *
+ * `options.fields` are applied unconditionally; `options.ifEmpty` only where the
+ * stored value is still blank (a reminder becomes the occurrence's card when it
+ * has none, and must not restamp one it already has); `options.meta` keys are
+ * merged into the stored `Meta_JSON` rather than replacing it, for the same
+ * reason the row is merged rather than replaced.
+ */
+function updateOccurrenceFields_(doc, occurrenceId, options) {
+  var opts = options || {};
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var occ = findOccurrence_(doc, occurrenceId);
+    if (!occ) return null;
+
+    var names = Object.keys(opts.fields || {});
+    for (var i = 0; i < names.length; i++) occ[names[i]] = opts.fields[names[i]];
+
+    var lazy = Object.keys(opts.ifEmpty || {});
+    for (var j = 0; j < lazy.length; j++) {
+      if (occ[lazy[j]] === "" || occ[lazy[j]] === null || occ[lazy[j]] === undefined) {
+        occ[lazy[j]] = opts.ifEmpty[lazy[j]];
+      }
+    }
+
+    if (opts.meta) {
+      occ.meta = occ.meta || {};
+      var metaNames = Object.keys(opts.meta);
+      for (var m = 0; m < metaNames.length; m++) occ.meta[metaNames[m]] = opts.meta[metaNames[m]];
+    }
+
+    writeOccurrenceRow_(doc, occ);
+    return occ;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 // ------------------------------------------------ occurrence materialisation
 
 /**

@@ -54,6 +54,30 @@ function cardFlagClass(displayStatus) {
     return '';
 }
 
+/**
+ * Whether this board may offer "✅ Bajarildi" for an occurrence.
+ *
+ * A photo-proof task is finished by a photo in the Tasks group and by nothing
+ * else. This board has no Telegram identity to claim it with, so the server
+ * refuses it (`needsProof`) — and one already `WaitingProof` is somebody's to
+ * deliver, so the server refuses that too (`awaitingProof`). Offering a button
+ * that is guaranteed to fail is worse than not offering it, so the card says
+ * where the work is finished instead.
+ */
+function occCanCompleteHere(occ) {
+    if (!occ) return false;
+    if (occ.displayStatus === 'WaitingProof') return false;
+    return !occ.photoRequired;
+}
+
+/** The line that replaces the button when only the group can finish it. */
+function occProofHint(occ) {
+    const text = occ && occ.displayStatus === 'WaitingProof'
+        ? '📷 Rasm kutilmoqda — guruhda so\'ralgan xabarga javob berilishi kerak'
+        : '📷 Rasm bilan tasdiqlanadi — Telegram guruhida bajarilgan deb belgilanadi';
+    return '<p class="t-note">' + escapeTaskHtml(text) + '</p>';
+}
+
 /** One occurrence card. `mode` picks which actions appear. */
 function occCard(occ, mode) {
     const extras = [];
@@ -65,12 +89,14 @@ function occCard(occ, mode) {
     let actions = '';
     if (mode === 'open') {
         // One prominent action, one subordinate icon — not two equal halves.
-        actions =
-            '<div class="acts">' +
-            '<button onclick="tasksCompleteOcc(\'' + occ.id + '\')" class="btn btn--primary">✅ Bajarildi</button>' +
+        const skip =
             '<button onclick="tasksSkip(\'' + occ.id + '\')" class="btn btn--ghost btn--icon" ' +
-            'aria-label="O\'tkazib yuborish" title="O\'tkazib yuborish">⏭</button>' +
-            '</div>';
+            'aria-label="O\'tkazib yuborish" title="O\'tkazib yuborish">⏭</button>';
+        actions = occCanCompleteHere(occ)
+            ? '<div class="acts">' +
+              '<button onclick="tasksCompleteOcc(\'' + occ.id + '\')" class="btn btn--primary">✅ Bajarildi</button>' +
+              skip + '</div>'
+            : occProofHint(occ) + '<div class="acts">' + skip + '</div>';
     } else if (mode === 'completed') {
         actions = '<div class="subacts">' +
             '<button onclick="tasksReopen(\'' + occ.id + '\')" class="lnk">↩ Qayta ochish</button>' +
@@ -167,11 +193,12 @@ function renderTasksPanel() {
 
     panel.innerHTML = tasks.map(task => {
         const occ = task.occurrence;
-        const canAct = occ && (occ.displayStatus === 'Open' || occ.displayStatus === 'Overdue' ||
+        const live = occ && (occ.displayStatus === 'Open' || occ.displayStatus === 'Overdue' ||
             occ.displayStatus === 'WaitingProof');
-        const act = canAct
+        const act = live && occCanCompleteHere(occ)
             ? '<button onclick="tasksCompleteOcc(\'' + occ.id + '\')" class="lnk lnk--ok">✅ Bajarildi</button>'
             : '';
+        const proofNote = live && !occCanCompleteHere(occ) ? occProofHint(occ) : '';
         return '<div class="card' + (occ ? cardFlagClass(occ.displayStatus) : '') + '">' +
             '<div class="row">' +
             '<div class="row__grow"><p class="t-title">' + escapeTaskHtml(task.title) + '</p></div>' +
@@ -184,6 +211,7 @@ function renderTasksPanel() {
                 photoRequired: task.photoRequired
             }) +
             (task.description ? '<p class="desc">' + escapeTaskHtml(task.description) + '</p>' : '') +
+            proofNote +
             defActionsRow(task, act) +
             '</div>';
     }).join('');
@@ -207,19 +235,22 @@ function renderRoutinesPanel() {
 
         let todayRow = '';
         if (today) {
-            const canAct = today.displayStatus === 'Open' || today.displayStatus === 'Overdue' ||
+            const live = today.displayStatus === 'Open' || today.displayStatus === 'Overdue' ||
                 today.displayStatus === 'WaitingProof';
+            const skip = '<button onclick="tasksSkip(\'' + today.id + '\')" class="btn btn--ghost btn--icon" ' +
+                'style="min-height:42px;width:42px;" aria-label="Bugun o\'tkazish" title="Bugun o\'tkazish">⏭</button>';
             todayRow = '<div class="today-strip">' +
                 '<span>Bugun: ' + taskStatusBadge(today.displayStatus) + '</span>' +
-                (canAct
+                (live
                     ? '<span class="today-strip__act acts" style="margin:0;">' +
-                      '<button onclick="tasksCompleteOcc(\'' + today.id + '\')" class="btn btn--primary" ' +
-                      'style="min-height:42px;padding:0 14px;">✅ Bajarildi</button>' +
-                      '<button onclick="tasksSkip(\'' + today.id + '\')" class="btn btn--ghost btn--icon" ' +
-                      'style="min-height:42px;width:42px;" aria-label="Bugun o\'tkazish" title="Bugun o\'tkazish">⏭</button>' +
-                      '</span>'
+                      (occCanCompleteHere(today)
+                          ? '<button onclick="tasksCompleteOcc(\'' + today.id + '\')" class="btn btn--primary" ' +
+                            'style="min-height:42px;padding:0 14px;">✅ Bajarildi</button>'
+                          : '') +
+                      skip + '</span>'
                     : '') +
-                '</div>';
+                '</div>' +
+                (live && !occCanCompleteHere(today) ? occProofHint(today) : '');
         }
 
         return '<div class="card">' +
@@ -256,11 +287,16 @@ function renderGoalsPanel() {
         const progress = task.progress || { done: 0, total: 0, percent: 0 };
         const steps = (task.stepOccurrences || []).map(step => {
             const done = step.displayStatus === 'Completed';
+            // A photo-proof step is finished in the group like any other
+            // photo-proof work, so the tick is replaced by what it is waiting for.
             const btn = done
                 ? '<button onclick="tasksReopen(\'' + step.id + '\')" class="step__btn" ' +
                   'aria-label="Qayta ochish" title="Qayta ochish">↩</button>'
-                : '<button onclick="tasksCompleteOcc(\'' + step.id + '\')" class="step__btn step__btn--ok" ' +
-                  'aria-label="Bajarildi" title="Bajarildi">✅</button>';
+                : (occCanCompleteHere(step)
+                    ? '<button onclick="tasksCompleteOcc(\'' + step.id + '\')" class="step__btn step__btn--ok" ' +
+                      'aria-label="Bajarildi" title="Bajarildi">✅</button>'
+                    : '<span class="step__btn" aria-label="Rasm bilan tasdiqlanadi" ' +
+                      'title="Rasm bilan tasdiqlanadi — Telegram guruhida">📷</span>');
             // The step title is stored as "<goal> — <step>"; show only the step.
             const short = step.title.split(' — ').slice(1).join(' — ') || step.title;
             return '<div class="step' + (done ? ' step--done' : '') + '">' +

@@ -184,8 +184,25 @@ describe('Mini App reminders', () => {
     // A routine's daily choice is not offered: each of its days owns its own
     // reminders.
     assert.strictEqual(await page.isHidden('#tRemindDailyRow'), true);
-    const recurrence = await page.textContent('#tRoutineBlock');
-    assert.match(recurrence, /Takrorlanish:/, 'and the cadence is shown, read-only');
+
+    // The cadence is editable here now, so the controls have to open on the
+    // routine's *stored* schedule -- a default would be silently saved over it.
+    // (This used to read "Takrorlanish: …" and send the person to the full
+    // panel for an ordinary schedule change.)
+    assert.strictEqual(await page.inputValue('#tFreq'), 'weekly');
+    assert.strictEqual(await page.inputValue('#tInterval'), '1');
+    const checkedDays = await page.$$eval('.mini-wd',
+      els => els.filter(e => e.checked).map(e => Number(e.dataset.wd)));
+    assert.deepStrictEqual(checkedDays.sort(), [1, 4], 'Monday and Thursday, as stored');
+    assert.strictEqual(await page.inputValue('#tStartKey'), '2026-08-03');
+    assert.strictEqual(await page.inputValue('#tEndKey'), '2026-12-31');
+    assert.strictEqual(await page.inputValue('#tDueTime'), '18:00');
+    assert.strictEqual(await page.isChecked('#tPhotoRequired'), true,
+      'and the photo rule, which this sheet could not reach at all before');
+
+    // Weekly means weekdays, not a month day.
+    assert.strictEqual(await page.isHidden('#tMonthDayRow'), true);
+    assert.strictEqual(await page.isHidden('#tWeekdayRow'), false);
 
     await context.close();
   });
@@ -226,9 +243,16 @@ describe('Mini App reminders', () => {
     const save = sent.filter(p => p.taskAction === 'save_task').pop();
     assert.ok(save, 'the save happened');
     assert.deepStrictEqual(save.reminderTimes, ['09:00', '18:30', '21:45']);
-    assert.strictEqual(save.recurrence, undefined, 'the cadence is not resent');
-    assert.strictEqual(save.startKey, undefined);
-    assert.strictEqual(save.photoRequired, undefined);
+    // The cadence *is* resent now that the sheet shows it -- and because the
+    // controls opened on the stored schedule, resending it stores the same
+    // schedule back. A field the person can see is a field they can change; a
+    // field they cannot see is one this payload must not carry.
+    assert.deepStrictEqual(save.recurrence,
+      { freq: 'weekly', interval: 1, weekdays: [1, 4] });
+    assert.strictEqual(save.startKey, '2026-08-03');
+    assert.strictEqual(save.endKey, '2026-12-31');
+    assert.strictEqual(save.dueTime, '18:00');
+    assert.strictEqual(save.photoRequired, true);
     assert.strictEqual(save.remindDaily, undefined, 'and a routine carries no daily flag');
 
     // The engine's own answer, not the form's: everything unmentioned survives.

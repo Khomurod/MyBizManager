@@ -4499,6 +4499,33 @@ function writeJobField_(sheet, rowNumber, columnIndex, value) {
 }
 
 /**
+ * Records on the job's own row that its outward call already succeeded.
+ *
+ * A job is "send something, then write down what came back". If the send works
+ * and the write then fails, the whole job is retried — and the send goes out
+ * again. That is a duplicate Telegram card for a message the group already has,
+ * and no existing marker stops it: the reminder slot in `Reminders_Sent_JSON`
+ * and `Notified_At` are both stamped at *enqueue* time and deduplicate enqueues,
+ * not deliveries.
+ *
+ * One cell on the job's own row is the cheapest durable place to say "this went
+ * out". The retry reads it, skips the send, and only finishes the bookkeeping.
+ *
+ * The row is `Processing` while this happens, so `hasPendingJob_` — which
+ * matches on the exact payload JSON — stops matching it. That is acceptable
+ * precisely because it is not what prevents a duplicate enqueue: the slot marker
+ * and `Notified_At` are, and both are written under the script lock before the
+ * job is queued at all.
+ */
+function markJobDelivered_(job, facts) {
+  if (!job || !job.sheet || !job.rowNumber) return;
+  job.payload = job.payload || {};
+  var names = Object.keys(facts || {});
+  for (var i = 0; i < names.length; i++) job.payload[names[i]] = facts[names[i]];
+  writeJobField_(job.sheet, job.rowNumber, 4, JSON.stringify(job.payload));
+}
+
+/**
  * Claims a job by flipping it to Processing under the script lock, so two
  * concurrent workers can never run the same job twice.
  */
@@ -4569,6 +4596,7 @@ function failJob_(sheet, job, error, doc) {
 /** Last-chance cleanup when a job will never be attempted again. */
 function onJobPermanentlyFailed_(doc, job) {
   if (job.type === "task_proof_prompt") releaseStuckProofPrompt_(doc, job);
+  if (job.type === "task_notify") releaseUndeliveredTaskNotify_(doc, job);
 }
 
 function processPendingJobs_(doc, maxJobs) {
@@ -5156,9 +5184,14 @@ function cafeStockShortfall_(state, consumption) {
  */
 function applyCafeStockMovement_(state, consumption, direction) {
   var inventory = cafeInventoryIndex_(state.inventory);
+  var missing = [];
   Object.keys(consumption).forEach(function (id) {
     var item = inventory[id];
-    if (!item) return;
+    // An id the inventory no longer holds. This used to be a bare `return`: the
+    // movement was skipped in silence and the caller had no way to find out, so a
+    // void reported the stock restored while some of it had gone nowhere. The
+    // shelf is still not guessed at -- it is reported instead.
+    if (!item) { missing.push({ id: id, qty: consumption[id].qty, cost: consumption[id].cost }); return; }
     item.qty = cafeRoundQty_((Number(item.qty) || 0) + consumption[id].qty * direction);
     item.totalCost = Math.max(0, Math.round((Number(item.totalCost) || 0) + consumption[id].cost * direction));
     if (item.qty > 0) {
@@ -5168,7 +5201,16 @@ function applyCafeStockMovement_(state, consumption, direction) {
       item.unitCost = 0;
     }
   });
-  return state.inventory;
+  return { inventory: state.inventory, missing: missing };
+}
+
+/** "Kola 1 (i1) — 2 dona" per unrestored line, for a human reading a log. */
+function describeMissingStock_(missing) {
+  var parts = [];
+  for (var i = 0; i < missing.length; i++) {
+    parts.push(missing[i].id + " — " + missing[i].qty);
+  }
+  return parts.join("; ");
 }
 
 /**
@@ -5266,7 +5308,10 @@ function saveCafeSale_(doc, configSheet, payload) {
       return jsonOutput_({ status: "error", message: "Omborda yetarli emas — " + short.join("; ") });
     }
 
-    var inventory = applyCafeStockMovement_(current, resolved.consumption, -1);
+    // `cafeStockShortfall_` above already refused any id the inventory does not
+    // hold, so nothing can be missing here; taking the field rather than the
+    // return value keeps one contract for both directions.
+    var inventory = applyCafeStockMovement_(current, resolved.consumption, -1).inventory;
     writeCafeInventory_(configSheet, inventory);
 
     var saleId = String(payload.id || new Date().getTime());
@@ -5342,14 +5387,41 @@ function voidCafeSale_(doc, configSheet, payload) {
       : resolveCafeSaleLines_(current, cafeReceiptItems_(detail), { allowInactive: true });
 
     var inventory = current.inventory;
+    var missing = [];
     if (!restored.error) {
-      inventory = applyCafeStockMovement_(current, restored.consumption, 1);
+      var applied = applyCafeStockMovement_(current, restored.consumption, 1);
+      inventory = applied.inventory;
+      missing = applied.missing;
       writeCafeInventory_(configSheet, inventory);
+      if (missing.length > 0) {
+        // Every id in the frozen snapshot is checked against the inventory as it
+        // is now, because an item can be deleted between the sale and the void.
+        // The rest of the receipt *was* put back -- only these lines could not
+        // be -- and `stockRestored` used to be `!restored.error`, which on this
+        // path is `true` unconditionally: the snapshot branch has no `error`
+        // property at all. So the answer said the goods were returned and the
+        // POS told the operator so, whether or not any of them had been.
+        debugLog_(doc, "cafe_void_stock_unresolved",
+          saleId + ": omborda yo'q — " + describeMissingStock_(missing));
+      }
     } else {
       // The receipt names something the catalogue no longer has. The sale is
       // still voided -- the money is what matters -- but the stock cannot be
       // put back automatically, and saying so is better than guessing.
       debugLog_(doc, "cafe_void_stock_unresolved", saleId + ": " + restored.error);
+    }
+
+    var stockRestored = !restored.error && missing.length === 0;
+
+    // Recorded *before* the receipt row goes, because the row is the only place
+    // the frozen consumption lives: once it is deleted there is nothing left to
+    // say what should have been restored. Missing quantities are never guessed,
+    // so what the log holds is the whole record of the shortfall.
+    if (!stockRestored) {
+      appendAuditRow_(doc, "cafe_sale_void_stock_unrestored",
+        saleId + (missing.length > 0
+          ? " missing:" + describeMissingStock_(missing)
+          : " unresolved:" + restored.error));
     }
 
     salesSheet.deleteRow(rowNumber);
@@ -5358,7 +5430,9 @@ function voidCafeSale_(doc, configSheet, payload) {
 
     return jsonOutput_({
       status: "success", duplicate: false, inventory: inventory,
-      stockRestored: !restored.error
+      stockRestored: stockRestored,
+      // What the operator has to count by hand, named rather than implied.
+      unrestored: missing
     });
   } finally {
     lock.releaseLock();
@@ -9174,6 +9248,21 @@ function taskDaysInMonth_(year, month) {
  *     monthDay: 1..31 | 'last', // monthly: which day of month
  *     intervalDays: >=1 }       // custom: every N days
  */
+/**
+ * Whether a caller actually said which day of the month it means.
+ *
+ * `normalizeTaskRecurrence_` resolves anything unusable to the 1st, and it does
+ * that on the read path as well as the write path, so the default cannot be
+ * tightened without rewriting what every stored row means. This is the
+ * save-time question instead: did the client choose, or is this monthly task
+ * about to become a day-1 task because nobody asked?
+ */
+function isTaskMonthDayChoice_(value) {
+  if (value === "last") return true;
+  var day = Number(value);
+  return isFinite(day) && day >= 1 && day <= 31 && Math.floor(day) === day;
+}
+
 function normalizeTaskRecurrence_(recurrence) {
   var r = recurrence && typeof recurrence === "object" ? recurrence : {};
   var freq = ["daily", "weekly", "monthly", "custom"].indexOf(String(r.freq)) !== -1 ? String(r.freq) : "daily";
@@ -9695,6 +9784,60 @@ function writeOccurrenceRow_(doc, occ) {
   applyTaskTextFormats_(sheet, TASK_OCC_HEADER, TASK_OCC_TEXT_COLUMNS, occ.rowNumber, 1);
   sheet.getRange(occ.rowNumber, 1, 1, TASK_OCC_HEADER.length).setValues([occurrenceToRow_(occ)]);
   bumpDataRevision_(CACHE_SCOPE_TASKS);
+}
+
+/**
+ * Persists only the named fields, on to whatever the row says *now*.
+ *
+ * `writeOccurrenceRow_` writes all 27 columns from an in-memory object, which is
+ * right for a caller that has just decided the whole state of an occurrence and
+ * wrong for one that has been away. A Telegram send is away for a network round
+ * trip: the reminder job read an Open occurrence, sent the card, and wrote its
+ * pre-send snapshot back — so a completion, cancellation, skip or edit that
+ * landed in that window was erased, attribution, proof and reminder markers
+ * included. The job owns the message id it just learned and nothing else.
+ *
+ * So: take the lock, re-read the row, apply only what the caller owns, write.
+ * The read-modify-write is what makes it a merge rather than a replay, and the
+ * fresh read also fixes the row number, which a deleted or shifted row would
+ * otherwise have made stale. Returns the merged occurrence, or null if the row
+ * is gone.
+ *
+ * `options.fields` are applied unconditionally; `options.ifEmpty` only where the
+ * stored value is still blank (a reminder becomes the occurrence's card when it
+ * has none, and must not restamp one it already has); `options.meta` keys are
+ * merged into the stored `Meta_JSON` rather than replacing it, for the same
+ * reason the row is merged rather than replaced.
+ */
+function updateOccurrenceFields_(doc, occurrenceId, options) {
+  var opts = options || {};
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var occ = findOccurrence_(doc, occurrenceId);
+    if (!occ) return null;
+
+    var names = Object.keys(opts.fields || {});
+    for (var i = 0; i < names.length; i++) occ[names[i]] = opts.fields[names[i]];
+
+    var lazy = Object.keys(opts.ifEmpty || {});
+    for (var j = 0; j < lazy.length; j++) {
+      if (occ[lazy[j]] === "" || occ[lazy[j]] === null || occ[lazy[j]] === undefined) {
+        occ[lazy[j]] = opts.ifEmpty[lazy[j]];
+      }
+    }
+
+    if (opts.meta) {
+      occ.meta = occ.meta || {};
+      var metaNames = Object.keys(opts.meta);
+      for (var m = 0; m < metaNames.length; m++) occ.meta[metaNames[m]] = opts.meta[metaNames[m]];
+    }
+
+    writeOccurrenceRow_(doc, occ);
+    return occ;
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 // ------------------------------------------------ occurrence materialisation
@@ -10289,6 +10432,16 @@ function completeTaskOccurrence_(doc, occ, options) {
   var opts = options || {};
   var nowMs = opts.nowMs === undefined ? Date.now() : opts.nowMs;
 
+  // The one function every completion path funnels through, and therefore the
+  // only place the photo rule cannot be forgotten. A photo-required occurrence
+  // becomes Completed by delivering the photo and by nothing else: not a button,
+  // not a client that omits an identity, not a second press of a card that is
+  // already WaitingProof. The rule used to live in one caller and be conditional
+  // on the caller naming a person, which is how the admin board completed
+  // photo-required work with Proof_File_Id empty. Refusing here writes nothing
+  // and lets each caller say what it wants to say about it.
+  if (occ.photoRequired && !opts.proofFileId) return null;
+
   occ.status = TASK_STATUS_COMPLETED;
   occ.completedById = String(opts.byId || "");
   occ.completedByName = String(opts.byName || "");
@@ -10438,9 +10591,15 @@ function handleTaskCallback_(callback, doc) {
     return;
   }
 
-  completeTaskOccurrence_(doc, occ, {
+  var completed = completeTaskOccurrence_(doc, occ, {
     byId: from.id, byName: taskDisplayName_(from), source: "telegram"
   });
+  // Unreachable while the photo branch above is intact; the choke point is what
+  // makes that true rather than something this branch has to be trusted about.
+  if (!completed) {
+    answerCallbackQuery_(callback.id, "📷 Bu vazifa rasm bilan tasdiqlanadi.");
+    return;
+  }
   answerCallbackQuery_(callback.id, "✅ Bajarildi.");
 }
 
@@ -10485,11 +10644,18 @@ function handleTaskGroupMessage_(message, doc) {
   }
 
   var largest = message.photo[message.photo.length - 1] || {};
+  // A photo Telegram gave us no file id for is not proof we can store, and the
+  // choke point refuses it rather than completing without one.
+  if (!largest.file_id) {
+    trySendTaskGroupMessage_(doc,
+      "⚠️ Rasmni o'qib bo'lmadi. Iltimos, qaytadan yuboring.");
+    return;
+  }
   completeTaskOccurrence_(doc, target, {
     byId: from.id,
     byName: taskDisplayName_(from),
     source: "telegram",
-    proofFileId: largest.file_id || "",
+    proofFileId: largest.file_id,
     proofMsgId: message.message_id
   });
   trySendTaskGroupMessage_(doc, "✅ Rasm qabul qilindi — \"" + target.title + "\" bajarildi.");
@@ -10566,21 +10732,31 @@ function runTaskProofPromptJob_(doc, job) {
   if (!chatId) throw new Error("Telegram Tasks group ID o'rnatilmagan.");
   var occ = findOccurrence_(doc, String(job.payload.occurrenceId || ""));
   if (!occ) return;
-  if (occ.status !== TASK_STATUS_WAITING) return;                                  // already resolved
-  if (String(occ.proofAwaitingUserId) !== String(job.payload.userId || "")) return; // superseded
 
-  var sent = sendTelegramMessage_(
-    chatId,
-    buildTaskProofPromptMessage_(occ, job.payload),
-    { force_reply: true, selective: true },
-    "HTML",
-    { replyToMessageId: occ.msgId }
-  );
-  var promptId = extractTelegramMessageId_(sent);
-  if (promptId) {
-    occ.meta = occ.meta || {};
-    occ.meta.proofPromptMsgId = String(promptId);
-    writeOccurrenceRow_(doc, occ);
+  // A previous attempt already delivered the prompt and failed only to write it
+  // down. Asking again would put a second ForceReply in the group for one claim.
+  var alreadySent = String(job.payload.deliveredMsgId || "");
+  if (!alreadySent) {
+    if (occ.status !== TASK_STATUS_WAITING) return;                                  // already resolved
+    if (String(occ.proofAwaitingUserId) !== String(job.payload.userId || "")) return; // superseded
+
+    var sent = sendTelegramMessage_(
+      chatId,
+      buildTaskProofPromptMessage_(occ, job.payload),
+      { force_reply: true, selective: true },
+      "HTML",
+      { replyToMessageId: occ.msgId }
+    );
+    alreadySent = String(extractTelegramMessageId_(sent) || "");
+    if (alreadySent) markJobDelivered_(job, { deliveredMsgId: alreadySent });
+  }
+
+  // The prompt's own message id is the only thing this send learned. Merging it
+  // on to a fresh read means a claim that was released, or an occurrence
+  // completed by a photo already sitting in the group, is not undone by writing
+  // back the snapshot this job read before the round trip.
+  if (alreadySent) {
+    updateOccurrenceFields_(doc, occ.id, { meta: { proofPromptMsgId: alreadySent } });
   }
 }
 
@@ -10590,9 +10766,14 @@ function runTaskProofPromptJob_(doc, job) {
  * lie the group cannot act on.
  */
 function releaseStuckProofPrompt_(doc, job) {
-  var occ = findOccurrence_(doc, String((job.payload || {}).occurrenceId || ""));
+  var payload = job.payload || {};
+  var occ = findOccurrence_(doc, String(payload.occurrenceId || ""));
   if (!occ || occ.status !== TASK_STATUS_WAITING) return;
   if (occ.meta && occ.meta.proofPromptMsgId) return;   // it did go out
+  // ...and so did this one, even though the row never got to hear about it.
+  // Releasing the claim here would tell the group nobody was asked, next to a
+  // ForceReply message that is sitting right there asking them.
+  if (payload.deliveredMsgId) return;
   occ.status = TASK_STATUS_OPEN;
   occ.proofAwaitingUserId = "";
   occ.completedByName = "";
@@ -10610,10 +10791,25 @@ function runTaskNotifyJob_(doc, job) {
   var occ = findOccurrence_(doc, String(job.payload.occurrenceId || ""));
   if (!occ) return; // deleted before it went out
 
+  // Already in the group; a previous attempt only failed to write down its id.
+  if (job.payload.deliveredMsgId) {
+    return finishTaskCardDelivery_(doc, occ, String(job.payload.deliveredMsgId));
+  }
+
   // The definition can be paused between enqueue and send; the queue must not
   // deliver a message the admin has already stopped.
   var notifyTask = findTask_(doc, occ.taskId);
   if (notifyTask && (notifyTask.status === TASK_DEF_PAUSED || notifyTask.status === TASK_DEF_CANCELLED)) return;
+
+  // Reminder times are the notification schedule, not an extra ping: an
+  // occurrence that has them gets no `Yangi vazifa` card, and its first reminder
+  // is its first card. That rule used to be applied only where the job was
+  // enqueued, so adding reminders to a task before the queue drained still
+  // posted the card -- and because that stamped the message id, the reminder
+  // then became an orphan second card no completion could edit in place.
+  // Deciding it here as well is what makes the queued job obsolete rather than
+  // merely early. `Notified_At` stays stamped, so nothing re-enqueues it.
+  if (occ.reminderTimes && occ.reminderTimes.length) return;
 
   // The card carries the task's brief; the lookup above already has it, so this
   // costs nothing extra. Cards are HTML so a long description can be collapsed.
@@ -10624,15 +10820,63 @@ function runTaskNotifyJob_(doc, job) {
   if (occ.status !== TASK_STATUS_OPEN) {
     var response = sendTelegramMessage_(chatId,
       buildTaskStatusMessage_(occ, Date.now(), notifyDescription), taskClearedMarkup_(), "HTML");
-    var doneId = extractTelegramMessageId_(response);
-    if (doneId && !occ.msgId) { occ.msgId = String(doneId); writeOccurrenceRow_(doc, occ); }
+    var doneId = String(extractTelegramMessageId_(response) || "");
+    if (doneId) {
+      markJobDelivered_(job, { deliveredMsgId: doneId });
+      updateOccurrenceFields_(doc, occ.id, { ifEmpty: { msgId: doneId } });
+    }
     return;
   }
 
   var sent = sendTelegramMessage_(chatId,
     buildTaskOccurrenceMessage_(occ, notifyDescription), taskDoneMarkup_(occ.id), "HTML");
-  var msgId = extractTelegramMessageId_(sent);
-  if (msgId) { occ.msgId = String(msgId); writeOccurrenceRow_(doc, occ); }
+  var msgId = String(extractTelegramMessageId_(sent) || "");
+  if (msgId) {
+    markJobDelivered_(job, { deliveredMsgId: msgId });
+    finishTaskCardDelivery_(doc, occ, msgId);
+  }
+}
+
+/**
+ * Stores the id of a card that is now in the group, and nothing else.
+ *
+ * Only the message id: the occurrence may have been completed, cancelled or
+ * skipped while the card was in flight, and that is newer than anything the job
+ * read before it. `ifEmpty` because a card that arrived first owns the id.
+ *
+ * If the work did finish in that window, the card in the group is still showing
+ * a live button. The completion could not queue an edit for it -- there was no
+ * message id to edit yet -- so this queues it now that there is one.
+ */
+function finishTaskCardDelivery_(doc, occ, msgId) {
+  var merged = updateOccurrenceFields_(doc, occ.id, { ifEmpty: { msgId: msgId } });
+  if (!merged) return;
+  if (merged.status !== TASK_STATUS_OPEN && String(merged.msgId) === String(msgId)) {
+    enqueueTaskJob_(doc, "task_update_message", occ.id, { occurrenceId: occ.id });
+  }
+}
+
+/**
+ * A `Yangi vazifa` card that will never be delivered.
+ *
+ * `Notified_At` is stamped when the job is enqueued, and the scheduler will not
+ * announce an occurrence that carries one. So a notify that exhausted its
+ * retries used to silence the announcement for ever: the card was lost and
+ * nothing said so. Clearing the stamp lets the next scheduler pass try once
+ * more; `notifyFailedAt` is what stops that becoming a card retried at every
+ * tick for as long as the group stays misconfigured.
+ */
+function releaseUndeliveredTaskNotify_(doc, job) {
+  var payload = job.payload || {};
+  if (payload.deliveredMsgId) return;               // it did go out
+  var occ = findOccurrence_(doc, String(payload.occurrenceId || ""));
+  if (!occ) return;
+  if (occ.meta && occ.meta.notifyFailedAt) return;  // it has already had its second chance
+  updateOccurrenceFields_(doc, occ.id, {
+    fields: { notifiedAt: "" },
+    meta: { notifyFailedAt: new Date().toISOString() }
+  });
+  appendAuditRow_(doc, "task_notify_undelivered", occ.id);
 }
 
 function runTaskReminderJob_(doc, job) {
@@ -10640,6 +10884,15 @@ function runTaskReminderJob_(doc, job) {
   if (!chatId) throw new Error("Telegram Tasks group ID o'rnatilmagan.");
   var occ = findOccurrence_(doc, String(job.payload.occurrenceId || ""));
   if (!occ) return;
+
+  // Telegram already accepted this reminder on an earlier attempt and only the
+  // row write failed. The group has the message; finish the bookkeeping and do
+  // not deliver it twice. The status checks below are about whether to *send*,
+  // and this has already been sent.
+  if (job.payload.deliveredMsgId) {
+    return finishTaskReminderDelivery_(doc, occ, String(job.payload.deliveredMsgId));
+  }
+
   // Completion (or cancellation/skip) between enqueue and send stops the ping.
   if (occ.status !== TASK_STATUS_OPEN) return;
 
@@ -10651,17 +10904,30 @@ function runTaskReminderJob_(doc, job) {
   var sent = sendTelegramMessage_(chatId,
     buildTaskReminderMessage_(occ, remindTask ? remindTask.description : ""),
     taskDoneMarkup_(occ.id), "HTML");
+  var reminderMsgId = String(extractTelegramMessageId_(sent) || "");
+  if (!reminderMsgId) return;
+  markJobDelivered_(job, { deliveredMsgId: reminderMsgId });
 
   // An occurrence with reminder times has no separate "Yangi vazifa" card.
   // Its first successful reminder is therefore the primary group card: keep
   // that message id so completion/proof/cancellation can edit it in place.
-  if (!occ.msgId) {
-    var reminderMsgId = extractTelegramMessageId_(sent);
-    if (reminderMsgId) {
-      occ.msgId = String(reminderMsgId);
-      if (!occ.notifiedAt) occ.notifiedAt = new Date().toISOString();
-      writeOccurrenceRow_(doc, occ);
-    }
+  //
+  // The card id and the stamp that says a card exists, and nothing else: the
+  // rest of the row belongs to whoever touched it while this reminder was in
+  // flight -- including the person who completed it off the back of this very
+  // card. Both go in `ifEmpty`, so a card that arrived first keeps the id and a
+  // later reminder does not restamp `Notified_At`.
+  finishTaskReminderDelivery_(doc, occ, reminderMsgId);
+}
+
+/** The bookkeeping half of a reminder, separable so a retry can finish it. */
+function finishTaskReminderDelivery_(doc, occ, msgId) {
+  var merged = updateOccurrenceFields_(doc, occ.id, {
+    ifEmpty: { msgId: msgId, notifiedAt: new Date().toISOString() }
+  });
+  if (!merged) return;
+  if (merged.status !== TASK_STATUS_OPEN && String(merged.msgId) === String(msgId)) {
+    enqueueTaskJob_(doc, "task_update_message", occ.id, { occurrenceId: occ.id });
   }
 }
 
@@ -11133,6 +11399,17 @@ function normalizeTaskInput_(payload, existing) {
         ? normalizeTaskRecurrence_(existing.recurrence)
         : normalizeTaskRecurrence_(payload.recurrence));
 
+    // A monthly cadence with no chosen day silently becomes the 1st. Refusing it
+    // here is what stops a client creating one by not asking -- which is exactly
+    // what the Mini App did, having no monthly-day control at all, so every
+    // monthly routine made on a phone fell due on the 1st whatever was intended.
+    // Only a caller that actually supplied `recurrence` is held to this: an edit
+    // that does not mention the cadence keeps the stored one, day included.
+    if (taskFieldSupplied_(payload, "recurrence") && task.recurrence.freq === "monthly" &&
+        !isTaskMonthDayChoice_((payload.recurrence || {}).monthDay)) {
+      return { error: "Oylik vazifa uchun oy kunini tanlang." };
+    }
+
     task.startKey = isTaskDateKey_(payload.startKey) ? String(payload.startKey) : (existing && existing.startKey ? existing.startKey : taskTodayKey_(Date.now()));
 
     var endKey = keep("endKey", existing ? existing.endKey : "");
@@ -11488,9 +11765,17 @@ function completeOccurrenceAction_(doc, payload) {
   if (!occ) return { status: "error", message: "Vazifa topilmadi." };
   if (occ.status === TASK_STATUS_COMPLETED) return { status: "success" }; // idempotent
   if (occ.status === TASK_STATUS_CANCELLED) return { status: "error", message: "Bekor qilingan vazifa." };
+  if (occ.status === TASK_STATUS_SKIPPED) return { status: "error", message: "Bu vazifa o'tkazib yuborilgan." };
   if (isFutureOccurrence_(occ, taskTodayKey_(Date.now()))) {
     return { status: "error",
       message: "Kelgusi kun uchun vazifani oldindan bajarilgan deb belgilab bo'lmaydi." };
+  }
+  // Somebody has already claimed this one and been asked for the photo. Pressing
+  // the button again is not how they deliver it, and it must not be a way round
+  // it either -- only a photo replying to the prompt finishes a claimed task.
+  if (occ.status === TASK_STATUS_WAITING) {
+    return { status: "error", awaitingProof: true,
+      message: "📷 Rasm kutilmoqda — guruhda so'ralgan xabarga rasm bilan javob bering." };
   }
 
   // A caller with a verified identity is recorded as themselves. The admin
@@ -11501,10 +11786,17 @@ function completeOccurrenceAction_(doc, payload) {
   var source = String(payload.completedSource || "web");
 
   // A task that asks for a photo does not become done because a button was
-  // pressed - that is the rule the group cards already enforce. Any client
-  // that can name a person can start the proof flow instead of bypassing it;
-  // one that cannot has no one to ask, so it completes as before.
-  if (occ.photoRequired && occ.status !== TASK_STATUS_WAITING && byId) {
+  // pressed - that is the rule the group cards already enforce, and
+  // `completeTaskOccurrence_` now enforces it for every caller. A client that
+  // can name a person starts the proof flow; one that cannot has nobody to ask
+  // for the photo, so it is refused here instead of completing without one.
+  // (It used to complete: `&& byId` meant the admin board, which sends no
+  // identity, marked photo-required work done with Proof_File_Id empty.)
+  if (occ.photoRequired && !byId) {
+    return { status: "error", needsProof: true,
+      message: "📷 Bu vazifa rasm bilan tasdiqlanadi — Telegram guruhida bajarilgan deb belgilang." };
+  }
+  if (occ.photoRequired) {
     occ.status = TASK_STATUS_WAITING;
     occ.proofAwaitingUserId = byId;
     occ.completedByName = byName;                  // provisional; confirmed on proof
@@ -11524,13 +11816,25 @@ function completeOccurrenceAction_(doc, payload) {
     };
   }
 
-  completeTaskOccurrence_(doc, occ, { byId: byId, byName: byName, source: source });
+  var completed = completeTaskOccurrence_(doc, occ, { byId: byId, byName: byName, source: source });
+  // The choke point refused it. Every reason it can refuse is already answered
+  // above, so this is the backstop rather than the guard: never report a
+  // completion that did not happen.
+  if (!completed) {
+    return { status: "error", needsProof: true,
+      message: "📷 Bu vazifa rasm bilan tasdiqlanadi." };
+  }
   return { status: "success" };
 }
 
 function reopenOccurrenceAction_(doc, payload) {
   var occ = findOccurrence_(doc, payload.occurrenceId);
   if (!occ) return { status: "error", message: "Vazifa topilmadi." };
+  // A cancelled occurrence is not unfinished work, it is a decision. Reopening
+  // one used to succeed and cleared its proof and attribution on the way past.
+  if (occ.status === TASK_STATUS_CANCELLED) {
+    return { status: "error", message: "Bekor qilingan vazifani qayta ochib bo'lmaydi." };
+  }
   occ.status = TASK_STATUS_OPEN;
   occ.completedById = "";
   occ.completedByName = "";

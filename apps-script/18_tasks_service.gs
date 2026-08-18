@@ -214,6 +214,16 @@ function completeTaskOccurrence_(doc, occ, options) {
   var opts = options || {};
   var nowMs = opts.nowMs === undefined ? Date.now() : opts.nowMs;
 
+  // The one function every completion path funnels through, and therefore the
+  // only place the photo rule cannot be forgotten. A photo-required occurrence
+  // becomes Completed by delivering the photo and by nothing else: not a button,
+  // not a client that omits an identity, not a second press of a card that is
+  // already WaitingProof. The rule used to live in one caller and be conditional
+  // on the caller naming a person, which is how the admin board completed
+  // photo-required work with Proof_File_Id empty. Refusing here writes nothing
+  // and lets each caller say what it wants to say about it.
+  if (occ.photoRequired && !opts.proofFileId) return null;
+
   occ.status = TASK_STATUS_COMPLETED;
   occ.completedById = String(opts.byId || "");
   occ.completedByName = String(opts.byName || "");
@@ -363,9 +373,15 @@ function handleTaskCallback_(callback, doc) {
     return;
   }
 
-  completeTaskOccurrence_(doc, occ, {
+  var completed = completeTaskOccurrence_(doc, occ, {
     byId: from.id, byName: taskDisplayName_(from), source: "telegram"
   });
+  // Unreachable while the photo branch above is intact; the choke point is what
+  // makes that true rather than something this branch has to be trusted about.
+  if (!completed) {
+    answerCallbackQuery_(callback.id, "📷 Bu vazifa rasm bilan tasdiqlanadi.");
+    return;
+  }
   answerCallbackQuery_(callback.id, "✅ Bajarildi.");
 }
 
@@ -410,11 +426,18 @@ function handleTaskGroupMessage_(message, doc) {
   }
 
   var largest = message.photo[message.photo.length - 1] || {};
+  // A photo Telegram gave us no file id for is not proof we can store, and the
+  // choke point refuses it rather than completing without one.
+  if (!largest.file_id) {
+    trySendTaskGroupMessage_(doc,
+      "⚠️ Rasmni o'qib bo'lmadi. Iltimos, qaytadan yuboring.");
+    return;
+  }
   completeTaskOccurrence_(doc, target, {
     byId: from.id,
     byName: taskDisplayName_(from),
     source: "telegram",
-    proofFileId: largest.file_id || "",
+    proofFileId: largest.file_id,
     proofMsgId: message.message_id
   });
   trySendTaskGroupMessage_(doc, "✅ Rasm qabul qilindi — \"" + target.title + "\" bajarildi.");
