@@ -860,6 +860,15 @@ npm run bench            # sheet passes / bytes / ms per screen (see below)
   `Utilities`, `Session`, `ContentService` and `HtmlService` mocked, so backend
   logic is testable outside Apps Script. **The harness's fidelity matters** — a
   previously wrong `Utilities.formatDate` mock hid a real class of bug.
+- **A fixture pinned to a literal date is a test with an expiry date on it.**
+  Anything asserted against a bucket the *code* derives from `new Date()` — the
+  café summary's month, the task view's today, the Mini App's opening period —
+  must be dated from `todayKey()` / `currentPeriodKey()` in `tests/gas-harness.js`,
+  never written down. Five tests were pinned to `2026-08` and began failing the
+  moment the calendar moved past them; because `deploy` gates on `unit`, that
+  silently stopped the backend shipping rather than looking like a test problem.
+  A value asserted against something *stored* — a deadline, a period column, a
+  recurrence key — may stay literal: those mean the same thing for ever.
 - **Dates in tests are the recurring trap.** The harness's `formatDate` mock
   still **ignores its timezone argument** and formats with the host's local
   getters, though `Session.getScriptTimeZone()` reports `Asia/Tashkent`. So a

@@ -18,7 +18,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const crypto = require('crypto');
-const { loadScript, readJsonOutput, postEvent } = require('./gas-harness');
+const { loadScript, readJsonOutput, postEvent, currentPeriodKey, todayKey } = require('./gas-harness');
 
 const ADMIN_KEY = 'read-efficiency-key';
 const BOT_TOKEN = '123456789:AAFakeTokenForTestsOnly_0123456789abcd';
@@ -276,10 +276,29 @@ function bootManySales() {
     kind: 'product', inventoryId: `i${n}`, name: `Mahsulot ${n}`,
     qty: n, unitPrice: 8000, unitCost: 6000, lineTotal: 8000 * n, lineProfit: 2000 * n
   })));
+  // Dated into the month the café summary will actually bucket by, and never on
+  // today.
+  //
+  // It used to be the literal `2026-08`, which meant these assertions held only
+  // while the calendar agreed with the fixture -- `buildMiniCafeSummary_`
+  // derives its `monthKey` from `new Date()`, so from 2026-09 onwards
+  // `month.sales` was 0 and the suite failed for ever, taking the deploy with
+  // it (the release job gates on the unit tests).
+  //
+  // Today is excluded because the till test below adds exactly one sale for
+  // today and asserts it is the only one it gets back. Both readings of "today"
+  // are excluded: the harness's `Utilities.formatDate` mock ignores the timezone
+  // it is handed and formats with the host's getters, so the code under test can
+  // be a day behind the engine's own Tashkent date. Days 1-28 so the set is
+  // valid in February too.
+  const month = currentPeriodKey();
+  const skip = [Number(todayKey().slice(8, 10)), new Date().getUTCDate()];
+  const days = [];
+  for (let d = 1; d <= 28; d++) if (skip.indexOf(d) === -1) days.push(d);
   const rows = [];
   for (let i = 0; i < 200; i++) {
     rows.push([
-      `2026-08-${String((i % 12) + 1).padStart(2, '0')}T09:00:00.000Z`,
+      `${month}-${String(days[i % days.length]).padStart(2, '0')}T09:00:00.000Z`,
       'kassir', 40000, 10000, receipt, `sale_${i}`
     ]);
   }

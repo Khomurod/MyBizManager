@@ -307,4 +307,36 @@ function postEvent(payload, parameter = {}) {
   return { postData: { contents: JSON.stringify(payload) }, parameter };
 }
 
-module.exports = { loadScript, readJsonOutput, postEvent, createSpreadsheet };
+/**
+ * "Today" and "this month", in the timezone the app actually works in.
+ *
+ * A fixture pinned to a literal date is a test with an expiry date on it. Two
+ * suites here compared such a fixture against a bucket the *code* derives from
+ * `new Date()` — the café summary's `monthKey` (`buildMiniCafeSummary_`) and the
+ * task view's `todayKey` — so they passed when they were written and began
+ * failing the moment the calendar moved past them. That is not a flake: it is
+ * permanent, and it takes the whole deploy with it, because the release job
+ * gates on the unit tests.
+ *
+ * Anything asserted against a current-time bucket must be dated from these.
+ * Anything asserted against a *stored* value (a deadline, a period column, a
+ * recurrence key) may stay literal — those mean the same thing for ever.
+ *
+ * Both are built in Asia/Tashkent, a fixed UTC+5, because that is the engine's
+ * clock: between 19:00 and midnight UTC the host's calendar and the engine's
+ * disagree about what day it is.
+ */
+function todayKey() {
+  const d = new Date(Date.now() + 5 * 3600000);
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+}
+
+/** The canonical `YYYY-MM` period the app is in right now. */
+function currentPeriodKey() {
+  return todayKey().slice(0, 7);
+}
+
+module.exports = {
+  loadScript, readJsonOutput, postEvent, createSpreadsheet, todayKey, currentPeriodKey
+};

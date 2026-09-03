@@ -425,9 +425,14 @@ test('a deadline with a time reaches the phone as a labelled instant', () => {
     deadlineKey: '2026-08-20', deadlineTime: '14:30'
   });
 
-  const occ = (mini(gas, 'mini_tasks').view.today.upcoming || [])
-    .concat(mini(gas, 'mini_tasks').view.today.needsAttention || [])
-    .find(o => o.taskId === created.taskId);
+  // Every list the occurrence could be in, including `overdue`: the deadline is
+  // a fixed date, so which bucket it lands in depends on when the suite runs.
+  // Searching only `upcoming` + `needsAttention` made this pass until the
+  // calendar moved past 2026-08-20 and then fail for ever. The sibling tests
+  // below already did it this way.
+  const view = mini(gas, 'mini_tasks').view;
+  const occ = [].concat(view.today.upcoming || [], view.today.needsAttention || [],
+    view.today.overdue || []).find(o => o.taskId === created.taskId);
 
   assert.ok(occ, 'the occurrence is in the view');
   assert.strictEqual(occ.dueLabel, '20.08.2026 14:30');
