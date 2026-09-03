@@ -201,7 +201,26 @@ function newGoalStepId_() {
   return "step_" + Utilities.getUuid().split("-").join("");
 }
 
-function normalizeGoalSteps_(steps) {
+/**
+ * The steps of a goal, cleaned up.
+ *
+ * `photoRequired` has three meanings and they are not interchangeable:
+ *
+ *   absent  - this caller is not talking about the photo rule at all
+ *   null    - clear the override, so the step inherits the goal's rule again
+ *   boolean - override the goal's rule for this step
+ *
+ * A *stored* step never carries null (`mergeGoalSteps_` deletes the key rather
+ * than writing one), so the read path collapses null into absent and keeps
+ * exactly the two states it has always had. Only an incoming payload needs the
+ * third, and it says so with `keepClear` -- without it "inherit" would be
+ * unsendable, because absent has to keep meaning "leave the stored value
+ * alone" for clients that never mention steps' photo rules at all.
+ *
+ * @param {Array} steps
+ * @param {boolean} [keepClear]  preserve an explicit null as a clear request
+ */
+function normalizeGoalSteps_(steps, keepClear) {
   var source = Array.isArray(steps) ? steps : [];
   var out = [];
   for (var i = 0; i < source.length; i++) {
@@ -210,9 +229,10 @@ function normalizeGoalSteps_(steps) {
     if (!title) continue;
     var entry = { title: title };
     if (step.id) entry.id = String(step.id).slice(0, 64);
-    // Absent means "inherit from the goal". Only an explicit value overrides,
-    // which is why this key is not written unless one was supplied.
-    if (step.photoRequired !== undefined && step.photoRequired !== null && step.photoRequired !== "") {
+    var cleared = step.photoRequired === null || step.photoRequired === "";
+    if (cleared) {
+      if (keepClear) entry.photoRequired = null;
+    } else if (step.photoRequired !== undefined) {
       entry.photoRequired = parseTaskBool_(step.photoRequired);
     }
     out.push(entry);

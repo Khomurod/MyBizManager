@@ -4433,16 +4433,31 @@ function jobQueueSheet_(doc) {
  *
  * Asking twice for the same group message to be deleted is one instruction,
  * not two: the second job could only ever find the message already gone.
+ *
+ * "Identical" is judged on the keys the *enqueuer* supplied, not on the whole
+ * stored payload, because a job's payload grows while it runs:
+ * `markJobDelivered_` writes what came back onto the same row. Comparing the
+ * exact JSON therefore stopped recognising a job the moment it got that far,
+ * and for `task_proof_prompt` this function is the only thing standing between
+ * a redelivered Telegram webhook and a second ForceReply in the group -- that
+ * job has no slot marker and no `Notified_At` to fall back on. A stored job
+ * carrying extra keys is still the same instruction.
  */
 function hasPendingJob_(doc, type, relatedId, payload) {
   var read = readJobRows_(doc);
-  var wanted = JSON.stringify(payload || {});
+  var wanted = payload || {};
+  var names = Object.keys(wanted);
   for (var i = 0; i < read.rows.length; i++) {
     var job = read.rows[i];
     if (job.status !== JOB_STATUS_PENDING && job.status !== JOB_STATUS_PROCESSING) continue;
     if (job.type !== String(type)) continue;
     if (job.relatedId !== String(relatedId || "")) continue;
-    if (JSON.stringify(job.payload || {}) === wanted) return job.jobId;
+    var stored = job.payload || {};
+    var same = true;
+    for (var n = 0; n < names.length; n++) {
+      if (JSON.stringify(stored[names[n]]) !== JSON.stringify(wanted[names[n]])) { same = false; break; }
+    }
+    if (same) return job.jobId;
   }
   return "";
 }
@@ -4511,11 +4526,11 @@ function writeJobField_(sheet, rowNumber, columnIndex, value) {
  * One cell on the job's own row is the cheapest durable place to say "this went
  * out". The retry reads it, skips the send, and only finishes the bookkeeping.
  *
- * The row is `Processing` while this happens, so `hasPendingJob_` — which
- * matches on the exact payload JSON — stops matching it. That is acceptable
- * precisely because it is not what prevents a duplicate enqueue: the slot marker
- * and `Notified_At` are, and both are written under the script lock before the
- * job is queued at all.
+ * The facts written here are extra keys on top of what the enqueuer supplied,
+ * which is why `hasPendingJob_` compares only the enqueuer's own keys: a job
+ * that has already sent must still be recognisable as the same instruction, or
+ * `task_proof_prompt` — which has no slot marker and no `Notified_At` — would
+ * be enqueued a second time by a redelivered webhook.
  */
 function markJobDelivered_(job, facts) {
   if (!job || !job.sheet || !job.rowNumber) return;
@@ -5637,20 +5652,42 @@ function readCafeClosingsLean_(doc) {
 // parsed all of it to display four figures. The catalogue is unchanged; only
 // what is derived from the sales sheet is scoped.
 //
-// The full payload is still what an unscoped request gets, so nothing that
-// already works has to know about this.
+// A manager who names no scope still gets the full payload, so nothing that
+// already works has to know about this. A seller gets the till's.
 
 var CAFE_ADMIN_RECENT_CLOSINGS = 30;
 
 /** How long a café display summary may be reused. Every write bumps the key. */
 var CAFE_SUMMARY_TTL_SECONDS = 120;
 
-/** Routes `get_cafe_data` to the payload the asking screen actually needs. */
-function readCafePayloadForScope_(doc, configSheet, payload) {
+/**
+ * The café read, chosen by the caller's role rather than by the caller.
+ *
+ * `get_cafe_data` is gated on AUTH_ROLES_CAFE_READ, which includes the seller --
+ * and the scope then decided which payload came back. So a signed-in seller
+ * could ask for `scope: "admin"` and receive the manager's dashboard: revenue
+ * and profit per period, best sellers, close-day reports, stock movements with
+ * their costs and who made them. Asking for *no* scope was worse: it fell to
+ * `readCafeState_`, which is every sale ever made with its profit.
+ *
+ * The write side has always split these roles (`CAFE_ACTION_ROLES`). The read
+ * side now does too: the manager's view needs a manager's role, and the default
+ * is the till's payload rather than the whole history.
+ */
+function readCafePayloadForScope_(doc, configSheet, payload, role) {
   var scope = String((payload && payload.scope) || "");
+  var manager = role === AUTH_ROLE_OMAD_ADMIN || role === AUTH_ROLE_CAFE_ADMIN;
+
+  if (scope === "admin") {
+    if (!manager) return { status: "error", message: "Bu amal uchun ruxsat yo'q." };
+    return readCafeAdminPayload_(doc, configSheet, payload);
+  }
   if (scope === "pos") return readCafePosPayload_(doc, configSheet, payload);
-  if (scope === "admin") return readCafeAdminPayload_(doc, configSheet, payload);
-  return readCafeState_(doc, configSheet);
+  // No scope named: an older client. Managers keep the whole-state answer they
+  // have always had; a seller gets the till's payload, which is all their own
+  // screen has ever asked for.
+  if (manager) return readCafeState_(doc, configSheet);
+  return readCafePosPayload_(doc, configSheet, payload);
 }
 
 /** A yyyy-MM-dd the caller supplied, or today in the script's timezone. */
@@ -9578,7 +9615,26 @@ function newGoalStepId_() {
   return "step_" + Utilities.getUuid().split("-").join("");
 }
 
-function normalizeGoalSteps_(steps) {
+/**
+ * The steps of a goal, cleaned up.
+ *
+ * `photoRequired` has three meanings and they are not interchangeable:
+ *
+ *   absent  - this caller is not talking about the photo rule at all
+ *   null    - clear the override, so the step inherits the goal's rule again
+ *   boolean - override the goal's rule for this step
+ *
+ * A *stored* step never carries null (`mergeGoalSteps_` deletes the key rather
+ * than writing one), so the read path collapses null into absent and keeps
+ * exactly the two states it has always had. Only an incoming payload needs the
+ * third, and it says so with `keepClear` -- without it "inherit" would be
+ * unsendable, because absent has to keep meaning "leave the stored value
+ * alone" for clients that never mention steps' photo rules at all.
+ *
+ * @param {Array} steps
+ * @param {boolean} [keepClear]  preserve an explicit null as a clear request
+ */
+function normalizeGoalSteps_(steps, keepClear) {
   var source = Array.isArray(steps) ? steps : [];
   var out = [];
   for (var i = 0; i < source.length; i++) {
@@ -9587,9 +9643,10 @@ function normalizeGoalSteps_(steps) {
     if (!title) continue;
     var entry = { title: title };
     if (step.id) entry.id = String(step.id).slice(0, 64);
-    // Absent means "inherit from the goal". Only an explicit value overrides,
-    // which is why this key is not written unless one was supplied.
-    if (step.photoRequired !== undefined && step.photoRequired !== null && step.photoRequired !== "") {
+    var cleared = step.photoRequired === null || step.photoRequired === "";
+    if (cleared) {
+      if (keepClear) entry.photoRequired = null;
+    } else if (step.photoRequired !== undefined) {
       entry.photoRequired = parseTaskBool_(step.photoRequired);
     }
     out.push(entry);
@@ -11421,7 +11478,7 @@ function normalizeTaskInput_(payload, existing) {
     task.dueTime = isTaskTimeKey_(dueTime) ? String(dueTime) : "";
   } else if (type === "goal") {
     task.steps = taskFieldSupplied_(payload, "steps")
-      ? normalizeGoalSteps_(payload.steps)
+      ? normalizeGoalSteps_(payload.steps, true)
       : (existing ? (existing.steps || []) : []);
     if (task.steps.length === 0) return { error: "Maqsad uchun kamida bitta qadam kiriting." };
   }
@@ -11548,10 +11605,30 @@ function mergeGoalSteps_(existingSteps, incomingSteps) {
     var atPosition = existing[pi];
     if (atPosition && atPosition.id && !used[atPosition.id]) { used[atPosition.id] = true; out[pi] = { id: atPosition.id }; }
   }
+  // Three states, the same three the engine uses everywhere else: a field the
+  // caller did not mention is left alone, an explicitly empty one clears, and a
+  // value sets.
+  //
+  //   absent  -> keep whatever the stored step said (inherit or override)
+  //   null    -> clear the override, so the step inherits the goal's rule again
+  //   boolean -> override
+  //
+  // `out[n]` used to start life as a bare `{id}`, so a stored override survived
+  // only if the client echoed it back. The /tasks board sends its steps as bare
+  // title strings, which meant saving a goal there silently cleared every
+  // per-step photo rule set from the phone. Carrying the stored step forward
+  // fixes that for every client at once -- but only alongside a way to say
+  // "inherit" out loud, or the setting would become impossible to undo.
+  var byIdAll = {};
+  for (var s = 0; s < existing.length; s++) if (existing[s].id) byIdAll[existing[s].id] = existing[s];
+
   for (var n = 0; n < out.length; n++) {
     if (!out[n]) out[n] = { id: newGoalStepId_() };
+    var stored = byIdAll[out[n].id];
+    if (stored && stored.photoRequired !== undefined) out[n].photoRequired = stored.photoRequired;
     out[n].title = incoming[n].title;
-    if (incoming[n].photoRequired !== undefined) out[n].photoRequired = incoming[n].photoRequired;
+    if (incoming[n].photoRequired === null) delete out[n].photoRequired;
+    else if (incoming[n].photoRequired !== undefined) out[n].photoRequired = incoming[n].photoRequired;
   }
   return out;
 }
@@ -13223,7 +13300,7 @@ function doPost(e) {
     if (action === 'get_cafe_data') {
       var cafeReadAuth = authorizeWebRequest_(payload, AUTH_ROLES_CAFE_READ);
       if (!cafeReadAuth.ok) return authRefusal_(cafeReadAuth);
-      return jsonOutput_(readCafePayloadForScope_(doc, configSheet, payload));
+      return jsonOutput_(readCafePayloadForScope_(doc, configSheet, payload, cafeReadAuth.role));
     }
 
     // ---- Omad ledger ------------------------------------------------------
@@ -13975,8 +14052,14 @@ function verifyTelegramInitData_(initData, nowMs) {
  * this particular person may see anything.
  */
 function authorizeMiniAppRequest_(payload) {
+  // A rate limit is not a refused identity, and the client has to be able to
+  // tell them apart: a refusal means this device's stored figures were verified
+  // for somebody no longer accepted, so they go; a throttle means "too many
+  // requests just now", and throwing the snapshot away for that is the café-till
+  // incident again (App Brief decision 12). The bucket is global and charged
+  // before the signature is checked, so anyone holding the /exec URL can trip it.
   var throttled = enforceRateLimit_("mini_auth", MINI_APP_RATE_LIMIT, TELEGRAM_RATE_WINDOW_SECONDS);
-  if (throttled) return { ok: false, message: throttled };
+  if (throttled) return { ok: false, reason: "throttled", message: throttled };
 
   var verified = verifyTelegramInitData_((payload && payload.initData) || "");
   if (!verified.ok) {

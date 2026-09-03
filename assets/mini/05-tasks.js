@@ -622,8 +622,14 @@ function goalStepValues() {
         const override = row.querySelector('.mini-step-photo').value;
         const step = { title: title };
         if (id) step.id = id;
+        // Three states, said out loud. The engine leaves a field alone when a
+        // client does not mention it -- which is what lets the /tasks board
+        // save a goal without wiping the photo rules set here. So "Meros" has
+        // to be an explicit null: silence would now mean "keep the override",
+        // and the setting could never be undone from this screen.
         if (override === 'yes') step.photoRequired = true;
-        if (override === 'no') step.photoRequired = false;
+        else if (override === 'no') step.photoRequired = false;
+        else step.photoRequired = null;
         return step;
     }).filter(step => step.title);
 }

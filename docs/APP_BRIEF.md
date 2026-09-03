@@ -248,6 +248,16 @@ happens on the server. A refusal for the wrong role answers `code: "forbidden"`
 and `authExpired: false`, which is deliberately *not* the shape that signs a
 client out.
 
+**A read's scope is derived from the role, never taken from the request.**
+`get_cafe_data` admits all three roles, because the till needs the catalogue —
+so its `scope` field is a *hint about which screen is asking*, not a permission.
+`scope: "admin"` is refused for a seller (the manager's dashboard is revenue and
+profit per period, stock movements with their costs, and the close-day
+reports), and a request naming **no** scope gets the till's payload rather than
+`readCafeState_`, which is every sale ever made with its profit attached. A
+manager naming no scope still gets the whole state, so nothing that already
+works had to change.
+
 ### Sessions
 
 - Format `v1.<username>.<role>.<expiry>.<pwv>.<nonce>.<signature>`, signed with
@@ -473,6 +483,14 @@ bills and it comes off what they owe:
   keeps its occurrence, its proof and who completed it; a step's `photoRequired`
   is written **only** as a real override, because an explicit `false` is
   indistinguishable from "inherit the goal's rule".
+- A step's `photoRequired` therefore has **three** states on the wire, and a
+  client must be able to say all three: **absent** = "I am not talking about the
+  photo rule" and the stored value is kept; **`null`** = clear the override, so
+  the step inherits the goal again; **boolean** = override. `/tasks` sends its
+  steps as bare title strings and relies on the first; the Mini App editor sends
+  `null` for "Meros". Only `normalizeGoalSteps_(steps, true)` — the incoming-
+  payload call — carries the `null` through; reading a stored row collapses it,
+  because a stored step never holds one.
 - **`reopen_occurrence` refuses a cancelled occurrence.** A cancellation is a
   decision, not unfinished work.
 - On an edit, **an absent field means "leave alone"; an explicitly empty one
@@ -582,6 +600,13 @@ composes the message from data it already stored.
   `JOB_MAX_ATTEMPTS = 5`. Job types: `omad_transaction_report`,
   `omad_transaction_delete_report`, `cafe_close_day_report`, `task_notify`,
   `task_reminder`, `task_update_message`, `task_proof_prompt`.
+- **A job is deduplicated on the keys its enqueuer supplied**, plus its type and
+  related id — not on the whole stored payload. A running job's payload *grows*:
+  `markJobDelivered_` writes what came back on to the same row so a retry after
+  a failed bookkeeping step does not send twice. Comparing the whole payload
+  made the job unrecognisable at exactly that point, and `task_proof_prompt` has
+  no slot marker and no `Notified_At` — `hasPendingJob_` is the only thing
+  between a redelivered Telegram webhook and a second ForceReply in the group.
 - A permanently failed job gets one `onJobPermanentlyFailed_` call so it can
   clean up state — `task_proof_prompt` uses it to release an occurrence that
   would otherwise wait forever for a prompt that was never delivered.
@@ -751,6 +776,12 @@ composes the message from data it already stored.
     close-day writes a counted inventory back wholesale. Any of those from a
     day-old copy overwrites everything changed since. Reads stay open, so Retry
     can recover.
+    **A refusal has to say which kind it is.** The Mini App keeps its stored
+    figures for `stale` and `throttled` and throws them away for anything else,
+    so the rate-limit refusal carries `reason: "throttled"`. Its bucket is
+    global and charged *before* the signature is checked — anyone holding the
+    `/exec` URL can trip it — so a throttle that looked like a forged signature
+    let a stranger wipe the one authorized device's screen.
 13. **The cache never answers an authoritative question.** Prices, stock checks,
     the ledger, task state and every write path read the sheets. If deleting
     every cache entry would change an answer, that answer must not be cached.

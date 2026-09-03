@@ -63,6 +63,39 @@ test('the queue sheet carries the documented columns', () => {
   ]);
 });
 
+// --------------------------------------------------------------- dedup
+
+test('an identical instruction is recognised even after the job has half run', () => {
+  const gas = loadScript({ properties: props() });
+  const doc = gas.__spreadsheet;
+  const payload = { chatId: GROUP_ID, occurrenceId: 'occ_1', text: 'Rasm yuboring' };
+
+  const first = gas.enqueueJob_(doc, 'task_proof_prompt', 'occ_1', payload);
+  assert.ok(first);
+
+  // A job's payload grows while it runs: markJobDelivered_ writes what came
+  // back on to the same row, so the send is not repeated if the bookkeeping
+  // then fails. Comparing the whole payload made the job unrecognisable at
+  // exactly that point -- and task_proof_prompt has no slot marker and no
+  // Notified_At, so this dedup is all that stands between a redelivered
+  // Telegram webhook and a second ForceReply in the group.
+  const read = gas.readJobRows_(doc);
+  const claimed = read.rows.find(j => j.jobId === first);
+  claimed.sheet = read.sheet;
+  gas.markJobDelivered_(claimed, { deliveredMsgId: 4242 });
+  assert.ok(String(queueRows(gas)[0][3]).includes('4242'), 'the delivery fact is on the row');
+
+  const again = gas.enqueueJob_(doc, 'task_proof_prompt', 'occ_1', payload);
+  assert.strictEqual(again, first, 'the same instruction, not a second job');
+  assert.strictEqual(queueRows(gas).length, 1);
+
+  // Narrower, not blind: a different occurrence and a different text are still
+  // different work.
+  gas.enqueueJob_(doc, 'task_proof_prompt', 'occ_2', Object.assign({}, payload, { occurrenceId: 'occ_2' }));
+  gas.enqueueJob_(doc, 'task_proof_prompt', 'occ_1', Object.assign({}, payload, { text: 'Boshqa' }));
+  assert.strictEqual(queueRows(gas).length, 3);
+});
+
 test('a job runs once and is marked completed', () => {
   const gas = loadScript({ properties: props() });
   enqueueCloseDay(gas);

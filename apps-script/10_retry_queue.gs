@@ -50,16 +50,31 @@ function jobQueueSheet_(doc) {
  *
  * Asking twice for the same group message to be deleted is one instruction,
  * not two: the second job could only ever find the message already gone.
+ *
+ * "Identical" is judged on the keys the *enqueuer* supplied, not on the whole
+ * stored payload, because a job's payload grows while it runs:
+ * `markJobDelivered_` writes what came back onto the same row. Comparing the
+ * exact JSON therefore stopped recognising a job the moment it got that far,
+ * and for `task_proof_prompt` this function is the only thing standing between
+ * a redelivered Telegram webhook and a second ForceReply in the group -- that
+ * job has no slot marker and no `Notified_At` to fall back on. A stored job
+ * carrying extra keys is still the same instruction.
  */
 function hasPendingJob_(doc, type, relatedId, payload) {
   var read = readJobRows_(doc);
-  var wanted = JSON.stringify(payload || {});
+  var wanted = payload || {};
+  var names = Object.keys(wanted);
   for (var i = 0; i < read.rows.length; i++) {
     var job = read.rows[i];
     if (job.status !== JOB_STATUS_PENDING && job.status !== JOB_STATUS_PROCESSING) continue;
     if (job.type !== String(type)) continue;
     if (job.relatedId !== String(relatedId || "")) continue;
-    if (JSON.stringify(job.payload || {}) === wanted) return job.jobId;
+    var stored = job.payload || {};
+    var same = true;
+    for (var n = 0; n < names.length; n++) {
+      if (JSON.stringify(stored[names[n]]) !== JSON.stringify(wanted[names[n]])) { same = false; break; }
+    }
+    if (same) return job.jobId;
   }
   return "";
 }
@@ -128,11 +143,11 @@ function writeJobField_(sheet, rowNumber, columnIndex, value) {
  * One cell on the job's own row is the cheapest durable place to say "this went
  * out". The retry reads it, skips the send, and only finishes the bookkeeping.
  *
- * The row is `Processing` while this happens, so `hasPendingJob_` — which
- * matches on the exact payload JSON — stops matching it. That is acceptable
- * precisely because it is not what prevents a duplicate enqueue: the slot marker
- * and `Notified_At` are, and both are written under the script lock before the
- * job is queued at all.
+ * The facts written here are extra keys on top of what the enqueuer supplied,
+ * which is why `hasPendingJob_` compares only the enqueuer's own keys: a job
+ * that has already sent must still be recognisable as the same instruction, or
+ * `task_proof_prompt` — which has no slot marker and no `Notified_At` — would
+ * be enqueued a second time by a redelivered webhook.
  */
 function markJobDelivered_(job, facts) {
   if (!job || !job.sheet || !job.rowNumber) return;
