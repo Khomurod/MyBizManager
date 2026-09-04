@@ -132,6 +132,7 @@ Cloudflare Pages (static HTML/JS)         Google Apps Script web app        Goog
 | `13_migration.gs` | Legacy→V2 migration: preview / apply / verify / cutover / rollback |
 | `14_ledger.gs` | Append-only ledger: create / correct / cancel / read / audit |
 | `14a_ledger_write_performance.gs` | Fast ledger request / transaction-id lookup, ID allocation and atomic multi-line entry creation |
+| `14b_ledger_bulk.gs` | Bulk entry: many independent business actions in one submission |
 | `15_system_status.gs` | Safe diagnostics for the Sozlamalar → Tizim panel |
 | `15a_maintenance.gs` | Operator repairs (dates, debug-log secrets, webhook rotation) |
 | `16_tasks_recurrence.gs` | Pure Asia/Tashkent time + recurrence engine |
@@ -159,6 +160,13 @@ Cloudflare Pages (static HTML/JS)         Google Apps Script web app        Goog
   **tenant-paid expense pair**. A new multi-line ledger entry is committed by
   one batch action and one ledger write; the single-row API remains the safe
   rollout fallback and the edit/correction path.
+- **Ommaviy kiritish** — one submission, many *independent* business actions:
+  tenants' rent, expenses against a tenant, expenses out of the general cash and
+  bank buckets, and tenant-paid pairs, mixed freely, each row carrying **its own
+  month**. Pre-filled from the rent schedule the app already holds, or from last
+  month's entries. Present on `/omad` (a fifth tab) and in the Mini App (a sheet
+  on the Omad tab). This is the axis `Yangi` does not cover: `Yangi` is one
+  business action with several amounts, this is several business actions.
 - **History (`Tarix`)** — entries grouped by `Entry_Group_ID`, editable and
   cancellable **as a group**. Fetched a page of 40 business actions at a time
   (`get_omad_history`) when the tab is opened, never with the dashboard. A page
@@ -373,6 +381,37 @@ bills and it comes off what they owe:
   is required** — it is what makes the expense half readable a year later.
 - Created, reported, edited and cancelled **as a pair**, resolved by
   `Entry_Group_ID`.
+
+**Bulk entry** (`create_transaction_bulk`, `mini_bulk_entry`) — several
+business actions recorded in one submission:
+
+- **Nothing is written unless everything validates.** Every entry goes through
+  the same validator its single-entry equivalent uses — `validateTransactionInput_`
+  or `validateTenantPaidInput_` — *before* the lock is taken. The first failure
+  answers with an `entryIndex` and writes nothing.
+- An ordinary entry's object must be a **configured tenant**, or, for an
+  expense, one of the two general buckets. Both entry screens already offer
+  exactly that set; a grid of fifty typed names is where a misspelling would
+  otherwise credit a balance nobody owes.
+- **One `Entry_Group_ID` per entry**, minted server-side. Each entry therefore
+  gets its own Telegram card and can be corrected on its own a month later,
+  exactly as if it had been entered alone. Nothing is written as one combined
+  entry.
+- **Rates are frozen per entry, on that entry's own period** — which is why
+  `create_transaction_batch`'s single shared rate pair could not be reused: a
+  tenant settling three months at once must use each month's rate.
+- **One `appendLedgerRows_` for every row of every entry**, so a bulk cannot be
+  half-created. A `tenant_paid` entry inside a bulk is built by the same
+  `buildTenantPaidRows_` the single action calls, so the pair is identical.
+- Idempotent on a **counted request id**, `<base>__b<count>_<index>` (with
+  `_0`/`_1` for a pair's halves). The count binds the key to the submitted
+  shape: a retry with a changed list is refused as `bulk_retry_conflict` rather
+  than silently expanding or shrinking a financial submission. A partial prior
+  attempt resumes only the entries that are missing.
+- At most **50 entries** (so at most 100 rows) in one submission.
+- Both clients freeze the grid **before the first await** and lock every control
+  behind it, so what was submitted is what was on screen when the button was
+  pressed.
 
 **Café — the server is authoritative**
 
@@ -712,6 +751,7 @@ composes the message from data it already stored.
 | the Mini App's Tasks tab | `tests/miniapp-tasks-parity.e2e.js` — it drives the real UI, which is the only thing that can catch a capability the API has and the screen does not |
 | a queued Telegram job's send/persist order | `tests/task-telegram-races.test.js` — stale overwrites, duplicate deliveries and obsolete announcements all live in that gap |
 | `assets/omad/12-app.js`'s `submitViaLedger` | it **overrides** the same-named function in `08-entry.js`; editing only `08-entry.js` changes nothing at runtime |
+| the bulk grid on either client | freeze the rows **before** the first await and lock every control behind it; a grid edited mid-save means the request that went out and the rows on screen describe different money |
 
 ## 11. Decisions that must be preserved
 

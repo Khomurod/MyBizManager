@@ -205,9 +205,16 @@ async function api(action, payload = {}) {
  * the failure is a delay and never a missing report. That is why it swallows
  * its errors: there is nothing for the user to do about one.
  */
-function flushReports() {
+/**
+ * @param {number} [expected] how many cards this write produced. One entry
+ *   makes one, which is the default; a bulk makes one per business action, and
+ *   the server clamps whatever is asked for. Whatever is not sent here is sent
+ *   by the five-minute trigger.
+ */
+function flushReports(expected) {
     try {
-        api('mini_flush_reports').catch(() => {});
+        const max = Number(expected) > 1 ? Math.floor(Number(expected)) : undefined;
+        api('mini_flush_reports', max ? { max } : {}).catch(() => {});
     } catch (error) {
         // Not even a signed-out client should turn a saved entry into an error.
     }

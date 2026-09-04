@@ -51,6 +51,16 @@ var MINI_IDENTITY_FIELDS = {
   proofAwaitingUserId: true
 };
 
+/**
+ * The most cards one `mini_flush_reports` will send.
+ *
+ * A bulk of fifty entries queues fifty, and the request that drains them is
+ * fire-and-forget — but it still runs inside one Apps Script execution, so it
+ * is bounded. Whatever is left is sent by the five-minute trigger, which is the
+ * durable sender for every report on this queue.
+ */
+var MINI_FLUSH_MAX_JOBS = 12;
+
 function isMiniAppAction_(action) {
   return String(action || "").indexOf("mini_") === 0;
 }
@@ -93,6 +103,7 @@ function handleMiniAppAction_(action, payload, doc) {
 
   if (action === 'mini_save_transaction') return miniSaveTransaction_(doc, configSheet, payload);
   if (action === 'mini_tenant_paid') return miniTenantPaid_(doc, configSheet, payload);
+  if (action === 'mini_bulk_entry') return miniBulkEntry_(doc, payload);
   if (action === 'mini_task_action') return miniTaskAction_(doc, payload, auth);
 
   // Sending the group card is a Telegram round trip, and a phone on a slow
@@ -102,7 +113,14 @@ function handleMiniAppAction_(action, payload, doc) {
   // instead of waiting for the next five-minute trigger tick. Losing this
   // request costs nothing: the job stays queued and the trigger sends it.
   if (action === 'mini_flush_reports') {
-    return jsonOutput_({ status: "success", authorized: true, sent: drainJobQueueQuietly_(doc, null) });
+    // One card per business action, and a bulk makes several — so the client
+    // says how many it is expecting rather than the queue defaulting to one and
+    // leaving the rest to the five-minute trigger. Clamped, because this runs
+    // Telegram round trips inside one request. Absent, it drains one, exactly
+    // as it always has for a single entry.
+    var asked = Number(payload && payload.max) || JOB_QUEUE_INLINE_BATCH;
+    var drain = Math.min(Math.max(asked, JOB_QUEUE_INLINE_BATCH), MINI_FLUSH_MAX_JOBS);
+    return jsonOutput_({ status: "success", authorized: true, sent: drainJobQueueQuietly_(doc, null, drain) });
   }
 
   // The task equivalent, for the same reason and with the same contract. A task
@@ -445,6 +463,50 @@ function queueMiniTransactionReport_(doc, transaction) {
   } catch (queueError) {
     debugLog_(doc, "report_enqueue_failed", String(queueError));
   }
+}
+
+/**
+ * Bulk entry from the phone, through exactly the same function the web uses.
+ *
+ * The attribution fields are taken from the verified Telegram identity and
+ * never from the request, which is why `createdBy` and `source` are set here
+ * rather than forwarded: a phone must not be able to file an entry as though
+ * it had been typed on the web admin. Everything else — the validation, the
+ * one-group-per-entry rule, the per-entry rates, the single append and the
+ * counted idempotency key — is `createTransactionBulk_`, unchanged.
+ *
+ * The ledger is required. There is no legacy-sheet path here because there is
+ * no legacy bulk to be compatible with, and inventing one would mean a second
+ * implementation of the money rules.
+ */
+function miniBulkEntry_(doc, payload) {
+  if (!isLedgerActive_(doc)) {
+    return jsonOutput_({
+      status: "error",
+      message: "Yangi tranzaksiya tizimi hali yoqilmagan. Avval ma'lumotlarni ko'chiring."
+    });
+  }
+
+  var result = createTransactionBulk_(doc, {
+    requestId: payload.requestId,
+    entries: payload.entries,
+    createdBy: "miniapp",
+    source: TX_SOURCE_TELEGRAM
+  });
+  if (result.status !== "success") return jsonOutput_(result);
+
+  recordLastOperation_(doc, "mini_bulk_entry");
+  if (!result.duplicate) {
+    try {
+      result.reportJobIds = enqueueLedgerReportsBatch_(doc, bulkReportTargets_(result));
+    } catch (queueError) {
+      result.reportJobIds = [];
+      debugLog_(doc, "report_enqueue_failed", String(queueError));
+    }
+    // Not drained here: the phone is waiting on this response and asks for the
+    // flush once it has one. See `mini_flush_reports`.
+  }
+  return jsonOutput_(result);
 }
 
 /** The tenant-paid pair, through exactly the same code path the web app uses. */

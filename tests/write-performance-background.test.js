@@ -68,12 +68,19 @@ test('cancelling an entry refreshes in the background and refuses a second click
 test('the Mini App confirms a financial write before refreshing, and coalesces it', () => {
   const omad = read('assets/mini/03-omad.js');
 
-  // Both entry flows: close, confirm, then refresh out of band.
-  assert.strictEqual((omad.match(/refreshOmadInBackground\(\)/g) || []).length, 3,
-    'the transaction flow, the tenant-paid flow, and the helper itself');
+  // Every entry flow: close, confirm, then refresh out of band.
+  assert.strictEqual((omad.match(/refreshOmadInBackground\(\)/g) || []).length, 4,
+    'the transaction flow, the tenant-paid flow, the bulk flow, and the helper itself');
+  ['submitEntry', 'submitTenantPaid', 'submitBulk'].forEach(name => {
+    const body = omad.slice(omad.indexOf(`async function ${name}(`));
+    assert.match(body.slice(0, body.indexOf('\n}')), /refreshOmadInBackground\(\)/,
+      `${name} refreshes out of band`);
+  });
   assert.doesNotMatch(omad, /await loadOmad\(\);\n\s*\} catch/,
-    'neither write waits for the figures to come back');
+    'no write waits for the figures to come back');
   assert.match(omad, /flushReports\(\)/, 'the Telegram nudge stays unawaited');
+  // A bulk makes one card per business action, so it says how many to send.
+  assert.match(omad, /flushReports\(entries\.length\)/);
 
   // Coalesced, like the web app's.
   assert.match(omad, /miniOmadRefreshPending = true/);

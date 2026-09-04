@@ -278,16 +278,33 @@ function writeTenantPaidToLegacySheet_(doc, input, groupId) {
   return appendOmadTransactionGroup_(doc, buildLegacyTenantPaidRows_(input, groupId, ""));
 }
 
-/** The same pair as two ledger rows, also appended in one write. */
-function writeTenantPaidToLedger_(doc, input, groupId) {
+/**
+ * The pair, as two ledger transactions — built, not written.
+ *
+ * Separated from the append so the bulk entry screen produces exactly this
+ * pair rather than its own near-copy: same comment wording, same shared frozen
+ * `amountUZS`, same expense bucket. A pair that differed from the single
+ * action's by one field would still net to zero and still look right on the
+ * screen, and would quietly diverge in the history.
+ *
+ * `baseId` and `createdAt` are arguments because a bulk writes many entries in
+ * one pass, and `new Date().getTime()` inside a loop hands the same id to two
+ * of them.
+ *
+ * @param {object} input     a validated tenant-paid request
+ * @param {string} groupId   the one group both halves belong to
+ * @param {string} [baseId]  id stem; both halves take `_0` / `_1` from it
+ * @param {string} [createdAt]
+ */
+function buildTenantPaidRows_(input, groupId, baseId, createdAt) {
   var tenant = String(input.tenant).trim();
   var purpose = String(input.comment).trim();
   var amount = Number(input.amount);
   var requestId = String(input.requestId).trim();
   var period = String(input.period);
-  var now = new Date().toISOString();
+  var now = createdAt || new Date().toISOString();
   var snapshot = buildRateSnapshot_(period, input.currency, input.rateType);
-  var baseId = String(new Date().getTime());
+  var stem = baseId || String(new Date().getTime());
 
   var common = {
     createdAt: now,
@@ -313,23 +330,27 @@ function writeTenantPaidToLedger_(doc, input, groupId) {
     entryKind: ENTRY_KIND_TENANT_PAID
   };
 
-  var pair = [
+  return [
     Object.assign({}, common, {
-      id: baseId + "_0",
+      id: stem + "_0",
       requestId: requestId + "_0",
       tenant: tenant,
       type: "Income",
       comment: tenantPaidComment_("income", tenant, purpose)
     }),
     Object.assign({}, common, {
-      id: baseId + "_1",
+      id: stem + "_1",
       requestId: requestId + "_1",
       tenant: tenantPaidExpenseSource_(input.method),
       type: "Expense",
       comment: tenantPaidComment_("expense", tenant, purpose)
     })
   ];
+}
 
+/** The same pair as two ledger rows, appended in one write. */
+function writeTenantPaidToLedger_(doc, input, groupId) {
+  var pair = buildTenantPaidRows_(input, groupId);
   appendLedgerRows_(ledgerSheet_(doc), pair.map(transactionToLedgerRow_));
   return pair.map(ledgerToLegacyShape_);
 }

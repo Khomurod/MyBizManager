@@ -180,6 +180,23 @@
     .step-edit .mini-step-photo { flex: 0 0 auto; width: auto; min-width: 88px; }
     .step-edit .btn-sm { flex: 0 0 auto; }
 
+    /* ---------------------------------------------------- bulk entry rows */
+    /* One business action per row. Compact enough that three fit on a 320px
+       screen without the sheet's own scroll fighting the page's. */
+    .bulk-row {
+      border: 1px solid var(--line); border-radius: 12px;
+      padding: 10px; margin-bottom: 8px;
+    }
+    .bulk-row-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+    .bulk-row-head .bulk-kind { flex: 1; min-width: 0; }
+    .bulk-row-head .btn-sm { flex: 0 0 auto; }
+    .bulk-row .grid2 { margin-bottom: 8px; }
+    .bulk-row-money { display: flex; gap: 6px; margin-bottom: 8px; }
+    .bulk-row-money .bulk-amount { flex: 1 1 auto; min-width: 0; }
+    .bulk-row-money .bulk-currency,
+    .bulk-row-money .bulk-method { flex: 0 0 auto; width: auto; min-width: 74px; }
+    .bulk-row input, .bulk-row select { margin: 0; }
+
     /* ------------------------------------------------------------ tab bar */
     nav {
       position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
