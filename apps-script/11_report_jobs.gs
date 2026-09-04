@@ -30,6 +30,33 @@ function queueOmadTransactionReport_(doc, report) {
   return "";
 }
 
+/**
+ * One report per business action, for a submission that made several.
+ *
+ * Deliberately N jobs rather than one combined card: each entry of a bulk keeps
+ * its own group id, so a correction a month later edits that entry's own
+ * message in place. A single card covering ten entries would have nothing to
+ * edit when one of them changed. No new job type is involved — these are the
+ * same `omad_transaction_report` jobs a single entry queues.
+ *
+ * @param {Array} groups  `{ groupId, baseId }` per business action
+ */
+function enqueueLedgerReportsBatch_(doc, groups) {
+  var wanted = groups || [];
+  var jobs = [];
+  for (var i = 0; i < wanted.length; i++) {
+    var groupId = String((wanted[i] && wanted[i].groupId) || "");
+    var baseId = String((wanted[i] && wanted[i].baseId) || "");
+    if (!groupId && !baseId) continue;
+    jobs.push({
+      type: "omad_transaction_report",
+      relatedId: groupId || baseId,
+      payload: { groupId: groupId, baseId: baseId, messageId: "" }
+    });
+  }
+  return enqueueJobsBatch_(doc, jobs);
+}
+
 function runOmadTransactionReportJob_(doc, job) {
   var chatId = getOmadGroupChatId_();
   if (!chatId) throw new Error("Telegram guruh ID o'rnatilmagan.");

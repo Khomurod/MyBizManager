@@ -68,6 +68,7 @@ file for file. See [DEPLOYMENT.md](DEPLOYMENT.md).
 | `13_migration.gs` | Legacy→V2 migration: preview, apply, verify, cutover, rollback |
 | `14_ledger.gs` | Append-only ledger: create / correct / cancel / read / audit |
 | `14a_ledger_write_performance.gs` | Narrow ledger request / transaction-id lookup, ID allocation and atomic multi-line entry creation |
+| `14b_ledger_bulk.gs` | Bulk entry: many independent business actions in one submission |
 | `15_system_status.gs` | Safe diagnostics for Sozlamalar → Tizim |
 | `15a_maintenance.gs` | Operator repairs: dates, debug-log secrets, webhook rotation |
 | `16_tasks_recurrence.gs` | Task module: pure Asia/Tashkent time + recurrence engine |
@@ -127,7 +128,12 @@ scripts, in order, sharing one global scope:
 `00-config.js` (URL + access guard) → `01-state.js` → `01b-periods.js` → `02-format.js` → `02b-calc.js` → `02c-money-input.js` →
 `03-exchange-rates.js` → `04-tenants.js` → `05-planned-expenses.js` →
 `06-api.js` → `07-dashboard.js` → `08-entry.js` → `09-history.js` →
-`10-settings.js` → `10b-system.js` → `11-telegram-settings.js` → `12-app.js`.
+`10-settings.js` → `10b-system.js` → `11-telegram-settings.js` → `12-app.js` →
+`13-bulk.js`.
+
+`13-bulk.js` is last on purpose: it wraps `switchTab` and `callBackend`, both
+of which `12-app.js` defines or replaces, so loading it earlier would wrap a
+function that is about to be thrown away.
 
 `tests/static-analysis.test.js` parses every linked script and fails if any
 page defines the same function twice, so a shadowed definition cannot come
@@ -337,9 +343,10 @@ Café actions additionally accept the café roles described in the permissions s
 | `get_migration_status` | **yes** | Which sheet is live; the frontend picks its entry path from this |
 | `preview_` / `apply_` / `verify_` / `cutover_` / `rollback_omad_migration` | **yes** | The migration sequence, above |
 | `create_transaction_batch` / `create_transaction` / `correct_transaction` / `cancel_transaction` / `list_transactions` / `get_transaction` / `get_transaction_history` | **yes** | Append-only V2 ledger actions. New multi-line web entries use the batch action; edits deliberately keep the single-row correction/cancel path |
+| `create_transaction_bulk` | **yes** | Many business actions in one submission. Routed through `isLedgerAction_` like the batch action, so it inherits the same role list |
 | `get_tasks` (**POST only**) / `save_task` / `cancel_task` / `pause_routine` / `resume_routine` / `skip_occurrence` / `complete_occurrence` / `reopen_occurrence` | **yes** | The task board — reads included; see [TASKS.md](TASKS.md) |
 | `mini_home` / `mini_omad` / `mini_cafe` / `mini_tasks` | initData | Mini App reads — server-computed summaries |
-| `mini_save_transaction` / `mini_tenant_paid` / `mini_task_action` | initData | Mini App writes, through the shared implementations |
+| `mini_save_transaction` / `mini_tenant_paid` / `mini_bulk_entry` / `mini_task_action` | initData | Mini App writes, through the shared implementations. Attribution fields come from the verified identity, never from the request |
 | `mini_flush_reports` | initData | Drains queued jobs so the group card arrives without waiting for the trigger |
 | `audit_transaction_dates` | **yes** | Classifies every Date cell against the date its id proves. Writes nothing |
 | `fix_transaction_dates` | **yes** | Corrects only provably transposed dates. `dryRun` reports without writing |
@@ -665,6 +672,7 @@ message from data it already stored:
 | `save_omad` + `telegramReport.operation = "transaction_delete"` | Deletes the previously sent group message |
 | `close_day` | Builds the café close-day report (`buildCafeCloseDayMessage_`) from the stored close-day payload |
 | `create_transaction_batch` / `create_transaction` / `correct_transaction` / `cancel_transaction` | Queues one server-composed report for the affected business group after the ledger change succeeds |
+| `create_transaction_bulk` / `mini_bulk_entry` | Queues **one report per entry** — each keeps its own group, so a later correction still edits its own card. `enqueueLedgerReportsBatch_` writes them all against one read of the queue |
 | Telegram `/yangi` | Saves the transaction, then queues its own report |
 
 Every one of those becomes a **job on `Omad_Job_Queue`**, so a Telegram outage
@@ -921,6 +929,7 @@ deterministically and normalize a missing `Entry_Kind` to ordinary (`""`).
 | Action | Effect |
 |---|---|
 | `create_transaction_batch` | New multi-line business action: validates every line first, writes missing rows together under one lock, and is idempotent on a request id bound to the original line count |
+| `create_transaction_bulk` | Many *independent* business actions in one submission: validates all of them first, mints one `Entry_Group_ID` per entry, freezes rates on each entry's own period, and appends every row of every entry in one call |
 | `create_transaction` | Appends one `Active` row. Idempotent on `Request_ID` |
 | `correct_transaction` | Appends the replacement, then marks the original `Corrected`. The original's values are untouched |
 | `cancel_transaction` | Marks the row `Cancelled`. Nothing is removed |

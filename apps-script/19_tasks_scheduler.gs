@@ -745,7 +745,7 @@ function normalizeTaskInput_(payload, existing) {
     task.dueTime = isTaskTimeKey_(dueTime) ? String(dueTime) : "";
   } else if (type === "goal") {
     task.steps = taskFieldSupplied_(payload, "steps")
-      ? normalizeGoalSteps_(payload.steps)
+      ? normalizeGoalSteps_(payload.steps, true)
       : (existing ? (existing.steps || []) : []);
     if (task.steps.length === 0) return { error: "Maqsad uchun kamida bitta qadam kiriting." };
   }
@@ -872,10 +872,30 @@ function mergeGoalSteps_(existingSteps, incomingSteps) {
     var atPosition = existing[pi];
     if (atPosition && atPosition.id && !used[atPosition.id]) { used[atPosition.id] = true; out[pi] = { id: atPosition.id }; }
   }
+  // Three states, the same three the engine uses everywhere else: a field the
+  // caller did not mention is left alone, an explicitly empty one clears, and a
+  // value sets.
+  //
+  //   absent  -> keep whatever the stored step said (inherit or override)
+  //   null    -> clear the override, so the step inherits the goal's rule again
+  //   boolean -> override
+  //
+  // `out[n]` used to start life as a bare `{id}`, so a stored override survived
+  // only if the client echoed it back. The /tasks board sends its steps as bare
+  // title strings, which meant saving a goal there silently cleared every
+  // per-step photo rule set from the phone. Carrying the stored step forward
+  // fixes that for every client at once -- but only alongside a way to say
+  // "inherit" out loud, or the setting would become impossible to undo.
+  var byIdAll = {};
+  for (var s = 0; s < existing.length; s++) if (existing[s].id) byIdAll[existing[s].id] = existing[s];
+
   for (var n = 0; n < out.length; n++) {
     if (!out[n]) out[n] = { id: newGoalStepId_() };
+    var stored = byIdAll[out[n].id];
+    if (stored && stored.photoRequired !== undefined) out[n].photoRequired = stored.photoRequired;
     out[n].title = incoming[n].title;
-    if (incoming[n].photoRequired !== undefined) out[n].photoRequired = incoming[n].photoRequired;
+    if (incoming[n].photoRequired === null) delete out[n].photoRequired;
+    else if (incoming[n].photoRequired !== undefined) out[n].photoRequired = incoming[n].photoRequired;
   }
   return out;
 }

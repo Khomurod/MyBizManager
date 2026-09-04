@@ -165,8 +165,14 @@ function verifyTelegramInitData_(initData, nowMs) {
  * this particular person may see anything.
  */
 function authorizeMiniAppRequest_(payload) {
+  // A rate limit is not a refused identity, and the client has to be able to
+  // tell them apart: a refusal means this device's stored figures were verified
+  // for somebody no longer accepted, so they go; a throttle means "too many
+  // requests just now", and throwing the snapshot away for that is the café-till
+  // incident again (App Brief decision 12). The bucket is global and charged
+  // before the signature is checked, so anyone holding the /exec URL can trip it.
   var throttled = enforceRateLimit_("mini_auth", MINI_APP_RATE_LIMIT, TELEGRAM_RATE_WINDOW_SECONDS);
-  if (throttled) return { ok: false, message: throttled };
+  if (throttled) return { ok: false, reason: "throttled", message: throttled };
 
   var verified = verifyTelegramInitData_((payload && payload.initData) || "");
   if (!verified.ok) {

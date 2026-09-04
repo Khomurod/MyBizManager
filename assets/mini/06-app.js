@@ -34,16 +34,25 @@ function showApp() {
 /**
  * Sends the app back to the gate.
  *
- * An expired session is the one case worth offering a retry for: reopening the
- * Mini App gives Telegram a chance to hand over a fresh signature. A refusal
- * is final, and saying so plainly is kinder than a button that will not work.
+ * An expired session and a rate limit are the two cases worth offering a retry
+ * for: reopening the Mini App gives Telegram a chance to hand over a fresh
+ * signature, and a throttle clears within the minute. A refusal is final, and
+ * saying so plainly is kinder than a button that will not work.
  */
 function failAuth(error) {
-    const stale = error && error.reason === 'stale';
+    const reason = error && error.reason;
+    // A throttle used to be indistinguishable from a forged signature here,
+    // because the server sent no `reason` with it -- so being asked to slow
+    // down deleted this device's figures and put up a padlock with no way
+    // forward. The bucket is global and charged before the signature is even
+    // checked, so anyone holding the /exec URL could do that to the one person
+    // who uses this app. App Brief decision 12: a fault keeps the data.
+    const recoverable = reason === 'stale' || reason === 'throttled';
     // A refused signature is not a slow network: whatever this device had
     // stored was verified for an account that is no longer being accepted, so
     // it goes rather than staying behind the gate.
-    if (!stale) clearMiniSnapshot();
+    if (!recoverable) clearMiniSnapshot();
+    const stale = recoverable;
     showGate(stale ? '⌛' : '🔒', error && error.message ? error.message : OPEN_IN_TELEGRAM_MESSAGE, stale);
     closeSheet();
 }

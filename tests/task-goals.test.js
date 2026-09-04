@@ -107,6 +107,81 @@ test('a step may opt in when the goal does not require one', () => {
   assert.deepStrictEqual(steps(gas, doc, goal.id).map(o => o.photoRequired), [true, false]);
 });
 
+// ---------------------------------------------- keeping a step's own rule
+//
+// `photoRequired` on a step has three meanings, and an edit has to be able to
+// say all three: "I am not talking about it", "clear it", "set it". The board
+// at /tasks sends its steps as bare title strings, so if silence meant "clear
+// it" -- which it did -- saving a goal there wiped every per-step rule set from
+// the phone. And if silence meant "keep it", the phone could never undo one.
+
+/** Save through the real action, which is where the merge happens. */
+function saveGoal(gas, doc, payload) {
+  const answer = gas.saveTaskAction_(doc, Object.assign({ type: 'goal' }, payload));
+  assert.strictEqual(answer.status, 'success', answer.message);
+  return gas.findTask_(doc, answer.taskId);
+}
+
+test('an edit that does not mention a step\'s photo rule leaves it alone', () => {
+  const { gas, doc } = setup();
+  const created = saveGoal(gas, doc, {
+    title: 'Filial', photoRequired: true,
+    steps: [{ title: 'A', photoRequired: false }, { title: 'B' }]
+  });
+  assert.strictEqual(created.steps[0].photoRequired, false);
+
+  // Exactly what /tasks sends: titles, and nothing else.
+  const afterBoardSave = saveGoal(gas, doc, { id: created.id, title: 'Filial', steps: ['A', 'B'] });
+  assert.strictEqual(afterBoardSave.steps[0].photoRequired, false, 'the override survived a board save');
+  assert.strictEqual(afterBoardSave.steps[1].photoRequired, undefined, 'and step two still inherits');
+  assert.strictEqual(afterBoardSave.steps[0].id, created.steps[0].id, 'and it is the same step');
+});
+
+test('a step\'s photo rule is cleared by saying so, not by silence', () => {
+  const { gas, doc } = setup();
+  const created = saveGoal(gas, doc, {
+    title: 'Filial', photoRequired: true,
+    steps: [{ title: 'A', photoRequired: false }, { title: 'B' }]
+  });
+
+  // "Meros" on the phone: an explicit null, which is how the override is undone.
+  const cleared = saveGoal(gas, doc, {
+    id: created.id, title: 'Filial',
+    steps: [
+      { id: created.steps[0].id, title: 'A', photoRequired: null },
+      { id: created.steps[1].id, title: 'B', photoRequired: null }
+    ]
+  });
+  assert.strictEqual(cleared.steps[0].photoRequired, undefined, 'back to inheriting');
+  assert.strictEqual(cleared.steps[1].photoRequired, undefined);
+
+  // And it inherits the goal's rule again rather than staying off.
+  assert.strictEqual(gas.effectiveStepPhotoRequired_(cleared, cleared.steps[0]), true);
+
+  // Setting one still works, on a step that had no override at all.
+  const set = saveGoal(gas, doc, {
+    id: created.id, title: 'Filial',
+    steps: [
+      { id: created.steps[0].id, title: 'A', photoRequired: null },
+      { id: created.steps[1].id, title: 'B', photoRequired: true }
+    ]
+  });
+  assert.strictEqual(set.steps[1].photoRequired, true);
+});
+
+test('a renamed step keeps the rule that was set on it', () => {
+  const { gas, doc } = setup();
+  const created = saveGoal(gas, doc, {
+    title: 'Filial', steps: [{ title: 'A', photoRequired: true }, { title: 'B' }]
+  });
+
+  // A rename with no id and no photo rule -- position is what matches it.
+  const renamed = saveGoal(gas, doc, { id: created.id, title: 'Filial', steps: ['A yangi', 'B'] });
+  assert.strictEqual(renamed.steps[0].title, 'A yangi');
+  assert.strictEqual(renamed.steps[0].id, created.steps[0].id);
+  assert.strictEqual(renamed.steps[0].photoRequired, true);
+});
+
 // ------------------------------------------------------------ announcing
 
 test('goal steps are announced to the group exactly once', () => {

@@ -286,6 +286,53 @@ test('a café seller can do the till, and only the till', () => {
   assert.strictEqual(post(gas, { action: 'void_sale', id: 'sale_role_1', sessionToken: tokens.cafe_seller }).status, 'success');
 });
 
+test('a café seller cannot read the manager\'s café by asking for it', () => {
+  const { gas, tokens } = bootProvisioned();
+
+  // One receipt in the history, on a day that is not today, so a payload built
+  // from the whole sales sheet is distinguishable from the till's.
+  assert.strictEqual(post(gas, {
+    action: 'save_sale', sessionToken: tokens.cafe_seller,
+    requestId: 'req_scope_1', id: 'sale_scope_1', date: '2026-08-13T09:00:00.000Z', seller: 'kassir',
+    items: [{ kind: 'product', inventoryId: 'i1', qty: 1 }]
+  }).status, 'success');
+
+  // `get_cafe_data` lets the seller in -- the till needs the catalogue -- and
+  // the scope used to choose the payload, so this was the manager's dashboard:
+  // revenue and profit per period, stock movements with their costs, closings.
+  const escalated = post(gas, { action: 'get_cafe_data', scope: 'admin', sessionToken: tokens.cafe_seller });
+  assert.strictEqual(escalated.status, 'error');
+  assert.strictEqual(escalated.summary, undefined);
+  assert.strictEqual(escalated.movements, undefined);
+  assert.strictEqual(escalated.closeReports, undefined);
+
+  // Naming no scope was worse than naming the wrong one: it fell through to
+  // the whole-state read, which is every sale the business has ever made with
+  // its profit attached.
+  const unscoped = post(gas, { action: 'get_cafe_data', sessionToken: tokens.cafe_seller });
+  assert.strictEqual(unscoped.status, 'success');
+  assert.strictEqual(unscoped.scope, 'pos');
+  assert.strictEqual(unscoped.summary, undefined);
+  assert.strictEqual(unscoped.movements, undefined);
+  assert.strictEqual(unscoped.closeReports, undefined);
+  assert.ok(!(unscoped.sales || []).some(s => s.id === 'sale_scope_1'),
+    'the till payload carries today, not the history');
+
+  // The catalogue still comes back -- refusing the scope must not break the till.
+  assert.strictEqual(unscoped.inventory.length, 1);
+
+  // And both managers keep exactly what they had.
+  const manager = post(gas, { action: 'get_cafe_data', scope: 'admin', sessionToken: tokens.cafe_admin });
+  assert.strictEqual(manager.status, 'success');
+  assert.strictEqual(manager.scope, 'admin');
+  assert.ok(manager.summary, 'the café manager still gets the dashboard');
+
+  const owner = post(gas, { action: 'get_cafe_data', sessionToken: tokens.omad_admin });
+  assert.strictEqual(owner.status, 'success');
+  assert.ok(Array.isArray(owner.sales), 'an unscoped owner read is still the whole state');
+  assert.ok(owner.sales.some(s => s.id === 'sale_scope_1'));
+});
+
 test('a café manager edits the catalogue but does not ring up sales', () => {
   const { gas, tokens } = bootProvisioned();
 

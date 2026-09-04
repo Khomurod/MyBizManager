@@ -204,6 +204,29 @@ test('with no authorized user configured nothing is authorized', () => {
   assert.equal(post(gas, { action: 'mini_home', initData: initDataFor() }).reason, 'not_authorized');
 });
 
+// ------------------------------------------------------------------ throttle
+
+test('a rate limit says so, and does not look like a refused identity', () => {
+  const gas = boot();
+
+  let throttled = null;
+  for (let i = 0; i < gas.MINI_APP_RATE_LIMIT + 2 && !throttled; i++) {
+    const answer = post(gas, { action: 'mini_home', initData: initDataFor(AUTHORIZED_ID) });
+    if (answer.status === 'error' && answer.reason === 'throttled') throttled = answer;
+  }
+
+  assert.ok(throttled, 'the bucket refuses eventually');
+  // The client keeps its stored figures for a throttle and throws them away
+  // for a refusal, so the two cannot share a reason. This one used to carry
+  // none at all -- and the bucket is global and charged before the signature is
+  // even checked, so anyone holding the /exec URL could wipe the one authorized
+  // device's screen and leave a padlock with no way forward.
+  assert.equal(throttled.reason, 'throttled');
+  assert.ok(throttled.message, 'and it says something the person can read');
+  assert.notEqual(throttled.reason, 'bad_signature');
+  assert.notEqual(throttled.reason, 'not_authorized');
+});
+
 // ------------------------------------------------------- one source of truth
 
 test('the Mini App follows TELEGRAM_AUTHORIZED_USER_ID, exactly as /yangi does', () => {

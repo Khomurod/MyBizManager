@@ -3755,16 +3755,33 @@ function writeTenantPaidToLegacySheet_(doc, input, groupId) {
   return appendOmadTransactionGroup_(doc, buildLegacyTenantPaidRows_(input, groupId, ""));
 }
 
-/** The same pair as two ledger rows, also appended in one write. */
-function writeTenantPaidToLedger_(doc, input, groupId) {
+/**
+ * The pair, as two ledger transactions — built, not written.
+ *
+ * Separated from the append so the bulk entry screen produces exactly this
+ * pair rather than its own near-copy: same comment wording, same shared frozen
+ * `amountUZS`, same expense bucket. A pair that differed from the single
+ * action's by one field would still net to zero and still look right on the
+ * screen, and would quietly diverge in the history.
+ *
+ * `baseId` and `createdAt` are arguments because a bulk writes many entries in
+ * one pass, and `new Date().getTime()` inside a loop hands the same id to two
+ * of them.
+ *
+ * @param {object} input     a validated tenant-paid request
+ * @param {string} groupId   the one group both halves belong to
+ * @param {string} [baseId]  id stem; both halves take `_0` / `_1` from it
+ * @param {string} [createdAt]
+ */
+function buildTenantPaidRows_(input, groupId, baseId, createdAt) {
   var tenant = String(input.tenant).trim();
   var purpose = String(input.comment).trim();
   var amount = Number(input.amount);
   var requestId = String(input.requestId).trim();
   var period = String(input.period);
-  var now = new Date().toISOString();
+  var now = createdAt || new Date().toISOString();
   var snapshot = buildRateSnapshot_(period, input.currency, input.rateType);
-  var baseId = String(new Date().getTime());
+  var stem = baseId || String(new Date().getTime());
 
   var common = {
     createdAt: now,
@@ -3790,23 +3807,27 @@ function writeTenantPaidToLedger_(doc, input, groupId) {
     entryKind: ENTRY_KIND_TENANT_PAID
   };
 
-  var pair = [
+  return [
     Object.assign({}, common, {
-      id: baseId + "_0",
+      id: stem + "_0",
       requestId: requestId + "_0",
       tenant: tenant,
       type: "Income",
       comment: tenantPaidComment_("income", tenant, purpose)
     }),
     Object.assign({}, common, {
-      id: baseId + "_1",
+      id: stem + "_1",
       requestId: requestId + "_1",
       tenant: tenantPaidExpenseSource_(input.method),
       type: "Expense",
       comment: tenantPaidComment_("expense", tenant, purpose)
     })
   ];
+}
 
+/** The same pair as two ledger rows, appended in one write. */
+function writeTenantPaidToLedger_(doc, input, groupId) {
+  var pair = buildTenantPaidRows_(input, groupId);
   appendLedgerRows_(ledgerSheet_(doc), pair.map(transactionToLedgerRow_));
   return pair.map(ledgerToLegacyShape_);
 }
@@ -4433,18 +4454,46 @@ function jobQueueSheet_(doc) {
  *
  * Asking twice for the same group message to be deleted is one instruction,
  * not two: the second job could only ever find the message already gone.
+ *
+ * "Identical" is judged on the keys the *enqueuer* supplied, not on the whole
+ * stored payload, because a job's payload grows while it runs:
+ * `markJobDelivered_` writes what came back onto the same row. Comparing the
+ * exact JSON therefore stopped recognising a job the moment it got that far,
+ * and for `task_proof_prompt` this function is the only thing standing between
+ * a redelivered Telegram webhook and a second ForceReply in the group -- that
+ * job has no slot marker and no `Notified_At` to fall back on. A stored job
+ * carrying extra keys is still the same instruction.
  */
 function hasPendingJob_(doc, type, relatedId, payload) {
   var read = readJobRows_(doc);
-  var wanted = JSON.stringify(payload || {});
+  var pending = [];
   for (var i = 0; i < read.rows.length; i++) {
     var job = read.rows[i];
-    if (job.status !== JOB_STATUS_PENDING && job.status !== JOB_STATUS_PROCESSING) continue;
-    if (job.type !== String(type)) continue;
-    if (job.relatedId !== String(relatedId || "")) continue;
-    if (JSON.stringify(job.payload || {}) === wanted) return job.jobId;
+    if (job.status === JOB_STATUS_PENDING || job.status === JOB_STATUS_PROCESSING) pending.push(job);
   }
-  return "";
+  var match = matchingPendingJob_(pending, String(type), String(relatedId || ""), payload || {});
+  return match ? match.jobId : "";
+}
+
+/**
+ * The already-queued job this instruction matches, or null.
+ *
+ * Compares the keys the *enqueuer* supplied and no others, for the reason
+ * `hasPendingJob_` explains: a job's stored payload grows once it has run.
+ */
+function matchingPendingJob_(pending, type, relatedId, payload) {
+  var names = Object.keys(payload || {});
+  for (var i = 0; i < pending.length; i++) {
+    var job = pending[i];
+    if (job.type !== type || job.relatedId !== relatedId) continue;
+    var stored = job.payload || {};
+    var same = true;
+    for (var n = 0; n < names.length; n++) {
+      if (JSON.stringify(stored[names[n]]) !== JSON.stringify(payload[names[n]])) { same = false; break; }
+    }
+    if (same) return job;
+  }
+  return null;
 }
 
 function enqueueJob_(doc, type, relatedId, payload) {
@@ -4468,6 +4517,60 @@ function enqueueJob_(doc, type, relatedId, payload) {
     ""
   ]);
   return jobId;
+}
+
+/**
+ * Queues several jobs against one read of the queue and one write.
+ *
+ * `enqueueJob_` reads the whole queue to deduplicate, and that queue is never
+ * pruned -- so looping it over the fifty entries of a bulk submission is fifty
+ * full-sheet reads and fifty appends, after the money has already been written
+ * and while the person is waiting. The dedup rule is unchanged: it is applied
+ * once against the rows already stored, and again within this batch itself, so
+ * two identical instructions in one call still produce one job.
+ *
+ * @param {Array} jobs  `{ type, relatedId, payload }`, in order
+ * @return {Array<string>} the job id for each, aligned with the input
+ */
+function enqueueJobsBatch_(doc, jobs) {
+  var wanted = jobs || [];
+  var ids = new Array(wanted.length);
+  if (wanted.length === 0) return ids;
+
+  var read = readJobRows_(doc);
+  var pending = [];
+  for (var p = 0; p < read.rows.length; p++) {
+    var row = read.rows[p];
+    if (row.status === JOB_STATUS_PENDING || row.status === JOB_STATUS_PROCESSING) pending.push(row);
+  }
+
+  var sheet = jobQueueSheet_(doc);
+  var firstRow = sheet.getLastRow() + 1;
+  var stamp = new Date().getTime();
+  var now = new Date().toISOString();
+  var rows = [];
+
+  for (var i = 0; i < wanted.length; i++) {
+    var job = wanted[i] || {};
+    var type = String(job.type || "");
+    var relatedId = String(job.relatedId || "");
+    var payload = job.payload || {};
+
+    var duplicate = matchingPendingJob_(pending, type, relatedId, payload);
+    if (duplicate) { ids[i] = duplicate.jobId; continue; }
+
+    var jobId = "job_" + stamp + "_" + (firstRow + rows.length - 1);
+    ids[i] = jobId;
+    rows.push([jobId, relatedId, type, JSON.stringify(payload), JOB_STATUS_PENDING, 0, now, "", now, ""]);
+    // Visible to the rest of this batch, so a repeated instruction inside one
+    // call is still one job.
+    pending.push({ jobId: jobId, type: type, relatedId: relatedId, payload: payload });
+  }
+
+  if (rows.length > 0) {
+    sheet.getRange(firstRow, 1, rows.length, JOB_QUEUE_HEADER.length).setValues(rows);
+  }
+  return ids;
 }
 
 function readJobRows_(doc) {
@@ -4511,11 +4614,11 @@ function writeJobField_(sheet, rowNumber, columnIndex, value) {
  * One cell on the job's own row is the cheapest durable place to say "this went
  * out". The retry reads it, skips the send, and only finishes the bookkeeping.
  *
- * The row is `Processing` while this happens, so `hasPendingJob_` — which
- * matches on the exact payload JSON — stops matching it. That is acceptable
- * precisely because it is not what prevents a duplicate enqueue: the slot marker
- * and `Notified_At` are, and both are written under the script lock before the
- * job is queued at all.
+ * The facts written here are extra keys on top of what the enqueuer supplied,
+ * which is why `hasPendingJob_` compares only the enqueuer's own keys: a job
+ * that has already sent must still be recognisable as the same instruction, or
+ * `task_proof_prompt` — which has no slot marker and no `Notified_At` — would
+ * be enqueued a second time by a redelivered webhook.
  */
 function markJobDelivered_(job, facts) {
   if (!job || !job.sheet || !job.rowNumber) return;
@@ -4622,10 +4725,10 @@ function processPendingJobs_(doc, maxJobs) {
  * Pass `deferReports: true` on a request to skip it entirely and leave
  * everything to the trigger.
  */
-function drainJobQueueQuietly_(doc, options) {
+function drainJobQueueQuietly_(doc, options, batchSize) {
   if (options && options.deferReports === true) return 0;
   try {
-    return processPendingJobs_(doc, JOB_QUEUE_INLINE_BATCH);
+    return processPendingJobs_(doc, batchSize || JOB_QUEUE_INLINE_BATCH);
   } catch (error) {
     return 0;
   }
@@ -4714,6 +4817,33 @@ function queueOmadTransactionReport_(doc, report) {
     });
   }
   return "";
+}
+
+/**
+ * One report per business action, for a submission that made several.
+ *
+ * Deliberately N jobs rather than one combined card: each entry of a bulk keeps
+ * its own group id, so a correction a month later edits that entry's own
+ * message in place. A single card covering ten entries would have nothing to
+ * edit when one of them changed. No new job type is involved — these are the
+ * same `omad_transaction_report` jobs a single entry queues.
+ *
+ * @param {Array} groups  `{ groupId, baseId }` per business action
+ */
+function enqueueLedgerReportsBatch_(doc, groups) {
+  var wanted = groups || [];
+  var jobs = [];
+  for (var i = 0; i < wanted.length; i++) {
+    var groupId = String((wanted[i] && wanted[i].groupId) || "");
+    var baseId = String((wanted[i] && wanted[i].baseId) || "");
+    if (!groupId && !baseId) continue;
+    jobs.push({
+      type: "omad_transaction_report",
+      relatedId: groupId || baseId,
+      payload: { groupId: groupId, baseId: baseId, messageId: "" }
+    });
+  }
+  return enqueueJobsBatch_(doc, jobs);
 }
 
 function runOmadTransactionReportJob_(doc, job) {
@@ -5637,20 +5767,42 @@ function readCafeClosingsLean_(doc) {
 // parsed all of it to display four figures. The catalogue is unchanged; only
 // what is derived from the sales sheet is scoped.
 //
-// The full payload is still what an unscoped request gets, so nothing that
-// already works has to know about this.
+// A manager who names no scope still gets the full payload, so nothing that
+// already works has to know about this. A seller gets the till's.
 
 var CAFE_ADMIN_RECENT_CLOSINGS = 30;
 
 /** How long a café display summary may be reused. Every write bumps the key. */
 var CAFE_SUMMARY_TTL_SECONDS = 120;
 
-/** Routes `get_cafe_data` to the payload the asking screen actually needs. */
-function readCafePayloadForScope_(doc, configSheet, payload) {
+/**
+ * The café read, chosen by the caller's role rather than by the caller.
+ *
+ * `get_cafe_data` is gated on AUTH_ROLES_CAFE_READ, which includes the seller --
+ * and the scope then decided which payload came back. So a signed-in seller
+ * could ask for `scope: "admin"` and receive the manager's dashboard: revenue
+ * and profit per period, best sellers, close-day reports, stock movements with
+ * their costs and who made them. Asking for *no* scope was worse: it fell to
+ * `readCafeState_`, which is every sale ever made with its profit.
+ *
+ * The write side has always split these roles (`CAFE_ACTION_ROLES`). The read
+ * side now does too: the manager's view needs a manager's role, and the default
+ * is the till's payload rather than the whole history.
+ */
+function readCafePayloadForScope_(doc, configSheet, payload, role) {
   var scope = String((payload && payload.scope) || "");
+  var manager = role === AUTH_ROLE_OMAD_ADMIN || role === AUTH_ROLE_CAFE_ADMIN;
+
+  if (scope === "admin") {
+    if (!manager) return { status: "error", message: "Bu amal uchun ruxsat yo'q." };
+    return readCafeAdminPayload_(doc, configSheet, payload);
+  }
   if (scope === "pos") return readCafePosPayload_(doc, configSheet, payload);
-  if (scope === "admin") return readCafeAdminPayload_(doc, configSheet, payload);
-  return readCafeState_(doc, configSheet);
+  // No scope named: an older client. Managers keep the whole-state answer they
+  // have always had; a seller gets the till's payload, which is all their own
+  // screen has ever asked for.
+  if (manager) return readCafeState_(doc, configSheet);
+  return readCafePosPayload_(doc, configSheet, payload);
 }
 
 /** A yyyy-MM-dd the caller supplied, or today in the script's timezone. */
@@ -8483,6 +8635,429 @@ function createTransactionBatch_(doc, input) {
   }
 }
 
+// ----- apps-script/14b_ledger_bulk.gs ------------------------------------------
+
+// ============================================================
+// Bulk entry
+// ------------------------------------------------------------
+// `create_transaction_batch` records ONE business action with several amounts:
+// one tenant, one type, one period, one comment. That is the right shape for a
+// rent payment split across cash and bank, and the wrong shape for the thing
+// this business actually does at the start of every month, which is settle ten
+// tenants at once.
+//
+// So this is the other axis. One submission, many *independent* business
+// actions -- rent from several tenants, expenses booked against a tenant,
+// expenses out of the general cash or bank buckets, and tenant-paid-on-our-
+// behalf pairs -- mixed freely, each keeping its own group id, its own period
+// and its own frozen rates, and each getting its own Telegram card exactly as
+// if it had been entered on its own.
+//
+// What it does NOT do is invent a new kind of accounting. Every entry is
+// validated by the same validator the single-entry path uses, and a tenant-paid
+// entry is built by the very same `buildTenantPaidRows_` the single action
+// calls. The only thing that is new is that they are written together.
+// ============================================================
+
+/** At most this many business actions in one submission. */
+var BULK_MAX_ENTRIES = 50;
+
+/**
+ * The request id base is short so the derived per-row ids stay inside the
+ * 128-character limit `validateTenantPaidInput_` enforces:
+ * `<base>__b<count>_<index>_<half>` adds at most 10 characters.
+ */
+var BULK_MAX_REQUEST_BASE = 100;
+
+var BULK_KIND_ORDINARY = "ordinary";
+var BULK_KIND_TENANT_PAID = "tenant_paid";
+
+/**
+ * The idempotency key for one entry of one submission.
+ *
+ * Counted, like the batch's: the key carries the number of entries the client
+ * meant to send, so a retry whose list has changed is refused rather than
+ * silently expanding or shrinking a financial submission. The letter is `b`
+ * where the batch uses `n`, so `parseBatchRequestId_` can never claim one of
+ * these and no stored row is ever read by the wrong resume logic.
+ */
+function bulkRequestId_(requestBase, count, index) {
+  return String(requestBase) + "__b" + count + "_" + index;
+}
+
+/**
+ * Reads a stored row's request id back.
+ *
+ * Returns `{ count, index, half }` where `half` is -1 for an ordinary row and
+ * 0 or 1 for the two halves of a tenant-paid pair (which `buildTenantPaidRows_`
+ * appends). `null` means "not from this submission"; `invalid` means it claims
+ * to be and is malformed, which is a conflict rather than something to skip.
+ */
+function parseBulkRequestId_(requestId, requestBase) {
+  var value = String(requestId || "");
+  var prefix = String(requestBase) + "__b";
+  if (value.indexOf(prefix) !== 0) return null;
+
+  var parts = value.slice(prefix.length).split("_");
+  if (parts.length < 2 || parts.length > 3) return { invalid: true };
+  for (var i = 0; i < parts.length; i++) {
+    if (!/^\d+$/.test(parts[i])) return { invalid: true };
+  }
+
+  var count = Number(parts[0]);
+  var index = Number(parts[1]);
+  var half = parts.length === 3 ? Number(parts[2]) : -1;
+  if (count < 1 || count > BULK_MAX_ENTRIES) return { invalid: true };
+  if (index < 0 || index >= count) return { invalid: true };
+  if (half > 1) return { invalid: true };
+
+  return { invalid: false, count: count, index: index, half: half };
+}
+
+/**
+ * The next free `<stamp>_<n>` id slot for this millisecond.
+ *
+ * Deliberately not `nextBatchIdIndex_`, which reads only the last row and
+ * parses the whole suffix as a number. A bulk can end on a tenant-paid half,
+ * whose id is `<stamp>_<n>_1` -- `Number("3_1")` is NaN, so that helper would
+ * restart at 0 and a second bulk landing in the same millisecond would reuse
+ * ids that are already in the ledger. Ids are what a correction, a void and a
+ * delete look a row up by, so a duplicate is not cosmetic.
+ */
+function nextBulkIdIndex_(sheet, stamp) {
+  var index = 0;
+  var lastRow = sheet ? sheet.getLastRow() : 0;
+  if (lastRow < 2) return index;
+
+  // Bounded: a same-millisecond burst cannot be longer than one submission's
+  // worth of rows, and 200 is comfortably more than the 100 a full bulk writes.
+  var howMany = Math.min(lastRow - 1, 200);
+  var values = sheet.getRange(lastRow - howMany + 1, 1, howMany, 1).getValues();
+  var prefix = stamp + "_";
+  for (var i = 0; i < values.length; i++) {
+    var id = String(values[i][0] || "");
+    if (id.indexOf(prefix) !== 0) continue;
+    var tail = id.slice(prefix.length);
+    var separator = tail.indexOf("_");
+    if (separator >= 0) tail = tail.slice(0, separator);
+    var n = Number(tail);
+    if (isFinite(n) && n >= index) index = Math.floor(n) + 1;
+  }
+  return index;
+}
+
+/** `tenant_paid` or `ordinary`; anything unrecognised is an ordinary entry. */
+function normalizeBulkKind_(kind) {
+  return String(kind || "") === BULK_KIND_TENANT_PAID ? BULK_KIND_TENANT_PAID : BULK_KIND_ORDINARY;
+}
+
+/** How many ledger rows one entry of this kind occupies. */
+function bulkEntryRowCount_(kind) {
+  return kind === BULK_KIND_TENANT_PAID ? 2 : 1;
+}
+
+/**
+ * Whether an ordinary entry names something that can carry the amount.
+ *
+ * `validateTransactionInput_` accepts any non-empty text as the object, which
+ * is survivable when a person picks one row from a dropdown and fatal on a
+ * grid of fifty: an income credited to a misspelt name invents debt against
+ * nobody, and the debt figure is what this whole application is for. Both entry
+ * screens already offer exactly this set — configured tenants for an income,
+ * plus the two expense buckets for an expense — so this refuses only what no
+ * dropdown could have produced. It is the rule `mini_save_transaction` already
+ * applies to a single income.
+ */
+function bulkTenantError_(entry, tenants) {
+  var name = String(entry.tenant || "").trim();
+  if (isExpenseSourceName_(name)) {
+    if (entry.type === "Income") return "Kirim uchun ijarachi tanlang — umumiy kassa bo'lmaydi.";
+    return "";
+  }
+  if (!findConfiguredTenant_(tenants, name)) return "Bunday ijarachi ro'yxatda yo'q: " + name;
+  return "";
+}
+
+/**
+ * Validates every entry before anything is written.
+ *
+ * All of them, not the first failure's worth: a submission is all-or-nothing,
+ * so finding out at entry 9 that entry 3 was wrong must not leave 1 and 2 in
+ * the ledger. Returns `{ error, entryIndex }` or `{ prepared }`.
+ */
+function prepareBulkEntries_(doc, payload, requestBase, count) {
+  var entries = payload.entries;
+  var tenants = null;
+  var prepared = [];
+
+  for (var i = 0; i < count; i++) {
+    var raw = entries[i] || {};
+    var kind = normalizeBulkKind_(raw.kind);
+    var candidate = {
+      kind: kind,
+      period: raw.period,
+      tenant: raw.tenant,
+      amount: raw.amount,
+      currency: raw.currency,
+      method: raw.method,
+      comment: raw.comment,
+      rateType: raw.rateType || payload.rateType,
+      source: payload.source,
+      createdBy: payload.createdBy,
+      requestId: bulkRequestId_(requestBase, count, i)
+    };
+
+    var invalid;
+    if (kind === BULK_KIND_TENANT_PAID) {
+      // Read once, not once per entry: the tenant list is a config cell and a
+      // fifty-entry submission would otherwise parse it fifty times.
+      if (tenants === null) tenants = configuredTenants_(doc);
+      // The pair's own validator, which is the one that enforces a real
+      // configured tenant, the agreement window and a mandatory purpose.
+      invalid = validateTenantPaidInput_(candidate, tenants);
+    } else {
+      candidate.type = raw.type;
+      invalid = validateTransactionInput_(candidate);
+      if (!invalid) {
+        if (tenants === null) tenants = configuredTenants_(doc);
+        invalid = bulkTenantError_(candidate, tenants);
+      }
+    }
+    if (invalid) return { error: invalid, entryIndex: i };
+
+    prepared.push(candidate);
+  }
+
+  return { prepared: prepared };
+}
+
+/**
+ * Finds the rows a previous attempt at this submission already wrote.
+ *
+ * Returns `{ byEntry, conflict, storedEntries }`, where `byEntry[i]` is the
+ * array of active rows stored for entry `i`. A conflict means the retry does
+ * not describe the same submission, and the caller writes nothing at all.
+ */
+function findExistingBulkRows_(sheet, requestBase, count) {
+  var result = { byEntry: new Array(count), conflict: false, storedEntries: 0 };
+  var lastRow = sheet ? sheet.getLastRow() : 0;
+  if (lastRow < 2) return result;
+
+  var values = sheet.getRange(2, 2, lastRow - 1, 1).getValues();
+  for (var i = 0; i < values.length; i++) {
+    var parsed = parseBulkRequestId_(values[i][0], requestBase);
+    if (!parsed) continue;
+    if (parsed.invalid || parsed.count !== count) { result.conflict = true; continue; }
+
+    var rowNumber = i + 2;
+    var transaction = ledgerRowToTransaction_(
+      sheet.getRange(rowNumber, 1, 1, LEDGER_HEADER.length).getValues()[0], rowNumber);
+    // A voided row is not a row this submission still owns; the entry counts
+    // as missing and is written again.
+    if (transaction.status === TX_STATUS_VOID) continue;
+
+    var slot = result.byEntry[parsed.index] || (result.byEntry[parsed.index] = []);
+    for (var d = 0; d < slot.length; d++) {
+      if (slot[d].requestId === transaction.requestId) { result.conflict = true; break; }
+    }
+    slot.push(transaction);
+  }
+
+  for (var e = 0; e < count; e++) {
+    if (result.byEntry[e]) result.storedEntries++;
+  }
+  return result;
+}
+
+/**
+ * Whether the rows already stored for one entry are that same entry.
+ *
+ * The rate fields are deliberately not compared: they were frozen when the
+ * first attempt wrote them, and freezing them again now can legitimately give
+ * a different answer if the period's rate was edited in between. What must
+ * match is everything the person actually typed.
+ */
+function bulkEntryMatches_(stored, entry) {
+  var rows = stored || [];
+  if (rows.length !== bulkEntryRowCount_(entry.kind)) return false;
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i].status !== TX_STATUS_ACTIVE) return false;
+    if (rows[i].period !== String(entry.period)) return false;
+    if (Number(rows[i].amount) !== Number(entry.amount)) return false;
+    if (rows[i].currency !== entry.currency) return false;
+    if (rows[i].method !== entry.method) return false;
+    if (String(rows[i].createdBy || "") !== String(entry.createdBy || "").slice(0, 120)) return false;
+    if (rows[i].source !== (TX_SOURCES[entry.source] ? entry.source : TX_SOURCE_WEB)) return false;
+  }
+
+  var tenant = String(entry.tenant).trim();
+  if (entry.kind === BULK_KIND_TENANT_PAID) {
+    var purpose = String(entry.comment).trim();
+    var income = rows[0].requestId.slice(-2) === "_0" ? rows[0] : rows[1];
+    var expense = income === rows[0] ? rows[1] : rows[0];
+    return normalizeEntryKind_(income.entryKind) === ENTRY_KIND_TENANT_PAID &&
+      income.type === "Income" && expense.type === "Expense" &&
+      income.tenant === tenant &&
+      expense.tenant === tenantPaidExpenseSource_(entry.method) &&
+      income.comment === tenantPaidComment_("income", tenant, purpose) &&
+      expense.comment === tenantPaidComment_("expense", tenant, purpose) &&
+      income.groupId === expense.groupId;
+  }
+
+  return normalizeEntryKind_(rows[0].entryKind) === ENTRY_KIND_ORDINARY &&
+    rows[0].tenant === tenant &&
+    rows[0].type === entry.type &&
+    String(rows[0].comment || "") === String(entry.comment || "").slice(0, 2000);
+}
+
+/** The one ordinary ledger row an ordinary entry becomes. */
+function buildBulkOrdinaryRow_(entry, groupId, id, createdAt) {
+  var snapshot = buildRateSnapshot_(entry.period, entry.currency, entry.rateType);
+  var amount = Number(entry.amount);
+  return {
+    id: id,
+    requestId: entry.requestId,
+    createdAt: createdAt,
+    updatedAt: "",
+    createdBy: String(entry.createdBy || "").slice(0, 120),
+    source: TX_SOURCES[entry.source] ? entry.source : TX_SOURCE_WEB,
+    period: String(entry.period),
+    tenant: String(entry.tenant).trim(),
+    type: entry.type,
+    amount: amount,
+    currency: entry.currency,
+    rateBuy: snapshot.rateBuy,
+    rateSell: snapshot.rateSell,
+    rateUsed: snapshot.rateUsed,
+    rateType: snapshot.rateType,
+    amountUZS: Math.round(entry.currency === "USD" ? amount * snapshot.rateUsed : amount),
+    method: entry.method,
+    comment: String(entry.comment || "").slice(0, 2000),
+    status: TX_STATUS_ACTIVE,
+    relatedId: "",
+    msgId: "",
+    schemaVersion: LEDGER_SCHEMA_VERSION,
+    groupId: groupId,
+    entryKind: ENTRY_KIND_ORDINARY
+  };
+}
+
+/**
+ * Records many independent business actions in one submission.
+ *
+ * The guarantees, in the order they are enforced:
+ *
+ *   1. **Nothing is written until everything validates.** The whole list goes
+ *      through the ordinary validators before the lock is taken.
+ *   2. **One group per entry.** Each keeps its own `Entry_Group_ID`, so a
+ *      correction a month later edits that one entry and its one Telegram
+ *      card, exactly as if it had been entered alone.
+ *   3. **Rates are frozen per entry, on that entry's own period.** This is why
+ *      the batch's single shared rate pair could not be reused: settling three
+ *      months at once must use each month's rate.
+ *   4. **One append.** Every row of every entry goes in a single
+ *      `appendLedgerRows_` call, so a bulk cannot be half-created.
+ *   5. **A retry is resolved, never re-run.** The counted request id binds the
+ *      key to the submitted shape; a retry with a changed list is refused.
+ */
+function createTransactionBulk_(doc, input) {
+  var payload = input || {};
+  var entries = Array.isArray(payload.entries) ? payload.entries : [];
+  var count = entries.length;
+  if (count === 0) return { status: "error", message: "Kamida bitta yozuv kiriting." };
+  if (count > BULK_MAX_ENTRIES) {
+    return { status: "error", message: "Bir yuborishda " + BULK_MAX_ENTRIES + " tadan ko'p yozuv bo'lmaydi." };
+  }
+
+  var requestBase = String(payload.requestId || "").trim();
+  if (!requestBase) return { status: "error", message: "requestId talab qilinadi." };
+  if (requestBase.length > BULK_MAX_REQUEST_BASE) return { status: "error", message: "requestId juda uzun." };
+
+  var validated = prepareBulkEntries_(doc, payload, requestBase, count);
+  if (validated.error) {
+    return {
+      status: "error",
+      message: validated.error,
+      // Which row to put the message under. The screen keeps everything the
+      // person typed and points at the one that is wrong.
+      entryIndex: validated.entryIndex
+    };
+  }
+  var prepared = validated.prepared;
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var sheet = ledgerSheet_(doc);
+    var existing = findExistingBulkRows_(sheet, requestBase, count);
+    var conflict = {
+      status: "error",
+      code: "bulk_retry_conflict",
+      message: "Qayta urinish avval saqlangan yozuvlar bilan mos kelmadi. Ma'lumot o'zgartirilmadi."
+    };
+    if (existing.conflict) return conflict;
+
+    for (var v = 0; v < count; v++) {
+      if (!existing.byEntry[v]) continue;
+      if (!bulkEntryMatches_(existing.byEntry[v], prepared[v])) return conflict;
+    }
+
+    var groupIds = new Array(count);
+    var transactionsByEntry = new Array(count);
+    if (existing.storedEntries === count) {
+      for (var s = 0; s < count; s++) {
+        groupIds[s] = existing.byEntry[s][0].groupId;
+        transactionsByEntry[s] = existing.byEntry[s].map(ledgerToLegacyShape_);
+      }
+      return {
+        status: "success", duplicate: true, resumed: false,
+        groupIds: groupIds, entries: transactionsByEntry
+      };
+    }
+
+    var stamp = String(new Date().getTime());
+    var slot = nextBulkIdIndex_(sheet, stamp);
+    var createdAt = new Date().toISOString();
+    var newTransactions = [];
+
+    for (var i = 0; i < count; i++) {
+      if (existing.byEntry[i]) {
+        groupIds[i] = existing.byEntry[i][0].groupId;
+        transactionsByEntry[i] = existing.byEntry[i].map(ledgerToLegacyShape_);
+        continue;
+      }
+
+      var entry = prepared[i];
+      var groupId = newEntryGroupId_();
+      var id = stamp + "_" + slot;
+      slot++;
+
+      var rows = entry.kind === BULK_KIND_TENANT_PAID
+        // The identical pair the single tenant-paid action writes: same comment
+        // wording, same shared frozen amountUZS, same expense bucket.
+        ? buildTenantPaidRows_(entry, groupId, id, createdAt)
+        : [buildBulkOrdinaryRow_(entry, groupId, id, createdAt)];
+
+      groupIds[i] = groupId;
+      transactionsByEntry[i] = rows.map(ledgerToLegacyShape_);
+      for (var r = 0; r < rows.length; r++) newTransactions.push(rows[r]);
+    }
+
+    appendLedgerRows_(sheet, newTransactions.map(transactionToLedgerRow_));
+    appendTransactionCreatedAuditsBatch_(doc, newTransactions);
+
+    return {
+      status: "success",
+      duplicate: false,
+      resumed: existing.storedEntries > 0,
+      groupIds: groupIds,
+      entries: transactionsByEntry
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 // ----- apps-script/15_system_status.gs -----------------------------------------
 
 // ============================================================
@@ -9578,7 +10153,26 @@ function newGoalStepId_() {
   return "step_" + Utilities.getUuid().split("-").join("");
 }
 
-function normalizeGoalSteps_(steps) {
+/**
+ * The steps of a goal, cleaned up.
+ *
+ * `photoRequired` has three meanings and they are not interchangeable:
+ *
+ *   absent  - this caller is not talking about the photo rule at all
+ *   null    - clear the override, so the step inherits the goal's rule again
+ *   boolean - override the goal's rule for this step
+ *
+ * A *stored* step never carries null (`mergeGoalSteps_` deletes the key rather
+ * than writing one), so the read path collapses null into absent and keeps
+ * exactly the two states it has always had. Only an incoming payload needs the
+ * third, and it says so with `keepClear` -- without it "inherit" would be
+ * unsendable, because absent has to keep meaning "leave the stored value
+ * alone" for clients that never mention steps' photo rules at all.
+ *
+ * @param {Array} steps
+ * @param {boolean} [keepClear]  preserve an explicit null as a clear request
+ */
+function normalizeGoalSteps_(steps, keepClear) {
   var source = Array.isArray(steps) ? steps : [];
   var out = [];
   for (var i = 0; i < source.length; i++) {
@@ -9587,9 +10181,10 @@ function normalizeGoalSteps_(steps) {
     if (!title) continue;
     var entry = { title: title };
     if (step.id) entry.id = String(step.id).slice(0, 64);
-    // Absent means "inherit from the goal". Only an explicit value overrides,
-    // which is why this key is not written unless one was supplied.
-    if (step.photoRequired !== undefined && step.photoRequired !== null && step.photoRequired !== "") {
+    var cleared = step.photoRequired === null || step.photoRequired === "";
+    if (cleared) {
+      if (keepClear) entry.photoRequired = null;
+    } else if (step.photoRequired !== undefined) {
       entry.photoRequired = parseTaskBool_(step.photoRequired);
     }
     out.push(entry);
@@ -11421,7 +12016,7 @@ function normalizeTaskInput_(payload, existing) {
     task.dueTime = isTaskTimeKey_(dueTime) ? String(dueTime) : "";
   } else if (type === "goal") {
     task.steps = taskFieldSupplied_(payload, "steps")
-      ? normalizeGoalSteps_(payload.steps)
+      ? normalizeGoalSteps_(payload.steps, true)
       : (existing ? (existing.steps || []) : []);
     if (task.steps.length === 0) return { error: "Maqsad uchun kamida bitta qadam kiriting." };
   }
@@ -11548,10 +12143,30 @@ function mergeGoalSteps_(existingSteps, incomingSteps) {
     var atPosition = existing[pi];
     if (atPosition && atPosition.id && !used[atPosition.id]) { used[atPosition.id] = true; out[pi] = { id: atPosition.id }; }
   }
+  // Three states, the same three the engine uses everywhere else: a field the
+  // caller did not mention is left alone, an explicitly empty one clears, and a
+  // value sets.
+  //
+  //   absent  -> keep whatever the stored step said (inherit or override)
+  //   null    -> clear the override, so the step inherits the goal's rule again
+  //   boolean -> override
+  //
+  // `out[n]` used to start life as a bare `{id}`, so a stored override survived
+  // only if the client echoed it back. The /tasks board sends its steps as bare
+  // title strings, which meant saving a goal there silently cleared every
+  // per-step photo rule set from the phone. Carrying the stored step forward
+  // fixes that for every client at once -- but only alongside a way to say
+  // "inherit" out loud, or the setting would become impossible to undo.
+  var byIdAll = {};
+  for (var s = 0; s < existing.length; s++) if (existing[s].id) byIdAll[existing[s].id] = existing[s];
+
   for (var n = 0; n < out.length; n++) {
     if (!out[n]) out[n] = { id: newGoalStepId_() };
+    var stored = byIdAll[out[n].id];
+    if (stored && stored.photoRequired !== undefined) out[n].photoRequired = stored.photoRequired;
     out[n].title = incoming[n].title;
-    if (incoming[n].photoRequired !== undefined) out[n].photoRequired = incoming[n].photoRequired;
+    if (incoming[n].photoRequired === null) delete out[n].photoRequired;
+    else if (incoming[n].photoRequired !== undefined) out[n].photoRequired = incoming[n].photoRequired;
   }
   return out;
 }
@@ -13223,7 +13838,7 @@ function doPost(e) {
     if (action === 'get_cafe_data') {
       var cafeReadAuth = authorizeWebRequest_(payload, AUTH_ROLES_CAFE_READ);
       if (!cafeReadAuth.ok) return authRefusal_(cafeReadAuth);
-      return jsonOutput_(readCafePayloadForScope_(doc, configSheet, payload));
+      return jsonOutput_(readCafePayloadForScope_(doc, configSheet, payload, cafeReadAuth.role));
     }
 
     // ---- Omad ledger ------------------------------------------------------
@@ -13772,11 +14387,14 @@ function queueLedgerReport_(doc, action, result) {
 
 var isLedgerActionBeforeWritePerf_ = isLedgerAction_;
 isLedgerAction_ = function (action) {
-  return action === 'create_transaction_batch' || isLedgerActionBeforeWritePerf_(action);
+  return action === 'create_transaction_batch' ||
+    action === 'create_transaction_bulk' ||
+    isLedgerActionBeforeWritePerf_(action);
 };
 
 var ledgerActionBeforeWritePerf_ = ledgerAction_;
 ledgerAction_ = function (action, payload, doc) {
+  if (action === 'create_transaction_bulk') return bulkLedgerAction_(doc, payload);
   if (action !== 'create_transaction_batch') {
     return ledgerActionBeforeWritePerf_(action, payload, doc);
   }
@@ -13805,6 +14423,55 @@ ledgerAction_ = function (action, payload, doc) {
   }
   return jsonOutput_(result);
 };
+
+/**
+ * `create_transaction_bulk`: many business actions, one submission.
+ *
+ * Routed through `isLedgerAction_` rather than the main action switch, exactly
+ * as `create_transaction_batch` is, so it inherits `AUTH_ROLES_OMAD_ADMIN`
+ * without a second gate to keep in step with the first.
+ */
+function bulkLedgerAction_(doc, payload) {
+  if (!isLedgerActive_(doc)) {
+    return jsonOutput_({
+      status: "error",
+      message: "Yangi tranzaksiya tizimi hali yoqilmagan. Avval ma'lumotlarni ko'chiring."
+    });
+  }
+
+  var result = createTransactionBulk_(doc, payload);
+  if (result.status === "success") {
+    recordLastOperation_(doc, 'create_transaction_bulk');
+    try {
+      // One card per business action, queued against one read of the job queue.
+      // Failing to queue never undoes a save that already succeeded.
+      result.reportJobIds = result.duplicate ? [] : enqueueLedgerReportsBatch_(doc, bulkReportTargets_(result));
+    } catch (queueError) {
+      result.reportJobIds = [];
+      result.reportQueueError = redactSecrets_(queueError).slice(0, 300);
+      debugLog_(doc, "report_enqueue_failed", String(queueError));
+    }
+    drainJobQueueQuietly_(doc, payload);
+  }
+  return jsonOutput_(result);
+}
+
+/** `{groupId, baseId}` for each entry a bulk actually wrote. */
+function bulkReportTargets_(result) {
+  var targets = [];
+  var entries = result.entries || [];
+  for (var i = 0; i < entries.length; i++) {
+    var rows = entries[i] || [];
+    if (rows.length === 0) continue;
+    targets.push({
+      groupId: String(result.groupIds[i] || ""),
+      // The same fallback the single-entry report uses, for a job that outlives
+      // a deploy and meets a worker reading by base id.
+      baseId: String(rows[0].id || "").split("_")[0]
+    });
+  }
+  return targets;
+}
 
 // ----- apps-script/21_miniapp_auth.gs ------------------------------------------
 
@@ -13975,8 +14642,14 @@ function verifyTelegramInitData_(initData, nowMs) {
  * this particular person may see anything.
  */
 function authorizeMiniAppRequest_(payload) {
+  // A rate limit is not a refused identity, and the client has to be able to
+  // tell them apart: a refusal means this device's stored figures were verified
+  // for somebody no longer accepted, so they go; a throttle means "too many
+  // requests just now", and throwing the snapshot away for that is the café-till
+  // incident again (App Brief decision 12). The bucket is global and charged
+  // before the signature is checked, so anyone holding the /exec URL can trip it.
   var throttled = enforceRateLimit_("mini_auth", MINI_APP_RATE_LIMIT, TELEGRAM_RATE_WINDOW_SECONDS);
-  if (throttled) return { ok: false, message: throttled };
+  if (throttled) return { ok: false, reason: "throttled", message: throttled };
 
   var verified = verifyTelegramInitData_((payload && payload.initData) || "");
   if (!verified.ok) {
@@ -14060,6 +14733,16 @@ var MINI_IDENTITY_FIELDS = {
   proofAwaitingUserId: true
 };
 
+/**
+ * The most cards one `mini_flush_reports` will send.
+ *
+ * A bulk of fifty entries queues fifty, and the request that drains them is
+ * fire-and-forget — but it still runs inside one Apps Script execution, so it
+ * is bounded. Whatever is left is sent by the five-minute trigger, which is the
+ * durable sender for every report on this queue.
+ */
+var MINI_FLUSH_MAX_JOBS = 12;
+
 function isMiniAppAction_(action) {
   return String(action || "").indexOf("mini_") === 0;
 }
@@ -14102,6 +14785,7 @@ function handleMiniAppAction_(action, payload, doc) {
 
   if (action === 'mini_save_transaction') return miniSaveTransaction_(doc, configSheet, payload);
   if (action === 'mini_tenant_paid') return miniTenantPaid_(doc, configSheet, payload);
+  if (action === 'mini_bulk_entry') return miniBulkEntry_(doc, payload);
   if (action === 'mini_task_action') return miniTaskAction_(doc, payload, auth);
 
   // Sending the group card is a Telegram round trip, and a phone on a slow
@@ -14111,7 +14795,14 @@ function handleMiniAppAction_(action, payload, doc) {
   // instead of waiting for the next five-minute trigger tick. Losing this
   // request costs nothing: the job stays queued and the trigger sends it.
   if (action === 'mini_flush_reports') {
-    return jsonOutput_({ status: "success", authorized: true, sent: drainJobQueueQuietly_(doc, null) });
+    // One card per business action, and a bulk makes several — so the client
+    // says how many it is expecting rather than the queue defaulting to one and
+    // leaving the rest to the five-minute trigger. Clamped, because this runs
+    // Telegram round trips inside one request. Absent, it drains one, exactly
+    // as it always has for a single entry.
+    var asked = Number(payload && payload.max) || JOB_QUEUE_INLINE_BATCH;
+    var drain = Math.min(Math.max(asked, JOB_QUEUE_INLINE_BATCH), MINI_FLUSH_MAX_JOBS);
+    return jsonOutput_({ status: "success", authorized: true, sent: drainJobQueueQuietly_(doc, null, drain) });
   }
 
   // The task equivalent, for the same reason and with the same contract. A task
@@ -14454,6 +15145,50 @@ function queueMiniTransactionReport_(doc, transaction) {
   } catch (queueError) {
     debugLog_(doc, "report_enqueue_failed", String(queueError));
   }
+}
+
+/**
+ * Bulk entry from the phone, through exactly the same function the web uses.
+ *
+ * The attribution fields are taken from the verified Telegram identity and
+ * never from the request, which is why `createdBy` and `source` are set here
+ * rather than forwarded: a phone must not be able to file an entry as though
+ * it had been typed on the web admin. Everything else — the validation, the
+ * one-group-per-entry rule, the per-entry rates, the single append and the
+ * counted idempotency key — is `createTransactionBulk_`, unchanged.
+ *
+ * The ledger is required. There is no legacy-sheet path here because there is
+ * no legacy bulk to be compatible with, and inventing one would mean a second
+ * implementation of the money rules.
+ */
+function miniBulkEntry_(doc, payload) {
+  if (!isLedgerActive_(doc)) {
+    return jsonOutput_({
+      status: "error",
+      message: "Yangi tranzaksiya tizimi hali yoqilmagan. Avval ma'lumotlarni ko'chiring."
+    });
+  }
+
+  var result = createTransactionBulk_(doc, {
+    requestId: payload.requestId,
+    entries: payload.entries,
+    createdBy: "miniapp",
+    source: TX_SOURCE_TELEGRAM
+  });
+  if (result.status !== "success") return jsonOutput_(result);
+
+  recordLastOperation_(doc, "mini_bulk_entry");
+  if (!result.duplicate) {
+    try {
+      result.reportJobIds = enqueueLedgerReportsBatch_(doc, bulkReportTargets_(result));
+    } catch (queueError) {
+      result.reportJobIds = [];
+      debugLog_(doc, "report_enqueue_failed", String(queueError));
+    }
+    // Not drained here: the phone is waiting on this response and asks for the
+    // flush once it has one. See `mini_flush_reports`.
+  }
+  return jsonOutput_(result);
 }
 
 /** The tenant-paid pair, through exactly the same code path the web app uses. */

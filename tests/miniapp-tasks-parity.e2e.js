@@ -679,8 +679,10 @@ describe('Mini App Tasks parity', () => {
     assert.strictEqual(stored.steps[0].title, 'Joy topish');
     assert.strictEqual(stored.steps[1].title, 'Shartnoma');
 
-    // "Meros" must send nothing at all: an explicit `false` is indistinguishable
-    // from "unset" to the engine, and that is what stops a step inheriting.
+    // "Meros" is a state of its own, not an absence: the engine reads a missing
+    // key as "this client is not talking about the photo rule" -- which is what
+    // lets the /tasks board save a goal without wiping the overrides set here --
+    // so the editor says `null` and the stored step ends up with no override.
     assert.strictEqual(stored.steps[0].photoRequired, undefined, 'step one inherits');
     assert.strictEqual(stored.steps[1].photoRequired, false, 'step two overrides');
 
@@ -688,6 +690,37 @@ describe('Mini App Tasks parity', () => {
     assert.strictEqual(occurrences.length, 2, 'each step is its own occurrence');
     assert.strictEqual(occurrences[0].photoRequired, true, 'inherited from the goal');
     assert.strictEqual(occurrences[1].photoRequired, false, 'overridden off');
+    assert.deepStrictEqual(pageErrors, []);
+    await context.close();
+  });
+
+  test('a per-step photo override can be switched back to Meros from the phone', async () => {
+    const { page, context, backend, pageErrors } = await openTasks({
+      seed: [{
+        taskAction: 'save_task', type: 'goal', title: 'Qaytariladigan', photoRequired: true,
+        steps: [{ title: 'Joy topish', photoRequired: false }, { title: 'Shartnoma' }]
+      }]
+    });
+
+    const before = storedTask(backend, 'Qaytariladigan');
+    assert.strictEqual(before.steps[0].photoRequired, false, 'the override is there to begin with');
+
+    await openEdit(page, 'Qaytariladigan');
+    // The editor shows the stored override, so the person can see what they are
+    // undoing rather than guessing.
+    const photos = await page.$$('.mini-step-photo');
+    assert.strictEqual(await photos[0].inputValue(), 'no');
+    await photos[0].selectOption('');              // Meros
+    await save(page);
+
+    const after = storedTask(backend, 'Qaytariladigan');
+    assert.strictEqual(after.steps[0].photoRequired, undefined, 'the override is gone');
+    assert.strictEqual(after.steps[0].id, before.steps[0].id, 'and it is still the same step');
+
+    // Gone means inheriting the goal's rule, not silently switched off.
+    assert.strictEqual(
+      storedOccurrences(backend, after.id).filter(o => Number(o.stepIndex) === 0)[0].photoRequired,
+      true, 'the step inherits the goal again');
     assert.deepStrictEqual(pageErrors, []);
     await context.close();
   });

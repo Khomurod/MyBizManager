@@ -204,7 +204,62 @@
         </div>
     </div>
 
-    <!-- 3-TAB: TARIX -->
+    <!-- 3-TAB: OMMAVIY -->
+    <!--
+      One submission, many independent business actions. The Yangi tab is one
+      business action with several amounts; this is the other axis - ten tenants
+      settling at once, expenses out of the general buckets, and tenant-paid
+      pairs, mixed freely. Each row keeps its own month, so a tenant clearing
+      three months goes in one submit.
+    -->
+    <div id="tab-bulk" class="tab-content p-4">
+        <div class="flex justify-between items-center mb-4">
+            <h3 class="font-bold text-slate-700">Ommaviy Kiritish</h3>
+            <button onclick="clearBulkGrid()" id="bulkClearBtn" class="text-red-400 text-xs font-bold">Tozalash</button>
+        </div>
+
+        <div class="card">
+            <label class="block text-[10px] font-bold text-slate-400 mb-1">ASOSIY OY</label>
+            <select id="bulkMonth" onchange="onBulkMonthChange()"
+                class="w-full min-w-0 p-2 bg-slate-50 border border-slate-200 rounded font-bold text-sm outline-none mb-1"></select>
+            <p class="text-[11px] text-slate-400 mb-3">
+                Yangi qatorlar shu oy bilan ochiladi. Har bir qatorning oyini alohida o'zgartirsa bo'ladi.
+            </p>
+
+            <div class="grid grid-cols-3 gap-2">
+                <button onclick="fillFromRoster()" id="bulkFillRoster"
+                    class="py-2 rounded-lg font-bold text-[11px] border border-slate-300 bg-white text-slate-600 active:scale-95 transition-all">🏢 Ijarachilardan</button>
+                <button onclick="fillFromLastMonth()" id="bulkFillRepeat"
+                    class="py-2 rounded-lg font-bold text-[11px] border border-slate-300 bg-white text-slate-600 active:scale-95 transition-all">🔁 O'tgan oydan</button>
+                <button onclick="addBulkRow()" id="bulkAddRow"
+                    class="py-2 rounded-lg font-bold text-[11px] border border-slate-300 bg-white text-slate-600 active:scale-95 transition-all">➕ Qator</button>
+            </div>
+        </div>
+
+        <div id="bulkRows" class="space-y-2"></div>
+        <p id="bulkEmpty" class="text-center text-slate-400 text-xs py-8">
+            Hozircha qator yo'q. Ijarachilar ro'yxatidan to'ldiring yoki qator qo'shing.
+        </p>
+
+        <div class="card" id="bulkSummary">
+            <div class="flex justify-between text-xs text-slate-500 mb-1">
+                <span>Qatorlar</span><span id="bulkRowCount" class="font-bold text-slate-700">0</span>
+            </div>
+            <div class="flex justify-between text-xs text-slate-500 mb-1">
+                <span>Jami kirim</span><span id="bulkIncomeTotal" class="font-bold text-green-600">0</span>
+            </div>
+            <div class="flex justify-between text-xs text-slate-500 mb-3">
+                <span>Jami chiqim</span><span id="bulkExpenseTotal" class="font-bold text-red-500">0</span>
+            </div>
+            <p id="bulkError" class="hidden mb-3 bg-red-50 border border-red-200 rounded p-3 text-[11px] text-red-700"></p>
+            <button onclick="submitBulk()" id="bulkSubmitBtn"
+                class="w-full bg-green-600 text-white py-3 rounded-lg font-bold text-sm shadow-lg shadow-green-200 active:scale-95 transition-all">
+                HAMMASINI SAQLASH
+            </button>
+        </div>
+    </div>
+
+    <!-- 4-TAB: TARIX -->
     <div id="tab-history" class="tab-content p-4">
         <div class="flex justify-between items-center mb-4">
             <h3 class="font-bold text-slate-700">O'tkazmalar Tarixi</h3>
@@ -213,7 +268,7 @@
         <div id="historyList" class="space-y-3 pb-10"></div>
     </div>
 
-    <!-- 4-TAB: SOZLAMALAR -->
+    <!-- 5-TAB: SOZLAMALAR -->
     <div id="tab-settings" class="tab-content p-4">
 
         <!-- SECTION NAV -->
@@ -691,9 +746,10 @@
     </div>
 
     <!-- MENU -->
-    <div class="fixed bottom-0 left-0 w-full bg-white border-t border-slate-200 flex justify-between px-8 py-3 text-[10px] font-bold text-slate-400 z-50">
+    <div class="fixed bottom-0 left-0 w-full bg-white border-t border-slate-200 flex justify-between px-4 py-3 text-[10px] font-bold text-slate-400 z-50">
         <button onclick="switchTab('dash')" id="nav-dash" class="nav-item active flex flex-col items-center gap-1"><i class="fas fa-home text-lg"></i>Asosiy</button>
         <button onclick="switchTab('entry')" id="nav-entry" class="nav-item flex flex-col items-center gap-1"><i class="fas fa-plus-circle text-lg"></i>Yangi</button>
+        <button onclick="switchTab('bulk')" id="nav-bulk" class="nav-item flex flex-col items-center gap-1"><i class="fas fa-layer-group text-lg"></i>Ommaviy</button>
         <button onclick="switchTab('history')" id="nav-history" class="nav-item flex flex-col items-center gap-1"><i class="fas fa-history text-lg"></i>Tarix</button>
         <button onclick="switchTab('settings')" id="nav-settings" class="nav-item flex flex-col items-center gap-1"><i class="fas fa-sliders-h text-lg"></i>Sozlamalar</button>
     </div>
@@ -717,5 +773,7 @@
     <script src="assets/omad/10b-system.js"></script>
     <script src="assets/omad/11-telegram-settings.js"></script>
     <script src="assets/omad/12-app.js"></script>
+    <!-- After 12-app.js: it wraps switchTab and callBackend, both defined there. -->
+    <script src="assets/omad/13-bulk.js"></script>
 </body>
 </html>

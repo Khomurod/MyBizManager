@@ -50,18 +50,46 @@ function jobQueueSheet_(doc) {
  *
  * Asking twice for the same group message to be deleted is one instruction,
  * not two: the second job could only ever find the message already gone.
+ *
+ * "Identical" is judged on the keys the *enqueuer* supplied, not on the whole
+ * stored payload, because a job's payload grows while it runs:
+ * `markJobDelivered_` writes what came back onto the same row. Comparing the
+ * exact JSON therefore stopped recognising a job the moment it got that far,
+ * and for `task_proof_prompt` this function is the only thing standing between
+ * a redelivered Telegram webhook and a second ForceReply in the group -- that
+ * job has no slot marker and no `Notified_At` to fall back on. A stored job
+ * carrying extra keys is still the same instruction.
  */
 function hasPendingJob_(doc, type, relatedId, payload) {
   var read = readJobRows_(doc);
-  var wanted = JSON.stringify(payload || {});
+  var pending = [];
   for (var i = 0; i < read.rows.length; i++) {
     var job = read.rows[i];
-    if (job.status !== JOB_STATUS_PENDING && job.status !== JOB_STATUS_PROCESSING) continue;
-    if (job.type !== String(type)) continue;
-    if (job.relatedId !== String(relatedId || "")) continue;
-    if (JSON.stringify(job.payload || {}) === wanted) return job.jobId;
+    if (job.status === JOB_STATUS_PENDING || job.status === JOB_STATUS_PROCESSING) pending.push(job);
   }
-  return "";
+  var match = matchingPendingJob_(pending, String(type), String(relatedId || ""), payload || {});
+  return match ? match.jobId : "";
+}
+
+/**
+ * The already-queued job this instruction matches, or null.
+ *
+ * Compares the keys the *enqueuer* supplied and no others, for the reason
+ * `hasPendingJob_` explains: a job's stored payload grows once it has run.
+ */
+function matchingPendingJob_(pending, type, relatedId, payload) {
+  var names = Object.keys(payload || {});
+  for (var i = 0; i < pending.length; i++) {
+    var job = pending[i];
+    if (job.type !== type || job.relatedId !== relatedId) continue;
+    var stored = job.payload || {};
+    var same = true;
+    for (var n = 0; n < names.length; n++) {
+      if (JSON.stringify(stored[names[n]]) !== JSON.stringify(payload[names[n]])) { same = false; break; }
+    }
+    if (same) return job;
+  }
+  return null;
 }
 
 function enqueueJob_(doc, type, relatedId, payload) {
@@ -85,6 +113,60 @@ function enqueueJob_(doc, type, relatedId, payload) {
     ""
   ]);
   return jobId;
+}
+
+/**
+ * Queues several jobs against one read of the queue and one write.
+ *
+ * `enqueueJob_` reads the whole queue to deduplicate, and that queue is never
+ * pruned -- so looping it over the fifty entries of a bulk submission is fifty
+ * full-sheet reads and fifty appends, after the money has already been written
+ * and while the person is waiting. The dedup rule is unchanged: it is applied
+ * once against the rows already stored, and again within this batch itself, so
+ * two identical instructions in one call still produce one job.
+ *
+ * @param {Array} jobs  `{ type, relatedId, payload }`, in order
+ * @return {Array<string>} the job id for each, aligned with the input
+ */
+function enqueueJobsBatch_(doc, jobs) {
+  var wanted = jobs || [];
+  var ids = new Array(wanted.length);
+  if (wanted.length === 0) return ids;
+
+  var read = readJobRows_(doc);
+  var pending = [];
+  for (var p = 0; p < read.rows.length; p++) {
+    var row = read.rows[p];
+    if (row.status === JOB_STATUS_PENDING || row.status === JOB_STATUS_PROCESSING) pending.push(row);
+  }
+
+  var sheet = jobQueueSheet_(doc);
+  var firstRow = sheet.getLastRow() + 1;
+  var stamp = new Date().getTime();
+  var now = new Date().toISOString();
+  var rows = [];
+
+  for (var i = 0; i < wanted.length; i++) {
+    var job = wanted[i] || {};
+    var type = String(job.type || "");
+    var relatedId = String(job.relatedId || "");
+    var payload = job.payload || {};
+
+    var duplicate = matchingPendingJob_(pending, type, relatedId, payload);
+    if (duplicate) { ids[i] = duplicate.jobId; continue; }
+
+    var jobId = "job_" + stamp + "_" + (firstRow + rows.length - 1);
+    ids[i] = jobId;
+    rows.push([jobId, relatedId, type, JSON.stringify(payload), JOB_STATUS_PENDING, 0, now, "", now, ""]);
+    // Visible to the rest of this batch, so a repeated instruction inside one
+    // call is still one job.
+    pending.push({ jobId: jobId, type: type, relatedId: relatedId, payload: payload });
+  }
+
+  if (rows.length > 0) {
+    sheet.getRange(firstRow, 1, rows.length, JOB_QUEUE_HEADER.length).setValues(rows);
+  }
+  return ids;
 }
 
 function readJobRows_(doc) {
@@ -128,11 +210,11 @@ function writeJobField_(sheet, rowNumber, columnIndex, value) {
  * One cell on the job's own row is the cheapest durable place to say "this went
  * out". The retry reads it, skips the send, and only finishes the bookkeeping.
  *
- * The row is `Processing` while this happens, so `hasPendingJob_` — which
- * matches on the exact payload JSON — stops matching it. That is acceptable
- * precisely because it is not what prevents a duplicate enqueue: the slot marker
- * and `Notified_At` are, and both are written under the script lock before the
- * job is queued at all.
+ * The facts written here are extra keys on top of what the enqueuer supplied,
+ * which is why `hasPendingJob_` compares only the enqueuer's own keys: a job
+ * that has already sent must still be recognisable as the same instruction, or
+ * `task_proof_prompt` — which has no slot marker and no `Notified_At` — would
+ * be enqueued a second time by a redelivered webhook.
  */
 function markJobDelivered_(job, facts) {
   if (!job || !job.sheet || !job.rowNumber) return;
@@ -239,10 +321,10 @@ function processPendingJobs_(doc, maxJobs) {
  * Pass `deferReports: true` on a request to skip it entirely and leave
  * everything to the trigger.
  */
-function drainJobQueueQuietly_(doc, options) {
+function drainJobQueueQuietly_(doc, options, batchSize) {
   if (options && options.deferReports === true) return 0;
   try {
-    return processPendingJobs_(doc, JOB_QUEUE_INLINE_BATCH);
+    return processPendingJobs_(doc, batchSize || JOB_QUEUE_INLINE_BATCH);
   } catch (error) {
     return 0;
   }

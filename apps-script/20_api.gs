@@ -136,7 +136,7 @@ function doPost(e) {
     if (action === 'get_cafe_data') {
       var cafeReadAuth = authorizeWebRequest_(payload, AUTH_ROLES_CAFE_READ);
       if (!cafeReadAuth.ok) return authRefusal_(cafeReadAuth);
-      return jsonOutput_(readCafePayloadForScope_(doc, configSheet, payload));
+      return jsonOutput_(readCafePayloadForScope_(doc, configSheet, payload, cafeReadAuth.role));
     }
 
     // ---- Omad ledger ------------------------------------------------------

@@ -228,3 +228,97 @@ test('the flush is behind the same signature as everything else', () => {
   assert.strictEqual(forged.authorized, false);
   assert.strictEqual(pendingJobs(gas).length, 1, 'the queue was not touched');
 });
+
+// -------------------------------------------------------------- bulk entry
+
+test('a bulk from the phone is the same write the web makes, attributed to the phone', () => {
+  const gas = bootOnLedger();
+  const answer = mini(gas, 'mini_bulk_entry', {
+    requestId: 'mini_bulk_1',
+    entries: [
+      { kind: 'ordinary', type: 'Income', tenant: 'Apteka', period: '2026-08', amount: 1000000, currency: 'UZS', method: 'Naqd', comment: 'Avgust ijara' },
+      { kind: 'tenant_paid', tenant: 'Apteka', period: '2026-08', amount: 300000, currency: 'UZS', method: 'Naqd', comment: 'Elektrik xizmati' }
+    ]
+  });
+
+  assert.strictEqual(answer.status, 'success', answer.message);
+  assert.strictEqual(answer.groupIds.length, 2);
+
+  const rows = gas.__spreadsheet.getSheetByName('Omad_Transactions_V2')
+    .getDataRange().getValues().slice(1).filter(r => r[0]);
+  assert.strictEqual(rows.length, 3, 'two entries, three rows');
+
+  // Attribution is taken from the verified Telegram identity, never from the
+  // request: a phone must not be able to file an entry as though it had been
+  // typed on the web admin.
+  assert.ok(rows.every(r => r[4] === 'miniapp'), 'every row is attributed to the phone');
+  assert.ok(rows.every(r => r[5] === 'Telegram'));
+
+  // Queued, not sent: the phone is waiting on this response.
+  assert.strictEqual(pendingJobs(gas).length, 2, 'one card per business action');
+  assert.strictEqual(gas.__sentMessages.length, 0);
+
+  // The flush drains one job by default -- one card is what a single entry
+  // makes. A bulk says how many it is expecting.
+  mini(gas, 'mini_flush_reports', { max: 2 });
+  assert.strictEqual(gas.__sentMessages.length, 2);
+  assert.strictEqual(pendingJobs(gas).length, 0);
+});
+
+test('a bulk sent by anyone else writes nothing', () => {
+  const gas = bootOnLedger();
+  const entries = [{ kind: 'ordinary', type: 'Income', tenant: 'Apteka', period: '2026-08', amount: 5000, currency: 'UZS', method: 'Naqd', comment: 'x' }];
+
+  const noSignature = post(gas, { action: 'mini_bulk_entry', requestId: 'r', entries: entries });
+  assert.strictEqual(noSignature.authorized, false);
+
+  const forged = post(gas, {
+    action: 'mini_bulk_entry', requestId: 'r', entries: entries,
+    initData: `auth_date=${Math.floor(Date.now() / 1000)}&hash=deadbeef`
+  });
+  assert.strictEqual(forged.authorized, false);
+
+  const sheet = gas.__spreadsheet.getSheetByName('Omad_Transactions_V2');
+  assert.strictEqual(sheet.getLastRow(), 1, 'the ledger is still just its header');
+});
+
+test('a retried bulk from the phone does not send the cards twice', () => {
+  const gas = bootOnLedger();
+  const body = {
+    requestId: 'mini_bulk_2',
+    entries: [{ kind: 'ordinary', type: 'Income', tenant: 'Apteka', period: '2026-08', amount: 700000, currency: 'UZS', method: 'Bank', comment: 'ijara' }]
+  };
+
+  assert.strictEqual(mini(gas, 'mini_bulk_entry', body).status, 'success');
+  mini(gas, 'mini_flush_reports');
+  assert.strictEqual(gas.__sentMessages.length, 1);
+
+  const again = mini(gas, 'mini_bulk_entry', body);
+  assert.strictEqual(again.duplicate, true);
+  mini(gas, 'mini_flush_reports');
+  assert.strictEqual(gas.__sentMessages.length, 1, 'and no second card went out');
+});
+
+test('the flush is bounded, and the trigger sends whatever is left', () => {
+  const gas = bootOnLedger();
+  const entries = [];
+  for (let i = 0; i < gas.MINI_FLUSH_MAX_JOBS + 3; i++) {
+    entries.push({
+      kind: 'ordinary', type: 'Income', tenant: 'Apteka', period: '2026-08',
+      amount: 10000 + i, currency: 'UZS', method: 'Naqd', comment: 'ijara ' + i
+    });
+  }
+  assert.strictEqual(mini(gas, 'mini_bulk_entry', { requestId: 'mini_bulk_3', entries }).status, 'success');
+  assert.strictEqual(pendingJobs(gas).length, entries.length);
+
+  // Asking for more than the ceiling gets the ceiling, not a request that runs
+  // fifty Telegram round trips inside one Apps Script execution.
+  const flushed = mini(gas, 'mini_flush_reports', { max: 500 });
+  assert.strictEqual(flushed.sent, gas.MINI_FLUSH_MAX_JOBS);
+  assert.strictEqual(pendingJobs(gas).length, 3);
+
+  // Nothing is lost: the five-minute trigger is the durable sender.
+  gas.processPendingTelegramJobs();
+  assert.strictEqual(pendingJobs(gas).length, 0);
+  assert.strictEqual(gas.__sentMessages.length, entries.length);
+});

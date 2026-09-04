@@ -53,6 +53,7 @@ function renderOmad() {
             <button class="btn-sm" onclick="openEntrySheet('Expense')">➖ Chiqim</button>
             <button class="btn-sm" onclick="openTenantPaidSheet()">🏢 Ijarachi</button>
         </div>
+        <button class="btn-sm btn-full" style="margin-top:8px" onclick="openBulkSheet()">📋 Ommaviy kiritish</button>
 
         <h2>Ijarachilar</h2>
         <div class="card list" id="miniTenantList">${tenantRows()}</div>
@@ -331,5 +332,301 @@ async function loadOmad() {
         // and its own outcome is the one worth telling anybody about.
         if (seq !== miniOmadLoadSeq) return;
         toast(error.message, true);
+    }
+}
+
+// ==========================================================
+// Ommaviy kiritish — many business actions, one submission
+// ----------------------------------------------------------
+// The three sheets above each record one thing. At the start of a month there
+// are ten of them, and doing that on a phone was ten sheets opened, filled and
+// submitted one after another.
+//
+// This is the same screen the web admin's Ommaviy tab is, sized for a phone and
+// posting to the same server function. Every row is its own business action
+// with its own group id, its own month and its own Telegram card, so nothing
+// entered here is a special kind of entry — it is the ordinary kind, several at
+// a time.
+// ==========================================================
+
+const MINI_BULK_KINDS = ['income', 'expense', 'tenant_paid'];
+
+const MINI_BULK_LABELS = {
+    income: '➕ Kirim',
+    expense: '➖ Chiqim',
+    tenant_paid: "🏢 Ijarachi to'ladi"
+};
+
+/** How many months back a row may be dated. Three covers a late settlement. */
+const MINI_BULK_MONTHS_BACK = 3;
+
+let miniBulkSaveInFlight = false;
+
+function bulkPeriodOptions(selected) {
+    const options = [];
+    for (let back = 0; back <= MINI_BULK_MONTHS_BACK; back++) {
+        const period = shiftPeriod(state.period || currentPeriod(), -back);
+        options.push(
+            `<option value="${escapeHtml(period)}"${period === selected ? ' selected' : ''}>${escapeHtml(periodLabel(period))}</option>`
+        );
+    }
+    return options.join('');
+}
+
+function bulkTenantOptions(kind, selected) {
+    const names = state.tenants.map(t => t.name);
+    // An income credits a tenant's balance, and the two general buckets have no
+    // balance to credit — the same rule the single entry sheet follows.
+    if (kind === 'expense') names.push('Umumiy Naqd Puldan', 'Umumiy Bankdan');
+    return names.map(name =>
+        `<option value="${escapeHtml(name)}"${name === selected ? ' selected' : ''}>${escapeHtml(name)}</option>`
+    ).join('');
+}
+
+function openBulkSheet() {
+    openSheet('Ommaviy kiritish', `
+        <div class="task-editor-body">
+            <p class="tiny muted" style="margin:0 0 10px">
+                Har bir qator alohida yozuv: o'z oyi, o'z guruhi va o'z hisoboti bilan.
+            </p>
+            <div class="grid2">
+                <button class="btn-sm" id="mBulkFill" onclick="fillBulkFromDebts()">🏢 Qarzdorlar</button>
+                <button class="btn-sm" id="mBulkAdd" onclick="addBulkRow()">➕ Qator</button>
+            </div>
+            <div id="mBulkRows" style="margin-top:10px"></div>
+            <p class="muted tiny" id="mBulkEmpty" style="padding:14px 0;text-align:center">
+                Hozircha qator yo'q.
+            </p>
+        </div>
+        <div class="task-editor-actions">
+            <p class="tiny muted" id="mBulkSummary" style="margin:0 0 8px;text-align:center"></p>
+            <button class="btn-primary btn-full" id="mBulkSubmit" onclick="submitBulk()">Saqlash</button>
+        </div>
+    `, () => {
+        const sheet = document.querySelector('#sheetHost .sheet');
+        // The same full-height sheet the task editor uses: a fixed header and
+        // footer with a scrolling body, which is what a repeater needs.
+        if (sheet) sheet.classList.add('task-editor-sheet');
+        renderBulkSummary();
+    });
+}
+
+function bulkRowElements() {
+    const list = document.getElementById('mBulkRows');
+    return list ? Array.from(list.querySelectorAll('.bulk-row')) : [];
+}
+
+function addBulkRow(values) {
+    const list = document.getElementById('mBulkRows');
+    if (!list || miniBulkSaveInFlight) return;
+
+    const seed = values || {};
+    const kind = MINI_BULK_KINDS.includes(seed.kind) ? seed.kind : 'income';
+    const period = seed.period || state.period || currentPeriod();
+
+    const row = document.createElement('div');
+    row.className = 'bulk-row';
+    row.innerHTML =
+        '<div class="bulk-row-head">' +
+        `<select class="bulk-kind" aria-label="Turi" onchange="onBulkKindChange(this)">${
+            MINI_BULK_KINDS.map(k => `<option value="${k}"${k === kind ? ' selected' : ''}>${escapeHtml(MINI_BULK_LABELS[k])}</option>`).join('')
+        }</select>` +
+        '<button type="button" class="btn-sm" aria-label="Qatorni o\'chirish" onclick="removeBulkRow(this)">✕</button>' +
+        '</div>' +
+        '<div class="grid2">' +
+        '<select class="bulk-tenant" aria-label="Obyekt"></select>' +
+        `<select class="bulk-period" aria-label="Oy">${bulkPeriodOptions(period)}</select>` +
+        '</div>' +
+        '<div class="bulk-row-money">' +
+        `<input class="bulk-amount" inputmode="numeric" autocomplete="off" placeholder="0" aria-label="Summa" value="${escapeHtml(String(seed.amount || ''))}">` +
+        `<select class="bulk-currency" aria-label="Valyuta"><option${seed.currency === 'USD' ? '' : ' selected'}>UZS</option><option${seed.currency === 'USD' ? ' selected' : ''}>USD</option></select>` +
+        `<select class="bulk-method" aria-label="Usul"><option value="Naqd"${seed.method === 'Bank' ? '' : ' selected'}>Naqd</option><option value="Bank"${seed.method === 'Bank' ? ' selected' : ''}>Bank</option></select>` +
+        '</div>' +
+        `<input class="bulk-comment" autocomplete="off" placeholder="Izoh" value="${escapeHtml(String(seed.comment || ''))}">`;
+
+    list.appendChild(row);
+    applyBulkKind(row, kind, seed.tenant || '');
+
+    const amount = row.querySelector('.bulk-amount');
+    attachAmountFormatting(amount);
+    amount.addEventListener('input', renderBulkSummary);
+    amount.dispatchEvent(new Event('input'));
+
+    renderBulkSummary();
+    return row;
+}
+
+function onBulkKindChange(select) {
+    const row = select.closest('.bulk-row');
+    if (!row) return;
+    applyBulkKind(row, select.value, row.querySelector('.bulk-tenant').value);
+}
+
+/**
+ * Re-offers the objects this kind allows, keeping the chosen one when it is
+ * still legal. Switching an expense out of a general bucket into an income has
+ * to move the selection somewhere the server will accept.
+ */
+function applyBulkKind(row, kind, preferred) {
+    const bucket = preferred === 'Umumiy Naqd Puldan' || preferred === 'Umumiy Bankdan';
+    const wanted = preferred && !(kind !== 'expense' && bucket) ? preferred : '';
+    const select = row.querySelector('.bulk-tenant');
+    select.innerHTML = bulkTenantOptions(kind, wanted);
+    if (wanted) select.value = wanted;
+
+    // The pair's expense half is only readable a year from now if it says what
+    // it was for, so the server requires a purpose there.
+    row.querySelector('.bulk-comment').placeholder =
+        kind === 'tenant_paid' ? "Nima uchun to'ladi? (majburiy)" : 'Izoh';
+}
+
+function removeBulkRow(button) {
+    if (miniBulkSaveInFlight) return;
+    const row = button.closest('.bulk-row');
+    if (row) row.remove();
+    renderBulkSummary();
+}
+
+/** One row, as it is on screen. */
+function bulkRowValues(row) {
+    return {
+        kind: row.querySelector('.bulk-kind').value,
+        tenant: row.querySelector('.bulk-tenant').value,
+        period: row.querySelector('.bulk-period').value,
+        amount: readAmount(row.querySelector('.bulk-amount')),
+        currency: row.querySelector('.bulk-currency').value,
+        method: row.querySelector('.bulk-method').value,
+        comment: row.querySelector('.bulk-comment').value.trim()
+    };
+}
+
+function bulkGridValues() {
+    return bulkRowElements().map(bulkRowValues);
+}
+
+function bulkEntryPayload(values) {
+    if (values.kind === 'tenant_paid') {
+        return {
+            kind: 'tenant_paid', tenant: values.tenant, period: values.period,
+            amount: values.amount, currency: values.currency,
+            method: values.method, comment: values.comment
+        };
+    }
+    return {
+        kind: 'ordinary',
+        type: values.kind === 'expense' ? 'Expense' : 'Income',
+        tenant: values.tenant, period: values.period, amount: values.amount,
+        currency: values.currency, method: values.method, comment: values.comment
+    };
+}
+
+function renderBulkSummary() {
+    const rows = bulkGridValues();
+    const empty = document.getElementById('mBulkEmpty');
+    if (empty) empty.classList.toggle('hidden', rows.length > 0);
+
+    const summary = document.getElementById('mBulkSummary');
+    if (summary) {
+        // Only UZS rows are totalled: converting a USD row would need this
+        // month's rate, and the phone does not hold the rate table. The server
+        // freezes the real one per entry.
+        const uzs = rows.filter(r => r.currency === 'UZS')
+            .reduce((sum, r) => sum + (r.kind === 'expense' ? -r.amount : r.amount), 0);
+        summary.textContent = rows.length
+            ? `${rows.length} ta qator · ${uzs >= 0 ? '+' : ''}${uzs.toLocaleString('ru-RU').replace(/ /g, ' ')} so'm`
+            : '';
+    }
+
+    const submit = document.getElementById('mBulkSubmit');
+    if (submit && !miniBulkSaveInFlight) submit.disabled = rows.length === 0;
+}
+
+/**
+ * A row for every tenant who still owes something this month.
+ *
+ * Free: `state.tenants` already carries `{name, expected, paid, debt, surplus}`
+ * from `buildMiniTenantStatus_`, so there is no arithmetic to do on the phone.
+ * The debt is a UZS figure — the only one the Mini App is sent — so the rows
+ * open in UZS whatever currency the rent is agreed in.
+ */
+function fillBulkFromDebts() {
+    if (miniBulkSaveInFlight) return;
+    const period = state.period || currentPeriod();
+    const already = new Set(bulkGridValues()
+        .filter(row => row.kind === 'income' && row.period === period)
+        .map(row => row.tenant));
+
+    let added = 0;
+    state.tenants.forEach(tenant => {
+        if (!(tenant.debt > 0) || already.has(tenant.name)) return;
+        addBulkRow({
+            kind: 'income', tenant: tenant.name, period: period,
+            amount: tenant.debt, currency: 'UZS', method: 'Naqd',
+            comment: `${periodLabel(period)} ijara`
+        });
+        added++;
+    });
+
+    if (!added) toast('Qarzdor ijarachi topilmadi', true);
+}
+
+function setBulkSaveLock(locked) {
+    miniBulkSaveInFlight = locked;
+    ['mBulkFill', 'mBulkAdd', 'mBulkSubmit'].forEach(id => {
+        const element = document.getElementById(id);
+        if (element) element.disabled = locked;
+    });
+    bulkRowElements().forEach(row => {
+        row.querySelectorAll('input, select, button').forEach(control => { control.disabled = locked; });
+    });
+
+    const submit = document.getElementById('mBulkSubmit');
+    if (submit) submit.textContent = locked ? 'Saqlanmoqda...' : 'Saqlash';
+}
+
+/** The first thing wrong with the grid, in the person's words, or ''. */
+function bulkGridError(rows) {
+    if (!rows.length) return 'Kamida bitta qator kiriting.';
+    for (let i = 0; i < rows.length; i++) {
+        const at = `${i + 1}-qator: `;
+        if (!rows[i].tenant) return at + 'obyekt tanlanmagan.';
+        if (!(rows[i].amount > 0)) return at + "to'g'ri summa kiriting.";
+        if (rows[i].kind === 'tenant_paid' && !rows[i].comment) return at + 'chiqim maqsadini kiriting.';
+    }
+    return '';
+}
+
+async function submitBulk() {
+    if (miniBulkSaveInFlight) return;
+
+    // Frozen before the first await, and every control locked behind it: a grid
+    // that can be edited during a save means the request that went out and the
+    // rows on screen describe different money.
+    const rows = bulkGridValues();
+    const problem = bulkGridError(rows);
+    if (problem) return toast(problem, true);
+
+    const entries = rows.map(bulkEntryPayload);
+    setBulkSaveLock(true);
+    try {
+        await api('mini_bulk_entry', {
+            requestId: pendingId('bulk', 'mb'),
+            entries: entries
+        });
+        // Only now: the submission is stored, so its id must never be reused.
+        clearPendingId('bulk');
+        closeSheet();
+        toast(`${entries.length} ta yozuv saqlandi`);
+        // One card per business action, so the flush is told how many to send.
+        flushReports(entries.length);
+        refreshOmadInBackground();
+    } catch (error) {
+        if (error.unauthorized) return failAuth(error);
+        // The grid and the request id both stay, so pressing again is a retry
+        // of this submission rather than a second one.
+        toast(error.message, true);
+    } finally {
+        setBulkSaveLock(false);
+        renderBulkSummary();
     }
 }

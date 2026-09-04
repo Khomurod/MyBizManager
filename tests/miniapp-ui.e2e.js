@@ -51,7 +51,7 @@ function startStaticServer() {
  * data, and its actual responses are what the stubbed transport returns. The
  * browser talks to real server logic; only the network hop is faked.
  */
-const { loadScript, readJsonOutput, postEvent } = require('./gas-harness');
+const { loadScript, readJsonOutput, postEvent, currentPeriodKey } = require('./gas-harness');
 const crypto = require('crypto');
 
 const BOT_TOKEN = '123456789:AAFakeTokenForTestsOnly_0123456789abcd';
@@ -99,6 +99,21 @@ function tashkentFutureKey() {
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
 }
 
+// The Omad fixture lives in the month the Mini App will actually open on.
+//
+// It was pinned to `2026-08` while the app boots on `currentPeriod()`, so once
+// the calendar left August the browser asked for a month the fixture had no
+// rows, no rate and no label for, and three assertions here failed for ever.
+// A period is a current-time bucket, so it has to be derived, not written down.
+const PERIOD = currentPeriodKey();
+const PERIOD_MONTH_NAMES = ['Yanvar', 'Fevral', 'Mart', 'Aprel', 'May', 'Iyun',
+  'Iyul', 'Avgust', 'Sentabr', 'Oktabr', 'Noyabr', 'Dekabr'];
+const PERIOD_LABEL = PERIOD_MONTH_NAMES[Number(PERIOD.slice(5, 7)) - 1] + ' ' + PERIOD.slice(0, 4);
+/** A dd/MM/yyyy date inside PERIOD, for the legacy sheet's Date column. */
+function periodDate(day) {
+  return `${String(day).padStart(2, '0')}/${PERIOD.slice(5, 7)}/${PERIOD.slice(0, 4)}`;
+}
+
 const LEGACY_HEADER = [
   'ID', 'Tenant', 'Month', 'Type', 'Amount', 'Currency', 'Method', 'Date', 'Comment',
   'Telegram_Msg_ID', 'Request_ID', 'Entry_Group_ID', 'Entry_Kind'
@@ -123,7 +138,7 @@ function bootBackend() {
     },
     sheets: {
       System_Config: [
-        ['Omad_Rates', JSON.stringify({ '2026-08': { buy: 12000, sell: 12500 } })],
+        ['Omad_Rates', JSON.stringify({ [PERIOD]: { buy: 12000, sell: 12500 } })],
         ['Omad_Tenants', JSON.stringify([
           { name: 'Apteka', defaultRent: 1000000, currency: 'UZS', active: true },
           { name: 'Tehnopark', defaultRent: 500000, currency: 'UZS', active: true }
@@ -135,13 +150,13 @@ function bootBackend() {
         ])]
       ],
       Omad_Transactions: [LEGACY_HEADER,
-        ['1800000000000_0', 'Apteka', '2026-08', 'Income', 1200000, 'UZS', 'Naqd', '11/08/2026',
+        ['1800000000000_0', 'Apteka', PERIOD, 'Income', 1200000, 'UZS', 'Naqd', periodDate(11),
           'ijara', '', 'req_1', 'grp_plain', ''],
-        ['1800000000001_0', 'Tehnopark', '2026-08', 'Income', 800000, 'UZS', 'Bank', '12/08/2026',
+        ['1800000000001_0', 'Tehnopark', PERIOD, 'Income', 800000, 'UZS', 'Bank', periodDate(12),
           'ijara', '', 'req_2', 'grp_bank', ''],
-        ['1800000000002_0', 'Apteka', '2026-08', 'Income', 240000, 'UZS', 'Naqd', '12/08/2026',
+        ['1800000000002_0', 'Apteka', PERIOD, 'Income', 240000, 'UZS', 'Naqd', periodDate(12),
           "Ijarachi bizning nomimizdan to'ladi: Elektrik", '', 'req_3_0', 'grp_paid', 'tenant_paid_expense'],
-        ['1800000000002_1', 'Umumiy Naqd Puldan', '2026-08', 'Expense', 240000, 'UZS', 'Naqd', '12/08/2026',
+        ['1800000000002_1', 'Umumiy Naqd Puldan', PERIOD, 'Expense', 240000, 'UZS', 'Naqd', periodDate(12),
           "Elektrik (to'lovchi: Apteka)", '', 'req_3_1', 'grp_paid', 'tenant_paid_expense']
       ],
       Tasks: [TASKS_HEADER],
@@ -191,7 +206,7 @@ callBackend({
   deadlineKey: tashkentFutureKey(), deadlineTime: '14:30'
 });
 
-const HOME = callBackend({ action: 'mini_home', period: '2026-08' });
+const HOME = callBackend({ action: 'mini_home', period: PERIOD });
 const TASKS = callBackend({ action: 'mini_tasks' });
 
 describe('The Telegram Mini App', () => {
@@ -326,7 +341,7 @@ describe('The Telegram Mini App', () => {
     await page.waitForFunction(() => document.getElementById('miniTenantList'));
 
     const text = await page.locator('#tab-omad').innerText();
-    assert.ok(text.includes('Avgust 2026'));
+    assert.ok(text.includes(PERIOD_LABEL), `${PERIOD_LABEL} in: ${text}`);
     assert.ok(text.includes('2 000 000'.replace(/ /g, ' ')) || text.includes('2 000 000'));
     assert.ok(text.includes('Apteka'));
     assert.ok(text.includes("Ijarachi to'ladi"), 'a tenant-paid entry is labelled as one');
@@ -353,8 +368,17 @@ describe('The Telegram Mini App', () => {
     await page.waitForFunction(() =>
       window.__seen === undefined && document.getElementById('tab-omad').innerText.length > 0);
 
+    // The month before whichever one the app opened on, derived the same way
+    // `shiftPeriod` does rather than written down.
+    const year = Number(PERIOD.slice(0, 4));
+    const month = Number(PERIOD.slice(5, 7));
+    const previous = month === 1
+      ? `${year - 1}-12`
+      : `${year}-${String(month - 1).padStart(2, '0')}`;
+
     const periods = calls.filter(c => c.action === 'mini_omad').map(c => c.period);
-    assert.ok(periods.includes('2026-07'), 'the previous month is requested from the server');
+    assert.ok(periods.includes(previous),
+      `the previous month (${previous}) is requested from the server, saw ${periods.join()}`);
 
     await context.close();
   });
@@ -376,7 +400,7 @@ describe('The Telegram Mini App', () => {
     assert.equal(saves.length, 1);
     assert.equal(saves[0].amount, 500000);
     assert.equal(saves[0].type, 'Income');
-    assert.equal(saves[0].period, '2026-08');
+    assert.equal(saves[0].period, PERIOD);
     assert.ok(saves[0].requestId && saves[0].groupId);
 
     await context.close();

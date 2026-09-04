@@ -769,20 +769,42 @@ function readCafeClosingsLean_(doc) {
 // parsed all of it to display four figures. The catalogue is unchanged; only
 // what is derived from the sales sheet is scoped.
 //
-// The full payload is still what an unscoped request gets, so nothing that
-// already works has to know about this.
+// A manager who names no scope still gets the full payload, so nothing that
+// already works has to know about this. A seller gets the till's.
 
 var CAFE_ADMIN_RECENT_CLOSINGS = 30;
 
 /** How long a café display summary may be reused. Every write bumps the key. */
 var CAFE_SUMMARY_TTL_SECONDS = 120;
 
-/** Routes `get_cafe_data` to the payload the asking screen actually needs. */
-function readCafePayloadForScope_(doc, configSheet, payload) {
+/**
+ * The café read, chosen by the caller's role rather than by the caller.
+ *
+ * `get_cafe_data` is gated on AUTH_ROLES_CAFE_READ, which includes the seller --
+ * and the scope then decided which payload came back. So a signed-in seller
+ * could ask for `scope: "admin"` and receive the manager's dashboard: revenue
+ * and profit per period, best sellers, close-day reports, stock movements with
+ * their costs and who made them. Asking for *no* scope was worse: it fell to
+ * `readCafeState_`, which is every sale ever made with its profit.
+ *
+ * The write side has always split these roles (`CAFE_ACTION_ROLES`). The read
+ * side now does too: the manager's view needs a manager's role, and the default
+ * is the till's payload rather than the whole history.
+ */
+function readCafePayloadForScope_(doc, configSheet, payload, role) {
   var scope = String((payload && payload.scope) || "");
+  var manager = role === AUTH_ROLE_OMAD_ADMIN || role === AUTH_ROLE_CAFE_ADMIN;
+
+  if (scope === "admin") {
+    if (!manager) return { status: "error", message: "Bu amal uchun ruxsat yo'q." };
+    return readCafeAdminPayload_(doc, configSheet, payload);
+  }
   if (scope === "pos") return readCafePosPayload_(doc, configSheet, payload);
-  if (scope === "admin") return readCafeAdminPayload_(doc, configSheet, payload);
-  return readCafeState_(doc, configSheet);
+  // No scope named: an older client. Managers keep the whole-state answer they
+  // have always had; a seller gets the till's payload, which is all their own
+  // screen has ever asked for.
+  if (manager) return readCafeState_(doc, configSheet);
+  return readCafePosPayload_(doc, configSheet, payload);
 }
 
 /** A yyyy-MM-dd the caller supplied, or today in the script's timezone. */
