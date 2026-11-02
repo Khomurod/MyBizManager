@@ -164,8 +164,13 @@ test('a failing task scan still lets the accounting queue drain', () => {
     { summary: 'Test o\'chirildi' });
 
   // Break the task scan the way a corrupt sheet would.
-  const tasksSheet = doc.getSheetByName('Tasks');
-  tasksSheet.getDataRange = function () { throw new Error('Tasks sheet unreadable'); };
+  if (gas.__supabase) {
+    gas.__supabase.fail(request => request.table === 'tasks' && request.method === 'get' &&
+      'Tasks sheet unreadable');
+  } else {
+    const tasksSheet = doc.getSheetByName('Tasks');
+    tasksSheet.getDataRange = function () { throw new Error('Tasks sheet unreadable'); };
+  }
 
   const processed = gas.processPendingTelegramJobs();
 

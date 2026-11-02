@@ -47,6 +47,9 @@ var CONFIG_MEMO_ = {};
  */
 function resetRequestMemos_() {
   CONFIG_MEMO_ = {};
+  // The store is chosen per request (24_supabase_store.gs), and its row caches
+  // must not outlive the request either.
+  resetStorageMemos_();
 }
 
 function invalidateConfigMemo_(key) {
@@ -76,6 +79,12 @@ function setConfig(sheet, key, value) {
   // from it" a property of the code rather than of remembering.
   bumpScopeForConfigKey_(key);
 
+  // On Supabase a key is a primary key: one upsert, not a pass over the table.
+  if (sheet && typeof sheet.setConfigValue === "function") {
+    sheet.setConfigValue(key, value);
+    return;
+  }
+
   var data = sheet.getDataRange().getValues();
   for (var i = 0; i < data.length; i++) {
     if (data[i][0] === key) {
@@ -87,6 +96,7 @@ function setConfig(sheet, key, value) {
 }
 
 function getConfig(sheet, key) {
+  if (sheet && typeof sheet.getConfigValue === "function") return sheet.getConfigValue(key);
   var data = sheet.getDataRange().getValues();
   for (var i = 0; i < data.length; i++) {
     if (data[i][0] === key) return data[i][1];

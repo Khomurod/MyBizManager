@@ -11,7 +11,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { loadScript, readJsonOutput, postEvent } = require('./gas-harness');
+const { loadScript, readJsonOutput, postEvent, sheetsOnly } = require('./gas-harness');
 
 const ADMIN_KEY = 'maintenance-admin-key';
 const BOT_TOKEN = '123456789:AAFakeTokenForTestsOnly_0123456789abcd';
@@ -80,7 +80,7 @@ test('a date that already agrees with its id is left alone', () => {
   assert.equal(audit.transposed, 0);
 });
 
-test('a date that disagrees in some other way is reported but never corrected', () => {
+test('a date that disagrees in some other way is reported but never corrected', { skip: sheetsOnly('repairs date cells the spreadsheet coerced; the database has none') }, () => {
   const gas = bootDates([row(TRANSPOSED_ID + '_0', new Date(2026, 6, 19))]);
 
   const audit = gas.auditTransactionDates_(gas.__spreadsheet);
@@ -102,7 +102,7 @@ test('a row whose id carries no usable timestamp is skipped rather than guessed 
   assert.equal(gas.fixTransposedTransactionDates_(gas.__spreadsheet, {}).fixed, 0);
 });
 
-test('the repair corrects only the provable rows, and backs up before it writes', () => {
+test('the repair corrects only the provable rows, and backs up before it writes', { skip: sheetsOnly('repairs date cells the spreadsheet coerced; the database has none') }, () => {
   const bad = partsFor(Number(TRANSPOSED_ID));
   const good = partsFor(Number(CORRECT_ID));
   const gas = bootDates([
@@ -124,7 +124,7 @@ test('the repair corrects only the provable rows, and backs up before it writes'
   assert.ok(gas.__spreadsheet.getSheetByName('Omad_Backups').data.length > 1, 'a backup is written first');
 });
 
-test('a dry run reports what would change and writes nothing', () => {
+test('a dry run reports what would change and writes nothing', { skip: sheetsOnly('repairs date cells the spreadsheet coerced; the database has none') }, () => {
   const bad = partsFor(Number(TRANSPOSED_ID));
   const gas = bootDates([row(TRANSPOSED_ID + '_0', new Date(bad.year, swapped(bad).month - 1, swapped(bad).day))]);
 

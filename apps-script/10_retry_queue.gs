@@ -347,7 +347,7 @@ function drainJobQueueQuietly_(doc, options, batchSize) {
  */
 function processPendingTelegramJobs() {
   resetRequestMemos_();
-  var doc = SpreadsheetApp.getActiveSpreadsheet();
+  var doc = appDoc_();
   try {
     runTaskScheduler_(doc, Date.now());
   } catch (error) {

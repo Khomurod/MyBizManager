@@ -36,8 +36,12 @@ function dayKey(offsetDays) {
   return `${when.getFullYear()}-${String(when.getMonth() + 1).padStart(2, '0')}-${String(when.getDate()).padStart(2, '0')}`;
 }
 
+let receiptSeq = 0;
+
+/** A stored receipt. Every real sale has its own request id; the store enforces it. */
 function receipt(lines) {
-  return JSON.stringify({ requestId: 'seed', items: lines });
+  receiptSeq += 1;
+  return JSON.stringify({ requestId: 'seed_' + receiptSeq, items: lines });
 }
 
 function boot() {

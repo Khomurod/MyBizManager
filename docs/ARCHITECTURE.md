@@ -82,6 +82,8 @@ file for file. See [DEPLOYMENT.md](DEPLOYMENT.md).
 | `21_miniapp_auth.gs` | Telegram Mini App `initData` verification and authorization |
 | `22_miniapp_api.gs` | Mini App summaries and write actions |
 | `23_health.gs` | Mini App Bot API configuration and system health check |
+| `24_supabase_store.gs` | `appDoc_()` and the `OMAD_STORAGE` switch; the Supabase stand-in for the spreadsheet |
+| `25_supabase_import.gs` | The move from Sheets to Supabase: preview, copy + verify + switch, verify, rollback |
 
 The task-management feature (`/tasks`) is documented separately in
 **[TASKS.md](TASKS.md)**. It is an isolated module: dedicated `Tasks` and
@@ -354,6 +356,11 @@ Café actions additionally accept the café roles described in the permissions s
 | `purge_telegram_debug_secrets` | **yes** | Copies `Telegram_Debug_Log`, then re-redacts every row in place |
 | `audit_telegram_secret_exposure` | **yes** | Reports whether anything credential-shaped remains in the debug log. Writes nothing |
 | `rotate_telegram_webhook_secret` | **yes** | New verification secret, `setWebhook`, verify, or roll back |
+| `get_storage_status` | **yes** | Which store is live and whether Supabase answers; never the key |
+| `preview_supabase_import` | **yes** | Converts every sheet row in memory, counts, checks the database is empty. Writes nothing |
+| `apply_supabase_import` | **yes** | Copy + verify + switch, under the script lock; switches only if verification passes |
+| `verify_supabase_import` | **yes** | Compares the two stores again. Writes nothing |
+| `rollback_supabase_storage` | **yes** | Back to the spreadsheet. Routed before the store is opened, so it works when Supabase cannot be reached |
 
 **Any action name starting with `mini_` is Mini-App-gated** — never name a new
 admin action `mini_…`.
@@ -422,7 +429,7 @@ where a credential must never be.
 |---|---|
 | `"pos"` | catalogue + today's receipts for the named cashier |
 | `"admin"` | catalogue + per-period totals + recent close-day records |
-| absent | the full historical payload, unchanged, for anything that has not been taught about scopes |
+| absent | a manager gets the full historical payload (an older client); a seller gets the `pos` payload |
 
 ### Refusals
 
@@ -635,7 +642,7 @@ user and the webhook are checked in the same pass. There is no manual step.
 pass over everything that can stop working quietly. Green / warning / error
 with a sentence each, and never a secret, a chat id or a deployment URL.
 
-Sixteen checks, in `buildHealthReport_`:
+Seventeen checks, in `buildHealthReport_`:
 
 | Check | Notices |
 |---|---|
@@ -652,10 +659,11 @@ Sixteen checks, in `buildHealthReport_`:
 | Sheets | one of the five required sheets is absent |
 | Ledger | which transaction sheet is live, and whether V2 is on |
 | Log protection | anything in the recent debug log that still looks like a credential |
-| Omad / Café / Tasks | each is reachable, with its row count |
+| Storage | which store is live; Supabase selected but not answering is an error |
+| Omad / Café / Tasks | each is reachable, with its row count (Omad: the live ledger) |
 
 A failing bot does not take the report down with it: each check catches its own
-errors, so one broken thing still leaves the other fifteen answers readable.
+errors, so one broken thing still leaves the other sixteen answers readable.
 
 ## Telegram reporting
 
@@ -830,6 +838,76 @@ rejected rather than guessed at.
 
 Reads attach `period`, `periodSource` and `periodLabel` to every transaction,
 so the app shows correct years **before** the sheet is migrated.
+
+## Supabase storage
+
+`apps-script/24_supabase_store.gs` and `25_supabase_import.gs`; the schema is
+`supabase/migrations/`, applied to project `mybizmanager`
+(`ksdqoftlxrkpyylbbyoi`).
+
+### One surface, two stores
+
+Every module reaches its data through `appDoc_()`. With `OMAD_STORAGE` unset
+or `sheets` that is `SpreadsheetApp.getActiveSpreadsheet()`; with `supabase` it
+is `supabaseDoc_()`, an object with the same `getSheetByName`, `insertSheet`,
+`getSheets` and, per sheet, `getDataRange`, `getRange(r, c, n, m)`
+(`getValues` / `setValues` / `setValue` / `clearContent`), `appendRow`,
+`deleteRow(s)` and `getLastRow`. The business code is therefore the same code
+on both stores — which is also why the whole test suite can run on both.
+
+| Sheet idea | Table reality |
+|---|---|
+| a sheet | a table (`SUPABASE_SHEETS`: sheet → table, header → column, type) |
+| row 1 | the header, synthesised from the mapping; writes to it are ignored, and re-appending exactly the header after a clear is a no-op. `System_Config` has none: it never had a fixed header, and `getConfig` scans every row |
+| row N | the (N − header)th row by `seq`, the identity column every table carries |
+| `getValues` / `getDataRange` | `GET … order=seq`, paged 1 000 at a time, so a table of any size is read whole |
+| `setValues` on existing rows | one `PATCH` per row, **by the `seq` that was read**, `return=representation`: zero rows updated is an error |
+| `setValues` / `appendRow` past the end | one `POST` per ≤200 rows (≤4 MB) — one statement, so a group is never half-written |
+| `deleteRow(s)` | `DELETE` by `seq` — or, for `Cafe_Sales`, stamping `voided_at` (the receipt survives, hidden) |
+| `getConfig` / `setConfig` | a primary-key `GET`, and an upsert on `key` |
+| a number format | nothing — Postgres columns are typed |
+
+Cells cross the boundary through `supabaseToDb_` / `supabaseFromDb_`: `ts`
+columns travel as ISO strings, `json` as JSON text (what `safeParseJSON_`
+expects), `bool` accepts `"TRUE"`/`"FALSE"`, `datekey` / `timekey` / `period`
+recover a value the spreadsheet had already coerced into a date, and empty
+cells come back as `""` exactly as `getValues` returned them.
+
+The client is `UrlFetchApp` to `<SUPABASE_URL>/rest/v1/<table>` with the secret
+key in `apikey` (and `Authorization`, for a legacy JWT key). Any non-2xx throws
+with the database's own message, redacted, so a refused write fails the
+request rather than being reported as saved. `sb_secret_…` values are added to
+`redactSecrets_` and to the secret scanner.
+
+### What the database adds
+
+The ledger's `omad_ledger_guard` trigger refuses `DELETE`, and any `UPDATE`
+that touches anything but `status`, `updated_at`, `telegram_msg_id` (or fills
+an empty `entry_group_id`); a status may only go from `Active` to `Corrected`,
+`Cancelled` or `Void`; `TRUNCATE` is refused. The audit log refuses `UPDATE`,
+`DELETE` and `TRUNCATE`. Unique: transaction ids, an Active `request_id`, a
+café receipt's `requestId` (a generated column), a stock movement's request id,
+a routine's `(task_id, date_key)`. CHECKs cover periods, types, currencies,
+methods, statuses, priorities, date keys and clock times. RLS is enabled on
+every table with no policies and `anon`/`authenticated` have no grants.
+
+### The move
+
+`apply_supabase_import`, under the script lock: refuse unless every table is
+empty → convert every row of every mapped sheet in memory (the first bad cell
+is named by sheet, row and column, and nothing is written) → insert in sheet
+order → `verifySupabaseCopy_` → switch only if it passed. Verification
+compares each cell's round trip through the store against what the database
+returns (jsonb by meaning, since it reorders keys), and then reads the ledger
+through `readOmadTransactions_` from both stores and compares all-time
+cash/bank/total, every period's income and expense, and what every tenant paid.
+`Omad_Read_Model` is not copied (it is derived and rebuilds on first read), nor
+the `Type / Data JSON` label row. The Telegram debug log and its backup copies
+(stored with `source_sheet`) are compared but cannot block the switch.
+
+The switch writes `Omad_Storage_Cutover_At` into the database, sets
+`OMAD_STORAGE=supabase` and bumps every cache revision. `supabase/reset_before_cutover.sql`
+empties the tables for a second attempt and refuses once that key exists.
 
 ## Migration and cutover
 

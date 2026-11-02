@@ -63,7 +63,7 @@ function telegramFetch_(method, body) {
   // Only facts that cannot carry a credential. The request body is never
   // logged: setWebhook carries the verification secret in both the URL and
   // secret_token, and that is exactly how it reached the debug sheet before.
-  debugLog_(SpreadsheetApp.getActiveSpreadsheet(), "telegram_api_" + method, JSON.stringify({
+  debugLog_(appDoc_(), "telegram_api_" + method, JSON.stringify({
     code: responseCode,
     chat: maskChatId_(body && body.chat_id),
     messageId: (body && body.message_id) || "",
@@ -128,7 +128,7 @@ function deleteTelegramMessageIfPresent_(chatId, messageId) {
   var responseText = response.getContentText();
   var responseCode = response.getResponseCode();
 
-  debugLog_(SpreadsheetApp.getActiveSpreadsheet(), "telegram_api_deleteMessage", JSON.stringify({
+  debugLog_(appDoc_(), "telegram_api_deleteMessage", JSON.stringify({
     code: responseCode,
     chat: maskChatId_(chatId),
     messageId: String(messageId),

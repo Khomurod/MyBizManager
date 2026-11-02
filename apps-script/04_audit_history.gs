@@ -45,7 +45,7 @@ function archiveChangedOmadTransactions_(doc, existingTransactions, incomingTran
 
 function auditTelegramSettingsChange_(updatedFields) {
   try {
-    var doc = SpreadsheetApp.getActiveSpreadsheet();
+    var doc = appDoc_();
     var sheet = doc.getSheetByName("Omad_Audit_Log") || doc.insertSheet("Omad_Audit_Log");
     if (sheet.getLastRow() === 0) sheet.appendRow(["Timestamp", "Event", "Details"]);
     // Only field NAMES are stored - never values, never the token.

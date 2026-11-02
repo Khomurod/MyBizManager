@@ -9,6 +9,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const { createSupabaseMock } = require('./supabase-mock');
 
 const SCRIPT_PATH = path.join(__dirname, '..', 'script.gs');
 
@@ -147,7 +148,19 @@ function createSpreadsheet(initialSheets, coerce) {
  *        Off by default so existing tests keep their literal values.
  */
 function loadScript(options = {}) {
+  // Which store the backend runs against. `MBM_STORAGE=supabase npm test`
+  // runs the whole suite against the in-memory Supabase (tests/supabase-mock.js),
+  // seeded from each test's sheets through the real import code.
+  // `supabaseTarget: true` keeps the spreadsheet as the store but gives the
+  // backend an (empty) database to import into -- the state before a cutover.
+  const storage = options.storage || process.env.MBM_STORAGE || 'sheets';
+  const supabase = (storage === 'supabase' || options.supabaseTarget) ? createSupabaseMock() : null;
   const properties = Object.assign({}, options.properties || {});
+  if (supabase) {
+    if (storage === 'supabase' && properties.OMAD_STORAGE === undefined) properties.OMAD_STORAGE = 'supabase';
+    if (properties.SUPABASE_URL === undefined) properties.SUPABASE_URL = supabase.url;
+    if (properties.SUPABASE_SECRET_KEY === undefined) properties.SUPABASE_SECRET_KEY = supabase.key;
+  }
   const spreadsheet = createSpreadsheet(options.sheets || {}, options.coerceLikeSheets === true);
   const cacheStore = Object.assign({}, options.cache || {});
   const fetchCalls = [];
@@ -211,6 +224,8 @@ function loadScript(options = {}) {
 
     UrlFetchApp: {
       fetch: (url, params) => {
+        // The database is not an outbound call the tests count.
+        if (supabase && supabase.owns(url)) return supabase.handle(url, params);
         fetchCalls.push({ url, params });
         if (params && params.payload) {
           const body = JSON.parse(params.payload);
@@ -294,7 +309,80 @@ function loadScript(options = {}) {
   vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(SCRIPT_PATH, 'utf8'), sandbox, { filename: 'script.gs' });
 
+  if (supabase && storage === 'supabase') seedSupabase(sandbox, spreadsheet, supabase);
+  else if (supabase) sandbox.__supabase = supabase;
+
   return sandbox;
+}
+
+/**
+ * Copies the test's sheets into the in-memory database with the application's
+ * own import code, then points `__spreadsheet` at the database, so a test that
+ * seeds and inspects sheets reads and writes the store the backend is using.
+ *
+ * Each call through `__spreadsheet` opens a fresh document, the way each
+ * request does, so no row cache outlives the step that made it.
+ */
+function seedSupabase(sandbox, spreadsheet, supabase) {
+  const credentials = { url: supabase.url, key: supabase.key, ok: true, missing: [] };
+  const checked = sandbox.prepareSupabaseImport_(spreadsheet);
+  if (checked.error) throw new Error('Supabase seed refused the fixture: ' + checked.error);
+  sandbox.copyPreparedIntoSupabase_(checked.prepared, sandbox.supabaseDoc_(credentials));
+
+  const fresh = () => sandbox.supabaseDoc_(credentials);
+  // Rows built inside the VM are arrays of the VM's realm, which
+  // deepStrictEqual refuses to equate with a literal written in a test. The
+  // storage layer hands out only strings, numbers and booleans, so a JSON copy
+  // is exact.
+  const outer = value => JSON.parse(JSON.stringify(value));
+  const wrapRange = range => new Proxy(range, {
+    get: (target, prop) => (prop === 'getValues' ? () => outer(target.getValues()) : target[prop])
+  });
+  // A test that patches a method on a sheet it inspects is instrumenting the
+  // spreadsheet, which the backend no longer uses; the patch lands on the
+  // wrapper and is simply never called by the application.
+  const wrapSheet = sheet => {
+    if (!sheet) return sheet;
+    const patched = {};
+    const own = {
+      getDataRange: () => wrapRange(sheet.getDataRange()),
+      getRange: (...args) => wrapRange(sheet.getRange(...args))
+    };
+    return new Proxy(sheet, {
+      get: (target, prop) => {
+        if (Object.prototype.hasOwnProperty.call(patched, prop)) return patched[prop];
+        if (Object.prototype.hasOwnProperty.call(own, prop)) return own[prop];
+        if (prop === 'data') return outer(target.data);
+        return target[prop];
+      },
+      set: (target, prop, value) => { patched[prop] = value; return true; }
+    });
+  };
+
+  // "Was this sheet ever created" on a spreadsheet becomes "does the table
+  // hold anything" here, for sheets the test did not seed: a table always
+  // exists, but an untouched one is what an uncreated sheet used to mean.
+  const seeded = new Set(Object.keys(spreadsheet.sheets));
+  const exists = name => {
+    if (seeded.has(name)) return true;
+    const sheet = fresh().getSheetByName(name);
+    return !!sheet && sheet.getLastRow() > (name === 'System_Config' ? 0 : 1);
+  };
+  sandbox.__sheetsSpreadsheet = spreadsheet;
+  sandbox.__supabase = supabase;
+  sandbox.__spreadsheet = {
+    __supabase: true,
+    getSheetByName: name => (exists(name) ? wrapSheet(fresh().getSheetByName(name)) : null),
+    insertSheet: name => { seeded.add(name); return wrapSheet(fresh().insertSheet(name)); },
+    getSheets: () => Array.from(fresh().getSheets()).filter(sheet => exists(sheet.getName())).map(wrapSheet),
+    get sheets() {
+      const out = {};
+      fresh().getSheets().forEach(sheet => {
+        if (exists(sheet.getName())) out[sheet.getName()] = wrapSheet(sheet);
+      });
+      return out;
+    }
+  };
 }
 
 /** Parses the JSON body of a jsonOutput_ result. */
@@ -337,6 +425,32 @@ function currentPeriodKey() {
   return todayKey().slice(0, 7);
 }
 
+/** True when this run is against the Supabase store (MBM_STORAGE=supabase). */
+const SUPABASE_RUN = process.env.MBM_STORAGE === 'supabase';
+
+/**
+ * `{ skip }` for a test that is about the spreadsheet itself -- its cell
+ * coercion, its number formats, how many times a sheet is read -- and so has
+ * no meaning against the database. Shown as a skip, with the reason.
+ */
+function sheetsOnly(reason) {
+  return SUPABASE_RUN ? 'Sheets-only: ' + reason : false;
+}
+
+/**
+ * On Supabase: the size of every insert request `run` sends to `table`. One
+ * request is one statement, so a group that arrives in one request cannot be
+ * half-created -- the database's version of "one setValues call".
+ */
+function supabaseInsertSizes(gas, table, run) {
+  const before = gas.__supabase.requests.length;
+  run();
+  return gas.__supabase.requests.slice(before)
+    .filter(r => r.method === 'post' && r.table === table)
+    .map(r => r.rows);
+}
+
 module.exports = {
+  sheetsOnly, SUPABASE_RUN, supabaseInsertSizes,
   loadScript, readJsonOutput, postEvent, createSpreadsheet, todayKey, currentPeriodKey
 };

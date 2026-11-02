@@ -109,7 +109,9 @@ function storedSecretValues_() {
     TELEGRAM_PROP_WEBHOOK_SECRET,
     // The outgoing secret during a rotation is still a secret.
     TELEGRAM_PROP_WEBHOOK_SECRET_PREVIOUS,
-    OMAD_PROP_ADMIN_KEY
+    OMAD_PROP_ADMIN_KEY,
+    // The database key reads and writes every financial row.
+    STORAGE_PROP_SUPABASE_KEY
   ];
   var values = [];
   for (var i = 0; i < names.length; i++) {
@@ -147,6 +149,8 @@ function redactSecrets_(value) {
 
   return text
     .replace(TELEGRAM_TOKEN_LIKE_PATTERN, "[REDACTED]")
+    // ...a Supabase secret key, whichever one is configured.
+    .replace(/sb_secret_[A-Za-z0-9_-]+/g, "[REDACTED]")
     // ...wh=<secret> in a URL or query string, however it is quoted.
     .replace(/([?&]wh=)[^&"'\s\\]+/gi, "$1[REDACTED]")
     // ..."secret_token":"<secret>" / secret_token=<secret>

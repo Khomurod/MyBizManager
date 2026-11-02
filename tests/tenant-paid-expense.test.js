@@ -11,7 +11,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { loadScript, readJsonOutput, postEvent } = require('./gas-harness');
+const { loadScript, readJsonOutput, postEvent, supabaseInsertSizes } = require('./gas-harness');
 
 const ADMIN_KEY = 'tenant-paid-admin-key';
 const BOT_TOKEN = '123456789:AAFakeTokenForTestsOnly_0123456789abcd';
@@ -153,6 +153,11 @@ test('a Bank payment books the expense against the bank, still netting to zero',
 
 test('both rows land in a single spreadsheet write, so the pair cannot be half-created', () => {
   const gas = boot();
+  if (gas.__supabase) {
+    const sizes = supabaseInsertSizes(gas, 'omad_transactions', () => post(gas, payload()));
+    assert.deepEqual(sizes, [2], 'exactly one write, carrying both rows');
+    return;
+  }
   const sheet = gas.__spreadsheet.getSheetByName('Omad_Transactions');
 
   const widths = [];

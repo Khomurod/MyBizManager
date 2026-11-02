@@ -15,7 +15,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { loadScript, readJsonOutput, postEvent } = require('./gas-harness');
+const { loadScript, readJsonOutput, postEvent, sheetsOnly } = require('./gas-harness');
 
 const ADMIN_KEY = 'migration-fidelity-key';
 
@@ -169,7 +169,7 @@ test('verification passes on a faithful migration', () => {
     JSON.stringify(verified.verification.failures || []));
 });
 
-test('verification refuses a target that lost its entry kinds', () => {
+test('verification refuses a target that lost its entry kinds', { skip: sheetsOnly('tampers with stored ledger rows, which the database refuses') }, () => {
   const gas = boot();
   apply(gas);
 
@@ -187,7 +187,7 @@ test('verification refuses a target that lost its entry kinds', () => {
     'and it says so by name');
 });
 
-test('verification refuses a target that lost its grouping', () => {
+test('verification refuses a target that lost its grouping', { skip: sheetsOnly('tampers with stored ledger rows, which the database refuses') }, () => {
   const gas = boot();
   apply(gas);
 
@@ -206,7 +206,7 @@ test('verification refuses a target that lost its grouping', () => {
     'the group check names it');
 });
 
-test('verification refuses a comment that was altered', () => {
+test('verification refuses a comment that was altered', { skip: sheetsOnly('tampers with stored ledger rows, which the database refuses') }, () => {
   const gas = boot();
   apply(gas);
 
@@ -221,7 +221,7 @@ test('verification refuses a comment that was altered', () => {
 
 // ------------------------------------------------------------------ cutover
 
-test('cutover is refused while verification fails', () => {
+test('cutover is refused while verification fails', { skip: sheetsOnly('tampers with stored ledger rows, which the database refuses') }, () => {
   const gas = boot();
   apply(gas);
 

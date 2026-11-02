@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
-const { loadScript, readJsonOutput, postEvent } = require('./gas-harness');
+const { loadScript, readJsonOutput, postEvent, sheetsOnly } = require('./gas-harness');
 
 const ADMIN_KEY = 'write-perf-admin';
 
@@ -470,9 +470,9 @@ test('transaction ids stay case-sensitive and exact after the fast lookup change
         ['Omad_Active_Transactions_Sheet', 'Omad_Transactions_V2']
       ],
       Omad_Transactions_V2: LEDGER_HEADER.concat([
-        ['Abc_1', 'r1', '', '', '', 'Web', '2026-08', 'T', 'Income', 1, 'UZS',
+        ['Abc_1', 'r1', '2026-08-01T09:00:00.000Z', '', '', 'Web', '2026-08', 'T', 'Income', 1, 'UZS',
           0, 0, 1, 'none', 1, 'Naqd', '', 'Active', '', '', 2, 'g1', ''],
-        ['abc_1', 'r2', '', '', '', 'Web', '2026-08', 'T', 'Income', 2, 'UZS',
+        ['abc_1', 'r2', '2026-08-01T09:00:00.000Z', '', '', 'Web', '2026-08', 'T', 'Income', 2, 'UZS',
           0, 0, 1, 'none', 2, 'Naqd', '', 'Active', '', '', 2, 'g2', '']
       ])
     }
@@ -484,7 +484,9 @@ test('transaction ids stay case-sensitive and exact after the fast lookup change
     'a prefix is not a match; the whole cell has to be the id');
 });
 
-test('a duplicated id still resolves to the first matching row, as it always did', () => {
+test('a duplicated id still resolves to the first matching row, as it always did', {
+  skip: sheetsOnly('the database refuses a duplicated transaction id outright')
+}, () => {
   const gas = boot({
     sheets: {
       System_Config: [['Omad_Active_Transactions_Sheet', 'Omad_Transactions_V2']],

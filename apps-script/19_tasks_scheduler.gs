@@ -507,7 +507,7 @@ function runTaskScheduler_(doc, nowMs) {
  */
 function processTaskSchedules() {
   resetRequestMemos_();
-  var doc = SpreadsheetApp.getActiveSpreadsheet();
+  var doc = appDoc_();
   runTaskScheduler_(doc, Date.now());
   return processPendingJobs_(doc, JOB_QUEUE_MANUAL_BATCH);
 }

@@ -167,7 +167,13 @@ test('the row itself is preserved, only the credential is replaced', () => {
   gas.purgeTelegramDebugSecrets_(gas.__spreadsheet);
 
   const row = gas.__spreadsheet.getSheetByName('Telegram_Debug_Log').getDataRange().getValues()[1];
-  assert.strictEqual(row[0], '2026-08-01T10:00:00Z', 'the timestamp is untouched');
+  // The database stores an instant and reads it back in canonical ISO form,
+  // so on Supabase "untouched" means the same instant, not the same spelling.
+  if (gas.__supabase) {
+    assert.strictEqual(Date.parse(row[0]), Date.parse('2026-08-01T10:00:00Z'), 'the timestamp is untouched');
+  } else {
+    assert.strictEqual(row[0], '2026-08-01T10:00:00Z', 'the timestamp is untouched');
+  }
   assert.strictEqual(row[1], 'telegram_api_setWebhook', 'the event name is untouched');
   assert.match(String(row[2]), /REDACTED/, 'the details keep their shape minus the secret');
 });

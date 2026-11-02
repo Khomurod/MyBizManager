@@ -16,7 +16,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { loadScript, postEvent, readJsonOutput } = require('./gas-harness');
+const { loadScript, postEvent, readJsonOutput, supabaseInsertSizes } = require('./gas-harness');
 
 const VALID_TOKEN = '123456789:AAFakeTokenForTestsOnly_0123456789abcd';
 const TASKS_GROUP = '-1009998887777';
@@ -105,8 +105,9 @@ test('new occurrences are appended in one write', () => {
   makeRoutines(gas, doc, 3, today);
   gas.taskOccurrencesSheet_(doc); // created lazily; the instrument needs it to exist
 
-  const writes = countMultiRowWrites(doc, 'Task_Occurrences',
-    () => gas.runTaskScheduler_(doc, FIXED_NOW));
+  const writes = gas.__supabase
+    ? supabaseInsertSizes(gas, 'task_occurrences', () => gas.runTaskScheduler_(doc, FIXED_NOW))
+    : countMultiRowWrites(doc, 'Task_Occurrences', () => gas.runTaskScheduler_(doc, FIXED_NOW));
 
   assert.strictEqual(writes.length, 1, 'a cold pass performs a single multi-row append');
   assert.strictEqual(writes[0], 45, '3 routines x 15 days, written at once');

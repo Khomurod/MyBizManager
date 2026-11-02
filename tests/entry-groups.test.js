@@ -15,7 +15,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { loadScript, readJsonOutput, postEvent } = require('./gas-harness');
+const { loadScript, readJsonOutput, postEvent, supabaseInsertSizes } = require('./gas-harness');
 
 const ADMIN_KEY = 'group-admin-key';
 
@@ -99,6 +99,15 @@ test('a stored group id wins over the id prefix, so one action can span two id b
 
 test('a group of rows is appended in one write, so a group cannot be half-created', () => {
   const gas = bootLegacy();
+  if (gas.__supabase) {
+    const sizes = supabaseInsertSizes(gas, 'omad_transactions', () => gas.appendOmadTransactionGroup_(gas.__spreadsheet, [
+      { id: '1800000000000_0', tenant: 'Apteka', month: '2026-02', type: 'Income', amount: 1000000, currency: 'UZS', method: 'Naqd', groupId: 'grp_pair' },
+      { id: '1800000000000_1', tenant: 'Umumiy Naqd Puldan', month: '2026-02', type: 'Expense', amount: 1000000, currency: 'UZS', method: 'Naqd', groupId: 'grp_pair' }
+    ]));
+    assert.deepEqual(sizes, [2], 'both rows must land in a single write');
+    assert.equal(gas.findTransactionsByGroupId_(gas.__spreadsheet, 'grp_pair').length, 2);
+    return;
+  }
   const sheet = gas.__spreadsheet.getSheetByName('Omad_Transactions');
 
   let setValuesCalls = 0;

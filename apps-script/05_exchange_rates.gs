@@ -18,7 +18,7 @@ var DEFAULT_RATE_UZS = 12500;
  * the per-request memo rather than passing over System_Config each time.
  */
 function getOmadRates_() {
-  var doc = SpreadsheetApp.getActiveSpreadsheet();
+  var doc = appDoc_();
   var configSheet = doc.getSheetByName("System_Config");
   if (!configSheet) return {};
   return safeParseJSON_(getConfigOnce_(configSheet, "Omad_Rates"), {});

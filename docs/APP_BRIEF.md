@@ -46,7 +46,9 @@ that does not serve that belongs in code comments or in `docs/`.
 ## 1. App purpose
 
 MyBizManager runs the day-to-day operations of one small Uzbek business. It
-covers three areas that share one backend, one database and one Telegram bot:
+covers three areas that share one backend, one database and one Telegram bot.
+The database is a Google Sheet or a Supabase Postgres database — one or the
+other, never both (see [§7](#7-data-other-features-depend-on)):
 
 | Area | Business problem |
 |---|---|
@@ -71,8 +73,10 @@ deliberately small and simple.
 ## 3. Shape of the system
 
 ```
-Cloudflare Pages (static HTML/JS)         Google Apps Script web app        Google Sheets
-  login.html                                 doPost  (everything)             System_Config
+Cloudflare Pages (static HTML/JS)         Google Apps Script web app        Google Sheets — or — Supabase
+  login.html                                 doPost  (everything)             (OMAD_STORAGE picks one;
+                                             appDoc_() opens the store         same tables either way)
+                                                                              System_Config
   omad_admin.html + assets/omad/*      ──▶   doGet   (inert banner)     ──▶   Omad_Transactions_V2
   cafe_admin.html, cafe_pos.html                                              Omad_Transactions (legacy)
   tasks.html + assets/tasks/*                                                 Cafe_Sales, Cafe_Kun_Yakuni
@@ -91,6 +95,12 @@ Cloudflare Pages (static HTML/JS)         Google Apps Script web app        Goog
   load. `npm run build:css` regenerates it; Cloudflare Pages has no build step,
   which is why the output is in the repository.
 
+- **The store is chosen per request by the `OMAD_STORAGE` Script Property**
+  (`sheets`, the default, or `supabase`). Every module reads and writes through
+  `appDoc_()`, which hands back either the spreadsheet or
+  `24_supabase_store.gs`'s stand-in for it: the same `getSheetByName` /
+  `getRange` / `appendRow` surface over Postgres tables. So the business code
+  is identical on both stores, and the whole test suite runs on both.
 - **Backend source of truth is `apps-script/*.gs`.** They share one global
   scope and are concatenated in filename order.
 - **`script.gs` is generated.** Never hand-edit it. Run `npm run build` after
@@ -146,6 +156,8 @@ Cloudflare Pages (static HTML/JS)         Google Apps Script web app        Goog
 | `21_miniapp_auth.gs` | Mini App `initData` signature verification |
 | `22_miniapp_api.gs` | Mini App summaries and write actions |
 | `23_health.gs` | Mini App configuration via Bot API, and the system health check |
+| `24_supabase_store.gs` | `appDoc_()` and the store switch; the Supabase stand-in for the spreadsheet (sheet → table mapping, value conversion, paging) |
+| `25_supabase_import.gs` | The move from Sheets: preview / copy + verify + switch / verify / rollback |
 
 ## 4. Main features and workflows
 
@@ -179,7 +191,8 @@ Cloudflare Pages (static HTML/JS)         Google Apps Script web app        Goog
 ### Café
 - **POS** sends *which items and how many*; the server prices, costs, checks
   stock, moves stock and writes the sale — see [§6](#6-important-business-rules).
-- **Void** restores stock from the stored receipt.
+- **Void** restores stock from the stored receipt. On Supabase the receipt row
+  is stamped `voided_at` and hidden rather than deleted.
 - **Close day** totals revenue and profit from recorded sales and accepts only
   the operator's **counted** stock level.
 - **Admin** edits inventory, recipes, categories and the daily target, moves
@@ -427,8 +440,9 @@ business actions recorded in one submission:
   when the stock cannot be put back** — an item deleted since the sale has
   nothing to restore on to — and in that case the answer says `stockRestored:
   false`, **names the unrestored lines with their frozen quantities**, and writes
-  them to the audit and debug logs *before* the receipt row is deleted, because
-  the row is the only place the frozen consumption lives. A missing quantity is
+  them to the audit and debug logs *before* the receipt row is deleted (on
+  Supabase: hidden, never deleted), because the row is the only place the
+  frozen consumption lives. A missing quantity is
   reported, never reconstructed. (`stockRestored` was previously derived from the
   *resolution* step, which on the frozen-snapshot path cannot fail, so it read
   `true` for every modern receipt whether or not anything went back.)
@@ -551,12 +565,45 @@ partial frontend/backend rollout resume only the missing lines safely.
 
 ## 7. Data other features depend on
 
+### Where the data lives
+
+| `OMAD_STORAGE` | Store |
+|---|---|
+| `sheets` (or unset) | the Google Sheet `1Q9_v2Prus…v963CA` |
+| `supabase` | the Supabase project `mybizmanager` (`ksdqoftlxrkpyylbbyoi`), at `SUPABASE_URL` with `SUPABASE_SECRET_KEY` |
+
+Every sheet below is a table with the same columns in the same order
+(`Omad_Transactions_V2` → `omad_transactions_v2`, `Cafe_Kun_Yakuni` →
+`cafe_close_days`, …); the mapping is `SUPABASE_SHEETS` in
+`24_supabase_store.gs`, the schema is `supabase/migrations/`. Each table has a
+`seq` identity column: row N of the "sheet" is the Nth row by `seq`, which is
+what sheet order always was.
+
+- **Supabase mode fails closed.** Selected without its URL or key, every
+  request errors (and Telegram still gets its 200). It never falls back to
+  the spreadsheet: two stores both accepting money would never reconcile.
+- **The database enforces what the code only promised.** The ledger refuses
+  `DELETE`, `TRUNCATE` and any change except `status` (Active → Corrected /
+  Cancelled / Void only), `updated_at`, `telegram_msg_id` and filling an
+  empty `entry_group_id`; an Active `request_id`, a café sale's request id and
+  a stock movement's are unique; the audit log is append-only; periods, date
+  keys, times, types, currencies and methods are CHECK-constrained. RLS is on
+  for every table with no policies: only the backend's secret key reads or
+  writes anything.
+- **A write by row number goes to the row that was read**, by its `seq`, even
+  if another request deleted a row above it; a row that has gone makes the
+  write fail loudly instead of landing on a neighbour.
+
 **`System_Config`** is a key/value sheet (column A key, column B a JSON string):
 `Omad_Tenants`, `Omad_Rates`, `Omad_Rates_V1_Backup`, `Omad_Template_Expenses`,
 `Omad_Active_Transactions_Sheet`, `Omad_Migration_Status`,
 `Omad_Migration_Fallback_Year`, `Omad_Read_Model`, `Cafe_Inventory`,
 `Cafe_Inventory_Rev`, `Cafe_Recipes`, `Cafe_Categories`, `Cafe_Catalogue_Rev`,
-`Cafe_Settings`.
+`Cafe_Settings`, `Omad_Last_Operation` (the Tizim panel's "last operation").
+On Supabase also `Omad_Storage_Cutover_At`, written at the switch; its presence
+is what makes `supabase/reset_before_cutover.sql` refuse to empty the database.
+The live sheet also still holds two pre-2026 keys, `Tenants` and `Rates`,
+that nothing reads.
 
 `Omad_Read_Model` is the one **derived** entry: it is a summary of the ledger,
 not a fact about it, and `CACHE_DERIVED_CONFIG_KEYS` keeps writing it from
@@ -596,14 +643,16 @@ not secrets), `TELEGRAM_WEBHOOK_SECRET`*, `TELEGRAM_WEBHOOK_SECRET_PREVIOUS`* (t
 during rotation), `TELEGRAM_WEBHOOK_ROTATED_AT`, `TELEGRAM_AUTHORIZED_USER_ID`,
 `TELEGRAM_GROUP_CHAT_ID`, `TELEGRAM_TASKS_GROUP_CHAT_ID`,
 `TELEGRAM_WEBHOOK_URL`, `TELEGRAM_WEBHOOK_STATUS`, `TELEGRAM_LAST_SUCCESS`,
-`TELEGRAM_LAST_ERROR` (`*` = secret). They are project state, not code — the
-deploy never touches them.
+`TELEGRAM_LAST_ERROR`, `OMAD_STORAGE`, `SUPABASE_URL`, `SUPABASE_SECRET_KEY`*,
+`OMAD_STORAGE_IMPORT` (the last move's timestamps and result) (`*` = secret).
+They are project state, not code — the deploy never touches them.
 
 ## 8. Integrations
 
 | Integration | What depends on it |
 |---|---|
-| **Google Sheets** (`1Q9_v2Prus…v963CA`) | the entire database |
+| **Google Sheets** (`1Q9_v2Prus…v963CA`) | the entire database while `OMAD_STORAGE` is `sheets`; the untouched pre-move copy afterwards |
+| **Supabase** (`mybizmanager`, `ksdqoftlxrkpyylbbyoi`, us-east-1, free plan) | the entire database once `OMAD_STORAGE` is `supabase`; reached by the backend over the REST API (PostgREST) only |
 | **Google Apps Script** web app `/exec` | the entire backend; one deployment id, never recreated |
 | **Telegram Bot API** | `/yangi` entry, task cards and reminders, group reports, the Mini App menu button and its `initData` signature |
 | **Cloudflare Pages** (`mybizmanager.pages.dev`) | serves the static frontend from `main`, no build step; serves `/mini` and `/tasks` as clean paths with no config |
@@ -741,6 +790,8 @@ composes the message from data it already stored.
 | deleting or renaming a backend function | add it to `RETIRED_FUNCTIONS` in `scripts/clasp-deploy.js` with a reason, or the deploy's drift guard fails |
 | a new money input field | add its id to `MONEY_FIELD_IDS` |
 | the task sheets | columns are positional — append only |
+| any sheet's columns, or a new sheet | a **new** file under `supabase/migrations/` (applied to the project), and the matching entry in `SUPABASE_SHEETS`; `tests/supabase-store.test.js` checks the two agree |
+| a test that only passes on one store | `{ skip: sheetsOnly(reason) }` is for what is about the spreadsheet itself; everything else must pass under `npm run test:supabase` too |
 | a new gated action | give it a role list from `AUTH_ROLES_*` in `20_api.gs`; there is no default |
 | a new sheet write path | bump the matching `CACHE_SCOPE_*` revision, or a summary goes stale for its TTL |
 | a ledger write path | the Omad read model is keyed by `CACHE_SCOPE_OMAD`; bumping it is what makes the dashboard see the write |
@@ -766,9 +817,9 @@ composes the message from data it already stored.
    `Omad_Transactions_V2` from scratch and never touches the legacy sheet;
    `rollback_omad_migration` points reads back and restores the pre-migration
    rate map without deleting migrated data. **It does destroy the *target*:**
-   apply clears V2 and repopulates it from the legacy sheet alone, and no guard
-   stops it running while V2 is live — so it must never be run while the
-   migration state is `cutover`. The full precondition chain is in
+   apply clears V2 and repopulates it from the legacy sheet alone, so it is
+   **refused while V2 is the active ledger** (and on Supabase the database
+   refuses the wipe as well). The full precondition chain is in
    [`ARCHITECTURE.md`](ARCHITECTURE.md#migration-and-cutover).
 3. **Tasks never touch financial data — one-way isolation.** The `/yangi`
    conversation may *create* a task; nothing in the task module reads or writes
@@ -854,7 +905,31 @@ composes the message from data it already stored.
     (`submittedCartLines`) *and* the controls that describe them are locked:
     **once Save starts, the business action being saved is immutable.**
 
+17. **One store at a time, and the move is decided on the money.** Moving
+    to Supabase is one locked action: copy every sheet into the *empty*
+    database, verify every cell (through the same conversion the store
+    applies) and the cash/bank/total balances, per-period figures and every
+    tenant's payments as the application computes them from each store, and
+    only then switch `OMAD_STORAGE`. A failed verification does not switch. The
+    move only reads the spreadsheet, and refuses to copy into a database that
+    already holds rows. The Telegram debug log is compared but never blocks.
+
 ## 12. Known limitations and intentional exceptions
+
+- **Rolling back from Supabase copies nothing back.** `rollback_supabase_storage`
+  switches reads and writes to the spreadsheet, which still holds the data as
+  of the move; anything entered while Supabase was the store exists only in
+  Supabase, and the answer says so.
+- **The Supabase project is on the free plan:** no downloadable automatic
+  backups. The spreadsheet stays as the pre-move copy; a scheduled export is a
+  separate decision.
+- **The Supabase store speaks the spreadsheet's language.** Each sheet
+  operation is one REST call, reads page by `seq`, and nothing is moved into
+  SQL functions yet — the business code is unchanged on purpose. Making hot
+  paths native queries is a later, separate step.
+- **A café sale retried with its request id after it was voided** is refused
+  by the database (the hidden receipt still holds the id) instead of being
+  rung up a second time, as the spreadsheet allowed.
 
 - **The legacy pre-cutover path is not idempotent.** It is dormant while V2 is
   live and exists for rollback.
@@ -916,6 +991,8 @@ npm run build:css        # regenerate assets/css/app.css (needs tailwindcss)
 npm run lint             # static analysis: syntax, duplicates, deploy gating
 npm test                 # unit/integration tests (node --test)
 npm run test:e2e         # Playwright/Chromium browser flows
+npm run test:supabase    # the unit suite again, against the Supabase store
+npm run test:supabase:e2e  # the browser flows again, against the Supabase store
 npm run scan:secrets     # working tree
 npm run scan:secrets:history   # every committed blob
 npm run bench            # sheet passes / bytes / ms per screen (see below)
@@ -926,6 +1003,14 @@ npm run bench            # sheet passes / bytes / ms per screen (see below)
   the arithmetic time. Sheet passes are the figure that matters: each one is a
   round trip to the Sheets backend and dominates everything measured in
   milliseconds. It is a comparison tool, not an absolute one.
+- **Both stores are tested by the same tests.** With `MBM_STORAGE=supabase`
+  the harness builds an in-memory PostgREST (`tests/supabase-mock.js`) from
+  `supabase/migrations/` — its columns, NOT NULLs, defaults, CHECKs, unique
+  indexes, plus the ledger and audit triggers — copies each test's sheets into
+  it with the real import code, and runs the backend with
+  `OMAD_STORAGE=supabase`. A test that is about the spreadsheet itself (cell
+  coercion, counting sheet passes, tampering with rows the database freezes)
+  is skipped there with its reason via `sheetsOnly(...)`; CI runs both.
 - `tests/gas-harness.js` loads `script.gs` into a Node VM with `SpreadsheetApp`,
   `PropertiesService`, `CacheService`, `LockService`, `UrlFetchApp`,
   `Utilities`, `Session`, `ContentService` and `HtmlService` mocked, so backend
@@ -983,6 +1068,7 @@ npm run bench            # sheet passes / bytes / ms per screen (see below)
 | V2 misbehaving | `rollback_omad_migration` — the legacy sheet is intact |
 | Bad backend deploy | Re-run CI on a known-good commit; the deployment id never changes |
 | Bad frontend deploy | Cloudflare Pages keeps every deployment; roll back in the dashboard |
+| Supabase misbehaving | Sozlamalar → Tizim → "Google Sheets'ga Qaytish" (`rollback_supabase_storage`) — works even when the database is unreachable; entries made on Supabase stay there |
 
 ## 14. Live state
 
@@ -998,6 +1084,7 @@ Operational state snapshot, rechecked read-only on **2026-08-17**:
 | Telegram | webhook on the active deployment with a URL secret; one 5-minute trigger |
 | Mini App | menu button installed and verified |
 | Web sign-in | username + password, server-verified, 30-day signed session |
+| Store | **Google Sheets** (`OMAD_STORAGE` unset). Supabase project `mybizmanager` created 2026-11-02, schema applied, empty; the move has not been run |
 
 Account records and the session-signing secret are live Script Properties, not
 repository state, so this document does not claim whether a one-time password
@@ -1011,7 +1098,8 @@ there and here.
 
 ## Documentation map
 
-Five documents, each authoritative for one thing. Nothing else in this
+Five documents, each authoritative for one thing (plus `supabase/README.md`
+for the database's own files). Nothing else in this
 repository is project documentation.
 
 | File | What it is |

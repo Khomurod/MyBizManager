@@ -18,14 +18,18 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
-const TOKEN_PATTERN = /\b\d{6,16}:[A-Za-z0-9_-]{30,}\b/g;
+// A Telegram bot token, or a Supabase secret key (which reads and writes every
+// financial row in the database).
+const TOKEN_PATTERN = /\b\d{6,16}:[A-Za-z0-9_-]{30,}\b|\bsb_secret_[A-Za-z0-9_-]{20,}/g;
 const SCANNED_EXTENSIONS = ['.html', '.gs', '.js', '.md', '.json', '.yml', '.yaml', '.csv', '.txt'];
 const SKIPPED_DIRS = new Set(['.git', 'node_modules']);
 // The test suite deliberately uses one obviously fake fixture token. It is
 // allowlisted by exact value (not by path), so a real secret committed into
 // tests/ is still caught.
 const FIXTURE_TOKENS = new Set([
-  '123456789:AAFakeTokenForTestsOnly_0123456789abcd'
+  '123456789:AAFakeTokenForTestsOnly_0123456789abcd',
+  // tests/supabase-mock.js: the in-memory database's own made-up key.
+  'sb_secret_test_key_for_the_mock'
 ]);
 
 function walk(dir, files = []) {
@@ -102,7 +106,7 @@ const scanHistoryToo = process.argv.includes('--history');
 const workingTreeFindings = scanWorkingTree();
 
 if (workingTreeFindings.length > 0) {
-  console.error('Secret scan FAILED - Telegram token-shaped values in the working tree:');
+  console.error('Secret scan FAILED - token-shaped values in the working tree:');
   workingTreeFindings.forEach(f => console.error(`  ${f}`));
   process.exit(1);
 }
