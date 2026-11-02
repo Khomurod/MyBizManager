@@ -463,6 +463,40 @@ describe('The Telegram Mini App', () => {
     await context.close();
   });
 
+  test('with storage that refuses writes the entry is sent directly, and a failure reopens the form', async () => {
+    let attempt = 0;
+    const { page, context, calls } = await openMini('auth_date=1&hash=x', Object.assign({}, defaultHandlers, {
+      mini_save_transaction: () => (++attempt === 1
+        ? NO_CONNECTION
+        : { status: 'success', authorized: true, duplicate: false, transaction: {} })
+    }));
+    await page.evaluate(() => {
+      const setItem = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (key, value) {
+        if (String(key).indexOf('mini_outbox_') === 0) throw new Error('QuotaExceededError');
+        return setItem.call(this, key, value);
+      };
+    });
+    await page.waitForFunction(() => document.getElementById('miniTenantList'));
+
+    await page.locator('button:has-text("Kirim")').first().click();
+    await page.fill('#mAmount', '330000');
+    await page.locator('#mSubmit').click();
+
+    // Not kept, not lost: the failed send brings the form back with the amount.
+    await page.waitForSelector('.toast.bad');
+    await page.waitForSelector('#mAmount');
+    assert.equal((await page.inputValue('#mAmount')).replace(/\D/g, ''), '330000');
+
+    await page.locator('#mSubmit').click();
+    await page.waitForSelector('.toast:not(.bad)');
+    const saves = calls.filter(c => c.action === 'mini_save_transaction');
+    assert.equal(saves.length, 2);
+    assert.equal(saves[0].requestId, saves[1].requestId, 'the retry is the same request, so one record');
+
+    await context.close();
+  });
+
   test('without a connection the entry waits on the phone and goes out once, with its own request id', async () => {
     let online = false;
     const { page, context, calls } = await openMini('auth_date=1&hash=x', Object.assign({}, defaultHandlers, {

@@ -215,8 +215,9 @@ function submitEntry(type, replacing) {
         currency: document.getElementById('mCurrency').value,
         method: document.getElementById('mMethod').value,
         comment: document.getElementById('mComment').value.trim(),
-        requestId: newMiniRequestId('mini'),
-        groupId: newMiniRequestId('grp_mini')
+        // A direct send that failed keeps its ids (03a-outbox.js).
+        requestId: miniDirectRetryIds ? miniDirectRetryIds.requestId : newMiniRequestId('mini'),
+        groupId: miniDirectRetryIds ? miniDirectRetryIds.groupId : newMiniRequestId('grp_mini')
     };
     // The refused entry this corrects was stored nowhere; the new one takes its place.
     if (replacing) removeMiniOutboxItem(replacing);

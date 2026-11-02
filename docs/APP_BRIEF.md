@@ -1013,7 +1013,9 @@ composes the message from data it already stored.
   timer while offline, the `online` event, the next open — resolves to one
   record. A server refusal is shown in red with its reason (Qayta /
   Tahrirlash / O'chirish) and never resent by itself. Balances move only when
-  the server's fresh list arrives. The tenant-paid pair, the bulk entry and
+  the server's fresh list arrives. If the phone cannot keep it (storage full
+  or off) it is sent directly, and a failure reopens the form with what was
+  typed and the same request id. The tenant-paid pair, the bulk entry and
   the web form still wait for the server.
 - **`assets/css/app.css` is generated but not verified in CI.** `npm run
   build:css` regenerates it from the pages; CI does not run it, because making

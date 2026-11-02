@@ -56,20 +56,21 @@ function readMiniOutbox() {
     }
 }
 
+/** Whether the list was stored. A full or disabled storage says no. */
 function writeMiniOutbox(list) {
     const key = miniOutboxKey();
-    if (!key) return;
+    if (!key) return false;
     try {
         if (list.length) localStorage.setItem(key, JSON.stringify(list));
         else localStorage.removeItem(key);
+        return true;
     } catch (error) {
-        // Without storage the entry still goes out now; it just cannot wait
-        // for a reopen if this send fails.
+        return false;
     }
 }
 
 function updateMiniOutboxItem(id, changes) {
-    writeMiniOutbox(readMiniOutbox().map(item => (item.id === id ? Object.assign({}, item, changes) : item)));
+    return writeMiniOutbox(readMiniOutbox().map(item => (item.id === id ? Object.assign({}, item, changes) : item)));
 }
 
 function removeMiniOutboxItem(id) {
@@ -84,30 +85,42 @@ function newMiniRequestId(prefix) {
 /**
  * Keeps an entry on the device and starts sending it. Returns at once.
  *
- * Without a verified account there is nowhere safe to keep it (see the header),
- * so it is then sent directly and its outcome shown as before.
+ * If it cannot be kept -- no verified account to keep it for, or storage that
+ * is full or switched off -- it is sent directly instead, and a refusal
+ * reopens the form with what was typed. Never dropped silently.
  */
 function queueMiniEntry(action, payload) {
-    if (!miniOutboxKey()) {
+    const list = readMiniOutbox();
+    list.push({ id: payload.requestId, action, payload, status: 'pending', error: '', at: Date.now() });
+    if (!writeMiniOutbox(list) || !readMiniOutbox().some(item => item.id === payload.requestId)) {
         sendMiniEntryDirectly(action, payload);
         return;
     }
-    const list = readMiniOutbox();
-    list.push({ id: payload.requestId, action, payload, status: 'pending', error: '', at: Date.now() });
-    writeMiniOutbox(list);
+    miniDirectRetryIds = null;
     renderOmadIfShown();
     drainMiniOutbox();
 }
 
+/**
+ * The ids of a direct send that did not succeed. The next Saqlash reuses them
+ * -- the answer may have been lost after the server stored the entry, and a
+ * fresh id would then make a second record.
+ */
+let miniDirectRetryIds = null;
+
 async function sendMiniEntryDirectly(action, payload) {
+    miniDirectRetryIds = { requestId: payload.requestId, groupId: payload.groupId };
     try {
         await api(action, payload);
+        miniDirectRetryIds = null;
         toast('Saqlandi');
         flushReports();
         refreshOmadInBackground();
     } catch (error) {
         if (error.unauthorized) return failAuth(error);
         toast(error.message, true);
+        // The same request id goes with it again, so a retry is still one record.
+        openEntrySheet(payload.type, { id: '', payload });
     }
 }
 
@@ -124,10 +137,14 @@ async function drainMiniOutbox() {
     clearTimeout(miniOutboxTimer);
     let saved = 0;
     let offline = false;
+    // Each entry is sent at most once per pass, even if storage stops taking
+    // the status that says it has gone.
+    const sent = new Set();
     try {
         for (;;) {
-            const next = readMiniOutbox().find(item => item.status === 'pending');
+            const next = readMiniOutbox().find(item => item.status === 'pending' && !sent.has(item.id));
             if (!next) break;
+            sent.add(next.id);
             try {
                 await api(next.action, next.payload);
                 updateMiniOutboxItem(next.id, { status: 'saved', error: '' });
