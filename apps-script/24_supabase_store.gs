@@ -598,6 +598,16 @@ function flushPendingWrites_() {
   if (doc) doc.__flush();
 }
 
+/**
+ * Reads the settings, the row counts and these whole tables in ONE round
+ * trip, for code about to need all of them -- typically right after taking
+ * the lock, which forgot everything read before it. A no-op on the
+ * spreadsheet, and for a table this request already holds.
+ */
+function storagePrefetch_(doc, sheetNames) {
+  if (doc && doc.__supabase && typeof doc.__prefetch === "function") doc.__prefetch(sheetNames || []);
+}
+
 function beginStorageBatch_() {
   STORAGE_BATCH_DEPTH_++;
 }
@@ -892,11 +902,13 @@ function supabaseDoc_(credentials, options) {
 
   /**
    * Fetches, in one round trip, whichever of the settings and the row counts
-   * this request has not got yet. A request needs both almost every time, and
-   * one parallel fetch costs what one of them does.
+   * this request has not got yet -- and, when named, whole tables the caller
+   * is about to read (storagePrefetch_). A request needs the settings and the
+   * counts almost every time, and one parallel fetch costs what one does.
    */
-  ctx.prime = function () {
+  ctx.prime = function (sheetNames) {
     var calls = [];
+    var tables = [];
     var wantCounts = !ctx.counts && !ctx.noRpc;
     var wantConfig = !ctx.config;
     // Counts are only true of what is stored.
@@ -906,6 +918,12 @@ function supabaseDoc_(credentials, options) {
     if (wantConfig) {
       calls.push({ method: "get", path: "system_config", params: [
         ["select", "seq,key,value"], ["order", "seq.asc"], ["limit", SUPABASE_PAGE_SIZE]] });
+    }
+    for (var n = 0; n < (sheetNames || []).length; n++) {
+      var wanted = doc.getSheetByName(sheetNames[n]);
+      if (!wanted || !wanted.__wantsRows()) continue;
+      tables.push(wanted);
+      calls.push({ method: "get", path: wanted.__table, params: wanted.__allPageParams() });
     }
     if (!calls.length) return;
     var answers = supabaseRequestAll_(credentials, calls);
@@ -922,7 +940,7 @@ function supabaseDoc_(credentials, options) {
       ctx.rpcKnown = true;
     }
     if (wantConfig) {
-      var first = answers[at];
+      var first = answers[at++];
       if (first instanceof Error) throw first;
       var rows = first.json || [];
       var page = rows;
@@ -935,6 +953,11 @@ function supabaseDoc_(credentials, options) {
       var config = {};
       for (var i = 0; i < rows.length; i++) config[rows[i].key] = rows[i].value === null ? "" : rows[i].value;
       ctx.config = config;
+    }
+    // A table that failed is simply read again when it is needed.
+    for (var t = 0; t < tables.length; t++) {
+      var answer = answers[at++];
+      if (!(answer instanceof Error)) tables[t].__adopt(answer.json || []);
     }
   };
 
@@ -952,6 +975,7 @@ function supabaseDoc_(credentials, options) {
     credentials: credentials,
     __flush: function () { ctx.flush(); },
     __lockAcquired: function () { ctx.forgetReads(); },
+    __prefetch: function (sheetNames) { if (ctx.perRequest) ctx.prime(sheetNames); },
     __pendingCount: function () { return ctx.pending.length; },
     getSheetByName: function (name) {
       var definition = supabaseSheetDefinition_(name);
@@ -1014,7 +1038,7 @@ function supabaseSheet_(ctx, name, definition, doc) {
   var table = definition.table;
   var columns = definition.columns;
   var header = columns.map(function (c) { return c[0]; });
-  var state = { seqs: [], count: -1, rows: null, rowIndex: null, countGen: -1 };
+  var state = { seqs: [], count: -1, rows: null, rowIndex: null, countGen: -1, firstPage: null };
   // Sheet rows above the data: the header, or none.
   var headerRows = definition.noHeader ? 0 : 1;
   var firstDataRow = headerRows + 1;
@@ -1064,6 +1088,7 @@ function supabaseSheet_(ctx, name, definition, doc) {
   var dropRows = function () {
     state.rows = null;
     state.rowIndex = null;
+    state.firstPage = null;
   };
 
   var allPage = function (afterSeq) {
@@ -1079,6 +1104,12 @@ function supabaseSheet_(ctx, name, definition, doc) {
   var readAll = function () {
     ctx.beforeRead(table);
     if (state.rows) return state.rows;
+    if (state.firstPage) {
+      // A full first page fetched alongside something else: page on from it.
+      var started = state.firstPage;
+      state.firstPage = null;
+      return finishReadAll(started);
+    }
 
     var calls = [allPage(0)];
     var companions = [];
@@ -1099,8 +1130,13 @@ function supabaseSheet_(ctx, name, definition, doc) {
       if (!(answers[c + 1] instanceof Error)) companions[c].__adopt(answers[c + 1].json || []);
     }
 
+    return finishReadAll(answers[0].json || []);
+  };
+
+  /** The rest of a whole read, from its first page. */
+  var finishReadAll = function (firstPage) {
     var records = [];
-    var page = answers[0].json || [];
+    var page = firstPage;
     while (true) {
       for (var i = 0; i < page.length; i++) records.push(page[i]);
       if (page.length < SUPABASE_PAGE_SIZE) break;
@@ -1517,11 +1553,14 @@ function supabaseSheet_(ctx, name, definition, doc) {
       dropRows();
       if (positions) state.seqs = [];
     },
-    __wantsRows: function () { return ctx.perRequest && !state.rows && !ctx.touched[table]; },
+    __wantsRows: function () {
+      return ctx.perRequest && !state.rows && !state.firstPage && !ctx.touched[table];
+    },
     __allPageParams: function () { return allPage(0).params; },
     /** A whole first page read alongside another table. */
     __adopt: function (records) {
-      if (records.length >= SUPABASE_PAGE_SIZE || ctx.touched[table]) return;
+      if (ctx.touched[table]) return;
+      if (records.length >= SUPABASE_PAGE_SIZE) { state.firstPage = records; return; }
       state.seqs = records.map(function (r) { return r.seq; });
       state.count = records.length;
       keepRows(records);

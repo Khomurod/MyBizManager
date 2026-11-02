@@ -25,7 +25,7 @@ sheet and the legacy `Omad_Transactions` is kept intact for rollback.
 | `assets/omad/*.js` | The Omad admin application, split by responsibility |
 | `cafe_admin.html` | Café inventory, recipes, categories, settings |
 | `cafe_pos.html` | Café point of sale, close-day |
-| `mini.html` + `assets/mini/*.js` | The Telegram Mini App, served at `/mini` |
+| `mini.html` + `assets/mini/*.js` | The Telegram Mini App, served at `/mini`. `03a-outbox.js` sends an income / expense in the background after the form has closed (App Brief §12) |
 | `apps-script/*.gs` | Apps Script backend **source of truth** — what CI uploads to the live project |
 | `script.gs` | **Generated** single-file bundle of `apps-script/*.gs`; a review aid and manual-deployment fallback, no longer the production path |
 
@@ -923,7 +923,11 @@ If `mbm_apply` refuses, nothing of the batch is stored, every position and
 count the request worked out is forgotten, and the error surfaces (a queue job
 records it with `failJob_`). Batches: the ledger actions and the café actions
 (under the lock), task mutations (`runTaskAction_`), and each queue job's
-bookkeeping (`processPendingJobs_`).
+bookkeeping (`processPendingJobs_`). A create (`createTransaction_`,
+`createTransactionBatch_`) takes an `inLock(result)` follow-up that its callers
+use for the report job and the `Omad_Last_Operation` stamp, so the whole save
+is one `mbm_apply`; the follow-up swallows its own errors (`runInLock_`), so a
+failure to queue a report still never undoes the save.
 
 **Reads are coalesced.** Settings come from one read of `system_config` per
 request and row counts from one `mbm_counts()` call, fetched together with
@@ -933,7 +937,10 @@ request — updated in place by this request's own updates, dropped on an
 insert or delete, and forgotten when the lock is taken. Tables marked
 `readWith` (tasks and occurrences) are fetched together. A café sale's
 idempotency lookup asks the database for the generated `request_id` instead
-of reading every receipt (`findFirstRow`).
+of reading every receipt (`findFirstRow`). Code that knows what it is about
+to read names it: `storagePrefetch_(doc, sheetNames)` fetches the settings,
+the counts and those whole tables in one round trip — the ledger write paths
+call it right after taking the lock (which forgot everything read before).
 
 A database without the two functions answers 404 to the request's first
 `mbm_counts`, which every batch waits for before keeping anything. The store

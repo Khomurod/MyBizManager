@@ -349,6 +349,7 @@ function createTransactionBulk_(doc, input) {
   var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
+    storagePrefetch_(doc, [OMAD_TRANSACTIONS_V2_SHEET]);
     var sheet = ledgerSheet_(doc);
     var existing = findExistingBulkRows_(sheet, requestBase, count);
     var conflict = {

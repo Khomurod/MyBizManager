@@ -348,8 +348,13 @@ function buildRateSnapshot_(period, currency, rateType) {
  * Appends one Active transaction. Idempotent on `requestId`: the same request
  * always resolves to the same record, so a retry, a refresh or a double-click
  * cannot create a second copy.
+ *
+ * `inLock(result)`, if given, runs under the same lock after a successful
+ * create (or a duplicate), so its writes -- the report job, the last-operation
+ * stamp -- reach the database in the same batch as the row itself. It must
+ * swallow its own failures: nothing it does may undo the save.
  */
-function createTransaction_(doc, input) {
+function createTransaction_(doc, input, inLock) {
   var validationError = validateTransactionInput_(input);
   if (validationError) return { status: "error", message: validationError };
 
@@ -360,10 +365,12 @@ function createTransaction_(doc, input) {
   var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
+    // Everything this needs, read in one round trip (24_supabase_store.gs).
+    storagePrefetch_(doc, inLock ? [OMAD_TRANSACTIONS_V2_SHEET, JOB_QUEUE_SHEET] : [OMAD_TRANSACTIONS_V2_SHEET]);
     var existing = findLedgerRowByRequestId_(doc, requestId);
     if (existing) {
       // Not an error: the caller gets exactly the record their request created.
-      return { status: "success", duplicate: true, transaction: ledgerToLegacyShape_(existing) };
+      return runInLock_(inLock, { status: "success", duplicate: true, transaction: ledgerToLegacyShape_(existing) });
     }
 
     var now = new Date().toISOString();
@@ -405,10 +412,18 @@ function createTransaction_(doc, input) {
       amount: transaction.amount, currency: transaction.currency
     }));
 
-    return { status: "success", duplicate: false, transaction: ledgerToLegacyShape_(transaction) };
+    return runInLock_(inLock, { status: "success", duplicate: false, transaction: ledgerToLegacyShape_(transaction) });
   } finally {
     lock.releaseLock();
   }
+}
+
+/** Runs a caller's follow-up under the lock it is already in; never fails the save. */
+function runInLock_(inLock, result) {
+  if (typeof inLock === "function") {
+    try { inLock(result); } catch (error) {}
+  }
+  return result;
 }
 
 /**
@@ -458,6 +473,7 @@ function correctTransaction_(doc, input) {
   var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
+    storagePrefetch_(doc, [OMAD_TRANSACTIONS_V2_SHEET, JOB_QUEUE_SHEET]);
     var alreadyDone = findLedgerRowByRequestId_(doc, requestId);
     if (alreadyDone) {
       return { status: "success", duplicate: true, transaction: ledgerToLegacyShape_(alreadyDone) };
@@ -549,6 +565,7 @@ function cancelTransaction_(doc, input) {
   var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
+    storagePrefetch_(doc, [OMAD_TRANSACTIONS_V2_SHEET, JOB_QUEUE_SHEET]);
     var original = findLedgerRow_(doc, input.transactionId);
     if (!original) return { status: "error", message: "Tranzaksiya topilmadi." };
 

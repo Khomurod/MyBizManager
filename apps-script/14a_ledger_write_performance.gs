@@ -327,7 +327,7 @@ function nextBatchIdIndex_(sheet, stamp) {
  * only the missing remainder. It never assumes that seeing line 0 means the
  * whole entry landed.
  */
-function createTransactionBatch_(doc, input) {
+function createTransactionBatch_(doc, input, inLock) {
   var payload = input || {};
   var lines = Array.isArray(payload.lines) ? payload.lines : [];
   if (lines.length === 0) return { status: "error", message: "Kamida bitta summa kiriting." };
@@ -361,6 +361,8 @@ function createTransactionBatch_(doc, input) {
   var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
+    // Everything this needs, read in one round trip (24_supabase_store.gs).
+    storagePrefetch_(doc, inLock ? [OMAD_TRANSACTIONS_V2_SHEET, JOB_QUEUE_SHEET] : [OMAD_TRANSACTIONS_V2_SHEET]);
     var sheet = ledgerSheet_(doc);
     var existingLookup = findExistingBatchLines_(sheet, requestBase, prepared.length);
     if (existingLookup.conflict) {
@@ -412,13 +414,13 @@ function createTransactionBatch_(doc, input) {
       if (existingCount === prepared.length) {
         var duplicateOutput = [];
         for (var d = 0; d < existingLines.length; d++) duplicateOutput.push(ledgerToLegacyShape_(existingLines[d]));
-        return {
+        return runInLock_(inLock, {
           status: "success",
           duplicate: true,
           transaction: duplicateOutput[0],
           transactions: duplicateOutput,
           groupId: groupId
-        };
+        });
       }
     }
 
@@ -481,14 +483,14 @@ function createTransactionBatch_(doc, input) {
     appendLedgerRows_(sheet, newRows);
     appendTransactionCreatedAuditsBatch_(doc, newTransactions);
 
-    return {
+    return runInLock_(inLock, {
       status: "success",
       duplicate: false,
       resumed: existingCount > 0,
       transaction: outputByLine[0],
       transactions: outputByLine,
       groupId: groupId
-    };
+    });
   } finally {
     lock.releaseLock();
   }

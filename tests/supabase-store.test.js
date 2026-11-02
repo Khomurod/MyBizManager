@@ -585,8 +585,9 @@ test('the common actions stay within their round-trip budget', () => {
 
   // Settings and row counts arrive together, in parallel: one round trip.
   assert.ok(supabaseRoundTrips(gas, () => post(gas, { action: 'get_omad_data', scope: 'dashboard' })) <= 2);
-  // Read under the lock, one batch of writes, the last-operation stamp and the report job.
-  assert.ok(supabaseRoundTrips(gas, () => post(gas, newIncome('budget'))) <= 6);
+  // Settings before the lock; settings, counts, ledger and queue together under
+  // it; then the rows, their audit lines, the report job and the stamp as one batch.
+  assert.ok(supabaseRoundTrips(gas, () => post(gas, newIncome('budget'))) <= 3);
   // The task, its occurrences, its audit line and the stamp in one batch; the
   // board read after it fetches both task tables at once.
   assert.ok(supabaseRoundTrips(gas, () => post(gas, {
@@ -693,4 +694,35 @@ test('without mbm_apply writes are immediate, so a failed correction is still ca
     'and its replacement was voided where the failure happened, not left to double-count');
   assert.ok(!gas.__supabase.requests.some(r => r.table === 'rpc/mbm_apply' && r.method === 'post' &&
     r.body && r.body.ops), 'nothing was ever kept for a batch');
+});
+
+test('a save sends its rows, audit line, report job and last-operation stamp as one write', () => {
+  const gas = liveWithTenants();
+  const before = gas.__supabase.requests.length;
+  const saved = post(gas, {
+    action: 'create_transaction', requestId: 'one-write', period: '2026-08', tenant: 'Apteka',
+    type: 'Income', amount: 100, currency: 'USD', method: 'Naqd', comment: '', deferReports: true
+  });
+  assert.strictEqual(saved.status, 'success', saved.message);
+  assert.ok(saved.reportJobId, 'the report is queued');
+
+  const sent = gas.__supabase.requests.slice(before);
+  const writes = sent.filter(r => r.method !== 'get' && r.table !== 'rpc/mbm_counts');
+  assert.strictEqual(writes.length, 1, 'one write: ' + writes.map(r => r.table).join(', '));
+  const ops = writes[0].body.ops;
+  assert.ok(ops.some(op => op.op === 'insert' && op.table === 'omad_transactions_v2'));
+  assert.ok(ops.some(op => op.op === 'insert' && op.table === 'omad_audit_log'));
+  assert.ok(ops.some(op => op.op === 'insert' && op.table === 'omad_job_queue'));
+  assert.ok(ops.some(op => op.op === 'upsert_config' && op.key === 'Omad_Last_Operation'));
+  assert.ok(new Set(sent.map(r => r.round)).size <= 3, 'and at most three round trips in all');
+
+  // A retry of the same request writes nothing new and queues no second report.
+  const jobs = gas.__supabase.count('omad_job_queue');
+  const again = post(gas, {
+    action: 'create_transaction', requestId: 'one-write', period: '2026-08', tenant: 'Apteka',
+    type: 'Income', amount: 100, currency: 'USD', method: 'Naqd', comment: '', deferReports: true
+  });
+  assert.strictEqual(again.duplicate, true);
+  assert.strictEqual(gas.__supabase.count('omad_job_queue'), jobs);
+  assert.strictEqual(gas.__supabase.count('omad_transactions_v2'), 2);
 });

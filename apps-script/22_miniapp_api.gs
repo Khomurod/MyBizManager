@@ -407,16 +407,17 @@ function miniSaveTransaction_(doc, configSheet, payload) {
   }
 
   if (isLedgerActive_(doc)) {
+    // The report job and the stamp are written under the save's own lock: on
+    // Supabase the whole save is one write to the database.
     var created = createTransaction_(doc, {
       requestId: requestId, groupId: groupId || newEntryGroupId_(), period: period,
       tenant: tenant, type: type, amount: amount, currency: payload.currency,
       method: payload.method, comment: String(payload.comment || ""),
       createdBy: "miniapp", source: TX_SOURCE_TELEGRAM
+    }, function (saved) {
+      if (!saved.duplicate) queueMiniTransactionReport_(doc, saved.transaction);
+      recordLastOperation_(doc, "mini_save_transaction");
     });
-    if (created.status === "success" && !created.duplicate) {
-      queueMiniTransactionReport_(doc, created.transaction);
-    }
-    if (created.status === "success") recordLastOperation_(doc, "mini_save_transaction");
     return jsonOutput_(created);
   }
 

@@ -228,6 +228,8 @@ describe('The Telegram Mini App', () => {
    *        opened in an ordinary browser.
    * @param handlers action -> response body, or a function.
    */
+  const NO_CONNECTION = Symbol('no connection');
+
   async function openMini(initData, handlers = {}) {
     const calls = [];
     const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
@@ -258,7 +260,12 @@ describe('The Telegram Mini App', () => {
       calls.push(payload);
 
       const handler = handlers[payload.action];
-      const body = typeof handler === 'function' ? handler(payload) : handler;
+      // A handler may answer later (a slow server) or not at all (no connection).
+      const body = await (typeof handler === 'function' ? handler(payload) : handler);
+      if (body === NO_CONNECTION) {
+        await route.abort();
+        return;
+      }
       await route.fulfill({
         status: 200, contentType: 'application/json',
         body: JSON.stringify(body || { status: 'error', message: 'Unknown action' })
@@ -395,6 +402,7 @@ describe('The Telegram Mini App', () => {
     await page.fill('#mComment', 'ijara');
     await page.locator('#mSubmit').click();
     await page.waitForFunction(() => !document.querySelector('.sheet'));
+    await page.waitForSelector('.toast:not(.bad)');
 
     const saves = calls.filter(c => c.action === 'mini_save_transaction');
     assert.equal(saves.length, 1);
@@ -406,8 +414,34 @@ describe('The Telegram Mini App', () => {
     await context.close();
   });
 
-  test('a refused save keeps the sheet open so nothing typed is lost', async () => {
+  test('Saqlash closes the form at once; the entry shows as being saved until the server answers', async () => {
+    let answer;
+    const answered = new Promise(resolve => { answer = resolve; });
     const { page, context } = await openMini('auth_date=1&hash=x', Object.assign({}, defaultHandlers, {
+      mini_save_transaction: () => answered
+    }));
+    await page.waitForFunction(() => document.getElementById('miniTenantList'));
+
+    await page.locator('button:has-text("Kirim")').first().click();
+    await page.fill('#mAmount', '750000');
+    await page.fill('#mComment', 'tez');
+    await page.locator('#mSubmit').click();
+
+    // The server has not answered, and the form is already gone.
+    await page.waitForFunction(() => !document.querySelector('.sheet'));
+    await page.waitForSelector('#miniEntryList [data-outbox="pending"]');
+    const row = await page.locator('#miniEntryList [data-outbox="pending"]').innerText();
+    assert.ok(row.includes('tez') && row.includes('Saqlanmoqda'), row);
+
+    answer({ status: 'success', authorized: true, duplicate: false, transaction: {} });
+    await page.waitForSelector('.toast:not(.bad)');
+    await page.waitForFunction(() => !document.querySelector('#miniEntryList [data-outbox="pending"]'));
+
+    await context.close();
+  });
+
+  test('a refused entry stays on the phone in red, and Tahrirlash brings back what was typed', async () => {
+    const { page, context, calls } = await openMini('auth_date=1&hash=x', Object.assign({}, defaultHandlers, {
       mini_save_transaction: { status: 'error', message: 'Summa juda katta.' }
     }));
     await page.waitForFunction(() => document.getElementById('miniTenantList'));
@@ -416,9 +450,98 @@ describe('The Telegram Mini App', () => {
     await page.fill('#mAmount', '500000');
     await page.locator('#mSubmit').click();
     await page.waitForSelector('.toast.bad');
+    await page.waitForSelector('#miniEntryList [data-outbox="failed"]');
+    assert.ok((await page.locator('#miniEntryList [data-outbox="failed"]').innerText()).includes('Summa juda katta.'));
 
-    assert.ok(await page.locator('.sheet').isVisible(), 'the form stays open');
-    assert.ok((await page.inputValue('#mAmount')).length > 0, 'what was typed survives');
+    // Never resent by itself.
+    assert.equal(calls.filter(c => c.action === 'mini_save_transaction').length, 1);
+
+    await page.locator('#miniEntryList button:has-text("Tahrirlash")').click();
+    await page.waitForSelector('#mAmount');
+    assert.equal((await page.inputValue('#mAmount')).replace(/\D/g, ''), '500000', 'what was typed survives');
+
+    // Closing the corrected form without saving keeps the refused entry.
+    await page.locator('.sheet button[aria-label="Yopish"]').click();
+    assert.equal(await page.locator('#miniEntryList [data-outbox="failed"]').count(), 1);
+
+    await context.close();
+  });
+
+  test('with storage that refuses writes the entry is sent directly, and a failure reopens the form', async () => {
+    let attempt = 0;
+    const { page, context, calls } = await openMini('auth_date=1&hash=x', Object.assign({}, defaultHandlers, {
+      mini_save_transaction: () => (++attempt === 1
+        ? NO_CONNECTION
+        : { status: 'success', authorized: true, duplicate: false, transaction: {} })
+    }));
+    await page.evaluate(() => {
+      const setItem = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (key, value) {
+        if (String(key).indexOf('mini_outbox_') === 0) throw new Error('QuotaExceededError');
+        return setItem.call(this, key, value);
+      };
+    });
+    await page.waitForFunction(() => document.getElementById('miniTenantList'));
+
+    await page.locator('button:has-text("Kirim")').first().click();
+    await page.fill('#mAmount', '330000');
+    await page.locator('#mSubmit').click();
+
+    // Not kept, not lost: the failed send brings the form back with the amount,
+    // locked -- it can only be resent exactly as it was.
+    await page.waitForSelector('.toast.bad');
+    await page.waitForSelector('#mAmount');
+    assert.equal((await page.inputValue('#mAmount')).replace(/\D/g, ''), '330000');
+    assert.equal(await page.locator('#mAmount').isDisabled(), true);
+
+    await page.locator('#mSubmit').click();
+    await page.waitForSelector('.toast:not(.bad)');
+    const saves = calls.filter(c => c.action === 'mini_save_transaction');
+    assert.equal(saves.length, 2);
+    assert.equal(saves[0].requestId, saves[1].requestId, 'the retry is the same request, so one record');
+    assert.equal(saves[1].amount, saves[0].amount, 'with the same values the server may already hold');
+
+    // A new entry afterwards is a new request, never the old one's id.
+    await page.locator('button:has-text("Kirim")').first().click();
+    await page.fill('#mAmount', '440000');
+    await page.locator('#mSubmit').click();
+    const sent = () => calls.filter(c => c.action === 'mini_save_transaction');
+    for (let i = 0; i < 100 && sent().length < 3; i++) await page.waitForTimeout(50);
+    const after = sent();
+    assert.equal(after.length, 3);
+    assert.notEqual(after[2].requestId, after[0].requestId);
+
+    await context.close();
+  });
+
+  test('without a connection the entry waits on the phone and goes out once, with its own request id', async () => {
+    let online = false;
+    const { page, context, calls } = await openMini('auth_date=1&hash=x', Object.assign({}, defaultHandlers, {
+      mini_save_transaction: () => (online
+        ? { status: 'success', authorized: true, duplicate: false, transaction: {} }
+        : NO_CONNECTION)
+    }));
+    await page.waitForFunction(() => document.getElementById('miniTenantList'));
+
+    await page.locator('button:has-text("Kirim")').first().click();
+    await page.fill('#mAmount', '120000');
+    await page.locator('#mSubmit').click();
+    await page.waitForFunction(() =>
+      (document.querySelector('#miniEntryList [data-outbox="pending"]') || {}).innerText &&
+      document.querySelector('#miniEntryList [data-outbox="pending"]').innerText.includes('Aloqa kutilmoqda'));
+
+    // Closed and reopened while offline: the entry is still there.
+    await page.reload();
+    await page.waitForSelector('#miniEntryList [data-outbox="pending"]');
+
+    online = true;
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await page.waitForSelector('.toast:not(.bad)');
+
+    const saves = calls.filter(c => c.action === 'mini_save_transaction');
+    assert.ok(saves.length >= 2, 'it was sent again');
+    assert.equal(new Set(saves.map(c => c.requestId)).size, 1, 'every attempt carries the same request id');
+    assert.equal(await page.locator('#miniEntryList [data-outbox="pending"]').count(), 0);
 
     await context.close();
   });

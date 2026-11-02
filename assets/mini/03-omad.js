@@ -122,8 +122,10 @@ function tenantRows() {
 }
 
 function entryRows() {
-    if (!state.entries.length) return emptyRow("Bu oyda amal yo'q");
-    return state.entries.map(e => {
+    // Entries still on their way to the server come first (03a-outbox.js).
+    const waiting = miniOutboxRows();
+    if (!state.entries.length) return waiting || emptyRow("Bu oyda amal yo'q");
+    return waiting + state.entries.map(e => {
         const tenantPaid = e.kind === 'tenant_paid_expense';
         const sign = tenantPaid ? 0 : (e.type === 'Income' ? 1 : -1);
         const badge = tenantPaid
@@ -165,55 +167,93 @@ function amountFields() {
         </div>`;
 }
 
-function openEntrySheet(type) {
+/**
+ * The exact submission the open form resends, when it is a retry of a direct
+ * send that got no answer (03a-outbox.js). The server may already hold that
+ * request, so it goes again unchanged, ids and values alike: changing a value
+ * under the same request id would be answered with the first record while the
+ * screen reported the new one. Set only by that reopened form, whose fields
+ * are locked, and cleared by every other form.
+ */
+let miniEntryFormRetry = null;
+
+/**
+ * The income / expense form. `refused`, an outbox entry the server turned
+ * down, fills it back in so it can be corrected; saving it replaces that entry.
+ * With `refused.sameIds` it is a retry of an unanswered send instead, shown
+ * read-only.
+ */
+function openEntrySheet(type, refused) {
     const income = type === 'Income';
+    miniEntryFormRetry = refused && refused.sameIds ? Object.assign({}, refused.payload) : null;
+    const retryNote = miniEntryFormRetry
+        ? `<p class="tiny muted" style="margin-bottom:8px">Javob kelmadi. Xuddi shu yozuv qayta yuboriladi —
+             boshqa qiymat uchun yangi forma oching.</p>`
+        : '';
     openSheet(income ? 'Yangi kirim' : 'Yangi chiqim', `
+        ${retryNote}
         <label for="mTenant">${income ? 'Ijarachi' : 'Manba'}</label>
         <select id="mTenant">${tenantOptions(!income)}</select>
         ${amountFields()}
         <label for="mComment">Izoh</label>
         <textarea id="mComment" placeholder="Ixtiyoriy"></textarea>
         <button class="btn-primary btn-full" style="margin-top:14px" id="mSubmit"
-                onclick="submitEntry('${type}')">Saqlash</button>
-    `, () => attachAmountFormatting(document.getElementById('mAmount')));
+                onclick="submitEntry('${type}', '${refused ? escapeHtml(refused.id) : ''}')">${miniEntryFormRetry ? 'Qayta yuborish' : 'Saqlash'}</button>
+    `, () => {
+        const amount = document.getElementById('mAmount');
+        attachAmountFormatting(amount);
+        if (!refused) return;
+        const p = refused.payload;
+        document.getElementById('mTenant').value = p.tenant;
+        amount.value = String(p.amount);
+        amount.dispatchEvent(new Event('input'));
+        document.getElementById('mCurrency').value = p.currency;
+        document.getElementById('mMethod').value = p.method;
+        document.getElementById('mComment').value = p.comment || '';
+        if (miniEntryFormRetry) {
+            ['mTenant', 'mAmount', 'mCurrency', 'mMethod', 'mComment'].forEach(id => {
+                document.getElementById(id).disabled = true;
+            });
+        }
+    });
 }
 
-async function submitEntry(type) {
+/**
+ * Saqlash: the form closes at once and the entry is sent in the background
+ * (03a-outbox.js). Its request id is minted here, once, and travels with it
+ * through every resend, so the server can only ever store it once.
+ */
+function submitEntry(type, replacing) {
     const button = document.getElementById('mSubmit');
+    if (!button || button.disabled) return;
+    if (miniEntryFormRetry) {
+        // Exactly what was sent before, so the server's answer describes it.
+        const again = miniEntryFormRetry;
+        miniEntryFormRetry = null;
+        button.disabled = true;
+        closeSheet();
+        queueMiniEntry('mini_save_transaction', again, replacing || '');
+        return;
+    }
     const amount = readAmount(document.getElementById('mAmount'));
     if (amount <= 0) return toast("To'g'ri summa kiriting", true);
-
     button.disabled = true;
-    button.textContent = 'Saqlanmoqda...';
-    try {
-        await api('mini_save_transaction', {
-            type,
-            tenant: document.getElementById('mTenant').value,
-            period: state.period,
-            amount,
-            currency: document.getElementById('mCurrency').value,
-            method: document.getElementById('mMethod').value,
-            comment: document.getElementById('mComment').value.trim(),
-            requestId: pendingId('entry', 'mini'),
-            groupId: pendingId('entryGroup', 'grp_mini')
-        });
-        clearPendingId('entry');
-        clearPendingId('entryGroup');
-        closeSheet();
-        toast('Saqlandi');
-        flushReports();
-        // The record is stored; the figures are a fresh read of it. Neither the
-        // Telegram card nor that read is a reason to keep this form busy.
-        refreshOmadInBackground();
-    } catch (error) {
-        if (error.unauthorized) return failAuth(error);
-        // The ids are kept, so pressing save again resolves to the same record
-        // rather than writing a second one.
-        toast(error.message, true);
-    } finally {
-        button.disabled = false;
-        button.textContent = 'Saqlash';
-    }
+
+    const payload = {
+        type,
+        tenant: document.getElementById('mTenant').value,
+        period: state.period,
+        amount,
+        currency: document.getElementById('mCurrency').value,
+        method: document.getElementById('mMethod').value,
+        comment: document.getElementById('mComment').value.trim(),
+        requestId: newMiniRequestId('mini'),
+        groupId: newMiniRequestId('grp_mini')
+    };
+    closeSheet();
+    haptic('success');
+    // A refused entry this corrects is replaced only once the new one is kept.
+    queueMiniEntry('mini_save_transaction', payload, replacing || '');
 }
 
 function openTenantPaidSheet() {
@@ -302,6 +342,7 @@ function refreshOmadInBackground() {
 
 async function loadOmad() {
     const seq = ++miniOmadLoadSeq;
+    const savedBefore = savedMiniEntryIds();
     try {
         const body = await api('mini_omad', { period: state.period });
         // A superseded answer is dropped whole: it may name another period, and
@@ -313,6 +354,8 @@ async function loadOmad() {
         state.entries = body.transactions || [];
         state.snapshotAt = 0;
         state.loadError = '';
+        // What the outbox delivered before this list was asked for is in it now.
+        forgetSavedMiniEntries(savedBefore);
         // Only the period the app opens on is worth storing: the snapshot
         // exists to make the *first* paint instant, and keeping a copy per
         // month someone browsed through would fill storage with figures nobody
