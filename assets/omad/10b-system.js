@@ -135,6 +135,7 @@ async function loadSystemStatus() {
     }
     renderSystemPanel();
     loadUserAccounts();
+    loadStorageStatus();
 }
 
 function renderSystemPanel() {
@@ -579,4 +580,163 @@ async function configureMiniApp() {
     renderMiniAppStatus(data.settings);
     const steps = (data.steps || []).map(s => `${s.status === 'ok' ? '✅' : '⛔️'} ${s.label}: ${s.message}`).join('\n');
     alert((data.ready ? "Mini App tayyor.\n\n" : "Mini App to'liq sozlanmadi.\n\n") + steps);
+}
+
+// ------------------------------------------------------------- Supabase store
+
+/**
+ * Which store is live, and the move from Google Sheets to Supabase.
+ *
+ * Copy, verify and switch are one backend action: the spreadsheet stays live
+ * until the moment of the switch, so verifying in a separate step later would
+ * compare against a sheet that had moved on. Nothing here decides anything --
+ * the server refuses a copy into a non-empty database and a switch whose
+ * verification failed -- the screen only says what happened.
+ */
+const STORAGE_MODE_LABELS = { sheets: 'Google Sheets', supabase: 'Supabase', moving: "Ko'chirilmoqda…" };
+
+function renderStorageStatus(storage, importStatus) {
+    const box = document.getElementById('storageStatus');
+    if (!box || !storage) return;
+    const reach = storage.reachable === true
+        ? `<span class="text-green-600 font-bold">ulangan</span>`
+        : storage.reachable === false
+            ? `<span class="text-red-600 font-bold">javob bermadi</span>`
+            : `<span class="text-slate-400">${escapeHTML(storage.message || "sozlanmagan")}</span>`;
+    const status = importStatus || {};
+    box.innerHTML = [
+        statusRow("Hozirgi baza", STORAGE_MODE_LABELS[storage.mode] || escapeHTML(storage.mode)),
+        statusRow("Supabase", reach),
+        status.importedAt ? statusRow("Ko'chirilgan", formatStamp(status.importedAt)) : '',
+        status.cutoverAt ? statusRow("O'tilgan", formatStamp(status.cutoverAt)) : '',
+        status.rolledBackAt ? statusRow("Qaytarilgan", formatStamp(status.rolledBackAt)) : ''
+    ].join('');
+}
+
+/** What a preview / copy / verification found, sheet by sheet. */
+function renderStorageResult(data) {
+    const box = document.getElementById('storageResult');
+    if (!box || !data) return;
+    const lines = [];
+    if (data.preview) {
+        lines.push(data.preview.ready
+            ? `<p class="font-bold text-green-600 mb-2">✅ Ko'chirishga tayyor</p>`
+            : `<p class="font-bold text-red-600 mb-2">⛔️ ${escapeHTML(data.preview.problem)}</p>`);
+        Object.keys(data.preview.rows || {}).forEach(name => {
+            lines.push(statusRow(escapeHTML(name), `${data.preview.rows[name]} ta qator`));
+        });
+    }
+    const verification = data.verification;
+    if (verification) {
+        lines.push(verification.ok
+            ? `<p class="font-bold text-green-600 mb-2">✅ Har bir katak va qoldiqlar mos</p>`
+            : `<p class="font-bold text-red-600 mb-2">⛔️ Farq topildi</p>`);
+        (verification.sheets || []).forEach(sheet => {
+            const diff = (sheet.differences || []).length;
+            const note = diff
+                ? `<span class="${sheet.informational ? 'text-amber-600' : 'text-red-600'} font-bold">${diff} ta farq</span>`
+                : `<span class="text-green-600">mos</span>`;
+            lines.push(statusRow(escapeHTML(sheet.sheet), `${sheet.stored}/${sheet.rows} · ${note}`));
+        });
+        if (verification.money) {
+            const money = verification.money;
+            lines.push(statusRow("Kassa / bank / jami", money.ok
+                ? `<span class="text-green-600">${formatUZS(money.balances.cash)} / ${formatUZS(money.balances.bank)} / ${formatUZS(money.balances.total)}</span>`
+                : `<span class="text-red-600 font-bold">mos emas: ${escapeHTML((money.mismatches || []).join(', '))}</span>`));
+        }
+    }
+    if (data.note) lines.push(`<p class="text-amber-600 mt-2">${escapeHTML(data.note)}</p>`);
+    box.innerHTML = lines.join('');
+    box.classList.remove('hidden');
+}
+
+async function storageCall(action, confirmText) {
+    if (confirmText && !confirm(confirmText)) return null;
+    showLoader(true);
+    try {
+        const data = await callBackend(Object.assign({ action }, adminCredentials()));
+        if (data && (data.storage || data.importStatus)) renderStorageStatus(data.storage, data.importStatus);
+        renderStorageResult(data);
+        return data;
+    } catch (e) {
+        alert("Server bilan bog'lanib bo'lmadi.");
+        return null;
+    } finally {
+        showLoader(false);
+    }
+}
+
+async function loadStorageStatus() {
+    try {
+        const data = await callBackend(Object.assign({ action: 'get_storage_status' }, adminCredentials()));
+        if (data && data.status === 'success') renderStorageStatus(data.storage, data.importStatus);
+    } catch (e) {
+        // The rest of the panel still works; this card says nothing rather than something wrong.
+    }
+}
+
+async function previewSupabaseImport() {
+    const data = await storageCall('preview_supabase_import');
+    if (data && data.status !== 'success') alert(data.message || "Xatolik yuz berdi.");
+}
+
+async function applySupabaseImport() {
+    const data = await storageCall('apply_supabase_import',
+        "Hamma ma'lumot Supabase'ga ko'chiriladi va tekshiriladi. Tekshiruv o'tsa, ilova Supabase'ga o'tadi. " +
+        "Ko'chirish paytida yozuv kiritmang. Davom etilsinmi?");
+    if (!data) return;
+    if (data.status === 'success') {
+        alert("✅ Ko'chirildi, tekshirildi va Supabase'ga o'tildi.");
+        await syncData();
+    } else {
+        alert(data.message || "Xatolik yuz berdi.");
+    }
+}
+
+async function verifySupabaseImport() {
+    const data = await storageCall('verify_supabase_import');
+    if (data && data.status !== 'success') alert(data.message || "Xatolik yuz berdi.");
+}
+
+async function rollbackSupabaseStorage() {
+    const data = await storageCall('rollback_supabase_storage',
+        "Ilova Google Sheets'ga qaytadi. Supabase'da kiritilgan yangi yozuvlar Google Sheets'ga ko'chirilmaydi. Davom etilsinmi?");
+    if (!data) return;
+    if (data.status === 'success') {
+        alert(data.warning || "Google Sheets'ga qaytildi.");
+        await syncData();
+    } else {
+        alert(data.message || "Xatolik yuz berdi.");
+    }
+}
+
+/**
+ * The same reads, timed from Google's servers against each store. Read-only;
+ * the numbers are what the decision to switch should rest on.
+ */
+async function measureStorageSpeed() {
+    const box = document.getElementById('storageResult');
+    showLoader(true);
+    try {
+        const data = await callBackend(Object.assign({ action: 'get_storage_status', benchmark: true }, adminCredentials()));
+        if (!data || data.status !== 'success' || !data.benchmark) {
+            alert((data && data.message) || "Xatolik yuz berdi.");
+            return;
+        }
+        const b = data.benchmark;
+        const cell = (side, key) => (side && !side.error && side[key] !== undefined ? `${side[key]} ms` : '—');
+        const rows = [
+            `<p class="font-bold text-slate-700 mb-2">Tezlik (Google serveridan, mediana)</p>`,
+            statusRow("Bitta sozlama", `Sheets ${cell(b.sheets, 'oneSettingMs')} · Supabase ${cell(b.supabase, 'oneSettingMs')}`),
+            statusRow("Butun reestr", `Sheets ${cell(b.sheets, 'wholeLedgerMs')} (${(b.sheets && b.sheets.ledgerRows) || 0} qator) · ` +
+                `Supabase ${cell(b.supabase, 'wholeLedgerMs')} (${(b.supabase && b.supabase.ledgerRows) || 0} qator)`)
+        ];
+        if (b.supabase && b.supabase.error) rows.push(`<p class="text-red-600 mt-2">${escapeHTML(b.supabase.error)}</p>`);
+        if (box) { box.innerHTML = rows.join(''); box.classList.remove('hidden'); }
+        renderStorageStatus(data.storage, data.importStatus);
+    } catch (e) {
+        alert("Server bilan bog'lanib bo'lmadi.");
+    } finally {
+        showLoader(false);
+    }
 }

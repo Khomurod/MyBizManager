@@ -13,7 +13,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { loadScript } = require('./gas-harness');
+const { loadScript, sheetsOnly } = require('./gas-harness');
 
 const RATES = { '2026-08': { buy: 12050, sell: 11930 } };
 
@@ -65,7 +65,7 @@ test('a clean migration verifies', () => {
 
 // ------------------------------------------------- the frozen-value blind spot
 
-test('a wrong frozen Amount_UZS fails even when counts and totals look right', () => {
+test('a wrong frozen Amount_UZS fails even when counts and totals look right', { skip: sheetsOnly('tampers with stored ledger rows, which the database refuses') }, () => {
   const { gas, sheet } = migrated();
 
   // Move value between two rows in the same period: the period total, the row
@@ -97,7 +97,7 @@ test('a frozen value is judged against its own rate, not the current table', () 
     'a rate change afterwards does not invalidate a frozen value');
 });
 
-test('a tampered exchange rate fails', () => {
+test('a tampered exchange rate fails', { skip: sheetsOnly('tampers with stored ledger rows, which the database refuses') }, () => {
   const { gas, sheet } = migrated();
   sheet.getRange(2, col(gas, 'Rate_Used')).setValue(9999);
 
@@ -120,7 +120,10 @@ const FIELD_CASES = [
 ];
 
 FIELD_CASES.forEach(([label, column, value, pattern]) => {
-  test(`a changed ${label} fails verification`, () => {
+  // Status is the one column the database lets change; the rest it refuses.
+  test(`a changed ${label} fails verification`, {
+    skip: column === 'Status' ? false : sheetsOnly('tampers with stored ledger rows, which the database refuses')
+  }, () => {
     const { gas, sheet } = migrated();
     sheet.getRange(2, col(gas, column)).setValue(value);
 
@@ -133,7 +136,7 @@ FIELD_CASES.forEach(([label, column, value, pattern]) => {
 
 // ------------------------------------------------------------ shape problems
 
-test('a missing row fails', () => {
+test('a missing row fails', { skip: sheetsOnly('tampers with stored ledger rows, which the database refuses') }, () => {
   const { gas, sheet } = migrated();
   sheet.deleteRow(2);
   const result = gas.verifyOmadMigration_(gas.__spreadsheet);
@@ -141,7 +144,7 @@ test('a missing row fails', () => {
   assert.ok(result.failures.some(f => /ko'chirilmagan|soni mos emas/.test(f)));
 });
 
-test('an extra row fails', () => {
+test('an extra row fails', { skip: sheetsOnly('tampers with stored ledger rows, which the database refuses') }, () => {
   const { gas, sheet } = migrated();
   const copy = sheet.getRange(2, 1, 1, gas.LEDGER_HEADER.length).getValues()[0].slice();
   copy[0] = 'ghost_0';
@@ -152,7 +155,7 @@ test('an extra row fails', () => {
   assert.ok(result.failures.some(f => /Manbada yo'q|soni mos emas/.test(f)));
 });
 
-test('a duplicated id fails', () => {
+test('a duplicated id fails', { skip: sheetsOnly('tampers with stored ledger rows, which the database refuses') }, () => {
   const { gas, sheet } = migrated();
   const copy = sheet.getRange(2, 1, 1, gas.LEDGER_HEADER.length).getValues()[0].slice();
   sheet.appendRow(copy);
@@ -162,7 +165,7 @@ test('a duplicated id fails', () => {
   assert.ok(result.failures.some(f => /Takrorlangan ID/.test(f)));
 });
 
-test('cutover is refused while verification fails', () => {
+test('cutover is refused while verification fails', { skip: sheetsOnly('tampers with stored ledger rows, which the database refuses') }, () => {
   const { gas, sheet } = migrated();
   sheet.getRange(2, col(gas, 'Amount_UZS')).setValue(1);
 

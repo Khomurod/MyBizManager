@@ -101,6 +101,14 @@ function bootOnLedger() {
 }
 
 function countLedgerReads(gas, run) {
+  // On Supabase a full ledger pass is a GET of the ledger's rows, not a sheet
+  // read; the storage layer issues one per page of them.
+  if (gas.__supabase) {
+    const before = gas.__supabase.requests.length;
+    run();
+    return gas.__supabase.requests.slice(before).filter(r =>
+      r.method === 'get' && /\/omad_transactions_v2\?/.test(r.url) && /amount_uzs/.test(decodeURIComponent(r.url))).length;
+  }
   let count = 0;
   const restore = [];
   gas.__spreadsheet.getSheets().forEach(sheet => {

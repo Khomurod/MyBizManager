@@ -357,7 +357,7 @@ function createTransaction_(doc, input) {
   if (!requestId) return { status: "error", message: "requestId talab qilinadi." };
   if (requestId.length > 128) return { status: "error", message: "requestId juda uzun." };
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     var existing = findLedgerRowByRequestId_(doc, requestId);
@@ -455,7 +455,7 @@ function correctTransaction_(doc, input) {
   var validationError = validateTransactionInput_(input);
   if (validationError) return { status: "error", message: validationError };
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     var alreadyDone = findLedgerRowByRequestId_(doc, requestId);
@@ -546,7 +546,7 @@ function cancelTransaction_(doc, input) {
   var requestId = String((input && input.requestId) || "").trim();
   if (!requestId) return { status: "error", message: "requestId talab qilinadi." };
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     var original = findLedgerRow_(doc, input.transactionId);
@@ -580,8 +580,10 @@ function cancelTransaction_(doc, input) {
 }
 
 function setLedgerStatus_(sheet, rowNumber, status, timestamp) {
-  sheet.getRange(rowNumber, 19).setValue(status);
-  sheet.getRange(rowNumber, 4).setValue(timestamp);
+  withBatchedWrites_(function () {
+    sheet.getRange(rowNumber, 19).setValue(status);
+    sheet.getRange(rowNumber, 4).setValue(timestamp);
+  });
   // A cancellation or a correction changes every figure derived from this row.
   bumpDataRevision_(CACHE_SCOPE_OMAD);
 }

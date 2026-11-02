@@ -163,9 +163,17 @@ test('an Apps Script write failure surfaces as an error, not a silent success', 
   // Simulate the sheet becoming unwritable mid-request. Ledger rows are
   // written through a range so the column formats can be applied first, so
   // that is where an Apps Script outage surfaces.
-  const sheet = gas.__spreadsheet.getSheetByName('Omad_Transactions_V2');
-  sheet.appendRow = () => { throw new Error('Service Spreadsheets timed out'); };
-  sheet.getRange = () => { throw new Error('Service Spreadsheets timed out'); };
+  if (gas.__supabase) {
+    // The database equivalent: the ledger insert is refused, whether it is
+    // sent alone or in the action's batch (mbm_apply).
+    gas.__supabase.fail(request => ((request.table === 'omad_transactions_v2' && request.method === 'post') ||
+      (request.table === 'rpc/mbm_apply' && request.body.ops.some(op => op.table === 'omad_transactions_v2'))) &&
+      'Service Spreadsheets timed out');
+  } else {
+    const sheet = gas.__spreadsheet.getSheetByName('Omad_Transactions_V2');
+    sheet.appendRow = () => { throw new Error('Service Spreadsheets timed out'); };
+    sheet.getRange = () => { throw new Error('Service Spreadsheets timed out'); };
+  }
 
   const body = readJsonOutput(gas.doPost(postEvent(input({ requestId: 'r1' }))));
 

@@ -86,6 +86,9 @@ function bumpDataRevision_(scope) {
     var current = Number(dataRevision_(scope)) || 0;
     scriptProperties_().setProperty(CACHE_REV_PROP_PREFIX + scope, String(current + 1));
   } catch (error) {}
+  // On Supabase the write this bump announces may still be waiting to be
+  // sent; it is bumped again once it is stored (24_supabase_store.gs).
+  noteRevisionBumpForPendingWrites_(scope);
 }
 
 // The read-modify-write above is deliberately not locked. Two writes landing

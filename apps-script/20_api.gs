@@ -37,11 +37,25 @@ function doPost(e) {
   // safe under a test harness that serves many requests from one load.
   resetRequestMemos_();
 
-  var doc = SpreadsheetApp.getActiveSpreadsheet();
+  var doc = null;
   var isTelegramWebhook = false;
 
   try {
     var payload = JSON.parse((e.postData && e.postData.contents) || "{}");
+    isTelegramWebhook = !payload.action && !!(payload.message || payload.callback_query);
+
+    // ---- Storage (Sheets <-> Supabase) ------------------------------------
+    // Routed before the store is opened, so that rolling back to the
+    // spreadsheet still works when the database cannot be reached at all.
+    if (isStorageAction_(payload.action)) {
+      var storageAccess = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+      if (!storageAccess.ok) return authRefusal_(storageAccess);
+      return jsonOutput_(storageAction_(payload.action, payload));
+    }
+
+    // Inside the try: a store that cannot be opened (Supabase selected but not
+    // configured) must still answer as JSON -- and as a 200 to Telegram.
+    doc = appDoc_();
     var action = payload.action;
     var configSheet = doc.getSheetByName("System_Config") || doc.insertSheet("System_Config");
 
@@ -297,7 +311,7 @@ function saveOmadAction_(action, payload, doc, configSheet) {
   var reportError = validateOmadTelegramReport_(payload.telegramReport);
   if (reportError) return jsonOutput_({ status: "error", message: reportError });
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     backupOmadState_(doc, configSheet, action);
@@ -561,6 +575,18 @@ function migrationAction_(action, payload, doc) {
     fallbackYear: Number(payload.fallbackYear) || 0,
     allowUnresolved: payload.allowUnresolved === true
   };
+
+  // `apply` rebuilds Omad_Transactions_V2 from the legacy sheet alone, so on a
+  // live ledger it would erase every entry made since the cutover. It used to
+  // have no guard at all (App Brief §11.2); the sequence is now refused while
+  // V2 is the active ledger. A re-run after a rollback is unaffected. On
+  // Supabase the database refuses the wipe as well.
+  if (action === 'apply_omad_migration' && isLedgerActive_(doc)) {
+    return jsonOutput_({
+      status: "error",
+      message: "Yangi tranzaksiya tizimi jonli: ko'chirish uni o'chirib yuboradi. Avval orqaga qaytaring."
+    });
+  }
 
   if (action === 'preview_omad_migration') {
     return jsonOutput_({ status: "success", preview: previewOmadMigration_(doc, options) });

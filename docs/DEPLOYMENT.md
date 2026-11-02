@@ -19,7 +19,8 @@ For what the application *is* and the rules it must not break, read
 | Script ID | `1afG6M-…9fgsWcpG` — the full value exists only in the `CLASP_JSON` secret |
 | Active deployment | id begins `AKfycbzhKyEOG…`, ends `…DtCA2W` — **never recreated** |
 | Executes as | the owner; access: Anyone |
-| Database | Google Sheet `1Q9_v2PrusZimoAjqbOUmHkW_NzDiV0z_8Wtr-v963CA` |
+| Database | Google Sheet `1Q9_v2PrusZimoAjqbOUmHkW_NzDiV0z_8Wtr-v963CA` while `OMAD_STORAGE` is `sheets` |
+| Database (after the move) | Supabase project `mybizmanager`, ref `ksdqoftlxrkpyylbbyoi`, us-east-1, organisation "Khomurod's Org", free plan. Schema: `supabase/migrations/` |
 | Bot / Mini App | Telegram `@mybizmanagerbot` |
 
 The Script ID is masked here because clasp guidance keeps `.clasp.json` out of
@@ -248,6 +249,51 @@ variable exists for the case where the remote code really is dead, and should
 be removed again afterwards.
 
 ---
+
+## The Supabase database
+
+The schema is not deployed by CI. Each file in `supabase/migrations/` is
+applied once, through the Supabase migrations API (the dashboard's SQL editor
+or the MCP `apply_migration`), with the file named by the version Supabase
+records. Never edit an applied file; add a new one, and the matching entry in
+`SUPABASE_SHEETS`. The tests build their database from these files, so a
+column the code needs and the schema lacks fails CI.
+
+Apply a migration **before** deploying code that needs it. The one exception
+is built in: without `20261102160523_batched_writes_and_counts.sql` (the
+functions `mbm_apply` and `mbm_counts`) the backend still works, one REST call
+per write, just slower and not atomic. It is applied to `mybizmanager`.
+
+### Moving the data from Sheets (once)
+
+1. **Script Properties** (Apps Script → Project Settings): `SUPABASE_URL` =
+   `https://ksdqoftlxrkpyylbbyoi.supabase.co`, `SUPABASE_SECRET_KEY` = the
+   project's secret key (Supabase → Project Settings → API Keys → Secret
+   keys). Never paste the key anywhere else. Leave `OMAD_STORAGE` unset.
+2. **Sozlamalar → Tizim → Tizim Salomatligi**: "Ma'lumotlar bazasi" says
+   "Google Sheets; Supabase tayyor".
+3. **Backups**, as before any live financial change: `create_backup`, and a
+   Drive *File → Make a copy* of the spreadsheet.
+4. **Supabase card → Tezlikni o'lchash** (optional): the same reads timed on
+   both stores from Google's servers. Before the copy the database is empty,
+   so the whole-ledger figure means more after a move.
+5. **Supabase card → 1. Ko'rib chiqish.** Must say "Ko'chirishga tayyor" with
+   a row count per sheet. Nothing is written.
+6. At a quiet moment (no entries, no sales), **2. Ko'chirish va o'tish.** While
+   it copies, every other request — the app, the Mini App, the bot — is
+   answered "Ma'lumotlar Supabase'ga ko'chirilmoqda" (`OMAD_STORAGE` holds a
+   `moving:…` marker, which expires by itself after ten minutes). It
+   copies, verifies every cell and the money, and switches only if both agree.
+   On success the app is on Supabase from the next request.
+7. If the copy stops halfway, or verification fails, nothing switched and the spreadsheet is still the
+   store. Run `supabase/reset_before_cutover.sql` in the SQL editor and repeat
+   from step 5.
+
+### Going back
+
+**Supabase card → Google Sheets'ga Qaytish** (`rollback_supabase_storage`)
+sets `OMAD_STORAGE=sheets`. It works even if the database cannot be reached.
+Entries made while Supabase was live stay only in Supabase.
 
 ## Never "New deployment"
 

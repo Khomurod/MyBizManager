@@ -20,7 +20,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { loadScript } = require('./gas-harness');
+const { loadScript, sheetsOnly } = require('./gas-harness');
 
 const GROUP_ID = '-1001234567890';
 
@@ -68,7 +68,7 @@ test('an August entry is still August after the spreadsheet round-trip', () => {
   assert.strictEqual(read[0].periodLabel, 'Avgust 2026');
 });
 
-test('the date column keeps the day and month the app meant', () => {
+test('the date column keeps the day and month the app meant', { skip: sheetsOnly("reproduces the spreadsheet's own cell coercion") }, () => {
   const gas = coercingSheet();
 
   gas.appendOmadTransaction_(gas.__spreadsheet, {
@@ -137,7 +137,7 @@ test('legacy month names with an unambiguous date are untouched', () => {
 
 // ------------------------------------- the same trap in the migrated ledger
 
-test('the ledger period is written as text, not collapsed into a date', () => {
+test('the ledger period is written as text, not collapsed into a date', { skip: sheetsOnly("reproduces the spreadsheet's own cell coercion") }, () => {
   const gas = coercingSheet();
   const sheet = gas.ledgerSheet_(gas.__spreadsheet);
 

@@ -333,8 +333,14 @@ test('a submission interrupted halfway resumes only what is missing', () => {
   });
   assert.strictEqual(partial.status, 'success');
   // Re-file it under the three-entry key the full submission would have used.
-  const sheet = doc.getSheetByName('Omad_Transactions_V2');
-  sheet.getRange(2, 2).setValue('bulk_resume__b3_0');
+  // A stored request id is frozen by the database, so on Supabase the staging
+  // is done underneath it, the way an operator would in the SQL editor.
+  if (gas.__supabase) {
+    gas.__supabase.rows.omad_transactions_v2[0].request_id = 'bulk_resume__b3_0';
+  } else {
+    const sheet = doc.getSheetByName('Omad_Transactions_V2');
+    sheet.getRange(2, 2).setValue('bulk_resume__b3_0');
+  }
 
   const resumed = gas.createTransactionBulk_(doc, {
     requestId: 'bulk_resume', source: 'Web', createdBy: 'tester',

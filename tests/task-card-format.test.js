@@ -262,8 +262,10 @@ test('an oversized description is shrunk to fit, never cut mid-entity', () => {
   row[header.indexOf('Title')] = 'Katta tavsif';
   row[header.indexOf('Description')] = 'x&'.repeat(3000);
   row[header.indexOf('Status')] = 'active';
-  doc.insertSheet('Tasks');
-  doc.sheets.Tasks.data.push(header.slice(), row);
+  row[header.indexOf('Priority')] = 'normal';
+  const tasks = doc.insertSheet('Tasks');
+  tasks.appendRow(header.slice());
+  tasks.appendRow(row);
 
   const task = gas.readTaskRows_(doc)[0];
   gas.materializeTaskOccurrences_(doc, task, FIXED_NOW);

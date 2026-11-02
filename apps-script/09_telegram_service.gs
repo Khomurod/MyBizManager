@@ -44,6 +44,9 @@ function telegramFetch_(method, body) {
   var token = getBotToken_();
   if (!token) throw new Error("Telegram bot token is not configured. Set it in Sozlamalar → Telegram.");
 
+  // A message must never describe a row that is not stored yet.
+  flushPendingWrites_();
+
   var response;
   try {
     response = UrlFetchApp.fetch("https://api.telegram.org/bot" + token + "/" + method, {
@@ -63,7 +66,7 @@ function telegramFetch_(method, body) {
   // Only facts that cannot carry a credential. The request body is never
   // logged: setWebhook carries the verification secret in both the URL and
   // secret_token, and that is exactly how it reached the debug sheet before.
-  debugLog_(SpreadsheetApp.getActiveSpreadsheet(), "telegram_api_" + method, JSON.stringify({
+  debugLog_(appDoc_(), "telegram_api_" + method, JSON.stringify({
     code: responseCode,
     chat: maskChatId_(body && body.chat_id),
     messageId: (body && body.message_id) || "",
@@ -112,6 +115,8 @@ function deleteTelegramMessageIfPresent_(chatId, messageId) {
   var token = getBotToken_();
   if (!token) throw new Error("Telegram bot token is not configured. Set it in Sozlamalar → Telegram.");
 
+  flushPendingWrites_();
+
   var response;
   try {
     response = UrlFetchApp.fetch("https://api.telegram.org/bot" + token + "/deleteMessage", {
@@ -128,7 +133,7 @@ function deleteTelegramMessageIfPresent_(chatId, messageId) {
   var responseText = response.getContentText();
   var responseCode = response.getResponseCode();
 
-  debugLog_(SpreadsheetApp.getActiveSpreadsheet(), "telegram_api_deleteMessage", JSON.stringify({
+  debugLog_(appDoc_(), "telegram_api_deleteMessage", JSON.stringify({
     code: responseCode,
     chat: maskChatId_(chatId),
     messageId: String(messageId),
@@ -378,7 +383,7 @@ function processOmadTextStep_(text, chatId, key, cache, doc, configSheet, fromId
     var requestId = state.sessionId ? ("tg_" + fromId + "_" + state.sessionId) : "";
     var transaction;
 
-    var lock = LockService.getScriptLock();
+    var lock = appScriptLock_();
     lock.waitLock(30000);
     try {
       var existing = findTransactionByRequestId_(doc, requestId);

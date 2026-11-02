@@ -454,7 +454,7 @@ function writeOccurrenceRow_(doc, occ) {
  */
 function updateOccurrenceFields_(doc, occurrenceId, options) {
   var opts = options || {};
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     var occ = findOccurrence_(doc, occurrenceId);

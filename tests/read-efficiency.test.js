@@ -18,7 +18,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const crypto = require('crypto');
-const { loadScript, readJsonOutput, postEvent, currentPeriodKey, todayKey } = require('./gas-harness');
+const { loadScript, readJsonOutput, postEvent, currentPeriodKey, todayKey, sheetsOnly } = require('./gas-harness');
 
 const ADMIN_KEY = 'read-efficiency-key';
 const BOT_TOKEN = '123456789:AAFakeTokenForTestsOnly_0123456789abcd';
@@ -115,7 +115,7 @@ function post(gas, body) {
 
 // ------------------------------------------------------------------ Mini App
 
-test('the Mini App first screen reads the ledger once', () => {
+test('the Mini App first screen reads the ledger once', { skip: sheetsOnly('counts spreadsheet passes') }, () => {
   const gas = boot();
   const initData = signedInitData();
 
@@ -179,7 +179,7 @@ function bootManyTenants() {
   });
 }
 
-test('the tenant list does not multiply the config reads', () => {
+test('the tenant list does not multiply the config reads', { skip: sheetsOnly('counts spreadsheet passes') }, () => {
   const gas = bootManyTenants();
 
   const counts = countSheetReads(gas, () => {
@@ -366,7 +366,7 @@ test('the café summary still totals the whole history', () => {
 
 // -------------------------------------------------------------- report jobs
 
-test('composing a transaction report reads the legacy sheet twice at most', () => {
+test('composing a transaction report reads the legacy sheet twice at most', { skip: sheetsOnly('counts spreadsheet passes') }, () => {
   const gas = boot();
 
   const counts = countSheetReads(gas, () => {
@@ -382,7 +382,7 @@ test('composing a transaction report reads the legacy sheet twice at most', () =
     'the group and the balances share a pass; the writeback needs its own');
 });
 
-test('composing a report on the ledger reads it once, writing back by row number', () => {
+test('composing a report on the ledger reads it once, writing back by row number', { skip: sheetsOnly('counts spreadsheet passes') }, () => {
   const gas = boot();
   // Cut over to V2, whose reader carries each row's position.
   post(gas, { action: 'apply_omad_migration', fallbackYear: 2026 });
@@ -423,7 +423,7 @@ test('a café sale avoids a full sales-sheet pass', () => {
     'idempotency reads only the receipt-details column; pricing reads the catalogue from config');
 });
 
-test('a café void reads the sales sheet once', () => {
+test('a café void reads the sales sheet once', { skip: sheetsOnly('counts spreadsheet passes') }, () => {
   const gas = boot();
   post(gas, {
     action: 'save_sale', date: '2026-08-12T10:00:00.000Z', seller: 'kassir',
@@ -440,7 +440,7 @@ test('a café void reads the sales sheet once', () => {
 
 // ---------------------------------------------------------------- migration
 
-test('verifying the migration reads the ledger once', () => {
+test('verifying the migration reads the ledger once', { skip: sheetsOnly('counts spreadsheet passes') }, () => {
   const gas = boot();
   post(gas, { action: 'apply_omad_migration', fallbackYear: 2026 });
 
@@ -486,7 +486,7 @@ test('the till payload parses only the receipts it is going to show', () => {
   assert.ok(parses < 15, `${parses} JSON parses for 201 sales; only the shown row needs one`);
 });
 
-test('the café dashboard sends totals rather than the sales they came from', () => {
+test('the café dashboard sends totals rather than the sales they came from', { skip: sheetsOnly('counts spreadsheet passes') }, () => {
   const gas = bootManySales();
   const today = gas.Utilities.formatDate(new Date(), 'Asia/Tashkent', 'yyyy-MM-dd');
 

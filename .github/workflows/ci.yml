@@ -47,6 +47,11 @@ jobs:
       - name: Automated tests
         run: npm test
 
+      # The same suite against the Supabase store: every test's sheets are
+      # imported into an in-memory database built from supabase/migrations.
+      - name: Automated tests (Supabase store)
+        run: npm run test:supabase
+
   browser:
     name: Browser flows
     runs-on: ubuntu-latest
@@ -62,6 +67,9 @@ jobs:
 
       - name: End-to-end browser tests
         run: npm run test:e2e
+
+      - name: End-to-end browser tests (Supabase store)
+        run: npm run test:supabase:e2e
 
   # ---------------------------------------------------------------- production
   # Updates the code inside the EXISTING Apps Script project and moves the

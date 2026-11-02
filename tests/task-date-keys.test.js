@@ -17,7 +17,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { loadScript } = require('./gas-harness');
+const { loadScript, sheetsOnly } = require('./gas-harness');
 
 const FIXED_NOW = Date.UTC(2026, 7, 10, 4, 0, 0); // 2026-08-10 09:00 Asia/Tashkent
 const TODAY = '2026-08-10';
@@ -123,7 +123,7 @@ test('the Today view is not flooded when the sheet coerces', () => {
 
 // ------------------------------------------------ healing rows written before
 
-test('a Date_Key that was already coerced by an older write still reads', () => {
+test('a Date_Key that was already coerced by an older write still reads', { skip: sheetsOnly('cells the spreadsheet already coerced into dates') }, () => {
   const { gas, doc } = fresh();
   // Seed the sheet the way a pre-fix write left it: a real Date in Date_Key.
   const header = gas.TASK_OCC_HEADER;
@@ -143,7 +143,7 @@ test('a Date_Key that was already coerced by an older write still reads', () => 
   assert.strictEqual(gas.occurrenceFromRow_(row).dateKey, TODAY);
 });
 
-test('a Start_Key that was already coerced still drives recurrence', () => {
+test('a Start_Key that was already coerced still drives recurrence', { skip: sheetsOnly('cells the spreadsheet already coerced into dates') }, () => {
   const { gas, doc } = fresh();
   const header = gas.TASKS_HEADER;
   const row = header.map(() => '');
@@ -166,7 +166,7 @@ test('a Start_Key that was already coerced still drives recurrence', () => {
   assert.strictEqual(keys.length, 15);
 });
 
-test('a rewritten row heals its own cells', () => {
+test('a rewritten row heals its own cells', { skip: sheetsOnly('cells the spreadsheet already coerced into dates') }, () => {
   const { gas, doc } = fresh();
   const header = gas.TASK_OCC_HEADER;
   const row = header.map(() => '');

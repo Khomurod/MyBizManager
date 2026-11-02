@@ -60,6 +60,13 @@ function baseInput(overrides = {}) {
  * working — which is what a transient spreadsheet fault actually looks like.
  */
 function breakStatusWriteForRow(gas, rowNumber) {
+  // On Supabase the same fault is the database refusing that one row's status
+  // write. The ledger starts empty, so sheet row N is the row with seq N - 1.
+  if (gas.__supabase) {
+    return gas.__supabase.fail(request => request.table === 'omad_transactions_v2' &&
+      request.method === 'patch' && request.body && request.body.status !== undefined &&
+      request.query.seq === 'eq.' + (rowNumber - 1) && 'spreadsheet unavailable');
+  }
   const sheet = gas.__spreadsheet.getSheetByName('Omad_Transactions_V2');
   const originalGetRange = sheet.getRange;
   sheet.getRange = function (row, col, numRows, numCols) {

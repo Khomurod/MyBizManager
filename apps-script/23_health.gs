@@ -173,7 +173,9 @@ function buildHealthReport_(doc) {
   checks.push(sheetsCheck_(doc));
   checks.push(ledgerCheck_(doc));
   checks.push(secretLoggingCheck_(doc));
-  checks.push(dataCheck_(doc, "omad", "Omad ma'lumotlari", OMAD_TRANSACTIONS_SHEET));
+  checks.push(storageCheck_());
+  // The ledger that is live, not the legacy sheet kept for rollback.
+  checks.push(dataCheck_(doc, "omad", "Omad ma'lumotlari", activeTransactionSheetName_(doc)));
   checks.push(dataCheck_(doc, "cafe", "Kafe ma'lumotlari", "Cafe_Sales"));
   checks.push(dataCheck_(doc, "tasks", "Vazifalar", TASKS_SHEET));
 
@@ -388,4 +390,28 @@ function dataCheck_(doc, id, label, sheetName) {
   if (!sheet) return check_(id, label, HEALTH_WARN, "Varaq hali yaratilmagan");
   var rows = Math.max(0, sheet.getLastRow() - 1);
   return check_(id, label, HEALTH_OK, rows + " ta yozuv");
+}
+
+/**
+ * Which store the data lives in, and whether it answers. Supabase selected
+ * but unreachable is an error -- every request is failing; Supabase merely
+ * unconfigured while the spreadsheet is live is the normal pre-move state.
+ */
+function storageCheck_() {
+  var status;
+  try { status = storageStatus_(); } catch (error) {
+    return check_("storage", "Ma'lumotlar bazasi", HEALTH_ERROR, "O'qib bo'lmadi");
+  }
+  if (status.mode === STORAGE_MODE_MOVING) {
+    return check_("storage", "Ma'lumotlar bazasi", HEALTH_WARN, "Supabase'ga ko'chirish davom etmoqda");
+  }
+  if (status.mode === STORAGE_MODE_SUPABASE) {
+    if (status.reachable) return check_("storage", "Ma'lumotlar bazasi", HEALTH_OK, "Supabase — ulangan");
+    return check_("storage", "Ma'lumotlar bazasi", HEALTH_ERROR, "Supabase javob bermadi: " + status.message);
+  }
+  if (status.supabaseConfigured && status.reachable === false) {
+    return check_("storage", "Ma'lumotlar bazasi", HEALTH_WARN, "Google Sheets; Supabase javob bermadi");
+  }
+  return check_("storage", "Ma'lumotlar bazasi", HEALTH_OK,
+    "Google Sheets" + (status.supabaseConfigured ? "; Supabase tayyor" : ""));
 }

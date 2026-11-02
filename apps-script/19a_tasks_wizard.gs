@@ -998,7 +998,7 @@ function handleWizardSave_(state, chatId, key, cache, doc, fromId) {
   var gone = false;
   var failure = "";
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   try {
     lock.waitLock(30000);
   } catch (lockError) {
