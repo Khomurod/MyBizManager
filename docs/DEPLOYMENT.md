@@ -259,6 +259,11 @@ records. Never edit an applied file; add a new one, and the matching entry in
 `SUPABASE_SHEETS`. The tests build their database from these files, so a
 column the code needs and the schema lacks fails CI.
 
+Apply a migration **before** deploying code that needs it. The one exception
+is built in: without `20261102160523_batched_writes_and_counts.sql` (the
+functions `mbm_apply` and `mbm_counts`) the backend still works, one REST call
+per write, just slower and not atomic. It is applied to `mybizmanager`.
+
 ### Moving the data from Sheets (once)
 
 1. **Script Properties** (Apps Script → Project Settings): `SUPABASE_URL` =
@@ -274,10 +279,13 @@ column the code needs and the schema lacks fails CI.
    so the whole-ledger figure means more after a move.
 5. **Supabase card → 1. Ko'rib chiqish.** Must say "Ko'chirishga tayyor" with
    a row count per sheet. Nothing is written.
-6. At a quiet moment (no entries, no sales), **2. Ko'chirish va o'tish.** It
+6. At a quiet moment (no entries, no sales), **2. Ko'chirish va o'tish.** While
+   it copies, every other request — the app, the Mini App, the bot — is
+   answered "Ma'lumotlar Supabase'ga ko'chirilmoqda" (`OMAD_STORAGE` holds a
+   `moving:…` marker, which expires by itself after ten minutes). It
    copies, verifies every cell and the money, and switches only if both agree.
    On success the app is on Supabase from the next request.
-7. If verification fails, nothing switched and the spreadsheet is still the
+7. If the copy stops halfway, or verification fails, nothing switched and the spreadsheet is still the
    store. Run `supabase/reset_before_cutover.sql` in the SQL editor and repeat
    from step 5.
 

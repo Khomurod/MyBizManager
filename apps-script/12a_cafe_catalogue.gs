@@ -116,7 +116,7 @@ function isCafeCatalogueAction_(action) {
  * holds the lock for the length of one write.
  */
 function saveCafeCatalogue_(action, payload, configSheet) {
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     var stale = cafeCatalogueStale_(configSheet, payload.expectedCatalogueRev);
@@ -476,7 +476,7 @@ function adjustCafeStock_(doc, configSheet, payload, actor) {
     return jsonOutput_({ status: "error", message: "Qisqacha sabab yozing." });
   }
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     var sheet = cafeMovementsSheet_(doc);

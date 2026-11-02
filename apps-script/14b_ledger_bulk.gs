@@ -346,7 +346,7 @@ function createTransactionBulk_(doc, input) {
   }
   var prepared = validated.prepared;
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     var sheet = ledgerSheet_(doc);

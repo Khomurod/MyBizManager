@@ -207,6 +207,10 @@ function createSupabaseMock(options = {}) {
   const url = options.url || 'https://mock-project.supabase.co';
   const key = options.key || 'sb_secret_test_key_for_the_mock';
   const requests = [];
+  // Requests sent in one UrlFetchApp.fetchAll share a round number.
+  let round = 0;
+  let inParallel = false;
+  let rpcDisabled = false;
   // Injected faults: a test says which request should fail, the way a Sheets
   // test makes one range throw. Each is (request) => message | falsy.
   const faults = [];
@@ -326,15 +330,124 @@ function createSupabaseMock(options = {}) {
     getHeaders: () => headers
   });
 
+  // ---------------------------------------------------------------- RPCs
+  //
+  // The two functions in supabase/migrations/*_batched_writes_and_counts.sql,
+  // reproduced: mbm_apply runs every op against staged copies and commits only
+  // if all of them succeed (one transaction), with the same triggers and
+  // constraints a single REST call meets.
+
+  function applyOps(ops) {
+    if (!Array.isArray(ops)) throw new PgError(400, 'P0001', 'mbm_apply: ops must be an array');
+    const staged = {};
+    const tableRows = t => staged[t] || (staged[t] = rows[t].slice());
+    const results = [];
+    for (const op of ops) {
+      if (op.op === 'upsert_config') {
+        const list = tableRows('system_config');
+        const now = new Date().toISOString();
+        const index = list.findIndex(r => r.key === String(op.key));
+        if (index >= 0) {
+          list[index] = Object.assign({}, list[index], { value: op.value === null || op.value === undefined ? null : String(op.value), updated_at: now });
+        } else {
+          const row = build('system_config', { key: String(op.key), value: op.value === null || op.value === undefined ? null : String(op.value), updated_at: now });
+          validate('system_config', row, list);
+          list.push(row);
+        }
+        results.push({ ok: true });
+        continue;
+      }
+      const table = op.table;
+      if (!schema[table]) throw new PgError(400, 'P0001', `mbm_apply: table ${table || '(none)'} is not allowed`);
+      const list = tableRows(table);
+      if (op.op === 'insert') {
+        const keys = Object.keys((op.rows || [])[0] || {});
+        const seqs = [];
+        for (const raw of op.rows) {
+          // Like jsonb_populate_recordset under the first row's column list:
+          // a key the first row lacks is not inserted; one a later row lacks is NULL.
+          const input = {};
+          keys.forEach(k => { input[k] = raw[k] === undefined ? null : raw[k]; });
+          const row = build(table, input);
+          validate(table, row, list);
+          list.push(row);
+          seqs.push(row.seq);
+        }
+        results.push({ seqs });
+      } else if (op.op === 'update') {
+        const index = list.findIndex(r => r.seq === Number(op.seq));
+        if (index < 0) throw new PgError(400, 'P0001', `mbm_apply: no row with seq ${op.seq} in ${table}`);
+        const updated = Object.assign({}, list[index]);
+        for (const [name, value] of Object.entries(op.values || {})) {
+          const column = schema[table].columns[name];
+          if (!column) throw new PgError(400, '42703', `column "${name}" of relation "${table}" does not exist`);
+          if (column.identity || column.generated) throw new PgError(400, '428C9', `column "${name}" can only be updated to DEFAULT`);
+          updated[name] = coerce(column, value);
+        }
+        Object.entries(GENERATED[table] || {}).forEach(([name, fn]) => { updated[name] = fn(updated); });
+        const refusal = TRIGGERS[table] && TRIGGERS[table].update(list[index], updated);
+        if (refusal) throw new PgError(400, 'P0001', refusal);
+        validate(table, updated, list.filter((_, j) => j !== index));
+        list[index] = updated;
+        results.push({ ok: true });
+      } else if (op.op === 'delete') {
+        const wanted = (op.seqs || []).map(Number);
+        const doomed = list.filter(r => wanted.includes(r.seq));
+        if (doomed.length && TRIGGERS[table]) throw new PgError(400, 'P0001', TRIGGERS[table].delete());
+        if (doomed.length !== wanted.length) throw new PgError(400, 'P0001', `mbm_apply: ${doomed.length} of ${wanted.length} rows deleted from ${table}`);
+        staged[table] = list.filter(r => !wanted.includes(r.seq));
+        results.push({ ok: true });
+      } else {
+        throw new PgError(400, 'P0001', `mbm_apply: unknown op ${op.op || '(none)'}`);
+      }
+    }
+    Object.keys(staged).forEach(t => { rows[t] = staged[t]; });
+    return results;
+  }
+
+  function counts() {
+    const out = {};
+    Object.keys(schema).forEach(t => { out[t] = rows[t].length; });
+    out.cafe_sales = rows.cafe_sales.filter(r => r.voided_at === null || r.voided_at === undefined).length;
+    const debug = {};
+    rows.telegram_debug_log.forEach(r => { debug[r.source_sheet] = (debug[r.source_sheet] || 0) + 1; });
+    out.telegram_debug_log = debug;
+    return out;
+  }
+
+  function rpc(name, body) {
+    // A database whose migrations stop before the batched-writes one.
+    if (rpcDisabled) return respond(404, { code: 'PGRST202', message: `Could not find the function public.${name}` });
+    try {
+      if (name === 'mbm_apply') return respond(200, applyOps(body.ops));
+      if (name === 'mbm_counts') return respond(200, counts());
+      return respond(404, { code: 'PGRST202', message: `Could not find the function public.${name}` });
+    } catch (error) {
+      if (error instanceof PgError) return respond(error.status, { code: error.code, message: error.message });
+      throw error;
+    }
+  }
+
   function handle(requestUrl, params = {}) {
     const method = String(params.method || 'get').toLowerCase();
     const headers = params.headers || {};
     const payloadRows = params.payload ? [].concat(JSON.parse(params.payload)).length : 0;
-    requests.push({ method, url: requestUrl, table: new URL(requestUrl).pathname.replace(/^\/rest\/v1\//, ''), rows: payloadRows });
+    if (!inParallel) round++;
+    requests.push({
+      method, url: requestUrl, table: new URL(requestUrl).pathname.replace(/^\/rest\/v1\//, ''), rows: payloadRows,
+      body: params.payload ? JSON.parse(params.payload) : null, round
+    });
     if (headers.apikey !== key) return respond(401, { message: 'Invalid API key' });
 
     const parsed = new URL(requestUrl);
     const table = parsed.pathname.replace(/^\/rest\/v1\//, '');
+    if (table.indexOf('rpc/') === 0) {
+      const injectedRpc = faults.map(f => f({
+        method, table, query: {}, body: params.payload ? JSON.parse(params.payload) : null
+      })).find(Boolean);
+      if (injectedRpc) return respond(503, { message: String(injectedRpc) });
+      return rpc(table.slice(4), params.payload ? JSON.parse(params.payload) : {});
+    }
     if (!schema[table]) return respond(404, { code: '42P01', message: `relation "public.${table}" does not exist` });
     const query = Array.from(parsed.searchParams.entries());
     const get = name => (query.find(([n]) => n === name) || [])[1];
@@ -445,7 +558,15 @@ function createSupabaseMock(options = {}) {
     /** Rows a table holds right now. */
     count: table => rows[table].length,
     /** Whether a URL belongs to this mock. */
-    owns: requestUrl => String(requestUrl).indexOf(url + '/rest/v1/') === 0
+    owns: requestUrl => String(requestUrl).indexOf(url + '/rest/v1/') === 0,
+    /** Behave like a database without mbm_apply / mbm_counts. */
+    disableRpc() { rpcDisabled = true; },
+    /** Runs `fn` with every request it makes counted as one round trip. */
+    parallel(fn) {
+      round++;
+      inParallel = true;
+      try { return fn(); } finally { inParallel = false; }
+    }
   };
 }
 

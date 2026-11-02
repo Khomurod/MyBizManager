@@ -148,7 +148,7 @@ function createTenantPaidExpense_(doc, input) {
   var validationError = validateTenantPaidInput_(input, configuredTenants_(doc));
   if (validationError) return { status: "error", message: validationError };
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     var replaceGroupId = String((input && input.replaceGroupId) || "").trim();

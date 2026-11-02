@@ -593,7 +593,7 @@ async function configureMiniApp() {
  * the server refuses a copy into a non-empty database and a switch whose
  * verification failed -- the screen only says what happened.
  */
-const STORAGE_MODE_LABELS = { sheets: 'Google Sheets', supabase: 'Supabase' };
+const STORAGE_MODE_LABELS = { sheets: 'Google Sheets', supabase: 'Supabase', moving: "Ko'chirilmoqda…" };
 
 function renderStorageStatus(storage, importStatus) {
     const box = document.getElementById('storageStatus');

@@ -65,7 +65,18 @@ function storageAction_(action, payload) {
     return answer;
   }
 
-  if (action === 'rollback_supabase_storage') return rollbackSupabaseStorage_();
+  if (action === 'rollback_supabase_storage') {
+    // Serialised with the move and with every locked writer: a rollback never
+    // interleaves with an apply, and a writer that waited behind it re-checks
+    // the store when it gets the lock (assertStoreUnchanged_).
+    var rollbackLock = appScriptLock_();
+    rollbackLock.waitLock(30000);
+    try {
+      return rollbackSupabaseStorage_();
+    } finally {
+      rollbackLock.releaseLock();
+    }
+  }
 
   var credentialsForVerify = supabaseCredentials_();
   if (action === 'verify_supabase_import') {
@@ -81,7 +92,11 @@ function storageAction_(action, payload) {
     };
   }
 
-  if (storageMode_() !== STORAGE_MODE_SHEETS) {
+  var currentMode = storageMode_();
+  if (currentMode === STORAGE_MODE_MOVING) {
+    return { status: "error", message: "Ko'chirish allaqachon davom etmoqda." };
+  }
+  if (currentMode !== STORAGE_MODE_SHEETS) {
     return { status: "error", message: "Ma'lumotlar allaqachon Supabase'da. Bu amal faqat Google Sheets rejimida ishlaydi." };
   }
   var credentials = supabaseCredentials_();
@@ -94,12 +109,35 @@ function storageAction_(action, payload) {
 
   if (action === 'preview_supabase_import') return previewSupabaseImport_(source, credentials);
 
-  var lock = LockService.getScriptLock();
-  lock.waitLock(30000);
+  // From here until the switch every other request is turned away (see
+  // STORAGE_MODE_MOVING), and a writer already waiting for the lock refuses
+  // when it gets it: nothing can be written to the spreadsheet after the copy
+  // has read it. The marker is this apply's own, so a second apply cannot
+  // clear it, and it expires on its own if this execution is killed.
+  var marker = STORAGE_MODE_MOVING + ":" + Date.now() + ":" + Utilities.getUuid();
+  setTelegramSetting_(STORAGE_PROP_MODE, marker);
+  STORAGE_MOVE_IN_THIS_EXECUTION_ = true;
+  var switched = false;
   try {
-    return applySupabaseImport_(source, target, credentials);
+    var lock = appScriptLock_();
+    lock.waitLock(30000);
+    try {
+      // A rollback or another apply that ran while this one waited has
+      // replaced the marker: this apply no longer speaks for the store.
+      if (getTelegramSetting_(STORAGE_PROP_MODE) !== marker) {
+        return { status: "error", message: "Ko'chirish bekor qilindi: baza holati kutish paytida o'zgardi. Qayta urinib ko'ring." };
+      }
+      var result = applySupabaseImport_(source, target, credentials);
+      switched = result.status === "success";
+      return result;
+    } finally {
+      lock.releaseLock();
+    }
   } finally {
-    lock.releaseLock();
+    STORAGE_MOVE_IN_THIS_EXECUTION_ = false;
+    if (!switched && getTelegramSetting_(STORAGE_PROP_MODE) === marker) {
+      setTelegramSetting_(STORAGE_PROP_MODE, STORAGE_MODE_SHEETS);
+    }
   }
 }
 
@@ -239,7 +277,22 @@ function applySupabaseImport_(source, target, credentials) {
   var checked = prepareSupabaseImport_(source);
   if (checked.error) return { status: "error", message: checked.error };
 
-  var copied = copyPreparedIntoSupabase_(checked.prepared, target);
+  var copied;
+  try {
+    copied = copyPreparedIntoSupabase_(checked.prepared, target);
+  } catch (copyError) {
+    // Part of the data may be in the database now, and the next apply would
+    // refuse a non-empty one. The spreadsheet is still the store.
+    var reason = redactSecrets_(copyError).slice(0, 300);
+    recordStorageImportStatus_({ failedAt: new Date().toISOString(), verified: false, failure: reason });
+    return {
+      status: "error",
+      message: "Ko'chirish yarim yo'lda to'xtadi — Google Sheets ishlashda davom etadi. " +
+        "Supabase SQL Editor'da supabase/reset_before_cutover.sql ni ishga tushiring, so'ng qaytadan urinib ko'ring. " +
+        "Sabab: " + reason,
+      importStatus: readStorageImportStatus_()
+    };
+  }
 
   var verification = verifySupabaseCopy_(source, target);
   var now = new Date().toISOString();
@@ -251,7 +304,7 @@ function applySupabaseImport_(source, target, credentials) {
     return {
       status: "error",
       message: "Ko'chirildi, lekin tekshiruv o'tmadi — Google Sheets ishlashda davom etadi. " +
-        "Supabase'ni tozalab, qaytadan urinib ko'ring.",
+        "Supabase SQL Editor'da supabase/reset_before_cutover.sql ni ishga tushirib, qaytadan urinib ko'ring.",
       copied: copied, verification: verification, importStatus: readStorageImportStatus_()
     };
   }
