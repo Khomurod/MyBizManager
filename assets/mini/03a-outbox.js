@@ -142,7 +142,7 @@ async function drainMiniOutbox() {
             sent.add(next.id);
             try {
                 await api(next.action, next.payload);
-                updateMiniOutboxItem(next.id, { status: 'saved', error: '', savedAt: Date.now() });
+                updateMiniOutboxItem(next.id, { status: 'saved', error: '' });
                 saved++;
             } catch (error) {
                 if (error.unauthorized) {
@@ -180,14 +180,20 @@ async function drainMiniOutbox() {
     renderOmadIfShown();
 }
 
+/** The entries already confirmed when a list is asked for: that list contains them. */
+function savedMiniEntryIds() {
+    return readMiniOutbox().filter(item => item.status === 'saved').map(item => item.id);
+}
+
 /**
- * Called with every fresh list from the server, with the time that list was
- * asked for: an entry saved before then is in it. One saved while the list
- * was already on its way may not be, and stays until a later list.
+ * Called with every fresh list from the server, with the entries that were
+ * already confirmed when it was asked for. One confirmed while the list was on
+ * its way may not be in it, and stays until a later list.
  */
-function forgetSavedMiniEntries(listRequestedAt) {
+function forgetSavedMiniEntries(savedBefore) {
+    const confirmed = new Set(savedBefore || []);
     const list = readMiniOutbox();
-    const kept = list.filter(item => item.status !== 'saved' || Number(item.savedAt || 0) >= listRequestedAt);
+    const kept = list.filter(item => !(item.status === 'saved' && confirmed.has(item.id)));
     if (kept.length !== list.length) writeMiniOutbox(kept);
 }
 

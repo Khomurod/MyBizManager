@@ -125,22 +125,26 @@ async function bootstrap() {
     const painted = hydrateMiniSnapshot();
     if (!painted) showGate('⏳', 'Tekshirilmoqda...', false);
 
-    const requestedAt = Date.now();
+    // In the same order guard as loadOmad: a save made on the stored figures
+    // while this was in flight refreshes them, and that newer answer wins.
+    const seq = ++miniOmadLoadSeq;
+    const savedBefore = savedMiniEntryIds();
     try {
         const body = await api('mini_home', { period: state.period || currentPeriod() });
         state.user = body.user;
-        state.omad = body.omad;
-        state.period = body.omad.period;
-        state.tenants = body.tenants || [];
-        state.entries = body.transactions || [];
-        state.snapshotAt = 0;
+        if (seq === miniOmadLoadSeq) {
+            state.omad = body.omad;
+            state.period = body.omad.period;
+            state.tenants = body.tenants || [];
+            state.entries = body.transactions || [];
+            state.snapshotAt = 0;
 
-        writeMiniSnapshot(body.user && body.user.id, {
-            user: state.user, omad: state.omad,
-            tenants: state.tenants, entries: state.entries
-        });
-
-        forgetSavedMiniEntries(requestedAt);
+            writeMiniSnapshot(body.user && body.user.id, {
+                user: state.user, omad: state.omad,
+                tenants: state.tenants, entries: state.entries
+            });
+            forgetSavedMiniEntries(savedBefore);
+        }
         showApp();
         renderOmad();
         // Anything saved while the last session could not reach the server.

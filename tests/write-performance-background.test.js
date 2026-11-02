@@ -100,6 +100,11 @@ test('an older Mini App read can never paint over a newer one', () => {
   const omad = read('assets/mini/03-omad.js');
 
   assert.match(omad, /let miniOmadLoadSeq = 0/);
+  // The first screen's answer is in the same guard: a save made on the stored
+  // figures refreshes them, and an older mini_home must not paint over that.
+  const app = read('assets/mini/06-app.js');
+  assert.match(app, /const seq = \+\+miniOmadLoadSeq/);
+  assert.match(app, /if \(seq === miniOmadLoadSeq\) \{/);
   assert.match(omad, /const seq = \+\+miniOmadLoadSeq/);
   // Guarded on both outcomes: a superseded answer is dropped whole, and a
   // superseded failure does not toast over a newer read that is still running.
