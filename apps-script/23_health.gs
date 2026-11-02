@@ -402,6 +402,9 @@ function storageCheck_() {
   try { status = storageStatus_(); } catch (error) {
     return check_("storage", "Ma'lumotlar bazasi", HEALTH_ERROR, "O'qib bo'lmadi");
   }
+  if (status.mode === STORAGE_MODE_MOVING) {
+    return check_("storage", "Ma'lumotlar bazasi", HEALTH_WARN, "Supabase'ga ko'chirish davom etmoqda");
+  }
   if (status.mode === STORAGE_MODE_SUPABASE) {
     if (status.reachable) return check_("storage", "Ma'lumotlar bazasi", HEALTH_OK, "Supabase — ulangan");
     return check_("storage", "Ma'lumotlar bazasi", HEALTH_ERROR, "Supabase javob bermadi: " + status.message);

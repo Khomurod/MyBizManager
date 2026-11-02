@@ -956,6 +956,15 @@ cash/bank/total, every period's income and expense, and what every tenant paid.
 the `Type / Data JSON` label row. The Telegram debug log and its backup copies
 (stored with `source_sheet`) are compared but cannot block the switch.
 
+Around all of it `OMAD_STORAGE` holds `moving:<millis>:<uuid>`: `appDoc_()`
+refuses every other request (the move's own execution keeps reading the
+spreadsheet), the marker is cleared if the move does not switch, and it counts
+as `sheets` once ten minutes old. `appScriptLock_()` re-checks the store when
+the lock is taken and refuses if it is no longer the one the request chose,
+which covers writers that were already waiting when the move or a rollback
+(also locked) switched. A copy that throws is reported with the reset script's
+name and recorded in `OMAD_STORAGE_IMPORT.failure`.
+
 The switch writes `Omad_Storage_Cutover_At` into the database, sets
 `OMAD_STORAGE=supabase` and bumps every cache revision. `supabase/reset_before_cutover.sql`
 empties the tables for a second attempt and refuses once that key exists.

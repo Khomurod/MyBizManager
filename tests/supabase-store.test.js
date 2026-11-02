@@ -594,3 +594,48 @@ test('the common actions stay within their round-trip budget', () => {
     reminderTimes: ['18:00'], deferReports: true
   })) <= 3);
 });
+
+// ------------------------------------------------------ the moment of the switch
+
+test('a writer that waited for the lock across a switch refuses, and writes nothing', () => {
+  const gas = sheetsWithTarget();
+  gas.resetRequestMemos_();
+  const doc = gas.appDoc_();                       // this request chose the spreadsheet...
+  gas.__properties.OMAD_STORAGE = 'supabase';      // ...and the move switched while it waited
+  const before = gas.__sheetsSpreadsheet
+    ? gas.__sheetsSpreadsheet.getSheetByName('Omad_Transactions_V2').data.length
+    : gas.__spreadsheet.getSheetByName('Omad_Transactions_V2').data.length;
+  assert.throws(() => gas.createTransaction_(doc, {
+    requestId: 'late', period: '2026-08', tenant: 'Apteka', type: 'Income', amount: 100,
+    currency: 'USD', method: 'Naqd', comment: '', createdBy: 'tester', source: 'Web'
+  }), /almashtirildi/);
+  assert.strictEqual(gas.__spreadsheet.getSheetByName('Omad_Transactions_V2').data.length, before,
+    'no payment lands in the store nobody reads any more');
+});
+
+test('while the move copies, every other request is turned away; a stale marker is not', () => {
+  const gas = sheetsWithTarget();
+  gas.__properties.OMAD_STORAGE = 'moving:' + Date.now() + ':other';
+  const during = post(gas, { action: 'get_omad_data', scope: 'dashboard' });
+  assert.strictEqual(during.status, 'error');
+  assert.match(during.message, /ko'chirilmoqda/);
+  assert.match(post(gas, { action: 'apply_supabase_import' }).message, /davom etmoqda/, 'and a second move is refused');
+
+  // An execution killed mid-move cannot leave the app shut.
+  gas.__properties.OMAD_STORAGE = 'moving:' + (Date.now() - 11 * 60 * 1000) + ':dead';
+  assert.strictEqual(gas.storageMode_(), 'sheets');
+  assert.strictEqual(post(gas, { action: 'get_omad_data', scope: 'dashboard' }).status, 'success');
+});
+
+test('a copy that stops halfway says how to reset, and the spreadsheet stays the store', () => {
+  const gas = sheetsWithTarget();
+  gas.__supabase.fail(r => r.table === 'cafe_sales' && r.method === 'post' && 'connection reset');
+  const body = post(gas, { action: 'apply_supabase_import' });
+  assert.strictEqual(body.status, 'error');
+  assert.match(body.message, /reset_before_cutover\.sql/);
+  assert.match(body.message, /connection reset/);
+  assert.strictEqual(gas.storageMode_(), 'sheets');
+  assert.strictEqual(gas.__properties.OMAD_STORAGE, 'sheets', 'the move marker is cleared');
+  assert.ok(body.importStatus.failedAt);
+  assert.strictEqual(post(gas, { action: 'get_omad_data', scope: 'dashboard' }).status, 'success');
+});

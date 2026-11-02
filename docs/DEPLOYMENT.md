@@ -279,10 +279,13 @@ per write, just slower and not atomic. It is applied to `mybizmanager`.
    so the whole-ledger figure means more after a move.
 5. **Supabase card → 1. Ko'rib chiqish.** Must say "Ko'chirishga tayyor" with
    a row count per sheet. Nothing is written.
-6. At a quiet moment (no entries, no sales), **2. Ko'chirish va o'tish.** It
+6. At a quiet moment (no entries, no sales), **2. Ko'chirish va o'tish.** While
+   it copies, every other request — the app, the Mini App, the bot — is
+   answered "Ma'lumotlar Supabase'ga ko'chirilmoqda" (`OMAD_STORAGE` holds a
+   `moving:…` marker, which expires by itself after ten minutes). It
    copies, verifies every cell and the money, and switches only if both agree.
    On success the app is on Supabase from the next request.
-7. If verification fails, nothing switched and the spreadsheet is still the
+7. If the copy stops halfway, or verification fails, nothing switched and the spreadsheet is still the
    store. Run `supabase/reset_before_cutover.sql` in the SQL editor and repeat
    from step 5.
 

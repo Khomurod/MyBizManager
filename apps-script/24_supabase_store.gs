@@ -244,10 +244,47 @@ function supabaseSheetDefinition_(name) {
 
 // ---------------------------------------------------------------- the switch
 
-/** "sheets" or "supabase". Anything unrecognised is the spreadsheet. */
+/**
+ * While the move copies the data, OMAD_STORAGE holds "moving:<millis>:<token>"
+ * and every other request is turned away: a write made to the spreadsheet
+ * during the copy would exist in neither store's future. An execution killed
+ * mid-move (Apps Script's time limit is six minutes) cannot leave the app shut:
+ * a marker older than this is read as the spreadsheet.
+ */
+var STORAGE_MODE_MOVING = "moving";
+/** True only inside the execution running the move (25_supabase_import.gs). */
+var STORAGE_MOVE_IN_THIS_EXECUTION_ = false;
+var STORAGE_MOVING_MAX_MS = 10 * 60 * 1000;
+
+/** "sheets", "supabase" or "moving". Anything unrecognised is the spreadsheet. */
 function storageMode_() {
   var mode = String(getTelegramSetting_(STORAGE_PROP_MODE) || "").trim().toLowerCase();
-  return mode === STORAGE_MODE_SUPABASE ? STORAGE_MODE_SUPABASE : STORAGE_MODE_SHEETS;
+  if (mode === STORAGE_MODE_SUPABASE) return STORAGE_MODE_SUPABASE;
+  if (mode.indexOf(STORAGE_MODE_MOVING + ":") === 0) {
+    var started = Number(mode.split(":")[1]);
+    if (isFinite(started) && Date.now() - started < STORAGE_MOVING_MAX_MS) return STORAGE_MODE_MOVING;
+  }
+  return STORAGE_MODE_SHEETS;
+}
+
+/** The store a document belongs to. */
+function storageModeOfDoc_(doc) {
+  return doc && doc.__supabase ? STORAGE_MODE_SUPABASE : STORAGE_MODE_SHEETS;
+}
+
+/**
+ * Refuses to go on if the store changed after this request chose its own.
+ *
+ * A request picks its store when it starts (appDoc_). If the move or a
+ * rollback switched stores while it waited for the script lock, everything it
+ * writes from here would land in the store nobody reads any more -- a payment
+ * reported as saved and then never seen. Nothing has been written yet when the
+ * lock is taken, so the honest answer is "try again".
+ */
+function assertStoreUnchanged_() {
+  if (!APP_DOC_MEMO_ || STORAGE_MOVE_IN_THIS_EXECUTION_) return;
+  if (storageModeOfDoc_(APP_DOC_MEMO_) === storageMode_()) return;
+  throw new Error("Ma'lumotlar bazasi hozirgina almashtirildi. Hech narsa saqlanmadi — iltimos, qayta urinib ko'ring.");
 }
 
 /** The Supabase project URL and secret key, or an explanation of what is missing. */
@@ -269,7 +306,15 @@ var APP_DOC_MEMO_ = null;
  */
 function appDoc_() {
   if (APP_DOC_MEMO_) return APP_DOC_MEMO_;
-  if (storageMode_() === STORAGE_MODE_SUPABASE) {
+  var mode = storageMode_();
+  if (mode === STORAGE_MODE_MOVING) {
+    // The move itself still works from the spreadsheet; everyone else waits.
+    if (!STORAGE_MOVE_IN_THIS_EXECUTION_) {
+      throw new Error("Ma'lumotlar Supabase'ga ko'chirilmoqda. Bir daqiqadan keyin qayta urinib ko'ring.");
+    }
+    mode = STORAGE_MODE_SHEETS;
+  }
+  if (mode === STORAGE_MODE_SUPABASE) {
     var credentials = supabaseCredentials_();
     if (!credentials.ok) {
       // Fail closed: never fall back to the spreadsheet once the database is
@@ -566,6 +611,12 @@ function appScriptLock_() {
   var held = false;
   var acquired = function () {
     if (held) return;
+    try {
+      assertStoreUnchanged_();
+    } catch (changed) {
+      lock.releaseLock();
+      throw changed;
+    }
     held = true;
     var doc = storageRequestDoc_();
     if (doc) doc.__lockAcquired();
@@ -1444,6 +1495,7 @@ function storageStatus_() {
     reachable: null,
     message: ""
   };
+  if (mode === STORAGE_MODE_MOVING) status.message = "Ko'chirish davom etmoqda";
   if (!credentials.ok) {
     status.message = mode === STORAGE_MODE_SUPABASE
       ? "Yo'q: " + credentials.missing.join(", ")
@@ -1461,6 +1513,12 @@ function storageStatus_() {
 }
 
 // ------------------------------------------------------------- speed check
+
+/** The ledger the application actually reads, by the store's own setting. */
+function benchmarkLedgerName_(configured) {
+  var name = String(configured || "").trim();
+  return name === OMAD_TRANSACTIONS_SHEET || name === OMAD_TRANSACTIONS_V2_SHEET ? name : OMAD_TRANSACTIONS_SHEET;
+}
 
 /** The middle value of a list of milliseconds. */
 function storageMedianMs_(values) {
@@ -1493,7 +1551,9 @@ function storageLatencyBenchmark_() {
 
   var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
   var sheetConfig = spreadsheet.getSheetByName("System_Config");
-  var sheetLedger = spreadsheet.getSheetByName(OMAD_TRANSACTIONS_V2_SHEET);
+  var sheetLedger = sheetConfig
+    ? spreadsheet.getSheetByName(benchmarkLedgerName_(getConfig(sheetConfig, OMAD_ACTIVE_TX_SHEET_KEY)))
+    : null;
   if (sheetConfig) {
     var sheetRows = 0;
     result.sheets = {
@@ -1511,11 +1571,13 @@ function storageLatencyBenchmark_() {
     try {
       var doc = supabaseDoc_(credentials);
       var config = doc.getSheetByName("System_Config");
+      // Each store's own setting: the two may differ before a move.
+      var ledgerName = benchmarkLedgerName_(config.getConfigValue(OMAD_ACTIVE_TX_SHEET_KEY));
       var dbRows = 0;
       result.supabase = {
         oneSettingMs: storageTimeMs_(3, function () { config.getConfigValue("Omad_Rates"); }),
         wholeLedgerMs: storageTimeMs_(3, function () {
-          dbRows = supabaseDoc_(credentials).getSheetByName(OMAD_TRANSACTIONS_V2_SHEET)
+          dbRows = supabaseDoc_(credentials).getSheetByName(ledgerName)
             .getDataRange().getValues().length - 1;
         }),
         ledgerRows: 0

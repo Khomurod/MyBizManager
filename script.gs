@@ -15782,6 +15782,9 @@ function storageCheck_() {
   try { status = storageStatus_(); } catch (error) {
     return check_("storage", "Ma'lumotlar bazasi", HEALTH_ERROR, "O'qib bo'lmadi");
   }
+  if (status.mode === STORAGE_MODE_MOVING) {
+    return check_("storage", "Ma'lumotlar bazasi", HEALTH_WARN, "Supabase'ga ko'chirish davom etmoqda");
+  }
   if (status.mode === STORAGE_MODE_SUPABASE) {
     if (status.reachable) return check_("storage", "Ma'lumotlar bazasi", HEALTH_OK, "Supabase — ulangan");
     return check_("storage", "Ma'lumotlar bazasi", HEALTH_ERROR, "Supabase javob bermadi: " + status.message);
@@ -16041,10 +16044,47 @@ function supabaseSheetDefinition_(name) {
 
 // ---------------------------------------------------------------- the switch
 
-/** "sheets" or "supabase". Anything unrecognised is the spreadsheet. */
+/**
+ * While the move copies the data, OMAD_STORAGE holds "moving:<millis>:<token>"
+ * and every other request is turned away: a write made to the spreadsheet
+ * during the copy would exist in neither store's future. An execution killed
+ * mid-move (Apps Script's time limit is six minutes) cannot leave the app shut:
+ * a marker older than this is read as the spreadsheet.
+ */
+var STORAGE_MODE_MOVING = "moving";
+/** True only inside the execution running the move (25_supabase_import.gs). */
+var STORAGE_MOVE_IN_THIS_EXECUTION_ = false;
+var STORAGE_MOVING_MAX_MS = 10 * 60 * 1000;
+
+/** "sheets", "supabase" or "moving". Anything unrecognised is the spreadsheet. */
 function storageMode_() {
   var mode = String(getTelegramSetting_(STORAGE_PROP_MODE) || "").trim().toLowerCase();
-  return mode === STORAGE_MODE_SUPABASE ? STORAGE_MODE_SUPABASE : STORAGE_MODE_SHEETS;
+  if (mode === STORAGE_MODE_SUPABASE) return STORAGE_MODE_SUPABASE;
+  if (mode.indexOf(STORAGE_MODE_MOVING + ":") === 0) {
+    var started = Number(mode.split(":")[1]);
+    if (isFinite(started) && Date.now() - started < STORAGE_MOVING_MAX_MS) return STORAGE_MODE_MOVING;
+  }
+  return STORAGE_MODE_SHEETS;
+}
+
+/** The store a document belongs to. */
+function storageModeOfDoc_(doc) {
+  return doc && doc.__supabase ? STORAGE_MODE_SUPABASE : STORAGE_MODE_SHEETS;
+}
+
+/**
+ * Refuses to go on if the store changed after this request chose its own.
+ *
+ * A request picks its store when it starts (appDoc_). If the move or a
+ * rollback switched stores while it waited for the script lock, everything it
+ * writes from here would land in the store nobody reads any more -- a payment
+ * reported as saved and then never seen. Nothing has been written yet when the
+ * lock is taken, so the honest answer is "try again".
+ */
+function assertStoreUnchanged_() {
+  if (!APP_DOC_MEMO_ || STORAGE_MOVE_IN_THIS_EXECUTION_) return;
+  if (storageModeOfDoc_(APP_DOC_MEMO_) === storageMode_()) return;
+  throw new Error("Ma'lumotlar bazasi hozirgina almashtirildi. Hech narsa saqlanmadi — iltimos, qayta urinib ko'ring.");
 }
 
 /** The Supabase project URL and secret key, or an explanation of what is missing. */
@@ -16066,7 +16106,15 @@ var APP_DOC_MEMO_ = null;
  */
 function appDoc_() {
   if (APP_DOC_MEMO_) return APP_DOC_MEMO_;
-  if (storageMode_() === STORAGE_MODE_SUPABASE) {
+  var mode = storageMode_();
+  if (mode === STORAGE_MODE_MOVING) {
+    // The move itself still works from the spreadsheet; everyone else waits.
+    if (!STORAGE_MOVE_IN_THIS_EXECUTION_) {
+      throw new Error("Ma'lumotlar Supabase'ga ko'chirilmoqda. Bir daqiqadan keyin qayta urinib ko'ring.");
+    }
+    mode = STORAGE_MODE_SHEETS;
+  }
+  if (mode === STORAGE_MODE_SUPABASE) {
     var credentials = supabaseCredentials_();
     if (!credentials.ok) {
       // Fail closed: never fall back to the spreadsheet once the database is
@@ -16363,6 +16411,12 @@ function appScriptLock_() {
   var held = false;
   var acquired = function () {
     if (held) return;
+    try {
+      assertStoreUnchanged_();
+    } catch (changed) {
+      lock.releaseLock();
+      throw changed;
+    }
     held = true;
     var doc = storageRequestDoc_();
     if (doc) doc.__lockAcquired();
@@ -17241,6 +17295,7 @@ function storageStatus_() {
     reachable: null,
     message: ""
   };
+  if (mode === STORAGE_MODE_MOVING) status.message = "Ko'chirish davom etmoqda";
   if (!credentials.ok) {
     status.message = mode === STORAGE_MODE_SUPABASE
       ? "Yo'q: " + credentials.missing.join(", ")
@@ -17258,6 +17313,12 @@ function storageStatus_() {
 }
 
 // ------------------------------------------------------------- speed check
+
+/** The ledger the application actually reads, by the store's own setting. */
+function benchmarkLedgerName_(configured) {
+  var name = String(configured || "").trim();
+  return name === OMAD_TRANSACTIONS_SHEET || name === OMAD_TRANSACTIONS_V2_SHEET ? name : OMAD_TRANSACTIONS_SHEET;
+}
 
 /** The middle value of a list of milliseconds. */
 function storageMedianMs_(values) {
@@ -17290,7 +17351,9 @@ function storageLatencyBenchmark_() {
 
   var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
   var sheetConfig = spreadsheet.getSheetByName("System_Config");
-  var sheetLedger = spreadsheet.getSheetByName(OMAD_TRANSACTIONS_V2_SHEET);
+  var sheetLedger = sheetConfig
+    ? spreadsheet.getSheetByName(benchmarkLedgerName_(getConfig(sheetConfig, OMAD_ACTIVE_TX_SHEET_KEY)))
+    : null;
   if (sheetConfig) {
     var sheetRows = 0;
     result.sheets = {
@@ -17308,11 +17371,13 @@ function storageLatencyBenchmark_() {
     try {
       var doc = supabaseDoc_(credentials);
       var config = doc.getSheetByName("System_Config");
+      // Each store's own setting: the two may differ before a move.
+      var ledgerName = benchmarkLedgerName_(config.getConfigValue(OMAD_ACTIVE_TX_SHEET_KEY));
       var dbRows = 0;
       result.supabase = {
         oneSettingMs: storageTimeMs_(3, function () { config.getConfigValue("Omad_Rates"); }),
         wholeLedgerMs: storageTimeMs_(3, function () {
-          dbRows = supabaseDoc_(credentials).getSheetByName(OMAD_TRANSACTIONS_V2_SHEET)
+          dbRows = supabaseDoc_(credentials).getSheetByName(ledgerName)
             .getDataRange().getValues().length - 1;
         }),
         ledgerRows: 0
@@ -17394,7 +17459,18 @@ function storageAction_(action, payload) {
     return answer;
   }
 
-  if (action === 'rollback_supabase_storage') return rollbackSupabaseStorage_();
+  if (action === 'rollback_supabase_storage') {
+    // Serialised with the move and with every locked writer: a rollback never
+    // interleaves with an apply, and a writer that waited behind it re-checks
+    // the store when it gets the lock (assertStoreUnchanged_).
+    var rollbackLock = appScriptLock_();
+    rollbackLock.waitLock(30000);
+    try {
+      return rollbackSupabaseStorage_();
+    } finally {
+      rollbackLock.releaseLock();
+    }
+  }
 
   var credentialsForVerify = supabaseCredentials_();
   if (action === 'verify_supabase_import') {
@@ -17410,7 +17486,11 @@ function storageAction_(action, payload) {
     };
   }
 
-  if (storageMode_() !== STORAGE_MODE_SHEETS) {
+  var currentMode = storageMode_();
+  if (currentMode === STORAGE_MODE_MOVING) {
+    return { status: "error", message: "Ko'chirish allaqachon davom etmoqda." };
+  }
+  if (currentMode !== STORAGE_MODE_SHEETS) {
     return { status: "error", message: "Ma'lumotlar allaqachon Supabase'da. Bu amal faqat Google Sheets rejimida ishlaydi." };
   }
   var credentials = supabaseCredentials_();
@@ -17423,12 +17503,35 @@ function storageAction_(action, payload) {
 
   if (action === 'preview_supabase_import') return previewSupabaseImport_(source, credentials);
 
-  var lock = appScriptLock_();
-  lock.waitLock(30000);
+  // From here until the switch every other request is turned away (see
+  // STORAGE_MODE_MOVING), and a writer already waiting for the lock refuses
+  // when it gets it: nothing can be written to the spreadsheet after the copy
+  // has read it. The marker is this apply's own, so a second apply cannot
+  // clear it, and it expires on its own if this execution is killed.
+  var marker = STORAGE_MODE_MOVING + ":" + Date.now() + ":" + Utilities.getUuid();
+  setTelegramSetting_(STORAGE_PROP_MODE, marker);
+  STORAGE_MOVE_IN_THIS_EXECUTION_ = true;
+  var switched = false;
   try {
-    return applySupabaseImport_(source, target, credentials);
+    var lock = appScriptLock_();
+    lock.waitLock(30000);
+    try {
+      // A rollback or another apply that ran while this one waited has
+      // replaced the marker: this apply no longer speaks for the store.
+      if (getTelegramSetting_(STORAGE_PROP_MODE) !== marker) {
+        return { status: "error", message: "Ko'chirish bekor qilindi: baza holati kutish paytida o'zgardi. Qayta urinib ko'ring." };
+      }
+      var result = applySupabaseImport_(source, target, credentials);
+      switched = result.status === "success";
+      return result;
+    } finally {
+      lock.releaseLock();
+    }
   } finally {
-    lock.releaseLock();
+    STORAGE_MOVE_IN_THIS_EXECUTION_ = false;
+    if (!switched && getTelegramSetting_(STORAGE_PROP_MODE) === marker) {
+      setTelegramSetting_(STORAGE_PROP_MODE, STORAGE_MODE_SHEETS);
+    }
   }
 }
 
@@ -17568,7 +17671,22 @@ function applySupabaseImport_(source, target, credentials) {
   var checked = prepareSupabaseImport_(source);
   if (checked.error) return { status: "error", message: checked.error };
 
-  var copied = copyPreparedIntoSupabase_(checked.prepared, target);
+  var copied;
+  try {
+    copied = copyPreparedIntoSupabase_(checked.prepared, target);
+  } catch (copyError) {
+    // Part of the data may be in the database now, and the next apply would
+    // refuse a non-empty one. The spreadsheet is still the store.
+    var reason = redactSecrets_(copyError).slice(0, 300);
+    recordStorageImportStatus_({ failedAt: new Date().toISOString(), verified: false, failure: reason });
+    return {
+      status: "error",
+      message: "Ko'chirish yarim yo'lda to'xtadi — Google Sheets ishlashda davom etadi. " +
+        "Supabase SQL Editor'da supabase/reset_before_cutover.sql ni ishga tushiring, so'ng qaytadan urinib ko'ring. " +
+        "Sabab: " + reason,
+      importStatus: readStorageImportStatus_()
+    };
+  }
 
   var verification = verifySupabaseCopy_(source, target);
   var now = new Date().toISOString();
@@ -17580,7 +17698,7 @@ function applySupabaseImport_(source, target, credentials) {
     return {
       status: "error",
       message: "Ko'chirildi, lekin tekshiruv o'tmadi — Google Sheets ishlashda davom etadi. " +
-        "Supabase'ni tozalab, qaytadan urinib ko'ring.",
+        "Supabase SQL Editor'da supabase/reset_before_cutover.sql ni ishga tushirib, qaytadan urinib ko'ring.",
       copied: copied, verification: verification, importStatus: readStorageImportStatus_()
     };
   }

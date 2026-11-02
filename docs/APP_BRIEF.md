@@ -922,6 +922,14 @@ composes the message from data it already stored.
     only then switch `OMAD_STORAGE`. A failed verification does not switch. The
     move only reads the spreadsheet, and refuses to copy into a database that
     already holds rows. The Telegram debug log is compared but never blocks.
+    While the copy runs `OMAD_STORAGE` is a `moving:<millis>:<uuid>` marker
+    and every other request is refused (it expires after ten minutes, so a
+    killed execution cannot shut the app). A request that chose its store
+    before a switch and only then gets the script lock refuses before writing
+    (`assertStoreUnchanged_`): a payment never lands in the store nobody reads.
+    Rollback takes the lock too, and an apply whose marker was replaced while
+    it waited gives up. A copy that stops halfway names
+    `supabase/reset_before_cutover.sql`.
 
 18. **Every module takes the script lock through `appScriptLock_()`,** never
     `LockService` directly. On Supabase the lock is also the batch boundary:
