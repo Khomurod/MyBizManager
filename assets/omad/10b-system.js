@@ -709,3 +709,34 @@ async function rollbackSupabaseStorage() {
         alert(data.message || "Xatolik yuz berdi.");
     }
 }
+
+/**
+ * The same reads, timed from Google's servers against each store. Read-only;
+ * the numbers are what the decision to switch should rest on.
+ */
+async function measureStorageSpeed() {
+    const box = document.getElementById('storageResult');
+    showLoader(true);
+    try {
+        const data = await callBackend(Object.assign({ action: 'get_storage_status', benchmark: true }, adminCredentials()));
+        if (!data || data.status !== 'success' || !data.benchmark) {
+            alert((data && data.message) || "Xatolik yuz berdi.");
+            return;
+        }
+        const b = data.benchmark;
+        const cell = (side, key) => (side && !side.error && side[key] !== undefined ? `${side[key]} ms` : '—');
+        const rows = [
+            `<p class="font-bold text-slate-700 mb-2">Tezlik (Google serveridan, mediana)</p>`,
+            statusRow("Bitta sozlama", `Sheets ${cell(b.sheets, 'oneSettingMs')} · Supabase ${cell(b.supabase, 'oneSettingMs')}`),
+            statusRow("Butun reestr", `Sheets ${cell(b.sheets, 'wholeLedgerMs')} (${(b.sheets && b.sheets.ledgerRows) || 0} qator) · ` +
+                `Supabase ${cell(b.supabase, 'wholeLedgerMs')} (${(b.supabase && b.supabase.ledgerRows) || 0} qator)`)
+        ];
+        if (b.supabase && b.supabase.error) rows.push(`<p class="text-red-600 mt-2">${escapeHTML(b.supabase.error)}</p>`);
+        if (box) { box.innerHTML = rows.join(''); box.classList.remove('hidden'); }
+        renderStorageStatus(data.storage, data.importStatus);
+    } catch (e) {
+        alert("Server bilan bog'lanib bo'lmadi.");
+    } finally {
+        showLoader(false);
+    }
+}

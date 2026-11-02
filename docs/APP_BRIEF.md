@@ -923,10 +923,15 @@ composes the message from data it already stored.
 - **The Supabase project is on the free plan:** no downloadable automatic
   backups. The spreadsheet stays as the pre-move copy; a scheduled export is a
   separate decision.
-- **The Supabase store speaks the spreadsheet's language.** Each sheet
-  operation is one REST call, reads page by `seq`, and nothing is moved into
-  SQL functions yet — the business code is unchanged on purpose. Making hot
-  paths native queries is a later, separate step.
+- **The Supabase store speaks the spreadsheet's language, so it is not
+  faster by itself.** Each sheet operation is one REST call through
+  `UrlFetchApp`; an action makes about as many store round trips as on Sheets
+  (counted on a realistic fixture: dashboard 9 vs 8, new entry 11 vs 23,
+  correction 16 vs 30, café sale 8 vs 12, trigger tick 47 vs 71), and a
+  `UrlFetchApp` call is not obviously cheaper than a Sheets call. Real timings
+  come from Tizim → Supabase → "Tezlikni o'lchash". Speed comes from the next
+  step: one SQL function per business action (one round trip instead of 8–16)
+  and parallel reads — the business code is unchanged on purpose until then.
 - **A café sale retried with its request id after it was voided** is refused
   by the database (the hidden receipt still holds the id) instead of being
   rung up a second time, as the spreadsheet allowed.

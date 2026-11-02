@@ -356,7 +356,7 @@ Café actions additionally accept the café roles described in the permissions s
 | `purge_telegram_debug_secrets` | **yes** | Copies `Telegram_Debug_Log`, then re-redacts every row in place |
 | `audit_telegram_secret_exposure` | **yes** | Reports whether anything credential-shaped remains in the debug log. Writes nothing |
 | `rotate_telegram_webhook_secret` | **yes** | New verification secret, `setWebhook`, verify, or roll back |
-| `get_storage_status` | **yes** | Which store is live and whether Supabase answers; never the key |
+| `get_storage_status` | **yes** | Which store is live and whether Supabase answers; never the key. With `benchmark: true` it also times one setting read and one whole-ledger read on each store, from Google's servers (read-only) |
 | `preview_supabase_import` | **yes** | Converts every sheet row in memory, counts, checks the database is empty. Writes nothing |
 | `apply_supabase_import` | **yes** | Copy + verify + switch, under the script lock; switches only if verification passes |
 | `verify_supabase_import` | **yes** | Compares the two stores again. Writes nothing |

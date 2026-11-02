@@ -794,3 +794,71 @@ function storageStatus_() {
   }
   return status;
 }
+
+// ------------------------------------------------------------- speed check
+
+/** The middle value of a list of milliseconds. */
+function storageMedianMs_(values) {
+  var sorted = values.slice().sort(function (a, b) { return a - b; });
+  return sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0;
+}
+
+/** Runs `fn` `times` times and returns the median duration in ms. */
+function storageTimeMs_(times, fn) {
+  var durations = [];
+  for (var i = 0; i < times; i++) {
+    var started = Date.now();
+    fn();
+    durations.push(Date.now() - started);
+  }
+  return storageMedianMs_(durations);
+}
+
+/**
+ * How long the same reads take from each store, measured from where the
+ * backend actually runs -- Google's servers -- rather than guessed.
+ *
+ * Read-only on both sides. One small read (a single setting) is the price of
+ * one round trip; one full read of the live ledger is the price of the pass
+ * the dashboard and every report make. Writes are not timed: there is nothing
+ * safe to write to a live ledger for the sake of a stopwatch.
+ */
+function storageLatencyBenchmark_() {
+  var result = { sheets: null, supabase: null, measuredAt: new Date().toISOString() };
+
+  var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  var sheetConfig = spreadsheet.getSheetByName("System_Config");
+  var sheetLedger = spreadsheet.getSheetByName(OMAD_TRANSACTIONS_V2_SHEET);
+  if (sheetConfig) {
+    var sheetRows = 0;
+    result.sheets = {
+      oneSettingMs: storageTimeMs_(3, function () { getConfig(sheetConfig, "Omad_Rates"); }),
+      wholeLedgerMs: sheetLedger
+        ? storageTimeMs_(3, function () { sheetRows = sheetLedger.getDataRange().getValues().length - 1; })
+        : 0,
+      ledgerRows: 0
+    };
+    result.sheets.ledgerRows = Math.max(0, sheetRows);
+  }
+
+  var credentials = supabaseCredentials_();
+  if (credentials.ok) {
+    try {
+      var doc = supabaseDoc_(credentials);
+      var config = doc.getSheetByName("System_Config");
+      var dbRows = 0;
+      result.supabase = {
+        oneSettingMs: storageTimeMs_(3, function () { config.getConfigValue("Omad_Rates"); }),
+        wholeLedgerMs: storageTimeMs_(3, function () {
+          dbRows = supabaseDoc_(credentials).getSheetByName(OMAD_TRANSACTIONS_V2_SHEET)
+            .getDataRange().getValues().length - 1;
+        }),
+        ledgerRows: 0
+      };
+      result.supabase.ledgerRows = Math.max(0, dbRows);
+    } catch (error) {
+      result.supabase = { error: redactSecrets_(error).slice(0, 300) };
+    }
+  }
+  return result;
+}

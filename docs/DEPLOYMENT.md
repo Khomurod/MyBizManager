@@ -269,14 +269,17 @@ column the code needs and the schema lacks fails CI.
    "Google Sheets; Supabase tayyor".
 3. **Backups**, as before any live financial change: `create_backup`, and a
    Drive *File → Make a copy* of the spreadsheet.
-4. **Supabase card → 1. Ko'rib chiqish.** Must say "Ko'chirishga tayyor" with
+4. **Supabase card → Tezlikni o'lchash** (optional): the same reads timed on
+   both stores from Google's servers. Before the copy the database is empty,
+   so the whole-ledger figure means more after a move.
+5. **Supabase card → 1. Ko'rib chiqish.** Must say "Ko'chirishga tayyor" with
    a row count per sheet. Nothing is written.
-5. At a quiet moment (no entries, no sales), **2. Ko'chirish va o'tish.** It
+6. At a quiet moment (no entries, no sales), **2. Ko'chirish va o'tish.** It
    copies, verifies every cell and the money, and switches only if both agree.
    On success the app is on Supabase from the next request.
-6. If verification fails, nothing switched and the spreadsheet is still the
+7. If verification fails, nothing switched and the spreadsheet is still the
    store. Run `supabase/reset_before_cutover.sql` in the SQL editor and repeat
-   from step 4.
+   from step 5.
 
 ### Going back
 

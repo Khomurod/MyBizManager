@@ -407,3 +407,24 @@ test('a write by row number lands on the row that was read, even after a row abo
   const rows = gas.__supabase.rows.task_occurrences;
   assert.deepStrictEqual(rows.map(r => [r.id, r.status]), [['occ_b', 'Open'], ['occ_c', 'Completed']]);
 });
+
+test('the speed check times the same reads on both stores, and writes nothing', () => {
+  const gas = sheetsWithTarget();
+  assert.strictEqual(post(gas, { action: 'apply_supabase_import' }).status, 'success');
+  assert.strictEqual(post(gas, { action: 'rollback_supabase_storage' }).status, 'success');
+
+  const before = gas.__supabase.requests.filter(r => r.method !== 'get').length;
+  const body = post(gas, { action: 'get_storage_status', benchmark: true });
+  assert.strictEqual(body.status, 'success');
+  const b = body.benchmark;
+  assert.strictEqual(b.sheets.ledgerRows, 3);
+  assert.strictEqual(b.supabase.ledgerRows, 3, 'the same ledger, read from the database');
+  ['oneSettingMs', 'wholeLedgerMs'].forEach(key => {
+    assert.ok(b.sheets[key] >= 0 && b.supabase[key] >= 0, key);
+  });
+  assert.strictEqual(gas.__supabase.requests.filter(r => r.method !== 'get').length, before, 'read-only');
+  assert.doesNotMatch(JSON.stringify(body), new RegExp(gas.__supabase.key));
+
+  // Without the flag the status stays cheap.
+  assert.strictEqual(post(gas, { action: 'get_storage_status' }).benchmark, undefined);
+});

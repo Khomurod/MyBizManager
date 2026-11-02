@@ -59,7 +59,10 @@ function isInformationalImportSheet_(name) {
 
 function storageAction_(action, payload) {
   if (action === 'get_storage_status') {
-    return { status: "success", storage: storageStatus_(), importStatus: readStorageImportStatus_() };
+    var answer = { status: "success", storage: storageStatus_(), importStatus: readStorageImportStatus_() };
+    // Opt-in: it reads the whole ledger from both stores, three times each.
+    if (payload && payload.benchmark === true) answer.benchmark = storageLatencyBenchmark_();
+    return answer;
   }
 
   if (action === 'rollback_supabase_storage') return rollbackSupabaseStorage_();

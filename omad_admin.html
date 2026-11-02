@@ -647,7 +647,10 @@
                     <button onclick="previewSupabaseImport()" class="py-2 bg-slate-800 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">1. Ko'rib chiqish</button>
                     <button onclick="applySupabaseImport()" class="py-2 bg-green-600 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">2. Ko'chirish va o'tish</button>
                 </div>
-                <button onclick="verifySupabaseImport()" class="w-full mt-2 py-2 bg-slate-800 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">Solishtirish</button>
+                <div class="grid grid-cols-2 gap-2 mt-2">
+                    <button onclick="verifySupabaseImport()" class="py-2 bg-slate-800 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">Solishtirish</button>
+                    <button onclick="measureStorageSpeed()" class="py-2 bg-slate-800 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">Tezlikni o'lchash</button>
+                </div>
                 <button onclick="rollbackSupabaseStorage()" class="w-full mt-2 py-2 text-red-500 text-xs font-bold">Google Sheets'ga Qaytish</button>
             </div>
 
