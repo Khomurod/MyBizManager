@@ -1014,9 +1014,10 @@ composes the message from data it already stored.
   record. A server refusal is shown in red with its reason (Qayta /
   Tahrirlash / O'chirish) and never resent by itself. Balances move only when
   the server's fresh list arrives. If the phone cannot keep it (storage full
-  or off) it is sent directly, and a failure reopens the form with what was
-  typed and the same request id (that form only — a new form always mints new
-  ids). Correcting a refused entry replaces it in one write, so one of the two
+  or off) it is sent directly, and a failure reopens the form read-only, to
+  resend exactly that submission with the same request id (a changed value
+  under an id the server may already hold would be answered with the first
+  record); a new form always mints new ids. Correcting a refused entry replaces it in one write, so one of the two
   is always kept. The tenant-paid pair, the bulk entry and
   the web form still wait for the server.
 - **`assets/css/app.css` is generated but not verified in CI.** `npm run

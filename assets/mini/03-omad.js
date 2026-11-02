@@ -168,29 +168,37 @@ function amountFields() {
 }
 
 /**
- * The ids the open entry form will save with, when it is a retry of a direct
- * send that got no answer (03a-outbox.js). Set only by that reopened form and
- * cleared by every other one, so a new entry can never inherit them.
+ * The exact submission the open form resends, when it is a retry of a direct
+ * send that got no answer (03a-outbox.js). The server may already hold that
+ * request, so it goes again unchanged, ids and values alike: changing a value
+ * under the same request id would be answered with the first record while the
+ * screen reported the new one. Set only by that reopened form, whose fields
+ * are locked, and cleared by every other form.
  */
-let miniEntryFormIds = null;
+let miniEntryFormRetry = null;
 
 /**
  * The income / expense form. `refused`, an outbox entry the server turned
  * down, fills it back in so it can be corrected; saving it replaces that entry.
+ * With `refused.sameIds` it is a retry of an unanswered send instead, shown
+ * read-only.
  */
 function openEntrySheet(type, refused) {
     const income = type === 'Income';
-    miniEntryFormIds = refused && refused.sameIds
-        ? { requestId: refused.payload.requestId, groupId: refused.payload.groupId }
-        : null;
+    miniEntryFormRetry = refused && refused.sameIds ? Object.assign({}, refused.payload) : null;
+    const retryNote = miniEntryFormRetry
+        ? `<p class="tiny muted" style="margin-bottom:8px">Javob kelmadi. Xuddi shu yozuv qayta yuboriladi —
+             boshqa qiymat uchun yangi forma oching.</p>`
+        : '';
     openSheet(income ? 'Yangi kirim' : 'Yangi chiqim', `
+        ${retryNote}
         <label for="mTenant">${income ? 'Ijarachi' : 'Manba'}</label>
         <select id="mTenant">${tenantOptions(!income)}</select>
         ${amountFields()}
         <label for="mComment">Izoh</label>
         <textarea id="mComment" placeholder="Ixtiyoriy"></textarea>
         <button class="btn-primary btn-full" style="margin-top:14px" id="mSubmit"
-                onclick="submitEntry('${type}', '${refused ? escapeHtml(refused.id) : ''}')">Saqlash</button>
+                onclick="submitEntry('${type}', '${refused ? escapeHtml(refused.id) : ''}')">${miniEntryFormRetry ? 'Qayta yuborish' : 'Saqlash'}</button>
     `, () => {
         const amount = document.getElementById('mAmount');
         attachAmountFormatting(amount);
@@ -202,6 +210,11 @@ function openEntrySheet(type, refused) {
         document.getElementById('mCurrency').value = p.currency;
         document.getElementById('mMethod').value = p.method;
         document.getElementById('mComment').value = p.comment || '';
+        if (miniEntryFormRetry) {
+            ['mTenant', 'mAmount', 'mCurrency', 'mMethod', 'mComment'].forEach(id => {
+                document.getElementById(id).disabled = true;
+            });
+        }
     });
 }
 
@@ -213,6 +226,15 @@ function openEntrySheet(type, refused) {
 function submitEntry(type, replacing) {
     const button = document.getElementById('mSubmit');
     if (!button || button.disabled) return;
+    if (miniEntryFormRetry) {
+        // Exactly what was sent before, so the server's answer describes it.
+        const again = miniEntryFormRetry;
+        miniEntryFormRetry = null;
+        button.disabled = true;
+        closeSheet();
+        queueMiniEntry('mini_save_transaction', again, replacing || '');
+        return;
+    }
     const amount = readAmount(document.getElementById('mAmount'));
     if (amount <= 0) return toast("To'g'ri summa kiriting", true);
     button.disabled = true;
@@ -225,11 +247,9 @@ function submitEntry(type, replacing) {
         currency: document.getElementById('mCurrency').value,
         method: document.getElementById('mMethod').value,
         comment: document.getElementById('mComment').value.trim(),
-        // A retry of a direct send that got no answer keeps its ids.
-        requestId: miniEntryFormIds ? miniEntryFormIds.requestId : newMiniRequestId('mini'),
-        groupId: miniEntryFormIds ? miniEntryFormIds.groupId : newMiniRequestId('grp_mini')
+        requestId: newMiniRequestId('mini'),
+        groupId: newMiniRequestId('grp_mini')
     };
-    miniEntryFormIds = null;
     closeSheet();
     haptic('success');
     // A refused entry this corrects is replaced only once the new one is kept.

@@ -487,16 +487,19 @@ describe('The Telegram Mini App', () => {
     await page.fill('#mAmount', '330000');
     await page.locator('#mSubmit').click();
 
-    // Not kept, not lost: the failed send brings the form back with the amount.
+    // Not kept, not lost: the failed send brings the form back with the amount,
+    // locked -- it can only be resent exactly as it was.
     await page.waitForSelector('.toast.bad');
     await page.waitForSelector('#mAmount');
     assert.equal((await page.inputValue('#mAmount')).replace(/\D/g, ''), '330000');
+    assert.equal(await page.locator('#mAmount').isDisabled(), true);
 
     await page.locator('#mSubmit').click();
     await page.waitForSelector('.toast:not(.bad)');
     const saves = calls.filter(c => c.action === 'mini_save_transaction');
     assert.equal(saves.length, 2);
     assert.equal(saves[0].requestId, saves[1].requestId, 'the retry is the same request, so one record');
+    assert.equal(saves[1].amount, saves[0].amount, 'with the same values the server may already hold');
 
     // A new entry afterwards is a new request, never the old one's id.
     await page.locator('button:has-text("Kirim")').first().click();
