@@ -639,3 +639,23 @@ test('a copy that stops halfway says how to reset, and the spreadsheet stays the
   assert.ok(body.importStatus.failedAt);
   assert.strictEqual(post(gas, { action: 'get_omad_data', scope: 'dashboard' }).status, 'success');
 });
+
+test('a cache revision is bumped again once the batch it announced is stored', () => {
+  const gas = liveWithTenants();
+  gas.resetRequestMemos_();
+  const log = gas.appDoc_().getSheetByName('Omad_Audit_Log');
+  const lock = gas.appScriptLock_();
+  lock.waitLock(1000);
+  log.appendRow(['2026-08-01T09:00:00.000Z', 'kept', '']);
+  gas.bumpDataRevision_('OMAD');
+  // A lock-free reader here would see this revision with the row not stored yet.
+  const announced = Number(gas.dataRevision_('OMAD'));
+  lock.releaseLock();
+  assert.ok(Number(gas.dataRevision_('OMAD')) > announced, 'so whatever it cached under it is never used');
+
+  // A bump with nothing unsent is not repeated.
+  const settled = Number(gas.dataRevision_('OMAD'));
+  gas.bumpDataRevision_('OMAD');
+  gas.flushPendingWrites_();
+  assert.strictEqual(Number(gas.dataRevision_('OMAD')), settled + 1);
+});

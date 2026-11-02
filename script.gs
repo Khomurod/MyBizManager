@@ -546,6 +546,9 @@ function bumpDataRevision_(scope) {
     var current = Number(dataRevision_(scope)) || 0;
     scriptProperties_().setProperty(CACHE_REV_PROP_PREFIX + scope, String(current + 1));
   } catch (error) {}
+  // On Supabase the write this bump announces may still be waiting to be
+  // sent; it is bumped again once it is stored (24_supabase_store.gs).
+  noteRevisionBumpForPendingWrites_(scope);
 }
 
 // The read-modify-write above is deliberately not locked. Two writes landing
@@ -16132,6 +16135,7 @@ function appDoc_() {
 function resetStorageMemos_() {
   // Kept writes are never dropped by starting over.
   flushPendingWrites_();
+  STORAGE_DEFERRED_BUMPS_ = {};
   APP_DOC_MEMO_ = null;
 }
 
@@ -16359,6 +16363,36 @@ var STORAGE_BATCH_DEPTH_ = 0;
 /** The request's Supabase document, when that is the store in use. */
 function storageRequestDoc_() {
   return APP_DOC_MEMO_ && APP_DOC_MEMO_.__supabase ? APP_DOC_MEMO_ : null;
+}
+
+/**
+ * Cache scopes bumped while writes were still unsent.
+ *
+ * Writers bump a scope's revision right after writing, which on Supabase is
+ * before the batch is stored. A reader without the lock could see the new
+ * revision, read the old rows and cache them under it -- a stale summary, or
+ * a stale Omad_Read_Model, kept until the next write. So each such scope is
+ * bumped once more after the batch is stored.
+ */
+var STORAGE_DEFERRED_BUMPS_ = {};
+var STORAGE_REBUMPING_ = false;
+
+function noteRevisionBumpForPendingWrites_(scope) {
+  if (STORAGE_REBUMPING_) return;
+  var doc = storageRequestDoc_();
+  if (doc && (doc.__pendingCount() > 0 || doc.__ctx.buffering())) STORAGE_DEFERRED_BUMPS_[scope] = true;
+}
+
+function rebumpDeferredRevisions_() {
+  var scopes = Object.keys(STORAGE_DEFERRED_BUMPS_);
+  STORAGE_DEFERRED_BUMPS_ = {};
+  if (!scopes.length) return;
+  STORAGE_REBUMPING_ = true;
+  try {
+    for (var i = 0; i < scopes.length; i++) bumpDataRevision_(scopes[i]);
+  } finally {
+    STORAGE_REBUMPING_ = false;
+  }
 }
 
 /** Sends every kept write now. A no-op on the spreadsheet. */
@@ -16607,7 +16641,11 @@ function supabaseDoc_(credentials, options) {
 
   /** Sends every kept operation. */
   ctx.flush = function () {
-    if (!ctx.pending.length) return;
+    if (!ctx.pending.length) {
+      // Nothing unsent: a bump made since announced nothing still in flight.
+      if (!ctx.buffering()) STORAGE_DEFERRED_BUMPS_ = {};
+      return;
+    }
     var plan = wireOps(ctx.pending);
     ctx.pending = [];
     ctx.touched = {};
@@ -16620,6 +16658,7 @@ function supabaseDoc_(credentials, options) {
       ctx.counts = null;
       ctx.config = null;
       openSheets().forEach(function (sheet) { sheet.__forget(true); });
+      STORAGE_DEFERRED_BUMPS_ = {};
       throw error;
     }
     for (var i = 0; i < plan.inserts.length; i++) {
@@ -16630,6 +16669,7 @@ function supabaseDoc_(credentials, options) {
       }
       for (var k = 0; k < refs.length; k++) refs[k].seq = seqs[k];
     }
+    rebumpDeferredRevisions_();
   };
 
   /** Sends what a read of `table` would otherwise miss. */

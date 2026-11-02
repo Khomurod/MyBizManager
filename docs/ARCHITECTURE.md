@@ -862,7 +862,7 @@ on both stores — which is also why the whole test suite can run on both.
 | row N | the (N − header)th row by `seq`, the identity column every table carries |
 | `getValues` / `getDataRange` | `GET … order=seq`, paged 1 000 at a time, so a table of any size is read whole; within a request a whole read is kept and reused (below) |
 | `setValues` on existing rows | an update **by the `seq` that was read**; zero rows updated is an error |
-| `setValues` / `appendRow` past the end | an insert of ≤200 rows (≤4 MB) per statement, so a group is never half-written |
+| `setValues` / `appendRow` past the end | an insert of ≤200 rows (≤4 MB) per statement. Inside a batch every statement goes in the one `mbm_apply` transaction; outside one (the move's copy, a test), a larger write is several requests and is **not** atomic |
 | `deleteRow(s)` | delete by `seq` — or, for `Cafe_Sales`, stamping `voided_at` (the receipt survives, hidden) |
 | `getConfig` / `setConfig` | every setting read once per request (in parallel with the row counts), and an upsert on `key` |
 | `getLastRow` | `mbm_counts()`: every table's count in one call, once per request (and again under the lock) |
@@ -910,6 +910,10 @@ The batch is sent early whenever something needs it stored:
 | the lock is taken | the boundary; reads made before it are forgotten too |
 | the lock is released (even inside an outer batch) | the next execution may read the rows |
 | the batch ends | — |
+
+A cache revision bumped while writes are still unsent is bumped again once
+they are stored (`noteRevisionBumpForPendingWrites_`), so a reader without the
+lock cannot cache the old rows under the new revision.
 
 If `mbm_apply` refuses, nothing of the batch is stored, every position and
 count the request worked out is forgotten, and the error surfaces (a queue job

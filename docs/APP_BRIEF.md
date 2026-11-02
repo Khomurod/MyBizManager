@@ -939,7 +939,9 @@ composes the message from data it already stored.
     always sent before a read of its table and before any Telegram call
     (`telegramFetch_`, `deleteTelegramMessageIfPresent_` call
     `flushPendingWrites_`), so nothing ever reads around its own write and no
-    message describes a row that is not stored.
+    message describes a row that is not stored. A cache revision bumped
+    while writes are unsent is bumped again once they are stored, or a
+    lock-free reader could cache old rows under the new revision.
 
 ## 12. Known limitations and intentional exceptions
 
