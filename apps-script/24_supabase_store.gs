@@ -698,7 +698,8 @@ function supabaseDoc_(credentials, options) {
     counts: null,       // the mbm_counts() answer
     countsGen: 0,       // which mbm_counts() answer `counts` is
     config: null,       // every setting, key -> value
-    noRpc: false        // the database predates mbm_apply / mbm_counts
+    noRpc: false,       // the database predates mbm_apply / mbm_counts
+    rpcKnown: false     // whether that has been found out yet
   };
 
   var openSheets = function () {
@@ -709,8 +710,18 @@ function supabaseDoc_(credentials, options) {
     return list;
   };
 
+  /**
+   * Whether writes are kept for the batch right now. Only once the database
+   * is known to have mbm_apply: without it a kept batch could only be sent as
+   * separate calls *after* the code that wrote it had moved on -- a correction
+   * whose status write failed would no longer be caught where it happened and
+   * its replacement voided. So on such a database every write is immediate,
+   * exactly as before batching existed.
+   */
   ctx.buffering = function () {
-    return ctx.perRequest && STORAGE_BATCH_DEPTH_ > 0;
+    if (!ctx.perRequest || STORAGE_BATCH_DEPTH_ === 0) return false;
+    if (!ctx.noRpc && !ctx.rpcKnown) ctx.prime();
+    return !ctx.noRpc;
   };
 
   /** Keeps a row operation, merging it into one already kept where it can. */
@@ -828,6 +839,7 @@ function supabaseDoc_(credentials, options) {
         answer = supabaseRpc_(credentials, "mbm_apply", { ops: chunks[c] }).json || [];
       } catch (error) {
         if (c === 0 && isMissingSupabaseFunction_(error)) {
+          // Removed since this request found it: nothing of this call is stored.
           ctx.noRpc = true;
           return applyOneByOne(wire);
         }
@@ -857,8 +869,8 @@ function supabaseDoc_(credentials, options) {
       ctx.counts = null;
       ctx.config = null;
       openSheets().forEach(function (sheet) { sheet.__forget(true); });
-      // A batch split over several calls (only past SUPABASE_INSERT_MAX_CHARS,
-      // or without mbm_apply) may be partly stored: invalidate regardless.
+      // A batch split over several calls (only past SUPABASE_INSERT_MAX_CHARS)
+      // may be partly stored: invalidate regardless.
       rebumpDeferredRevisions_();
       throw error;
     }
@@ -907,6 +919,7 @@ function supabaseDoc_(credentials, options) {
         ctx.counts = counted.json || {};
         ctx.countsGen++;
       }
+      ctx.rpcKnown = true;
     }
     if (wantConfig) {
       var first = answers[at];

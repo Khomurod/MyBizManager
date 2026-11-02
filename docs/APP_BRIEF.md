@@ -968,8 +968,10 @@ composes the message from data it already stored.
   sends it, exactly as an immediate write would have stood. A queue job's
   "already sent" mark is therefore stored immediately, not with the batch.
 - **A database without `mbm_apply` / `mbm_counts`** (the migration not yet
-  applied) still works: the store falls back to one REST call per write, not
-  atomic, as before the speed work.
+  applied) still works exactly as before the speed work: nothing is kept for a
+  batch, every write is an immediate REST call, so the code's own failure
+  handling (a correction voiding its replacement) runs where the failure
+  happens. Only slower, and not atomic.
 - **A café sale retried with its request id after it was voided** is refused
   by the database (the hidden receipt still holds the id) instead of being
   rung up a second time, as the spreadsheet allowed.

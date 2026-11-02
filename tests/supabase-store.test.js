@@ -675,3 +675,22 @@ test('a batch the database refuses still invalidates the caches it announced', (
   // A split batch can be partly stored, so a refusal is never trusted to have changed nothing.
   assert.ok(Number(gas.dataRevision_('OMAD')) > announced);
 });
+
+test('without mbm_apply writes are immediate, so a failed correction is still caught and voided', () => {
+  const gas = liveWithTenants();
+  gas.__supabase.disableRpc();
+  const restore = gas.__supabase.fail(r => r.table === 'omad_transactions_v2' && r.method === 'patch' &&
+    r.body && r.body.status === 'Corrected' && 'database restarting');
+  const corrected = post(gas, {
+    action: 'correct_transaction', transactionId: '1786000000000_0', requestId: 'c1', period: '2026-08',
+    tenant: 'Apteka', type: 'Income', amount: 150, currency: 'USD', method: 'Naqd', deferReports: true
+  });
+  restore();
+  assert.strictEqual(corrected.status, 'error');
+  const rows = gas.__supabase.rows.omad_transactions_v2;
+  assert.strictEqual(rows.find(r => r.id === '1786000000000_0').status, 'Active', 'the original still counts');
+  assert.deepStrictEqual(rows.filter(r => r.id !== '1786000000000_0').map(r => r.status), ['Void'],
+    'and its replacement was voided where the failure happened, not left to double-count');
+  assert.ok(!gas.__supabase.requests.some(r => r.table === 'rpc/mbm_apply' && r.method === 'post' &&
+    r.body && r.body.ops), 'nothing was ever kept for a batch');
+});

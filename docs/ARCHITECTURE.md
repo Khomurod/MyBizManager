@@ -900,8 +900,7 @@ returns the new `seq`s, and either everything lands or nothing does. That
 holds per call: a batch larger than `SUPABASE_INSERT_MAX_CHARS` (4 MB — in
 practice only a bulk tool's thousands of rows; every ordinary action is a few
 KB) is split into several calls, each its own transaction, so a later one
-failing leaves the earlier ones stored. The same is true of the fallback
-without `mbm_apply`. A row
+failing leaves the earlier ones stored. A row
 queued for insert has a placeholder identity until then; a write to it changes
 the queued row.
 
@@ -936,8 +935,11 @@ insert or delete, and forgotten when the lock is taken. Tables marked
 idempotency lookup asks the database for the generated `request_id` instead
 of reading every receipt (`findFirstRow`).
 
-A database without the two functions answers 404; the store then falls back to
-one REST call per write (not atomic) and to per-table counts.
+A database without the two functions answers 404 to the request's first
+`mbm_counts`, which every batch waits for before keeping anything. The store
+then keeps nothing: every write is an immediate REST call, exactly as before
+batching, so failure handling inside the business code (a correction voiding
+its replacement) still runs where the failure happens; counts are per table.
 
 ### What the database adds
 
