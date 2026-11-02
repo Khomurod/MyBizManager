@@ -67,15 +67,23 @@ test('cancelling an entry refreshes in the background and refuses a second click
 
 test('the Mini App confirms a financial write before refreshing, and coalesces it', () => {
   const omad = read('assets/mini/03-omad.js');
+  const outbox = read('assets/mini/03a-outbox.js');
 
   // Every entry flow: close, confirm, then refresh out of band.
-  assert.strictEqual((omad.match(/refreshOmadInBackground\(\)/g) || []).length, 4,
-    'the transaction flow, the tenant-paid flow, the bulk flow, and the helper itself');
-  ['submitEntry', 'submitTenantPaid', 'submitBulk'].forEach(name => {
+  assert.strictEqual((omad.match(/refreshOmadInBackground\(\)/g) || []).length, 3,
+    'the tenant-paid flow, the bulk flow, and the helper itself');
+  ['submitTenantPaid', 'submitBulk'].forEach(name => {
     const body = omad.slice(omad.indexOf(`async function ${name}(`));
     assert.match(body.slice(0, body.indexOf('\n}')), /refreshOmadInBackground\(\)/,
       `${name} refreshes out of band`);
   });
+  // An income or expense does not even wait for the confirmation: it goes to
+  // the outbox, which refreshes once the server has it.
+  const entry = omad.slice(omad.indexOf('function submitEntry('));
+  assert.match(entry.slice(0, entry.indexOf('\n}')), /queueMiniEntry\('mini_save_transaction'/);
+  assert.doesNotMatch(entry.slice(0, entry.indexOf('\n}')), /await /, 'Saqlash never awaits the server');
+  assert.match(outbox, /refreshOmadInBackground\(\)/);
+  assert.match(outbox, /flushReports\(saved\)/);
   assert.doesNotMatch(omad, /await loadOmad\(\);\n\s*\} catch/,
     'no write waits for the figures to come back');
   assert.match(omad, /flushReports\(\)/, 'the Telegram nudge stays unawaited');

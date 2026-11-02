@@ -139,8 +139,11 @@ async function bootstrap() {
             tenants: state.tenants, entries: state.entries
         });
 
+        forgetSavedMiniEntries();
         showApp();
         renderOmad();
+        // Anything saved while the last session could not reach the server.
+        drainMiniOutbox();
     } catch (error) {
         if (error.unauthorized) return failAuth(error);
         // A network fault or a busy backend leaves the stored figures on
@@ -149,6 +152,8 @@ async function bootstrap() {
         if (painted) {
             state.loadError = error.message || 'Xatolik';
             renderOmad();
+            // Entries kept on this phone wait for the connection, not for a reopen.
+            drainMiniOutbox();
             return;
         }
         showGate('⚠️', error.message || 'Xatolik', true);

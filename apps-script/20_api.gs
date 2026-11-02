@@ -656,25 +656,30 @@ function ledgerAction_(action, payload, doc) {
     });
   }
 
-  var result;
-  if (action === 'create_transaction') result = createTransaction_(doc, payload);
-  else if (action === 'correct_transaction') result = correctTransaction_(doc, payload);
-  else result = cancelTransaction_(doc, payload);
-
-  if (result.status === "success") {
+  // The financial record is committed first. Reporting is a separate retryable
+  // job, and even failing to *queue* it must not undo a save the caller was
+  // about to be told succeeded.
+  var followUp = function (saved) {
     recordLastOperation_(doc, action);
-    // The financial record is committed. Reporting is a separate retryable job,
-    // and even failing to *queue* it must not undo a save the caller was about
-    // to be told succeeded.
     try {
-      result.reportJobId = queueLedgerReport_(doc, action, result) || "";
+      saved.reportJobId = queueLedgerReport_(doc, action, saved) || "";
     } catch (queueError) {
-      result.reportJobId = "";
-      result.reportQueueError = redactSecrets_(queueError).slice(0, 300);
+      saved.reportJobId = "";
+      saved.reportQueueError = redactSecrets_(queueError).slice(0, 300);
       debugLog_(doc, "report_enqueue_failed", String(queueError));
     }
-    drainJobQueueQuietly_(doc, payload);
+  };
+
+  var result;
+  // A create runs the follow-up under its own lock, so on Supabase the stamp
+  // and the report job travel in the same batch as the row.
+  if (action === 'create_transaction') result = createTransaction_(doc, payload, followUp);
+  else {
+    result = action === 'correct_transaction' ? correctTransaction_(doc, payload) : cancelTransaction_(doc, payload);
+    if (result.status === "success") followUp(result);
   }
+
+  if (result.status === "success") drainJobQueueQuietly_(doc, payload);
   return jsonOutput_(result);
 }
 

@@ -956,13 +956,17 @@ composes the message from data it already stored.
 - **Speed on Supabase comes from fewer round trips, not from the database.**
   A `UrlFetchApp` call is not obviously cheaper than a Sheets call; what
   changed is how many an action makes. Counted on a realistic fixture
-  (`Sheets calls → Supabase round trips`): dashboard 8 → 1, new entry 23 → 6,
-  correction 30 → 7, dashboard after a write 12 → 3, café sale 12 → 3, new
-  task 22 → 3, task board 4 → 2, trigger tick 71 → 16. Real timings come from
-  Tizim → Supabase → "Tezlikni o'lchash". What is left per save is the read
-  under the lock, the batch, and two small writes made after the lock on
-  purpose (`Omad_Last_Operation` and the report job, whose failure must not
-  undo a save). On the spreadsheet nothing changed.
+  (`Sheets calls → Supabase round trips`): dashboard 8 → 1, new entry 23 → 3,
+  Mini App entry → 3, correction 30 → 5, dashboard after a write 12 → 3, café
+  sale 12 → 3, new task 22 → 3, task board 4 → 2. Real timings come from
+  Tizim → Supabase → "Tezlikni o'lchash". A save is now: the settings before
+  the lock; the settings, counts, ledger and job queue together right after
+  it (`storagePrefetch_`); then the rows, their audit lines, the report job and
+  the `Omad_Last_Operation` stamp as one `mbm_apply` (the create path's
+  `inLock` follow-up, which swallows its own failures so it can never undo the
+  save). On the spreadsheet nothing changed. Each round trip still costs
+  ~0.3 s from Apps Script to the database; the rest of the wait is Apps
+  Script itself, which only leaving it (a Cloudflare Worker) removes.
 - **A kept write is lost if the execution is killed outright** (Apps Script's
   time limit) between the write and the end of its batch; an exception still
   sends it, exactly as an immediate write would have stood. A queue job's
@@ -1000,6 +1004,17 @@ composes the message from data it already stored.
   deletes it. Nothing is ever submitted from it, and the live answer replaces
   every field. Before this it rendered nothing until the round trip returned,
   which was a blank screen on every open.
+- **A Mini App income or expense is saved through an outbox on the phone**
+  (`assets/mini/03a-outbox.js`). Saqlash closes the form at once; the entry
+  is kept in `localStorage` (keyed by the *verified* Telegram id, so two
+  accounts on one phone never send each other's entries) and shown in
+  "Oxirgi amallar" as `Saqlanmoqda...` until the server confirms. It is sent
+  with the request id minted when Saqlash was pressed, so every resend — a
+  timer while offline, the `online` event, the next open — resolves to one
+  record. A server refusal is shown in red with its reason (Qayta /
+  Tahrirlash / O'chirish) and never resent by itself. Balances move only when
+  the server's fresh list arrives. The tenant-paid pair, the bulk entry and
+  the web form still wait for the server.
 - **`assets/css/app.css` is generated but not verified in CI.** `npm run
   build:css` regenerates it from the pages; CI does not run it, because making
   the deploy depend on a CSS toolchain is a worse failure mode than the one it

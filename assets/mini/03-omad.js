@@ -122,8 +122,10 @@ function tenantRows() {
 }
 
 function entryRows() {
-    if (!state.entries.length) return emptyRow("Bu oyda amal yo'q");
-    return state.entries.map(e => {
+    // Entries still on their way to the server come first (03a-outbox.js).
+    const waiting = miniOutboxRows();
+    if (!state.entries.length) return waiting || emptyRow("Bu oyda amal yo'q");
+    return waiting + state.entries.map(e => {
         const tenantPaid = e.kind === 'tenant_paid_expense';
         const sign = tenantPaid ? 0 : (e.type === 'Income' ? 1 : -1);
         const badge = tenantPaid
@@ -165,7 +167,11 @@ function amountFields() {
         </div>`;
 }
 
-function openEntrySheet(type) {
+/**
+ * The income / expense form. `refused`, an outbox entry the server turned
+ * down, fills it back in so it can be corrected; saving it replaces that entry.
+ */
+function openEntrySheet(type, refused) {
     const income = type === 'Income';
     openSheet(income ? 'Yangi kirim' : 'Yangi chiqim', `
         <label for="mTenant">${income ? 'Ijarachi' : 'Manba'}</label>
@@ -174,46 +180,49 @@ function openEntrySheet(type) {
         <label for="mComment">Izoh</label>
         <textarea id="mComment" placeholder="Ixtiyoriy"></textarea>
         <button class="btn-primary btn-full" style="margin-top:14px" id="mSubmit"
-                onclick="submitEntry('${type}')">Saqlash</button>
-    `, () => attachAmountFormatting(document.getElementById('mAmount')));
+                onclick="submitEntry('${type}', '${refused ? escapeHtml(refused.id) : ''}')">Saqlash</button>
+    `, () => {
+        const amount = document.getElementById('mAmount');
+        attachAmountFormatting(amount);
+        if (!refused) return;
+        const p = refused.payload;
+        document.getElementById('mTenant').value = p.tenant;
+        amount.value = String(p.amount);
+        amount.dispatchEvent(new Event('input'));
+        document.getElementById('mCurrency').value = p.currency;
+        document.getElementById('mMethod').value = p.method;
+        document.getElementById('mComment').value = p.comment || '';
+    });
 }
 
-async function submitEntry(type) {
+/**
+ * Saqlash: the form closes at once and the entry is sent in the background
+ * (03a-outbox.js). Its request id is minted here, once, and travels with it
+ * through every resend, so the server can only ever store it once.
+ */
+function submitEntry(type, replacing) {
     const button = document.getElementById('mSubmit');
+    if (!button || button.disabled) return;
     const amount = readAmount(document.getElementById('mAmount'));
     if (amount <= 0) return toast("To'g'ri summa kiriting", true);
-
     button.disabled = true;
-    button.textContent = 'Saqlanmoqda...';
-    try {
-        await api('mini_save_transaction', {
-            type,
-            tenant: document.getElementById('mTenant').value,
-            period: state.period,
-            amount,
-            currency: document.getElementById('mCurrency').value,
-            method: document.getElementById('mMethod').value,
-            comment: document.getElementById('mComment').value.trim(),
-            requestId: pendingId('entry', 'mini'),
-            groupId: pendingId('entryGroup', 'grp_mini')
-        });
-        clearPendingId('entry');
-        clearPendingId('entryGroup');
-        closeSheet();
-        toast('Saqlandi');
-        flushReports();
-        // The record is stored; the figures are a fresh read of it. Neither the
-        // Telegram card nor that read is a reason to keep this form busy.
-        refreshOmadInBackground();
-    } catch (error) {
-        if (error.unauthorized) return failAuth(error);
-        // The ids are kept, so pressing save again resolves to the same record
-        // rather than writing a second one.
-        toast(error.message, true);
-    } finally {
-        button.disabled = false;
-        button.textContent = 'Saqlash';
-    }
+
+    const payload = {
+        type,
+        tenant: document.getElementById('mTenant').value,
+        period: state.period,
+        amount,
+        currency: document.getElementById('mCurrency').value,
+        method: document.getElementById('mMethod').value,
+        comment: document.getElementById('mComment').value.trim(),
+        requestId: newMiniRequestId('mini'),
+        groupId: newMiniRequestId('grp_mini')
+    };
+    // The refused entry this corrects was stored nowhere; the new one takes its place.
+    if (replacing) removeMiniOutboxItem(replacing);
+    closeSheet();
+    haptic('success');
+    queueMiniEntry('mini_save_transaction', payload);
 }
 
 function openTenantPaidSheet() {
@@ -313,6 +322,8 @@ async function loadOmad() {
         state.entries = body.transactions || [];
         state.snapshotAt = 0;
         state.loadError = '';
+        // What the outbox already delivered is in this list now.
+        forgetSavedMiniEntries();
         // Only the period the app opens on is worth storing: the snapshot
         // exists to make the *first* paint instant, and keeping a copy per
         // month someone browsed through would fill storage with figures nobody

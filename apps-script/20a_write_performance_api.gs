@@ -29,21 +29,22 @@ ledgerAction_ = function (action, payload, doc) {
     });
   }
 
-  var result = createTransactionBatch_(doc, payload);
-  if (result.status === "success") {
+  // The stamp and the report job are written under the save's own lock, so on
+  // Supabase they travel in the same batch as the rows (24_supabase_store.gs).
+  var result = createTransactionBatch_(doc, payload, function (saved) {
     recordLastOperation_(doc, action);
     try {
       // One report for the whole entry. Every row in the batch shares the same
       // group id, so the ordinary create report path already has the right
       // semantics and no new Telegram format is needed.
-      result.reportJobId = queueLedgerReport_(doc, 'create_transaction', result) || "";
+      saved.reportJobId = queueLedgerReport_(doc, 'create_transaction', saved) || "";
     } catch (queueError) {
-      result.reportJobId = "";
-      result.reportQueueError = redactSecrets_(queueError).slice(0, 300);
+      saved.reportJobId = "";
+      saved.reportQueueError = redactSecrets_(queueError).slice(0, 300);
       debugLog_(doc, "report_enqueue_failed", String(queueError));
     }
-    drainJobQueueQuietly_(doc, payload);
-  }
+  });
+  if (result.status === "success") drainJobQueueQuietly_(doc, payload);
   return jsonOutput_(result);
 };
 

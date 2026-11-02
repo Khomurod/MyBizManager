@@ -7867,8 +7867,13 @@ function buildRateSnapshot_(period, currency, rateType) {
  * Appends one Active transaction. Idempotent on `requestId`: the same request
  * always resolves to the same record, so a retry, a refresh or a double-click
  * cannot create a second copy.
+ *
+ * `inLock(result)`, if given, runs under the same lock after a successful
+ * create (or a duplicate), so its writes -- the report job, the last-operation
+ * stamp -- reach the database in the same batch as the row itself. It must
+ * swallow its own failures: nothing it does may undo the save.
  */
-function createTransaction_(doc, input) {
+function createTransaction_(doc, input, inLock) {
   var validationError = validateTransactionInput_(input);
   if (validationError) return { status: "error", message: validationError };
 
@@ -7879,10 +7884,12 @@ function createTransaction_(doc, input) {
   var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
+    // Everything this needs, read in one round trip (24_supabase_store.gs).
+    storagePrefetch_(doc, inLock ? [OMAD_TRANSACTIONS_V2_SHEET, JOB_QUEUE_SHEET] : [OMAD_TRANSACTIONS_V2_SHEET]);
     var existing = findLedgerRowByRequestId_(doc, requestId);
     if (existing) {
       // Not an error: the caller gets exactly the record their request created.
-      return { status: "success", duplicate: true, transaction: ledgerToLegacyShape_(existing) };
+      return runInLock_(inLock, { status: "success", duplicate: true, transaction: ledgerToLegacyShape_(existing) });
     }
 
     var now = new Date().toISOString();
@@ -7924,10 +7931,18 @@ function createTransaction_(doc, input) {
       amount: transaction.amount, currency: transaction.currency
     }));
 
-    return { status: "success", duplicate: false, transaction: ledgerToLegacyShape_(transaction) };
+    return runInLock_(inLock, { status: "success", duplicate: false, transaction: ledgerToLegacyShape_(transaction) });
   } finally {
     lock.releaseLock();
   }
+}
+
+/** Runs a caller's follow-up under the lock it is already in; never fails the save. */
+function runInLock_(inLock, result) {
+  if (typeof inLock === "function") {
+    try { inLock(result); } catch (error) {}
+  }
+  return result;
 }
 
 /**
@@ -7977,6 +7992,7 @@ function correctTransaction_(doc, input) {
   var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
+    storagePrefetch_(doc, [OMAD_TRANSACTIONS_V2_SHEET, JOB_QUEUE_SHEET]);
     var alreadyDone = findLedgerRowByRequestId_(doc, requestId);
     if (alreadyDone) {
       return { status: "success", duplicate: true, transaction: ledgerToLegacyShape_(alreadyDone) };
@@ -8068,6 +8084,7 @@ function cancelTransaction_(doc, input) {
   var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
+    storagePrefetch_(doc, [OMAD_TRANSACTIONS_V2_SHEET, JOB_QUEUE_SHEET]);
     var original = findLedgerRow_(doc, input.transactionId);
     if (!original) return { status: "error", message: "Tranzaksiya topilmadi." };
 
@@ -8526,7 +8543,7 @@ function nextBatchIdIndex_(sheet, stamp) {
  * only the missing remainder. It never assumes that seeing line 0 means the
  * whole entry landed.
  */
-function createTransactionBatch_(doc, input) {
+function createTransactionBatch_(doc, input, inLock) {
   var payload = input || {};
   var lines = Array.isArray(payload.lines) ? payload.lines : [];
   if (lines.length === 0) return { status: "error", message: "Kamida bitta summa kiriting." };
@@ -8560,6 +8577,8 @@ function createTransactionBatch_(doc, input) {
   var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
+    // Everything this needs, read in one round trip (24_supabase_store.gs).
+    storagePrefetch_(doc, inLock ? [OMAD_TRANSACTIONS_V2_SHEET, JOB_QUEUE_SHEET] : [OMAD_TRANSACTIONS_V2_SHEET]);
     var sheet = ledgerSheet_(doc);
     var existingLookup = findExistingBatchLines_(sheet, requestBase, prepared.length);
     if (existingLookup.conflict) {
@@ -8611,13 +8630,13 @@ function createTransactionBatch_(doc, input) {
       if (existingCount === prepared.length) {
         var duplicateOutput = [];
         for (var d = 0; d < existingLines.length; d++) duplicateOutput.push(ledgerToLegacyShape_(existingLines[d]));
-        return {
+        return runInLock_(inLock, {
           status: "success",
           duplicate: true,
           transaction: duplicateOutput[0],
           transactions: duplicateOutput,
           groupId: groupId
-        };
+        });
       }
     }
 
@@ -8680,14 +8699,14 @@ function createTransactionBatch_(doc, input) {
     appendLedgerRows_(sheet, newRows);
     appendTransactionCreatedAuditsBatch_(doc, newTransactions);
 
-    return {
+    return runInLock_(inLock, {
       status: "success",
       duplicate: false,
       resumed: existingCount > 0,
       transaction: outputByLine[0],
       transactions: outputByLine,
       groupId: groupId
-    };
+    });
   } finally {
     lock.releaseLock();
   }
@@ -9046,6 +9065,7 @@ function createTransactionBulk_(doc, input) {
   var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
+    storagePrefetch_(doc, [OMAD_TRANSACTIONS_V2_SHEET]);
     var sheet = ledgerSheet_(doc);
     var existing = findExistingBulkRows_(sheet, requestBase, count);
     var conflict = {
@@ -14421,25 +14441,30 @@ function ledgerAction_(action, payload, doc) {
     });
   }
 
-  var result;
-  if (action === 'create_transaction') result = createTransaction_(doc, payload);
-  else if (action === 'correct_transaction') result = correctTransaction_(doc, payload);
-  else result = cancelTransaction_(doc, payload);
-
-  if (result.status === "success") {
+  // The financial record is committed first. Reporting is a separate retryable
+  // job, and even failing to *queue* it must not undo a save the caller was
+  // about to be told succeeded.
+  var followUp = function (saved) {
     recordLastOperation_(doc, action);
-    // The financial record is committed. Reporting is a separate retryable job,
-    // and even failing to *queue* it must not undo a save the caller was about
-    // to be told succeeded.
     try {
-      result.reportJobId = queueLedgerReport_(doc, action, result) || "";
+      saved.reportJobId = queueLedgerReport_(doc, action, saved) || "";
     } catch (queueError) {
-      result.reportJobId = "";
-      result.reportQueueError = redactSecrets_(queueError).slice(0, 300);
+      saved.reportJobId = "";
+      saved.reportQueueError = redactSecrets_(queueError).slice(0, 300);
       debugLog_(doc, "report_enqueue_failed", String(queueError));
     }
-    drainJobQueueQuietly_(doc, payload);
+  };
+
+  var result;
+  // A create runs the follow-up under its own lock, so on Supabase the stamp
+  // and the report job travel in the same batch as the row.
+  if (action === 'create_transaction') result = createTransaction_(doc, payload, followUp);
+  else {
+    result = action === 'correct_transaction' ? correctTransaction_(doc, payload) : cancelTransaction_(doc, payload);
+    if (result.status === "success") followUp(result);
   }
+
+  if (result.status === "success") drainJobQueueQuietly_(doc, payload);
   return jsonOutput_(result);
 }
 
@@ -14495,21 +14520,22 @@ ledgerAction_ = function (action, payload, doc) {
     });
   }
 
-  var result = createTransactionBatch_(doc, payload);
-  if (result.status === "success") {
+  // The stamp and the report job are written under the save's own lock, so on
+  // Supabase they travel in the same batch as the rows (24_supabase_store.gs).
+  var result = createTransactionBatch_(doc, payload, function (saved) {
     recordLastOperation_(doc, action);
     try {
       // One report for the whole entry. Every row in the batch shares the same
       // group id, so the ordinary create report path already has the right
       // semantics and no new Telegram format is needed.
-      result.reportJobId = queueLedgerReport_(doc, 'create_transaction', result) || "";
+      saved.reportJobId = queueLedgerReport_(doc, 'create_transaction', saved) || "";
     } catch (queueError) {
-      result.reportJobId = "";
-      result.reportQueueError = redactSecrets_(queueError).slice(0, 300);
+      saved.reportJobId = "";
+      saved.reportQueueError = redactSecrets_(queueError).slice(0, 300);
       debugLog_(doc, "report_enqueue_failed", String(queueError));
     }
-    drainJobQueueQuietly_(doc, payload);
-  }
+  });
+  if (result.status === "success") drainJobQueueQuietly_(doc, payload);
   return jsonOutput_(result);
 };
 
@@ -15178,16 +15204,17 @@ function miniSaveTransaction_(doc, configSheet, payload) {
   }
 
   if (isLedgerActive_(doc)) {
+    // The report job and the stamp are written under the save's own lock: on
+    // Supabase the whole save is one write to the database.
     var created = createTransaction_(doc, {
       requestId: requestId, groupId: groupId || newEntryGroupId_(), period: period,
       tenant: tenant, type: type, amount: amount, currency: payload.currency,
       method: payload.method, comment: String(payload.comment || ""),
       createdBy: "miniapp", source: TX_SOURCE_TELEGRAM
+    }, function (saved) {
+      if (!saved.duplicate) queueMiniTransactionReport_(doc, saved.transaction);
+      recordLastOperation_(doc, "mini_save_transaction");
     });
-    if (created.status === "success" && !created.duplicate) {
-      queueMiniTransactionReport_(doc, created.transaction);
-    }
-    if (created.status === "success") recordLastOperation_(doc, "mini_save_transaction");
     return jsonOutput_(created);
   }
 
@@ -16401,6 +16428,16 @@ function flushPendingWrites_() {
   if (doc) doc.__flush();
 }
 
+/**
+ * Reads the settings, the row counts and these whole tables in ONE round
+ * trip, for code about to need all of them -- typically right after taking
+ * the lock, which forgot everything read before it. A no-op on the
+ * spreadsheet, and for a table this request already holds.
+ */
+function storagePrefetch_(doc, sheetNames) {
+  if (doc && doc.__supabase && typeof doc.__prefetch === "function") doc.__prefetch(sheetNames || []);
+}
+
 function beginStorageBatch_() {
   STORAGE_BATCH_DEPTH_++;
 }
@@ -16695,11 +16732,13 @@ function supabaseDoc_(credentials, options) {
 
   /**
    * Fetches, in one round trip, whichever of the settings and the row counts
-   * this request has not got yet. A request needs both almost every time, and
-   * one parallel fetch costs what one of them does.
+   * this request has not got yet -- and, when named, whole tables the caller
+   * is about to read (storagePrefetch_). A request needs the settings and the
+   * counts almost every time, and one parallel fetch costs what one does.
    */
-  ctx.prime = function () {
+  ctx.prime = function (sheetNames) {
     var calls = [];
+    var tables = [];
     var wantCounts = !ctx.counts && !ctx.noRpc;
     var wantConfig = !ctx.config;
     // Counts are only true of what is stored.
@@ -16709,6 +16748,12 @@ function supabaseDoc_(credentials, options) {
     if (wantConfig) {
       calls.push({ method: "get", path: "system_config", params: [
         ["select", "seq,key,value"], ["order", "seq.asc"], ["limit", SUPABASE_PAGE_SIZE]] });
+    }
+    for (var n = 0; n < (sheetNames || []).length; n++) {
+      var wanted = doc.getSheetByName(sheetNames[n]);
+      if (!wanted || !wanted.__wantsRows()) continue;
+      tables.push(wanted);
+      calls.push({ method: "get", path: wanted.__table, params: wanted.__allPageParams() });
     }
     if (!calls.length) return;
     var answers = supabaseRequestAll_(credentials, calls);
@@ -16725,7 +16770,7 @@ function supabaseDoc_(credentials, options) {
       ctx.rpcKnown = true;
     }
     if (wantConfig) {
-      var first = answers[at];
+      var first = answers[at++];
       if (first instanceof Error) throw first;
       var rows = first.json || [];
       var page = rows;
@@ -16738,6 +16783,11 @@ function supabaseDoc_(credentials, options) {
       var config = {};
       for (var i = 0; i < rows.length; i++) config[rows[i].key] = rows[i].value === null ? "" : rows[i].value;
       ctx.config = config;
+    }
+    // A table that failed is simply read again when it is needed.
+    for (var t = 0; t < tables.length; t++) {
+      var answer = answers[at++];
+      if (!(answer instanceof Error)) tables[t].__adopt(answer.json || []);
     }
   };
 
@@ -16755,6 +16805,7 @@ function supabaseDoc_(credentials, options) {
     credentials: credentials,
     __flush: function () { ctx.flush(); },
     __lockAcquired: function () { ctx.forgetReads(); },
+    __prefetch: function (sheetNames) { if (ctx.perRequest) ctx.prime(sheetNames); },
     __pendingCount: function () { return ctx.pending.length; },
     getSheetByName: function (name) {
       var definition = supabaseSheetDefinition_(name);
@@ -16817,7 +16868,7 @@ function supabaseSheet_(ctx, name, definition, doc) {
   var table = definition.table;
   var columns = definition.columns;
   var header = columns.map(function (c) { return c[0]; });
-  var state = { seqs: [], count: -1, rows: null, rowIndex: null, countGen: -1 };
+  var state = { seqs: [], count: -1, rows: null, rowIndex: null, countGen: -1, firstPage: null };
   // Sheet rows above the data: the header, or none.
   var headerRows = definition.noHeader ? 0 : 1;
   var firstDataRow = headerRows + 1;
@@ -16867,6 +16918,7 @@ function supabaseSheet_(ctx, name, definition, doc) {
   var dropRows = function () {
     state.rows = null;
     state.rowIndex = null;
+    state.firstPage = null;
   };
 
   var allPage = function (afterSeq) {
@@ -16882,6 +16934,12 @@ function supabaseSheet_(ctx, name, definition, doc) {
   var readAll = function () {
     ctx.beforeRead(table);
     if (state.rows) return state.rows;
+    if (state.firstPage) {
+      // A full first page fetched alongside something else: page on from it.
+      var started = state.firstPage;
+      state.firstPage = null;
+      return finishReadAll(started);
+    }
 
     var calls = [allPage(0)];
     var companions = [];
@@ -16902,8 +16960,13 @@ function supabaseSheet_(ctx, name, definition, doc) {
       if (!(answers[c + 1] instanceof Error)) companions[c].__adopt(answers[c + 1].json || []);
     }
 
+    return finishReadAll(answers[0].json || []);
+  };
+
+  /** The rest of a whole read, from its first page. */
+  var finishReadAll = function (firstPage) {
     var records = [];
-    var page = answers[0].json || [];
+    var page = firstPage;
     while (true) {
       for (var i = 0; i < page.length; i++) records.push(page[i]);
       if (page.length < SUPABASE_PAGE_SIZE) break;
@@ -17320,11 +17383,14 @@ function supabaseSheet_(ctx, name, definition, doc) {
       dropRows();
       if (positions) state.seqs = [];
     },
-    __wantsRows: function () { return ctx.perRequest && !state.rows && !ctx.touched[table]; },
+    __wantsRows: function () {
+      return ctx.perRequest && !state.rows && !state.firstPage && !ctx.touched[table];
+    },
     __allPageParams: function () { return allPage(0).params; },
     /** A whole first page read alongside another table. */
     __adopt: function (records) {
-      if (records.length >= SUPABASE_PAGE_SIZE || ctx.touched[table]) return;
+      if (ctx.touched[table]) return;
+      if (records.length >= SUPABASE_PAGE_SIZE) { state.firstPage = records; return; }
       state.seqs = records.map(function (r) { return r.seq; });
       state.count = records.length;
       keepRows(records);
