@@ -89,38 +89,33 @@ function newMiniRequestId(prefix) {
  * is full or switched off -- it is sent directly instead, and a refusal
  * reopens the form with what was typed. Never dropped silently.
  */
-function queueMiniEntry(action, payload) {
-    const list = readMiniOutbox();
+function queueMiniEntry(action, payload, replacing) {
+    // A corrected entry takes the refused one's place in the same write, so
+    // there is never a moment when neither is kept.
+    const list = readMiniOutbox().filter(item => !replacing || item.id !== replacing);
     list.push({ id: payload.requestId, action, payload, status: 'pending', error: '', at: Date.now() });
     if (!writeMiniOutbox(list) || !readMiniOutbox().some(item => item.id === payload.requestId)) {
-        sendMiniEntryDirectly(action, payload);
+        sendMiniEntryDirectly(action, payload, replacing);
         return;
     }
-    miniDirectRetryIds = null;
     renderOmadIfShown();
     drainMiniOutbox();
 }
 
-/**
- * The ids of a direct send that did not succeed. The next Saqlash reuses them
- * -- the answer may have been lost after the server stored the entry, and a
- * fresh id would then make a second record.
- */
-let miniDirectRetryIds = null;
-
-async function sendMiniEntryDirectly(action, payload) {
-    miniDirectRetryIds = { requestId: payload.requestId, groupId: payload.groupId };
+async function sendMiniEntryDirectly(action, payload, replacing) {
     try {
         await api(action, payload);
-        miniDirectRetryIds = null;
+        // Only now is the refused entry it corrects no longer needed.
+        if (replacing) removeMiniOutboxItem(replacing);
         toast('Saqlandi');
         flushReports();
         refreshOmadInBackground();
     } catch (error) {
         if (error.unauthorized) return failAuth(error);
         toast(error.message, true);
-        // The same request id goes with it again, so a retry is still one record.
-        openEntrySheet(payload.type, { id: '', payload });
+        // The answer may have been lost after the server stored it, so the
+        // reopened form sends the same request id again: still one record.
+        openEntrySheet(payload.type, { id: replacing || '', payload, sameIds: true });
     }
 }
 

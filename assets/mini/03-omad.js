@@ -168,11 +168,21 @@ function amountFields() {
 }
 
 /**
+ * The ids the open entry form will save with, when it is a retry of a direct
+ * send that got no answer (03a-outbox.js). Set only by that reopened form and
+ * cleared by every other one, so a new entry can never inherit them.
+ */
+let miniEntryFormIds = null;
+
+/**
  * The income / expense form. `refused`, an outbox entry the server turned
  * down, fills it back in so it can be corrected; saving it replaces that entry.
  */
 function openEntrySheet(type, refused) {
     const income = type === 'Income';
+    miniEntryFormIds = refused && refused.sameIds
+        ? { requestId: refused.payload.requestId, groupId: refused.payload.groupId }
+        : null;
     openSheet(income ? 'Yangi kirim' : 'Yangi chiqim', `
         <label for="mTenant">${income ? 'Ijarachi' : 'Manba'}</label>
         <select id="mTenant">${tenantOptions(!income)}</select>
@@ -215,15 +225,15 @@ function submitEntry(type, replacing) {
         currency: document.getElementById('mCurrency').value,
         method: document.getElementById('mMethod').value,
         comment: document.getElementById('mComment').value.trim(),
-        // A direct send that failed keeps its ids (03a-outbox.js).
-        requestId: miniDirectRetryIds ? miniDirectRetryIds.requestId : newMiniRequestId('mini'),
-        groupId: miniDirectRetryIds ? miniDirectRetryIds.groupId : newMiniRequestId('grp_mini')
+        // A retry of a direct send that got no answer keeps its ids.
+        requestId: miniEntryFormIds ? miniEntryFormIds.requestId : newMiniRequestId('mini'),
+        groupId: miniEntryFormIds ? miniEntryFormIds.groupId : newMiniRequestId('grp_mini')
     };
-    // The refused entry this corrects was stored nowhere; the new one takes its place.
-    if (replacing) removeMiniOutboxItem(replacing);
+    miniEntryFormIds = null;
     closeSheet();
     haptic('success');
-    queueMiniEntry('mini_save_transaction', payload);
+    // A refused entry this corrects is replaced only once the new one is kept.
+    queueMiniEntry('mini_save_transaction', payload, replacing || '');
 }
 
 function openTenantPaidSheet() {

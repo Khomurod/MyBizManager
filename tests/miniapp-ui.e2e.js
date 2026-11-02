@@ -460,6 +460,10 @@ describe('The Telegram Mini App', () => {
     await page.waitForSelector('#mAmount');
     assert.equal((await page.inputValue('#mAmount')).replace(/\D/g, ''), '500000', 'what was typed survives');
 
+    // Closing the corrected form without saving keeps the refused entry.
+    await page.locator('.sheet button[aria-label="Yopish"]').click();
+    assert.equal(await page.locator('#miniEntryList [data-outbox="failed"]').count(), 1);
+
     await context.close();
   });
 
@@ -493,6 +497,16 @@ describe('The Telegram Mini App', () => {
     const saves = calls.filter(c => c.action === 'mini_save_transaction');
     assert.equal(saves.length, 2);
     assert.equal(saves[0].requestId, saves[1].requestId, 'the retry is the same request, so one record');
+
+    // A new entry afterwards is a new request, never the old one's id.
+    await page.locator('button:has-text("Kirim")').first().click();
+    await page.fill('#mAmount', '440000');
+    await page.locator('#mSubmit').click();
+    const sent = () => calls.filter(c => c.action === 'mini_save_transaction');
+    for (let i = 0; i < 100 && sent().length < 3; i++) await page.waitForTimeout(50);
+    const after = sent();
+    assert.equal(after.length, 3);
+    assert.notEqual(after[2].requestId, after[0].requestId);
 
     await context.close();
   });
