@@ -342,6 +342,7 @@ function refreshOmadInBackground() {
 
 async function loadOmad() {
     const seq = ++miniOmadLoadSeq;
+    const requestedAt = Date.now();
     try {
         const body = await api('mini_omad', { period: state.period });
         // A superseded answer is dropped whole: it may name another period, and
@@ -353,8 +354,8 @@ async function loadOmad() {
         state.entries = body.transactions || [];
         state.snapshotAt = 0;
         state.loadError = '';
-        // What the outbox already delivered is in this list now.
-        forgetSavedMiniEntries();
+        // What the outbox delivered before this list was asked for is in it now.
+        forgetSavedMiniEntries(requestedAt);
         // Only the period the app opens on is worth storing: the snapshot
         // exists to make the *first* paint instant, and keeping a copy per
         // month someone browsed through would fill storage with figures nobody

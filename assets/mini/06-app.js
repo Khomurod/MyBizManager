@@ -125,6 +125,7 @@ async function bootstrap() {
     const painted = hydrateMiniSnapshot();
     if (!painted) showGate('⏳', 'Tekshirilmoqda...', false);
 
+    const requestedAt = Date.now();
     try {
         const body = await api('mini_home', { period: state.period || currentPeriod() });
         state.user = body.user;
@@ -139,7 +140,7 @@ async function bootstrap() {
             tenants: state.tenants, entries: state.entries
         });
 
-        forgetSavedMiniEntries();
+        forgetSavedMiniEntries(requestedAt);
         showApp();
         renderOmad();
         // Anything saved while the last session could not reach the server.

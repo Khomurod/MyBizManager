@@ -142,7 +142,7 @@ async function drainMiniOutbox() {
             sent.add(next.id);
             try {
                 await api(next.action, next.payload);
-                updateMiniOutboxItem(next.id, { status: 'saved', error: '' });
+                updateMiniOutboxItem(next.id, { status: 'saved', error: '', savedAt: Date.now() });
                 saved++;
             } catch (error) {
                 if (error.unauthorized) {
@@ -180,10 +180,14 @@ async function drainMiniOutbox() {
     renderOmadIfShown();
 }
 
-/** Called with every fresh list from the server: what it confirmed is in it now. */
-function forgetSavedMiniEntries() {
+/**
+ * Called with every fresh list from the server, with the time that list was
+ * asked for: an entry saved before then is in it. One saved while the list
+ * was already on its way may not be, and stays until a later list.
+ */
+function forgetSavedMiniEntries(listRequestedAt) {
     const list = readMiniOutbox();
-    const kept = list.filter(item => item.status !== 'saved');
+    const kept = list.filter(item => item.status !== 'saved' || Number(item.savedAt || 0) >= listRequestedAt);
     if (kept.length !== list.length) writeMiniOutbox(kept);
 }
 
