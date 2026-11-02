@@ -340,7 +340,7 @@ Café actions additionally accept the café roles described in the permissions s
 | `get_omad_data` / `get_cafe_data` | **yes** | The authenticated replacements for the `doGet` reads. `get_omad_data` takes `scope: "dashboard"`, which answers with the read model's figures and a short recent list instead of the ledger (and with the whole list before cutover, because the legacy save submits it back) |
 | `get_omad_history` | **yes** | One page of history as whole business actions — `{period?, offset, limit}` — newest first, every row of each group on the page |
 | `verify_omad_read_model` / `rebuild_omad_read_model` | **yes** | Compare the stored summary against a fresh full-ledger build, and store a fresh one |
-| `get_health` | **yes** | The sixteen-check system health report |
+| `get_health` | **yes** | The seventeen-check system health report |
 | `configure_mini_app` | **yes** | Installs and verifies the bot's Mini App menu button |
 | `get_migration_status` | **yes** | Which sheet is live; the frontend picks its entry path from this |
 | `preview_` / `apply_` / `verify_` / `cutover_` / `rollback_omad_migration` | **yes** | The migration sequence, above |
@@ -862,7 +862,7 @@ on both stores — which is also why the whole test suite can run on both.
 | row N | the (N − header)th row by `seq`, the identity column every table carries |
 | `getValues` / `getDataRange` | `GET … order=seq`, paged 1 000 at a time, so a table of any size is read whole; within a request a whole read is kept and reused (below) |
 | `setValues` on existing rows | an update **by the `seq` that was read**; zero rows updated is an error |
-| `setValues` / `appendRow` past the end | an insert of ≤200 rows (≤4 MB) per statement. Inside a batch every statement goes in the one `mbm_apply` transaction; outside one (the move's copy, a test), a larger write is several requests and is **not** atomic |
+| `setValues` / `appendRow` past the end | an insert of ≤200 rows (≤4 MB) per statement. Inside a batch the statements go in the batch's `mbm_apply` call; outside one (the move's copy, a test), a larger write is several requests and is **not** atomic |
 | `deleteRow(s)` | delete by `seq` — or, for `Cafe_Sales`, stamping `voided_at` (the receipt survives, hidden) |
 | `getConfig` / `setConfig` | every setting read once per request (in parallel with the row counts), and an upsert on `key` |
 | `getLastRow` | `mbm_counts()`: every table's count in one call, once per request (and again under the lock) |
@@ -896,7 +896,12 @@ of one row become one update; consecutive inserts into one table become one
 statement) and sent in a single `POST /rest/v1/rpc/mbm_apply` (migration
 `20261102160523_batched_writes_and_counts.sql`). The function applies the
 operations in order inside one transaction with every trigger and constraint,
-returns the new `seq`s, and either everything lands or nothing does. A row
+returns the new `seq`s, and either everything lands or nothing does. That
+holds per call: a batch larger than `SUPABASE_INSERT_MAX_CHARS` (4 MB — in
+practice only a bulk tool's thousands of rows; every ordinary action is a few
+KB) is split into several calls, each its own transaction, so a later one
+failing leaves the earlier ones stored. The same is true of the fallback
+without `mbm_apply`. A row
 queued for insert has a placeholder identity until then; a write to it changes
 the queued row.
 

@@ -597,7 +597,8 @@ what sheet order always was.
   script lock (and inside `withBatchedWrites_`: a task edit, a queue job's
   bookkeeping) are kept and sent together through the SQL function
   `mbm_apply` — one transaction, so a payment, its audit line and its status
-  changes land together or not at all. They are sent earlier whenever
+  changes land together or not at all. (Only a batch over 4 MB, which no
+  ordinary action approaches, is split into several transactions.) They are sent earlier whenever
   something must see them: before a read of a table they touch, before any
   Telegram call, and when the lock is taken or released. Settings and row
   counts arrive together in one parallel fetch per request (`mbm_counts`),

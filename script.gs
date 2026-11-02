@@ -16603,7 +16603,9 @@ function supabaseDoc_(credentials, options) {
 
   /**
    * Operations in calls of a size the server accepts. Everything an action
-   * writes fits in one; only a bulk tool's thousands of rows are split.
+   * writes fits in one; only a batch past SUPABASE_INSERT_MAX_CHARS (a bulk
+   * tool's thousands of rows) is split, and then each call is its own
+   * transaction: a later call failing leaves the earlier ones stored.
    */
   var applyWire = function (wire) {
     if (ctx.noRpc) return applyOneByOne(wire);
@@ -16658,7 +16660,9 @@ function supabaseDoc_(credentials, options) {
       ctx.counts = null;
       ctx.config = null;
       openSheets().forEach(function (sheet) { sheet.__forget(true); });
-      STORAGE_DEFERRED_BUMPS_ = {};
+      // A batch split over several calls (only past SUPABASE_INSERT_MAX_CHARS,
+      // or without mbm_apply) may be partly stored: invalidate regardless.
+      rebumpDeferredRevisions_();
       throw error;
     }
     for (var i = 0; i < plan.inserts.length; i++) {

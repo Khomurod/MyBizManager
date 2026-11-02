@@ -659,3 +659,19 @@ test('a cache revision is bumped again once the batch it announced is stored', (
   gas.flushPendingWrites_();
   assert.strictEqual(Number(gas.dataRevision_('OMAD')), settled + 1);
 });
+
+test('a batch the database refuses still invalidates the caches it announced', () => {
+  const gas = liveWithTenants();
+  gas.resetRequestMemos_();
+  const log = gas.appDoc_().getSheetByName('Omad_Audit_Log');
+  const lock = gas.appScriptLock_();
+  lock.waitLock(1000);
+  log.appendRow(['2026-08-01T09:00:00.000Z', 'refused', '']);
+  gas.bumpDataRevision_('OMAD');
+  const announced = Number(gas.dataRevision_('OMAD'));
+  const restore = gas.__supabase.fail(r => r.table === 'rpc/mbm_apply' && 'database restarting');
+  assert.throws(() => lock.releaseLock(), /restarting/);
+  restore();
+  // A split batch can be partly stored, so a refusal is never trusted to have changed nothing.
+  assert.ok(Number(gas.dataRevision_('OMAD')) > announced);
+});
