@@ -259,6 +259,11 @@ records. Never edit an applied file; add a new one, and the matching entry in
 `SUPABASE_SHEETS`. The tests build their database from these files, so a
 column the code needs and the schema lacks fails CI.
 
+Apply a migration **before** deploying code that needs it. The one exception
+is built in: without `20261102160523_batched_writes_and_counts.sql` (the
+functions `mbm_apply` and `mbm_counts`) the backend still works, one REST call
+per write, just slower and not atomic. It is applied to `mybizmanager`.
+
 ### Moving the data from Sheets (once)
 
 1. **Script Properties** (Apps Script → Project Settings): `SUPABASE_URL` =

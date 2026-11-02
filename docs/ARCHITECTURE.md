@@ -860,11 +860,12 @@ on both stores — which is also why the whole test suite can run on both.
 | a sheet | a table (`SUPABASE_SHEETS`: sheet → table, header → column, type) |
 | row 1 | the header, synthesised from the mapping; writes to it are ignored, and re-appending exactly the header after a clear is a no-op. `System_Config` has none: it never had a fixed header, and `getConfig` scans every row |
 | row N | the (N − header)th row by `seq`, the identity column every table carries |
-| `getValues` / `getDataRange` | `GET … order=seq`, paged 1 000 at a time, so a table of any size is read whole |
-| `setValues` on existing rows | one `PATCH` per row, **by the `seq` that was read**, `return=representation`: zero rows updated is an error |
-| `setValues` / `appendRow` past the end | one `POST` per ≤200 rows (≤4 MB) — one statement, so a group is never half-written |
-| `deleteRow(s)` | `DELETE` by `seq` — or, for `Cafe_Sales`, stamping `voided_at` (the receipt survives, hidden) |
-| `getConfig` / `setConfig` | a primary-key `GET`, and an upsert on `key` |
+| `getValues` / `getDataRange` | `GET … order=seq`, paged 1 000 at a time, so a table of any size is read whole; within a request a whole read is kept and reused (below) |
+| `setValues` on existing rows | an update **by the `seq` that was read**; zero rows updated is an error |
+| `setValues` / `appendRow` past the end | an insert of ≤200 rows (≤4 MB) per statement, so a group is never half-written |
+| `deleteRow(s)` | delete by `seq` — or, for `Cafe_Sales`, stamping `voided_at` (the receipt survives, hidden) |
+| `getConfig` / `setConfig` | every setting read once per request (in parallel with the row counts), and an upsert on `key` |
+| `getLastRow` | `mbm_counts()`: every table's count in one call, once per request (and again under the lock) |
 | a number format | nothing — Postgres columns are typed |
 
 Cells cross the boundary through `supabaseToDb_` / `supabaseFromDb_`: `ts`
@@ -878,6 +879,56 @@ key in `apikey` (and `Authorization`, for a legacy JWT key). Any non-2xx throws
 with the database's own message, redacted, so a refused write fails the
 request rather than being reported as saved. `sb_secret_…` values are added to
 `redactSecrets_` and to the secret scanner.
+
+### Batching and parallel reads
+
+On the spreadsheet a call stays inside Google; on Supabase each is an HTTPS
+round trip, so the request's own document (`appDoc_()` →
+`supabaseDoc_(credentials, { request: true })`) works to make few of them.
+Documents opened for anything else — the move, the speed check, a test
+inspecting tables — read and write directly.
+
+**Writes are kept and sent as one transaction.** While a batch is open — the
+script lock is held (`appScriptLock_()`, which every module uses instead of
+`LockService`) or `withBatchedWrites_(fn)` is running — inserts, updates,
+deletes and setting upserts are queued, merged where they can be (four cells
+of one row become one update; consecutive inserts into one table become one
+statement) and sent in a single `POST /rest/v1/rpc/mbm_apply` (migration
+`20261102160523_batched_writes_and_counts.sql`). The function applies the
+operations in order inside one transaction with every trigger and constraint,
+returns the new `seq`s, and either everything lands or nothing does. A row
+queued for insert has a placeholder identity until then; a write to it changes
+the queued row.
+
+The batch is sent early whenever something needs it stored:
+
+| When | Why |
+|---|---|
+| a read of a table with queued writes | nothing reads around its own write |
+| `telegramFetch_` / `deleteTelegramMessageIfPresent_` | a message never describes an unstored row |
+| `markJobDelivered_` | the "already sent" mark is what prevents a duplicate send |
+| the lock is taken | the boundary; reads made before it are forgotten too |
+| the lock is released (even inside an outer batch) | the next execution may read the rows |
+| the batch ends | — |
+
+If `mbm_apply` refuses, nothing of the batch is stored, every position and
+count the request worked out is forgotten, and the error surfaces (a queue job
+records it with `failJob_`). Batches: the ledger actions and the café actions
+(under the lock), task mutations (`runTaskAction_`), and each queue job's
+bookkeeping (`processPendingJobs_`).
+
+**Reads are coalesced.** Settings come from one read of `system_config` per
+request and row counts from one `mbm_counts()` call, fetched together with
+`UrlFetchApp.fetchAll`. Tables marked `wholeReads` (the two ledgers, tasks,
+occurrences, the job queue) serve every read from one whole read kept for the
+request — updated in place by this request's own updates, dropped on an
+insert or delete, and forgotten when the lock is taken. Tables marked
+`readWith` (tasks and occurrences) are fetched together. A café sale's
+idempotency lookup asks the database for the generated `request_id` instead
+of reading every receipt (`findFirstRow`).
+
+A database without the two functions answers 404; the store then falls back to
+one REST call per write (not atomic) and to per-table counts.
 
 ### What the database adds
 

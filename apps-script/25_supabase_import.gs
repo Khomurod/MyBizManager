@@ -94,7 +94,7 @@ function storageAction_(action, payload) {
 
   if (action === 'preview_supabase_import') return previewSupabaseImport_(source, credentials);
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     return applySupabaseImport_(source, target, credentials);

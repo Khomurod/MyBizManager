@@ -174,7 +174,7 @@ function applyOmadMigration_(doc, options) {
 
   if (preview.fallbackYear) setFallbackYear_(configSheet, preview.fallbackYear);
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     backupOmadState_(doc, configSheet, "pre_period_migration");

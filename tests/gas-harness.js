@@ -232,6 +232,12 @@ function loadScript(options = {}) {
           if (url.indexOf('/sendMessage') !== -1) sentMessages.push(body);
         }
         return fetchImpl(url, params);
+      },
+      // Requests sent together: the database counts them as one round trip.
+      fetchAll: requests => {
+        const one = request => sandbox.UrlFetchApp.fetch(request.url, request);
+        if (supabase && requests.every(r => supabase.owns(r.url))) return supabase.parallel(() => requests.map(one));
+        return requests.map(one);
       }
     },
 
@@ -445,12 +451,25 @@ function sheetsOnly(reason) {
 function supabaseInsertSizes(gas, table, run) {
   const before = gas.__supabase.requests.length;
   run();
-  return gas.__supabase.requests.slice(before)
-    .filter(r => r.method === 'post' && r.table === table)
-    .map(r => r.rows);
+  const sizes = [];
+  gas.__supabase.requests.slice(before).forEach(r => {
+    if (r.method === 'post' && r.table === table) sizes.push(r.rows);
+    // A batch sent through mbm_apply: each insert op is one statement.
+    if (r.table === 'rpc/mbm_apply') {
+      (r.body.ops || []).forEach(op => { if (op.op === 'insert' && op.table === table) sizes.push(op.rows.length); });
+    }
+  });
+  return sizes;
+}
+
+/** Round trips to the database while `run` runs: parallel requests count once. */
+function supabaseRoundTrips(gas, run) {
+  const before = gas.__supabase.requests.length;
+  run();
+  return new Set(gas.__supabase.requests.slice(before).map(r => r.round)).size;
 }
 
 module.exports = {
-  sheetsOnly, SUPABASE_RUN, supabaseInsertSizes,
+  sheetsOnly, SUPABASE_RUN, supabaseInsertSizes, supabaseRoundTrips,
   loadScript, readJsonOutput, postEvent, createSpreadsheet, todayKey, currentPeriodKey
 };

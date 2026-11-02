@@ -311,7 +311,7 @@ function saveOmadAction_(action, payload, doc, configSheet) {
   var reportError = validateOmadTelegramReport_(payload.telegramReport);
   if (reportError) return jsonOutput_({ status: "error", message: reportError });
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     backupOmadState_(doc, configSheet, action);

@@ -44,6 +44,9 @@ function telegramFetch_(method, body) {
   var token = getBotToken_();
   if (!token) throw new Error("Telegram bot token is not configured. Set it in Sozlamalar → Telegram.");
 
+  // A message must never describe a row that is not stored yet.
+  flushPendingWrites_();
+
   var response;
   try {
     response = UrlFetchApp.fetch("https://api.telegram.org/bot" + token + "/" + method, {
@@ -111,6 +114,8 @@ function editTelegramMessage_(chatId, messageId, text, replyMarkup, parseMode) {
 function deleteTelegramMessageIfPresent_(chatId, messageId) {
   var token = getBotToken_();
   if (!token) throw new Error("Telegram bot token is not configured. Set it in Sozlamalar → Telegram.");
+
+  flushPendingWrites_();
 
   var response;
   try {
@@ -378,7 +383,7 @@ function processOmadTextStep_(text, chatId, key, cache, doc, configSheet, fromId
     var requestId = state.sessionId ? ("tg_" + fromId + "_" + state.sessionId) : "";
     var transaction;
 
-    var lock = LockService.getScriptLock();
+    var lock = appScriptLock_();
     lock.waitLock(30000);
     try {
       var existing = findTransactionByRequestId_(doc, requestId);

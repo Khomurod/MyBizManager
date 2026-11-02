@@ -93,8 +93,19 @@ readCafeStockMovements_ = function (doc, limit) {
 var findCafeSaleByRequestIdBeforeWritePerf_ = findCafeSaleByRequestId_;
 findCafeSaleByRequestId_ = function (salesSheet, requestId) {
   var wanted = String(requestId || "");
-  if (!salesSheet || !wanted || salesSheet.getLastRow() < 2) return null;
+  if (!salesSheet || !wanted) return null;
 
+  // On Supabase the receipt's request id is an indexed column of its own: the
+  // database finds the row instead of the whole receipt column being read.
+  if (typeof salesSheet.findFirstRow === "function") {
+    var hit = salesSheet.findFirstRow("request_id", wanted);
+    if (!hit) return null;
+    var found = safeParseJSON_(hit.row[4], null);
+    if (!found || String(found.requestId || "") !== wanted) return null;
+    return { rowNumber: hit.rowNumber, row: hit.row, detail: found };
+  }
+
+  if (salesSheet.getLastRow() < 2) return null;
   var lastRow = salesSheet.getLastRow();
   var detailValues = salesSheet.getRange(2, 5, lastRow - 1, 1).getValues();
   var needle = '"requestId":' + JSON.stringify(wanted);

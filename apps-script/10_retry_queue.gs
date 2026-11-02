@@ -222,6 +222,9 @@ function markJobDelivered_(job, facts) {
   var names = Object.keys(facts || {});
   for (var i = 0; i < names.length; i++) job.payload[names[i]] = facts[names[i]];
   writeJobField_(job.sheet, job.rowNumber, 4, JSON.stringify(job.payload));
+  // This mark is what stops a second send, so it is stored now rather than
+  // with the rest of the job's writes.
+  flushPendingWrites_();
 }
 
 /**
@@ -229,7 +232,7 @@ function markJobDelivered_(job, facts) {
  * concurrent workers can never run the same job twice.
  */
 function claimDueJobs_(doc, maxJobs) {
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   try {
     lock.waitLock(20000);
   } catch (error) {
@@ -268,22 +271,27 @@ function claimDueJobs_(doc, maxJobs) {
 }
 
 function completeJob_(sheet, job) {
-  writeJobField_(sheet, job.rowNumber, 5, JOB_STATUS_COMPLETED);
-  writeJobField_(sheet, job.rowNumber, 6, job.attempts + 1);
-  writeJobField_(sheet, job.rowNumber, 8, "");
-  writeJobField_(sheet, job.rowNumber, 10, new Date().toISOString());
+  // Four cells of one row: one write to the database (24_supabase_store.gs).
+  withBatchedWrites_(function () {
+    writeJobField_(sheet, job.rowNumber, 5, JOB_STATUS_COMPLETED);
+    writeJobField_(sheet, job.rowNumber, 6, job.attempts + 1);
+    writeJobField_(sheet, job.rowNumber, 8, "");
+    writeJobField_(sheet, job.rowNumber, 10, new Date().toISOString());
+  });
 }
 
 function failJob_(sheet, job, error, doc) {
   var attempts = job.attempts + 1;
   var exhausted = attempts >= JOB_MAX_ATTEMPTS;
   var delaySeconds = JOB_RETRY_BASE_SECONDS * Math.pow(2, Math.max(0, attempts - 1));
-  writeJobField_(sheet, job.rowNumber, 5, exhausted ? JOB_STATUS_FAILED : JOB_STATUS_PENDING);
-  writeJobField_(sheet, job.rowNumber, 6, attempts);
-  writeJobField_(sheet, job.rowNumber, 7, new Date(new Date().getTime() + delaySeconds * 1000).toISOString());
-  writeJobField_(sheet, job.rowNumber, 8, redactSecrets_(error).slice(0, 500));
+  withBatchedWrites_(function () {
+    writeJobField_(sheet, job.rowNumber, 5, exhausted ? JOB_STATUS_FAILED : JOB_STATUS_PENDING);
+    writeJobField_(sheet, job.rowNumber, 6, attempts);
+    writeJobField_(sheet, job.rowNumber, 7, new Date(new Date().getTime() + delaySeconds * 1000).toISOString());
+    writeJobField_(sheet, job.rowNumber, 8, redactSecrets_(error).slice(0, 500));
+    if (exhausted) writeJobField_(sheet, job.rowNumber, 10, new Date().toISOString());
+  });
   if (exhausted) {
-    writeJobField_(sheet, job.rowNumber, 10, new Date().toISOString());
     // Some jobs leave state behind that only makes sense while they are still
     // going to be retried.
     if (doc) {
@@ -303,13 +311,28 @@ function processPendingJobs_(doc, maxJobs) {
   var processed = 0;
   for (var i = 0; i < jobs.length; i++) {
     var job = jobs[i];
+    // A job's bookkeeping -- the ids it records, its own status -- is sent to
+    // the database together (24_supabase_store.gs); every Telegram call still
+    // sees everything written before it.
+    var done = false;
     try {
-      runJob_(doc, job);
-      completeJob_(job.sheet, job);
-      processed++;
-    } catch (error) {
-      failJob_(job.sheet, job, error, doc);
+      done = withBatchedWrites_(function () {
+        try {
+          runJob_(doc, job);
+          completeJob_(job.sheet, job);
+          return true;
+        } catch (error) {
+          failJob_(job.sheet, job, error, doc);
+          return false;
+        }
+      });
+    } catch (storeError) {
+      // The database refused the job's writes: none of them is stored, so
+      // record the failure on its own and let the retry finish the job.
+      try { failJob_(job.sheet, job, storeError, doc); } catch (ignored) {}
+      done = false;
     }
+    if (done) processed++;
   }
   return processed;
 }

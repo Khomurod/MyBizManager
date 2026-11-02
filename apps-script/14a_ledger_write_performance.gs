@@ -358,7 +358,7 @@ function createTransactionBatch_(doc, input) {
     prepared.push(candidate);
   }
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     var sheet = ledgerSheet_(doc);

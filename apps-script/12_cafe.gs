@@ -84,7 +84,7 @@ function handleCafeAction_(action, payload, doc, configSheet) {
     // as two steps lets a sale land between them, so the check passes against a
     // version the write then replaces. It is the one place inventory is written
     // without holding it.
-    var inventoryLock = LockService.getScriptLock();
+    var inventoryLock = appScriptLock_();
     inventoryLock.waitLock(30000);
     try {
       var currentRev = cafeInventoryRev_(configSheet);
@@ -410,7 +410,7 @@ function saveCafeSale_(doc, configSheet, payload) {
   if (!requestId) return jsonOutput_({ status: "error", message: "requestId talab qilinadi." });
   if (requestId.length > 128) return jsonOutput_({ status: "error", message: "requestId juda uzun." });
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     var salesSheet = doc.getSheetByName("Cafe_Sales") || doc.insertSheet("Cafe_Sales");
@@ -486,7 +486,7 @@ function voidCafeSale_(doc, configSheet, payload) {
   var saleId = String(payload.id || "").trim();
   if (!saleId) return jsonOutput_({ status: "error", message: "Sotuv ID talab qilinadi." });
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     var salesSheet = doc.getSheetByName("Cafe_Sales");
@@ -581,7 +581,7 @@ function voidCafeSale_(doc, configSheet, payload) {
  * decides the money.
  */
 function closeCafeDay_(doc, configSheet, payload) {
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     // Lean rather than `readCafeState_`: closing the day needs the day's

@@ -357,7 +357,7 @@ function runTaskScheduler_(doc, nowMs) {
   var now = nowMs === undefined ? Date.now() : nowMs;
   var todayKey = taskTodayKey_(now);
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   try { lock.waitLock(20000); } catch (error) { return { notified: 0, reminders: 0, generated: 0 }; }
 
   var generated = 0;
@@ -583,17 +583,22 @@ function cachedTaskView_(doc) {
  * same engine for both callers, which is what stops the two surfaces drifting.
  */
 function runTaskAction_(action, payload, doc) {
-  var result;
-  if (action === "save_task") result = saveTaskAction_(doc, payload);
-  else if (action === "cancel_task") result = cancelTaskAction_(doc, payload);
-  else if (action === "pause_routine") result = setRoutinePausedAction_(doc, payload, true);
-  else if (action === "resume_routine") result = setRoutinePausedAction_(doc, payload, false);
-  else if (action === "skip_occurrence") result = skipOccurrenceAction_(doc, payload);
-  else if (action === "complete_occurrence") result = completeOccurrenceAction_(doc, payload);
-  else result = reopenOccurrenceAction_(doc, payload);
+  // The change itself -- the task, its occurrences, the audit line -- is sent
+  // to the database as one write (24_supabase_store.gs): all of it or none.
+  var result = withBatchedWrites_(function () {
+    var outcome;
+    if (action === "save_task") outcome = saveTaskAction_(doc, payload);
+    else if (action === "cancel_task") outcome = cancelTaskAction_(doc, payload);
+    else if (action === "pause_routine") outcome = setRoutinePausedAction_(doc, payload, true);
+    else if (action === "resume_routine") outcome = setRoutinePausedAction_(doc, payload, false);
+    else if (action === "skip_occurrence") outcome = skipOccurrenceAction_(doc, payload);
+    else if (action === "complete_occurrence") outcome = completeOccurrenceAction_(doc, payload);
+    else outcome = reopenOccurrenceAction_(doc, payload);
+    if (outcome.status === "success") recordLastOperation_(doc, action);
+    return outcome;
+  });
 
   if (result.status === "success") {
-    recordLastOperation_(doc, action);
     // Announce/refresh promptly, then let the trigger handle the rest.
     //
     // `deferReports: true` is a client saying it will ask for that settling in

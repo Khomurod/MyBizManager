@@ -428,3 +428,169 @@ test('the speed check times the same reads on both stores, and writes nothing', 
   // Without the flag the status stays cheap.
   assert.strictEqual(post(gas, { action: 'get_storage_status' }).benchmark, undefined);
 });
+
+// ------------------------------------------- one round trip per business action
+
+const { supabaseRoundTrips } = require('./gas-harness');
+
+function liveWithTenants(options = {}) {
+  return loadScript(Object.assign({
+    storage: 'supabase',
+    properties: { OMAD_ADMIN_KEY: ADMIN_KEY, TELEGRAM_BOT_TOKEN: BOT_TOKEN, TELEGRAM_GROUP_CHAT_ID: '-100123' },
+    sheets: {
+      System_Config: [
+        ['Omad_Rates', JSON.stringify({ '2026-08': { buy: 12000, sell: 12500 } })],
+        ['Omad_Tenants', JSON.stringify([{ name: 'Apteka', defaultRent: 100, currency: 'USD', active: true }])],
+        ['Omad_Active_Transactions_Sheet', 'Omad_Transactions_V2'],
+        ['Cafe_Recipes', '[]']
+      ],
+      Omad_Transactions_V2: [LEDGER_HEADER, ledgerRow('1786000000000_0')]
+    }
+  }, options));
+}
+
+function newIncome(requestId) {
+  return {
+    action: 'create_transaction_batch', requestId, groupId: 'g_' + requestId, period: '2026-08',
+    tenant: 'Apteka', type: 'Income', comment: 'ijara', source: 'Web', createdBy: 'tester', deferReports: true,
+    lines: [{ amount: 100, currency: 'USD', method: 'Naqd' }, { amount: 500000, currency: 'UZS', method: 'Bank' }]
+  };
+}
+
+test('a business action reaches the database as one write: all of it, or none of it', () => {
+  const gas = liveWithTenants();
+  const before = gas.__supabase.requests.length;
+  const saved = post(gas, newIncome('r1'));
+  assert.strictEqual(saved.status, 'success', saved.message);
+
+  const sent = gas.__supabase.requests.slice(before);
+  const batches = sent.filter(r => r.table === 'rpc/mbm_apply');
+  const ops = batches.flatMap(r => r.body.ops);
+  assert.ok(ops.some(op => op.op === 'insert' && op.table === 'omad_transactions_v2' && op.rows.length === 2));
+  assert.ok(ops.some(op => op.op === 'insert' && op.table === 'omad_audit_log'));
+  assert.ok(batches.some(r => r.body.ops.some(op => op.table === 'omad_transactions_v2') &&
+    r.body.ops.some(op => op.table === 'omad_audit_log')), 'the ledger rows and their audit lines travel together');
+  assert.ok(!sent.some(r => r.method === 'post' && (r.table === 'omad_transactions_v2' || r.table === 'omad_audit_log')),
+    'no row of the action is sent on its own');
+  assert.strictEqual(gas.__supabase.count('omad_transactions_v2'), 3);
+
+  // The database refuses the next action's batch: nothing of it is stored.
+  const audits = gas.__supabase.count('omad_audit_log');
+  const restore = gas.__supabase.fail(r => r.table === 'rpc/mbm_apply' && 'database restarting');
+  const refused = post(gas, newIncome('r2'));
+  restore();
+  assert.strictEqual(refused.status, 'error');
+  assert.match(refused.message, /restarting/);
+  assert.strictEqual(gas.__supabase.count('omad_transactions_v2'), 3, 'no ledger row');
+  assert.strictEqual(gas.__supabase.count('omad_audit_log'), audits, 'and no audit line for a save that did not happen');
+
+  // ...and the retry, with the same request id, records it once.
+  assert.strictEqual(post(gas, newIncome('r2')).status, 'success');
+  assert.strictEqual(gas.__supabase.count('omad_transactions_v2'), 5);
+});
+
+test('a correction the database refuses leaves the original Active and adds nothing', () => {
+  const gas = liveWithTenants();
+  const restore = gas.__supabase.fail(r => r.table === 'rpc/mbm_apply' &&
+    r.body.ops.some(op => op.op === 'update' && op.table === 'omad_transactions_v2') && 'database restarting');
+  const corrected = post(gas, {
+    action: 'correct_transaction', transactionId: '1786000000000_0', requestId: 'c1', period: '2026-08',
+    tenant: 'Apteka', type: 'Income', amount: 150, currency: 'USD', method: 'Naqd', deferReports: true
+  });
+  restore();
+  assert.strictEqual(corrected.status, 'error');
+  const rows = gas.__supabase.rows.omad_transactions_v2;
+  assert.deepStrictEqual(rows.map(r => [r.id, r.status]), [['1786000000000_0', 'Active']],
+    'the original is untouched and no replacement exists to double-count');
+});
+
+test('kept writes are read back, and are stored before Telegram hears of them', () => {
+  let storedWhenSent = -1;
+  const gas = liveWithTenants({
+    fetch: () => {
+      storedWhenSent = gas.__supabase.count('omad_audit_log');
+      return { getResponseCode: () => 200, getContentText: () => '{"ok":true,"result":{"message_id":1}}' };
+    }
+  });
+  gas.resetRequestMemos_();
+  const log = gas.appDoc_().getSheetByName('Omad_Audit_Log');
+  const stored = () => gas.__supabase.count('omad_audit_log');
+  const start = stored();
+
+  gas.withBatchedWrites_(() => {
+    log.appendRow(['2026-08-01T09:00:00.000Z', 'first', '']);
+    assert.strictEqual(stored(), start, 'kept, not sent yet');
+    const rows = log.getDataRange().getValues();
+    assert.strictEqual(rows[rows.length - 1][1], 'first', 'a read of the table sees its own write');
+    assert.strictEqual(stored(), start + 1, 'because the read sent it first');
+
+    log.appendRow(['2026-08-01T09:00:00.000Z', 'second', '']);
+    gas.sendTelegramMessage_('-100123', 'hello');
+    assert.strictEqual(storedWhenSent, start + 2, 'the message left only after the row was stored');
+  });
+});
+
+test('releasing the lock sends the batch, even inside a larger one', () => {
+  const gas = liveWithTenants();
+  gas.resetRequestMemos_();
+  const log = gas.appDoc_().getSheetByName('Omad_Audit_Log');
+  const stored = () => gas.__supabase.count('omad_audit_log');
+  const start = stored();
+
+  gas.withBatchedWrites_(() => {
+    const lock = gas.appScriptLock_();
+    lock.waitLock(1000);
+    log.appendRow(['2026-08-01T09:00:00.000Z', 'locked', '']);
+    assert.strictEqual(stored(), start);
+    lock.releaseLock();
+    assert.strictEqual(stored(), start + 1, 'another execution may read it once the lock is gone');
+    log.appendRow(['2026-08-01T09:00:00.000Z', 'after', '']);
+    assert.strictEqual(stored(), start + 1);
+  });
+  assert.strictEqual(stored(), start + 2);
+});
+
+test('taking the lock re-reads what another execution may have changed meanwhile', () => {
+  const gas = liveWithTenants();
+  gas.resetRequestMemos_();
+  const config = gas.appDoc_().getSheetByName('System_Config');
+  assert.strictEqual(gas.getConfig(config, 'Cafe_Recipes'), '[]');
+
+  // Another execution changes the setting.
+  gas.__supabase.rows.system_config.find(r => r.key === 'Cafe_Recipes').value = '[{"id":"r1"}]';
+  assert.strictEqual(gas.getConfig(config, 'Cafe_Recipes'), '[]', 'outside the lock, one view per request');
+
+  const lock = gas.appScriptLock_();
+  lock.waitLock(1000);
+  try {
+    assert.strictEqual(gas.getConfig(config, 'Cafe_Recipes'), '[{"id":"r1"}]', 'under the lock, the stored value');
+  } finally {
+    lock.releaseLock();
+  }
+});
+
+test('a database without the batched-writes migration still works, one call at a time', () => {
+  const gas = liveWithTenants();
+  gas.__supabase.disableRpc();
+  const saved = post(gas, newIncome('r1'));
+  assert.strictEqual(saved.status, 'success', saved.message);
+  assert.strictEqual(gas.__supabase.count('omad_transactions_v2'), 3);
+  const dashboard = post(gas, { action: 'get_omad_data', scope: 'dashboard' });
+  assert.strictEqual(dashboard.status, 'success', dashboard.message);
+});
+
+test('the common actions stay within their round-trip budget', () => {
+  const gas = liveWithTenants();
+  post(gas, { action: 'get_omad_data', scope: 'dashboard' });
+
+  // Settings and row counts arrive together, in parallel: one round trip.
+  assert.ok(supabaseRoundTrips(gas, () => post(gas, { action: 'get_omad_data', scope: 'dashboard' })) <= 2);
+  // Read under the lock, one batch of writes, the last-operation stamp and the report job.
+  assert.ok(supabaseRoundTrips(gas, () => post(gas, newIncome('budget'))) <= 6);
+  // The task, its occurrences, its audit line and the stamp in one batch; the
+  // board read after it fetches both task tables at once.
+  assert.ok(supabaseRoundTrips(gas, () => post(gas, {
+    action: 'save_task', type: 'routine', title: 'Budget', recurrence: { freq: 'daily' },
+    reminderTimes: ['18:00'], deferReports: true
+  })) <= 3);
+});

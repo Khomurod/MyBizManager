@@ -593,6 +593,15 @@ what sheet order always was.
 - **A write by row number goes to the row that was read**, by its `seq`, even
   if another request deleted a row above it; a row that has gone makes the
   write fail loudly instead of landing on a neighbour.
+- **One business action is one write to the database.** Writes made under the
+  script lock (and inside `withBatchedWrites_`: a task edit, a queue job's
+  bookkeeping) are kept and sent together through the SQL function
+  `mbm_apply` — one transaction, so a payment, its audit line and its status
+  changes land together or not at all. They are sent earlier whenever
+  something must see them: before a read of a table they touch, before any
+  Telegram call, and when the lock is taken or released. Settings and row
+  counts arrive together in one parallel fetch per request (`mbm_counts`),
+  and a table the code reads whole is read once per request.
 
 **`System_Config`** is a key/value sheet (column A key, column B a JSON string):
 `Omad_Tenants`, `Omad_Rates`, `Omad_Rates_V1_Backup`, `Omad_Template_Expenses`,
@@ -914,6 +923,16 @@ composes the message from data it already stored.
     move only reads the spreadsheet, and refuses to copy into a database that
     already holds rows. The Telegram debug log is compared but never blocks.
 
+18. **Every module takes the script lock through `appScriptLock_()`,** never
+    `LockService` directly. On Supabase the lock is also the batch boundary:
+    taking it sends anything kept and forgets counts, settings and rows read
+    before (another execution may have written while we waited); releasing
+    it sends the batch before the next execution can get in. A kept write is
+    always sent before a read of its table and before any Telegram call
+    (`telegramFetch_`, `deleteTelegramMessageIfPresent_` call
+    `flushPendingWrites_`), so nothing ever reads around its own write and no
+    message describes a row that is not stored.
+
 ## 12. Known limitations and intentional exceptions
 
 - **Rolling back from Supabase copies nothing back.** `rollback_supabase_storage`
@@ -923,15 +942,23 @@ composes the message from data it already stored.
 - **The Supabase project is on the free plan:** no downloadable automatic
   backups. The spreadsheet stays as the pre-move copy; a scheduled export is a
   separate decision.
-- **The Supabase store speaks the spreadsheet's language, so it is not
-  faster by itself.** Each sheet operation is one REST call through
-  `UrlFetchApp`; an action makes about as many store round trips as on Sheets
-  (counted on a realistic fixture: dashboard 9 vs 8, new entry 11 vs 23,
-  correction 16 vs 30, café sale 8 vs 12, trigger tick 47 vs 71), and a
-  `UrlFetchApp` call is not obviously cheaper than a Sheets call. Real timings
-  come from Tizim → Supabase → "Tezlikni o'lchash". Speed comes from the next
-  step: one SQL function per business action (one round trip instead of 8–16)
-  and parallel reads — the business code is unchanged on purpose until then.
+- **Speed on Supabase comes from fewer round trips, not from the database.**
+  A `UrlFetchApp` call is not obviously cheaper than a Sheets call; what
+  changed is how many an action makes. Counted on a realistic fixture
+  (`Sheets calls → Supabase round trips`): dashboard 8 → 1, new entry 23 → 6,
+  correction 30 → 7, dashboard after a write 12 → 3, café sale 12 → 3, new
+  task 22 → 3, task board 4 → 2, trigger tick 71 → 16. Real timings come from
+  Tizim → Supabase → "Tezlikni o'lchash". What is left per save is the read
+  under the lock, the batch, and two small writes made after the lock on
+  purpose (`Omad_Last_Operation` and the report job, whose failure must not
+  undo a save). On the spreadsheet nothing changed.
+- **A kept write is lost if the execution is killed outright** (Apps Script's
+  time limit) between the write and the end of its batch; an exception still
+  sends it, exactly as an immediate write would have stood. A queue job's
+  "already sent" mark is therefore stored immediately, not with the batch.
+- **A database without `mbm_apply` / `mbm_counts`** (the migration not yet
+  applied) still works: the store falls back to one REST call per write, not
+  atomic, as before the speed work.
 - **A café sale retried with its request id after it was voided** is refused
   by the database (the hidden receipt still holds the id) instead of being
   rung up a second time, as the spreadsheet allowed.
@@ -1015,7 +1042,11 @@ npm run bench            # sheet passes / bytes / ms per screen (see below)
   it with the real import code, and runs the backend with
   `OMAD_STORAGE=supabase`. A test that is about the spreadsheet itself (cell
   coercion, counting sheet passes, tampering with rows the database freezes)
-  is skipped there with its reason via `sheetsOnly(...)`; CI runs both.
+  is skipped there with its reason via `sheetsOnly(...)`; CI runs both. The
+  mock also runs `mbm_apply` (staged, all-or-nothing) and `mbm_counts`, and
+  counts `UrlFetchApp.fetchAll` as one round trip, so
+  `tests/supabase-store.test.js` pins atomicity, the flush rules and a
+  round-trip budget for the common actions.
 - `tests/gas-harness.js` loads `script.gs` into a Node VM with `SpreadsheetApp`,
   `PropertiesService`, `CacheService`, `LockService`, `UrlFetchApp`,
   `Utilities`, `Session`, `ContentService` and `HtmlService` mocked, so backend

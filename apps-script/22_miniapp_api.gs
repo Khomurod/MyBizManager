@@ -420,7 +420,7 @@ function miniSaveTransaction_(doc, configSheet, payload) {
     return jsonOutput_(created);
   }
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   var transaction;
   var duplicate = false;

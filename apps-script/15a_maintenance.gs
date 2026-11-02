@@ -155,7 +155,7 @@ function fixTransposedTransactionDates_(doc, options) {
   var configSheet = doc.getSheetByName("System_Config") || doc.insertSheet("System_Config");
   backupOmadState_(doc, configSheet, "fix_transaction_dates");
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   var fixed = 0;
   try {

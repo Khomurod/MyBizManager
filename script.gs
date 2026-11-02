@@ -3639,7 +3639,7 @@ function createTenantPaidExpense_(doc, input) {
   var validationError = validateTenantPaidInput_(input, configuredTenants_(doc));
   if (validationError) return { status: "error", message: validationError };
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     var replaceGroupId = String((input && input.replaceGroupId) || "").trim();
@@ -3950,6 +3950,9 @@ function telegramFetch_(method, body) {
   var token = getBotToken_();
   if (!token) throw new Error("Telegram bot token is not configured. Set it in Sozlamalar → Telegram.");
 
+  // A message must never describe a row that is not stored yet.
+  flushPendingWrites_();
+
   var response;
   try {
     response = UrlFetchApp.fetch("https://api.telegram.org/bot" + token + "/" + method, {
@@ -4017,6 +4020,8 @@ function editTelegramMessage_(chatId, messageId, text, replyMarkup, parseMode) {
 function deleteTelegramMessageIfPresent_(chatId, messageId) {
   var token = getBotToken_();
   if (!token) throw new Error("Telegram bot token is not configured. Set it in Sozlamalar → Telegram.");
+
+  flushPendingWrites_();
 
   var response;
   try {
@@ -4284,7 +4289,7 @@ function processOmadTextStep_(text, chatId, key, cache, doc, configSheet, fromId
     var requestId = state.sessionId ? ("tg_" + fromId + "_" + state.sessionId) : "";
     var transaction;
 
-    var lock = LockService.getScriptLock();
+    var lock = appScriptLock_();
     lock.waitLock(30000);
     try {
       var existing = findTransactionByRequestId_(doc, requestId);
@@ -4640,6 +4645,9 @@ function markJobDelivered_(job, facts) {
   var names = Object.keys(facts || {});
   for (var i = 0; i < names.length; i++) job.payload[names[i]] = facts[names[i]];
   writeJobField_(job.sheet, job.rowNumber, 4, JSON.stringify(job.payload));
+  // This mark is what stops a second send, so it is stored now rather than
+  // with the rest of the job's writes.
+  flushPendingWrites_();
 }
 
 /**
@@ -4647,7 +4655,7 @@ function markJobDelivered_(job, facts) {
  * concurrent workers can never run the same job twice.
  */
 function claimDueJobs_(doc, maxJobs) {
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   try {
     lock.waitLock(20000);
   } catch (error) {
@@ -4686,22 +4694,27 @@ function claimDueJobs_(doc, maxJobs) {
 }
 
 function completeJob_(sheet, job) {
-  writeJobField_(sheet, job.rowNumber, 5, JOB_STATUS_COMPLETED);
-  writeJobField_(sheet, job.rowNumber, 6, job.attempts + 1);
-  writeJobField_(sheet, job.rowNumber, 8, "");
-  writeJobField_(sheet, job.rowNumber, 10, new Date().toISOString());
+  // Four cells of one row: one write to the database (24_supabase_store.gs).
+  withBatchedWrites_(function () {
+    writeJobField_(sheet, job.rowNumber, 5, JOB_STATUS_COMPLETED);
+    writeJobField_(sheet, job.rowNumber, 6, job.attempts + 1);
+    writeJobField_(sheet, job.rowNumber, 8, "");
+    writeJobField_(sheet, job.rowNumber, 10, new Date().toISOString());
+  });
 }
 
 function failJob_(sheet, job, error, doc) {
   var attempts = job.attempts + 1;
   var exhausted = attempts >= JOB_MAX_ATTEMPTS;
   var delaySeconds = JOB_RETRY_BASE_SECONDS * Math.pow(2, Math.max(0, attempts - 1));
-  writeJobField_(sheet, job.rowNumber, 5, exhausted ? JOB_STATUS_FAILED : JOB_STATUS_PENDING);
-  writeJobField_(sheet, job.rowNumber, 6, attempts);
-  writeJobField_(sheet, job.rowNumber, 7, new Date(new Date().getTime() + delaySeconds * 1000).toISOString());
-  writeJobField_(sheet, job.rowNumber, 8, redactSecrets_(error).slice(0, 500));
+  withBatchedWrites_(function () {
+    writeJobField_(sheet, job.rowNumber, 5, exhausted ? JOB_STATUS_FAILED : JOB_STATUS_PENDING);
+    writeJobField_(sheet, job.rowNumber, 6, attempts);
+    writeJobField_(sheet, job.rowNumber, 7, new Date(new Date().getTime() + delaySeconds * 1000).toISOString());
+    writeJobField_(sheet, job.rowNumber, 8, redactSecrets_(error).slice(0, 500));
+    if (exhausted) writeJobField_(sheet, job.rowNumber, 10, new Date().toISOString());
+  });
   if (exhausted) {
-    writeJobField_(sheet, job.rowNumber, 10, new Date().toISOString());
     // Some jobs leave state behind that only makes sense while they are still
     // going to be retried.
     if (doc) {
@@ -4721,13 +4734,28 @@ function processPendingJobs_(doc, maxJobs) {
   var processed = 0;
   for (var i = 0; i < jobs.length; i++) {
     var job = jobs[i];
+    // A job's bookkeeping -- the ids it records, its own status -- is sent to
+    // the database together (24_supabase_store.gs); every Telegram call still
+    // sees everything written before it.
+    var done = false;
     try {
-      runJob_(doc, job);
-      completeJob_(job.sheet, job);
-      processed++;
-    } catch (error) {
-      failJob_(job.sheet, job, error, doc);
+      done = withBatchedWrites_(function () {
+        try {
+          runJob_(doc, job);
+          completeJob_(job.sheet, job);
+          return true;
+        } catch (error) {
+          failJob_(job.sheet, job, error, doc);
+          return false;
+        }
+      });
+    } catch (storeError) {
+      // The database refused the job's writes: none of them is stored, so
+      // record the failure on its own and let the retry finish the job.
+      try { failJob_(job.sheet, job, storeError, doc); } catch (ignored) {}
+      done = false;
     }
+    if (done) processed++;
   }
   return processed;
 }
@@ -5096,7 +5124,7 @@ function handleCafeAction_(action, payload, doc, configSheet) {
     // as two steps lets a sale land between them, so the check passes against a
     // version the write then replaces. It is the one place inventory is written
     // without holding it.
-    var inventoryLock = LockService.getScriptLock();
+    var inventoryLock = appScriptLock_();
     inventoryLock.waitLock(30000);
     try {
       var currentRev = cafeInventoryRev_(configSheet);
@@ -5422,7 +5450,7 @@ function saveCafeSale_(doc, configSheet, payload) {
   if (!requestId) return jsonOutput_({ status: "error", message: "requestId talab qilinadi." });
   if (requestId.length > 128) return jsonOutput_({ status: "error", message: "requestId juda uzun." });
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     var salesSheet = doc.getSheetByName("Cafe_Sales") || doc.insertSheet("Cafe_Sales");
@@ -5498,7 +5526,7 @@ function voidCafeSale_(doc, configSheet, payload) {
   var saleId = String(payload.id || "").trim();
   if (!saleId) return jsonOutput_({ status: "error", message: "Sotuv ID talab qilinadi." });
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     var salesSheet = doc.getSheetByName("Cafe_Sales");
@@ -5593,7 +5621,7 @@ function voidCafeSale_(doc, configSheet, payload) {
  * decides the money.
  */
 function closeCafeDay_(doc, configSheet, payload) {
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     // Lean rather than `readCafeState_`: closing the day needs the day's
@@ -6181,7 +6209,7 @@ function isCafeCatalogueAction_(action) {
  * holds the lock for the length of one write.
  */
 function saveCafeCatalogue_(action, payload, configSheet) {
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     var stale = cafeCatalogueStale_(configSheet, payload.expectedCatalogueRev);
@@ -6541,7 +6569,7 @@ function adjustCafeStock_(doc, configSheet, payload, actor) {
     return jsonOutput_({ status: "error", message: "Qisqacha sabab yozing." });
   }
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     var sheet = cafeMovementsSheet_(doc);
@@ -6777,8 +6805,19 @@ readCafeStockMovements_ = function (doc, limit) {
 var findCafeSaleByRequestIdBeforeWritePerf_ = findCafeSaleByRequestId_;
 findCafeSaleByRequestId_ = function (salesSheet, requestId) {
   var wanted = String(requestId || "");
-  if (!salesSheet || !wanted || salesSheet.getLastRow() < 2) return null;
+  if (!salesSheet || !wanted) return null;
 
+  // On Supabase the receipt's request id is an indexed column of its own: the
+  // database finds the row instead of the whole receipt column being read.
+  if (typeof salesSheet.findFirstRow === "function") {
+    var hit = salesSheet.findFirstRow("request_id", wanted);
+    if (!hit) return null;
+    var found = safeParseJSON_(hit.row[4], null);
+    if (!found || String(found.requestId || "") !== wanted) return null;
+    return { rowNumber: hit.rowNumber, row: hit.row, detail: found };
+  }
+
+  if (salesSheet.getLastRow() < 2) return null;
   var lastRow = salesSheet.getLastRow();
   var detailValues = salesSheet.getRange(2, 5, lastRow - 1, 1).getValues();
   var needle = '"requestId":' + JSON.stringify(wanted);
@@ -6976,7 +7015,7 @@ function applyOmadMigration_(doc, options) {
 
   if (preview.fallbackYear) setFallbackYear_(configSheet, preview.fallbackYear);
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     backupOmadState_(doc, configSheet, "pre_period_migration");
@@ -7834,7 +7873,7 @@ function createTransaction_(doc, input) {
   if (!requestId) return { status: "error", message: "requestId talab qilinadi." };
   if (requestId.length > 128) return { status: "error", message: "requestId juda uzun." };
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     var existing = findLedgerRowByRequestId_(doc, requestId);
@@ -7932,7 +7971,7 @@ function correctTransaction_(doc, input) {
   var validationError = validateTransactionInput_(input);
   if (validationError) return { status: "error", message: validationError };
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     var alreadyDone = findLedgerRowByRequestId_(doc, requestId);
@@ -8023,7 +8062,7 @@ function cancelTransaction_(doc, input) {
   var requestId = String((input && input.requestId) || "").trim();
   if (!requestId) return { status: "error", message: "requestId talab qilinadi." };
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     var original = findLedgerRow_(doc, input.transactionId);
@@ -8057,8 +8096,10 @@ function cancelTransaction_(doc, input) {
 }
 
 function setLedgerStatus_(sheet, rowNumber, status, timestamp) {
-  sheet.getRange(rowNumber, 19).setValue(status);
-  sheet.getRange(rowNumber, 4).setValue(timestamp);
+  withBatchedWrites_(function () {
+    sheet.getRange(rowNumber, 19).setValue(status);
+    sheet.getRange(rowNumber, 4).setValue(timestamp);
+  });
   // A cancellation or a correction changes every figure derived from this row.
   bumpDataRevision_(CACHE_SCOPE_OMAD);
 }
@@ -8513,7 +8554,7 @@ function createTransactionBatch_(doc, input) {
     prepared.push(candidate);
   }
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     var sheet = ledgerSheet_(doc);
@@ -8999,7 +9040,7 @@ function createTransactionBulk_(doc, input) {
   }
   var prepared = validated.prepared;
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     var sheet = ledgerSheet_(doc);
@@ -9362,7 +9403,7 @@ function fixTransposedTransactionDates_(doc, options) {
   var configSheet = doc.getSheetByName("System_Config") || doc.insertSheet("System_Config");
   backupOmadState_(doc, configSheet, "fix_transaction_dates");
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   var fixed = 0;
   try {
@@ -10420,7 +10461,7 @@ function writeOccurrenceRow_(doc, occ) {
  */
 function updateOccurrenceFields_(doc, occurrenceId, options) {
   var opts = options || {};
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     var occ = findOccurrence_(doc, occurrenceId);
@@ -11642,7 +11683,7 @@ function runTaskScheduler_(doc, nowMs) {
   var now = nowMs === undefined ? Date.now() : nowMs;
   var todayKey = taskTodayKey_(now);
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   try { lock.waitLock(20000); } catch (error) { return { notified: 0, reminders: 0, generated: 0 }; }
 
   var generated = 0;
@@ -11868,17 +11909,22 @@ function cachedTaskView_(doc) {
  * same engine for both callers, which is what stops the two surfaces drifting.
  */
 function runTaskAction_(action, payload, doc) {
-  var result;
-  if (action === "save_task") result = saveTaskAction_(doc, payload);
-  else if (action === "cancel_task") result = cancelTaskAction_(doc, payload);
-  else if (action === "pause_routine") result = setRoutinePausedAction_(doc, payload, true);
-  else if (action === "resume_routine") result = setRoutinePausedAction_(doc, payload, false);
-  else if (action === "skip_occurrence") result = skipOccurrenceAction_(doc, payload);
-  else if (action === "complete_occurrence") result = completeOccurrenceAction_(doc, payload);
-  else result = reopenOccurrenceAction_(doc, payload);
+  // The change itself -- the task, its occurrences, the audit line -- is sent
+  // to the database as one write (24_supabase_store.gs): all of it or none.
+  var result = withBatchedWrites_(function () {
+    var outcome;
+    if (action === "save_task") outcome = saveTaskAction_(doc, payload);
+    else if (action === "cancel_task") outcome = cancelTaskAction_(doc, payload);
+    else if (action === "pause_routine") outcome = setRoutinePausedAction_(doc, payload, true);
+    else if (action === "resume_routine") outcome = setRoutinePausedAction_(doc, payload, false);
+    else if (action === "skip_occurrence") outcome = skipOccurrenceAction_(doc, payload);
+    else if (action === "complete_occurrence") outcome = completeOccurrenceAction_(doc, payload);
+    else outcome = reopenOccurrenceAction_(doc, payload);
+    if (outcome.status === "success") recordLastOperation_(doc, action);
+    return outcome;
+  });
 
   if (result.status === "success") {
-    recordLastOperation_(doc, action);
     // Announce/refresh promptly, then let the trigger handle the rest.
     //
     // `deferReports: true` is a client saying it will ask for that settling in
@@ -13489,7 +13535,7 @@ function handleWizardSave_(state, chatId, key, cache, doc, fromId) {
   var gone = false;
   var failure = "";
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   try {
     lock.waitLock(30000);
   } catch (lockError) {
@@ -14027,7 +14073,7 @@ function saveOmadAction_(action, payload, doc, configSheet) {
   var reportError = validateOmadTelegramReport_(payload.telegramReport);
   if (reportError) return jsonOutput_({ status: "error", message: reportError });
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     backupOmadState_(doc, configSheet, action);
@@ -15142,7 +15188,7 @@ function miniSaveTransaction_(doc, configSheet, payload) {
     return jsonOutput_(created);
   }
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   var transaction;
   var duplicate = false;
@@ -15834,6 +15880,11 @@ var SUPABASE_INSERT_MAX_CHARS = 4000000;
  *   datetext  the legacy dd/MM/yyyy display date
  *
  * `def` is what a NOT NULL column receives when the code hands it nothing.
+ *
+ * `wholeReads`: the code reads this table whole on almost every visit, so any
+ * read of it in a request is served from one whole read kept for the request.
+ * `readWith`: tables read together; reading one fetches the others alongside
+ * it, in parallel.
  */
 var SUPABASE_SHEETS = {
   System_Config: {
@@ -15845,6 +15896,7 @@ var SUPABASE_SHEETS = {
   },
   Omad_Transactions_V2: {
     table: "omad_transactions_v2",
+    wholeReads: true,
     columns: [
       ["ID", "id", "text"], ["Request_ID", "request_id", "text"],
       ["Created_At", "created_at", "ts"], ["Updated_At", "updated_at", "ts"],
@@ -15862,6 +15914,7 @@ var SUPABASE_SHEETS = {
   },
   Omad_Transactions: {
     table: "omad_transactions",
+    wholeReads: true,
     columns: [
       ["ID", "id", "text"], ["Tenant", "tenant", "text"], ["Month", "month", "text"],
       ["Type", "type", "text"], ["Amount", "amount", "num"], ["Currency", "currency", "text"],
@@ -15901,6 +15954,8 @@ var SUPABASE_SHEETS = {
   },
   Tasks: {
     table: "tasks",
+    wholeReads: true,
+    readWith: ["Task_Occurrences"],
     columns: [
       ["ID", "id", "text"], ["Type", "type", "text"], ["Title", "title", "text"],
       ["Description", "description", "text"], ["Responsible", "responsible", "text"],
@@ -15916,6 +15971,8 @@ var SUPABASE_SHEETS = {
   },
   Task_Occurrences: {
     table: "task_occurrences",
+    wholeReads: true,
+    readWith: ["Tasks"],
     columns: [
       ["ID", "id", "text"], ["Task_ID", "task_id", "text"], ["Task_Type", "task_type", "text"],
       ["Title", "title", "text"], ["Date_Key", "date_key", "datekey"], ["Step_Index", "step_index", "int"],
@@ -15934,6 +15991,7 @@ var SUPABASE_SHEETS = {
   },
   Omad_Job_Queue: {
     table: "omad_job_queue",
+    wholeReads: true,
     columns: [
       ["Job_ID", "job_id", "text"], ["Related_ID", "related_id", "text"], ["Type", "type", "text"],
       ["Payload_JSON", "payload_json", "text"], ["Status", "status", "text"],
@@ -16016,7 +16074,7 @@ function appDoc_() {
       throw new Error("OMAD_STORAGE=supabase, lekin Script Properties'da yo'q: " +
         credentials.missing.join(", "));
     }
-    APP_DOC_MEMO_ = supabaseDoc_(credentials);
+    APP_DOC_MEMO_ = supabaseDoc_(credentials, { request: true });
   } else {
     APP_DOC_MEMO_ = SpreadsheetApp.getActiveSpreadsheet();
   }
@@ -16024,6 +16082,8 @@ function appDoc_() {
 }
 
 function resetStorageMemos_() {
+  // Kept writes are never dropped by starting over.
+  flushPendingWrites_();
   APP_DOC_MEMO_ = null;
 }
 
@@ -16049,11 +16109,8 @@ function supabaseHeader_(response, name) {
   return "";
 }
 
-/**
- * One PostgREST call. Throws on anything but a 2xx, with the server's own
- * message (which never contains the key) so a refused write is loud.
- */
-function supabaseRequest_(credentials, method, table, params, body, prefer) {
+/** The URL and UrlFetchApp options for one PostgREST call. */
+function supabaseFetchSpec_(credentials, method, path, params, body, prefer) {
   var headers = { apikey: credentials.key, Accept: "application/json" };
   // A legacy service_role key is a JWT and goes in Authorization as well; a
   // new-style secret key (sb_secret_...) is accepted in `apikey` alone.
@@ -16065,15 +16122,14 @@ function supabaseRequest_(credentials, method, table, params, body, prefer) {
     options.contentType = "application/json";
     options.payload = JSON.stringify(body);
   }
+  return { url: credentials.url + "/rest/v1/" + path + supabaseQuery_(params || []), options: options };
+}
 
-  var url = credentials.url + "/rest/v1/" + table + supabaseQuery_(params || []);
-  var response;
-  try {
-    response = UrlFetchApp.fetch(url, options);
-  } catch (transportError) {
-    throw new Error("Supabase bilan aloqa yo'q (" + table + "): " + redactSecrets_(transportError));
-  }
-
+/**
+ * A PostgREST answer, or an error carrying the server's own message (which
+ * never contains the key) so a refused write is loud.
+ */
+function supabaseResult_(method, path, response) {
   var code = response.getResponseCode();
   var text = response.getContentText() || "";
   if (code < 200 || code >= 300) {
@@ -16081,10 +16137,71 @@ function supabaseRequest_(credentials, method, table, params, body, prefer) {
     var reason = parsed && (parsed.message || parsed.hint || parsed.details)
       ? [parsed.message, parsed.details, parsed.hint].filter(function (p) { return p; }).join(" — ")
       : text;
-    throw new Error("Supabase " + method.toUpperCase() + " " + table + " rad etildi (HTTP " + code + "): " +
+    var error = new Error("Supabase " + method.toUpperCase() + " " + path + " rad etildi (HTTP " + code + "): " +
       redactSecrets_(reason).slice(0, 500));
+    error.httpCode = code;
+    return error;
   }
   return { code: code, text: text, response: response, json: text ? safeParseJSON_(text, null) : null };
+}
+
+/** One PostgREST call. Throws on anything but a 2xx. */
+function supabaseRequest_(credentials, method, path, params, body, prefer) {
+  var spec = supabaseFetchSpec_(credentials, method, path, params, body, prefer);
+  var response;
+  try {
+    response = UrlFetchApp.fetch(spec.url, spec.options);
+  } catch (transportError) {
+    throw new Error("Supabase bilan aloqa yo'q (" + path + "): " + redactSecrets_(transportError));
+  }
+  var result = supabaseResult_(method, path, response);
+  if (result instanceof Error) throw result;
+  return result;
+}
+
+/**
+ * Several independent PostgREST calls sent together: one round trip instead
+ * of one per call. Each answer is a result or an Error -- the caller decides
+ * which failures matter.
+ *
+ * calls: [{ method, path, params, body, prefer }]
+ */
+function supabaseRequestAll_(credentials, calls) {
+  if (calls.length === 1) {
+    var only = calls[0];
+    try {
+      return [supabaseRequest_(credentials, only.method, only.path, only.params, only.body, only.prefer)];
+    } catch (error) {
+      return [error];
+    }
+  }
+  var requests = calls.map(function (call) {
+    var spec = supabaseFetchSpec_(credentials, call.method, call.path, call.params, call.body, call.prefer);
+    var request = { url: spec.url };
+    for (var key in spec.options) {
+      if (Object.prototype.hasOwnProperty.call(spec.options, key)) request[key] = spec.options[key];
+    }
+    return request;
+  });
+  var responses;
+  try {
+    responses = UrlFetchApp.fetchAll(requests);
+  } catch (transportError) {
+    throw new Error("Supabase bilan aloqa yo'q: " + redactSecrets_(transportError));
+  }
+  return responses.map(function (response, i) {
+    return supabaseResult_(calls[i].method, calls[i].path, response);
+  });
+}
+
+/** A database function the migrations define (supabase/migrations). */
+function supabaseRpc_(credentials, name, args) {
+  return supabaseRequest_(credentials, "post", "rpc/" + name, [], args || {});
+}
+
+/** True for "this database has no such function": the migration is not applied yet. */
+function isMissingSupabaseFunction_(error) {
+  return !!error && (error.httpCode === 404 || /PGRST202|Could not find the function/.test(String(error.message || error)));
 }
 
 /** The total behind a `Prefer: count=exact` answer ("0-9/42" or "*\/0"). */
@@ -16162,18 +16279,376 @@ function supabaseFromDb_(type, value) {
   return String(value);
 }
 
+// ------------------------------------------------- batching and the lock
+//
+// ONE ROUND TRIP PER BUSINESS ACTION
+// ----------------------------------
+// On the spreadsheet a write is a call into the same Google data centre; on
+// Supabase it is an HTTPS round trip. A business action -- a payment, a
+// correction, a sale -- writes several rows (the ledger, the audit log, a
+// setting, a queued report), so sending each write on its own made writing
+// slower than it was on Sheets.
+//
+// Every write the request's own document makes while the script lock is held
+// (and inside withBatchedWrites_) is therefore kept, and sent as ONE call to
+// the database function mbm_apply when the lock is released. That call is one
+// transaction: either the whole action lands or none of it does, which the
+// spreadsheet could never promise.
+//
+// What keeps this exactly as correct as writing immediately:
+//   - a read of a table with unsent writes sends them first, so nothing ever
+//     reads around its own write;
+//   - everything is sent before any message leaves for Telegram, so a message
+//     never describes a row that is not stored yet;
+//   - everything is sent before the lock is released (and when it is taken),
+//     so another execution never sees half an action;
+//   - if the database refuses, nothing of the action is stored and the
+//     request fails with the database's reason.
+
+/** How many batching scopes are open: held script locks plus withBatchedWrites_. */
+var STORAGE_BATCH_DEPTH_ = 0;
+
+/** The request's Supabase document, when that is the store in use. */
+function storageRequestDoc_() {
+  return APP_DOC_MEMO_ && APP_DOC_MEMO_.__supabase ? APP_DOC_MEMO_ : null;
+}
+
+/** Sends every kept write now. A no-op on the spreadsheet. */
+function flushPendingWrites_() {
+  var doc = storageRequestDoc_();
+  if (doc) doc.__flush();
+}
+
+function beginStorageBatch_() {
+  STORAGE_BATCH_DEPTH_++;
+}
+
+function endStorageBatch_() {
+  STORAGE_BATCH_DEPTH_ = Math.max(0, STORAGE_BATCH_DEPTH_ - 1);
+  if (STORAGE_BATCH_DEPTH_ === 0) flushPendingWrites_();
+}
+
+/**
+ * Runs `fn` with its writes sent together at the end, for a group of writes
+ * made outside the script lock (a job's bookkeeping). If `fn` throws, what it
+ * wrote before the throw is still sent -- exactly what immediate writes would
+ * have left behind -- and the original error is the one that surfaces.
+ */
+function withBatchedWrites_(fn) {
+  beginStorageBatch_();
+  var finished = false;
+  try {
+    var result = fn();
+    finished = true;
+    return result;
+  } finally {
+    if (finished) endStorageBatch_();
+    else {
+      try { endStorageBatch_(); } catch (flushError) { /* the original error says more */ }
+    }
+  }
+}
+
+/**
+ * LockService's script lock, which also delimits a batch of writes. Every
+ * module takes the lock through this, never through LockService directly.
+ *
+ * Taking it sends anything still unsent and forgets what this request read
+ * before: another execution may have written while we waited, so counts and
+ * cached rows are re-read under the lock. Releasing it sends the batch first,
+ * then lets the next execution in.
+ */
+function appScriptLock_() {
+  var lock = LockService.getScriptLock();
+  var held = false;
+  var acquired = function () {
+    if (held) return;
+    held = true;
+    var doc = storageRequestDoc_();
+    if (doc) doc.__lockAcquired();
+    beginStorageBatch_();
+  };
+  return {
+    waitLock: function (timeoutMs) { lock.waitLock(timeoutMs); acquired(); },
+    tryLock: function (timeoutMs) {
+      var ok = lock.tryLock(timeoutMs);
+      if (ok) acquired();
+      return ok;
+    },
+    hasLock: function () { return lock.hasLock(); },
+    releaseLock: function () {
+      if (!held) { lock.releaseLock(); return; }
+      held = false;
+      try {
+        STORAGE_BATCH_DEPTH_ = Math.max(0, STORAGE_BATCH_DEPTH_ - 1);
+        // Always sent here, even inside an outer batch: once the lock is
+        // gone another execution may read these rows.
+        flushPendingWrites_();
+      } finally {
+        lock.releaseLock();
+      }
+    }
+  };
+}
+
 // ------------------------------------------------------------ the document
 
-/** The Supabase-backed stand-in for the active spreadsheet. */
-function supabaseDoc_(credentials) {
+/**
+ * The Supabase-backed stand-in for the active spreadsheet.
+ *
+ * options.request: this document serves one request (appDoc_). It then keeps
+ * writes made under the lock for one mbm_apply call (above), keeps each table
+ * it has read whole for the rest of the request, and answers settings and row
+ * counts from one parallel fetch. A document opened for anything else -- the
+ * move, the speed check, a test looking at the tables -- reads and writes
+ * directly, as before.
+ */
+function supabaseDoc_(credentials, options) {
   var sheets = {};
+  var ctx = {
+    credentials: credentials,
+    perRequest: !!(options && options.request),
+    pending: [],        // row operations not sent yet, in order
+    touched: {},        // table -> true while it has unsent operations
+    counts: null,       // the mbm_counts() answer
+    countsGen: 0,       // which mbm_counts() answer `counts` is
+    config: null,       // every setting, key -> value
+    noRpc: false        // the database predates mbm_apply / mbm_counts
+  };
+
+  var openSheets = function () {
+    var list = [];
+    for (var name in sheets) {
+      if (Object.prototype.hasOwnProperty.call(sheets, name)) list.push(sheets[name]);
+    }
+    return list;
+  };
+
+  ctx.buffering = function () {
+    return ctx.perRequest && STORAGE_BATCH_DEPTH_ > 0;
+  };
+
+  /** Keeps a row operation, merging it into one already kept where it can. */
+  ctx.queue = function (op) {
+    var pending = ctx.pending;
+    var last = pending[pending.length - 1];
+    var merged = false;
+    if (op.op === "insert" && last && last.op === "insert" && last.table === op.table) {
+      last.rows = last.rows.concat(op.rows);
+      last.refs = last.refs.concat(op.refs);
+      merged = true;
+    } else if (op.op === "update" || op.op === "upsert_config") {
+      for (var i = pending.length - 1; i >= 0 && !merged; i--) {
+        var kept = pending[i];
+        if (op.op === "update" && kept.op === "update" && kept.table === op.table && kept.seq === op.seq) {
+          for (var column in op.values) {
+            if (Object.prototype.hasOwnProperty.call(op.values, column)) kept.values[column] = op.values[column];
+          }
+          merged = true;
+        } else if (op.op === "upsert_config" && kept.op === "upsert_config" && kept.key === op.key) {
+          kept.value = op.value;
+          merged = true;
+        }
+      }
+    }
+    if (!merged) pending.push(op);
+    ctx.touched[op.op === "upsert_config" ? "system_config" : op.table] = true;
+  };
+
+  /** Rows of one insert grouped by column set, as one statement each wants. */
+  var wireOps = function (pending) {
+    var wire = [];
+    var inserts = [];
+    for (var p = 0; p < pending.length; p++) {
+      var op = pending[p];
+      if (op.op !== "insert") {
+        wire.push(op.op === "update" ? { op: "update", table: op.table, seq: op.seq, values: op.values }
+          : op.op === "delete" ? { op: "delete", table: op.table, seqs: op.seqs }
+          : { op: "upsert_config", key: op.key, value: op.value });
+        continue;
+      }
+      var group = null;
+      var groupKeys = "";
+      for (var r = 0; r < op.rows.length; r++) {
+        var keys = Object.keys(op.rows[r]).sort().join(",");
+        if (!group || keys !== groupKeys) {
+          group = { op: "insert", table: op.table, rows: [] };
+          groupKeys = keys;
+          wire.push(group);
+          inserts.push({ at: wire.length - 1, refs: [] });
+        }
+        group.rows.push(op.rows[r]);
+        inserts[inserts.length - 1].refs.push(op.refs[r]);
+      }
+    }
+    return { wire: wire, inserts: inserts };
+  };
+
+  /** The same operations as separate REST calls, for a database without mbm_apply. */
+  var applyOneByOne = function (wire) {
+    return wire.map(function (op) {
+      if (op.op === "upsert_config") {
+        supabaseRequest_(credentials, "post", "system_config", [["on_conflict", "key"]],
+          [{ key: op.key, value: op.value, updated_at: new Date().toISOString() }],
+          "resolution=merge-duplicates,return=minimal");
+        return { ok: true };
+      }
+      if (op.op === "insert") {
+        var inserted = supabaseRequest_(credentials, "post", op.table, [["select", "seq"]], op.rows,
+          "return=representation").json || [];
+        return { seqs: inserted.map(function (r) { return r.seq; }) };
+      }
+      if (op.op === "update") {
+        var updated = supabaseRequest_(credentials, "patch", op.table, [["seq", "eq." + op.seq], ["select", "seq"]],
+          op.values, "return=representation").json || [];
+        if (updated.length !== 1) throw new Error(op.table + ": yangilanadigan qator topilmadi (seq " + op.seq + ").");
+        return { ok: true };
+      }
+      var removed = supabaseRequest_(credentials, "delete", op.table,
+        [["seq", "in.(" + op.seqs.join(",") + ")"], ["select", "seq"]], null, "return=representation").json || [];
+      if (removed.length !== op.seqs.length) {
+        throw new Error(op.table + ": " + op.seqs.length + " qatordan " + removed.length + " tasi o'chirildi.");
+      }
+      return { ok: true };
+    });
+  };
+
+  /**
+   * Operations in calls of a size the server accepts. Everything an action
+   * writes fits in one; only a bulk tool's thousands of rows are split.
+   */
+  var applyWire = function (wire) {
+    if (ctx.noRpc) return applyOneByOne(wire);
+    var chunks = [];
+    var current = [];
+    var size = 0;
+    for (var i = 0; i < wire.length; i++) {
+      var length = JSON.stringify(wire[i]).length;
+      if (current.length && size + length > SUPABASE_INSERT_MAX_CHARS) {
+        chunks.push(current);
+        current = [];
+        size = 0;
+      }
+      current.push(wire[i]);
+      size += length;
+    }
+    if (current.length) chunks.push(current);
+
+    var results = [];
+    for (var c = 0; c < chunks.length; c++) {
+      var answer;
+      try {
+        answer = supabaseRpc_(credentials, "mbm_apply", { ops: chunks[c] }).json || [];
+      } catch (error) {
+        if (c === 0 && isMissingSupabaseFunction_(error)) {
+          ctx.noRpc = true;
+          return applyOneByOne(wire);
+        }
+        throw error;
+      }
+      results = results.concat(answer);
+    }
+    return results;
+  };
+
+  /** Sends every kept operation. */
+  ctx.flush = function () {
+    if (!ctx.pending.length) return;
+    var plan = wireOps(ctx.pending);
+    ctx.pending = [];
+    ctx.touched = {};
+    var results;
+    try {
+      results = applyWire(plan.wire);
+    } catch (error) {
+      // Nothing of the batch is stored. Every position and count this
+      // request worked out may now be wrong, so all of it is read again.
+      ctx.counts = null;
+      ctx.config = null;
+      openSheets().forEach(function (sheet) { sheet.__forget(true); });
+      throw error;
+    }
+    for (var i = 0; i < plan.inserts.length; i++) {
+      var seqs = (results[plan.inserts[i].at] || {}).seqs || [];
+      var refs = plan.inserts[i].refs;
+      if (seqs.length !== refs.length) {
+        throw new Error("Supabase: " + refs.length + " qatordan " + seqs.length + " tasi yozildi.");
+      }
+      for (var k = 0; k < refs.length; k++) refs[k].seq = seqs[k];
+    }
+  };
+
+  /** Sends what a read of `table` would otherwise miss. */
+  ctx.beforeRead = function (table) {
+    if (ctx.touched[table]) ctx.flush();
+  };
+
+  /**
+   * Fetches, in one round trip, whichever of the settings and the row counts
+   * this request has not got yet. A request needs both almost every time, and
+   * one parallel fetch costs what one of them does.
+   */
+  ctx.prime = function () {
+    var calls = [];
+    var wantCounts = !ctx.counts && !ctx.noRpc;
+    var wantConfig = !ctx.config;
+    // Counts are only true of what is stored.
+    if (wantCounts && ctx.pending.length) ctx.flush();
+    if (wantConfig) ctx.beforeRead("system_config");
+    if (wantCounts) calls.push({ method: "post", path: "rpc/mbm_counts", body: {} });
+    if (wantConfig) {
+      calls.push({ method: "get", path: "system_config", params: [
+        ["select", "seq,key,value"], ["order", "seq.asc"], ["limit", SUPABASE_PAGE_SIZE]] });
+    }
+    if (!calls.length) return;
+    var answers = supabaseRequestAll_(credentials, calls);
+    var at = 0;
+    if (wantCounts) {
+      var counted = answers[at++];
+      if (counted instanceof Error) {
+        if (!isMissingSupabaseFunction_(counted)) throw counted;
+        ctx.noRpc = true;
+      } else {
+        ctx.counts = counted.json || {};
+        ctx.countsGen++;
+      }
+    }
+    if (wantConfig) {
+      var first = answers[at];
+      if (first instanceof Error) throw first;
+      var rows = first.json || [];
+      var page = rows;
+      while (page.length === SUPABASE_PAGE_SIZE) {
+        page = supabaseRequest_(credentials, "get", "system_config", [
+          ["select", "seq,key,value"], ["seq", "gt." + page[page.length - 1].seq],
+          ["order", "seq.asc"], ["limit", SUPABASE_PAGE_SIZE]]).json || [];
+        rows = rows.concat(page);
+      }
+      var config = {};
+      for (var i = 0; i < rows.length; i++) config[rows[i].key] = rows[i].value === null ? "" : rows[i].value;
+      ctx.config = config;
+    }
+  };
+
+  /** Everything read so far may be stale (the lock was just taken). */
+  ctx.forgetReads = function () {
+    ctx.flush();
+    ctx.counts = null;
+    ctx.config = null;
+    openSheets().forEach(function (sheet) { sheet.__forget(false); });
+  };
+
   var doc = {
     __supabase: true,
+    __ctx: ctx,
     credentials: credentials,
+    __flush: function () { ctx.flush(); },
+    __lockAcquired: function () { ctx.forgetReads(); },
+    __pendingCount: function () { return ctx.pending.length; },
     getSheetByName: function (name) {
       var definition = supabaseSheetDefinition_(name);
       if (!definition) return null;
-      if (!sheets[name]) sheets[name] = supabaseSheet_(credentials, name, definition);
+      if (!sheets[name]) sheets[name] = supabaseSheet_(ctx, name, definition, doc);
       return sheets[name];
     },
     insertSheet: function (name) {
@@ -16186,6 +16661,7 @@ function supabaseDoc_(credentials) {
       Object.keys(SUPABASE_SHEETS).forEach(function (name) { list.push(doc.getSheetByName(name)); });
       // The purge's backup copies are rows of the debug-log table, named by
       // the sheet they came from.
+      ctx.beforeRead("telegram_debug_log");
       var names = supabaseDebugBackupNames_(credentials);
       for (var i = 0; i < names.length; i++) list.push(doc.getSheetByName(names[i]));
       return list;
@@ -16219,16 +16695,24 @@ function supabaseDebugBackupNames_(credentials) {
 /**
  * One table, behaving like the sheet it replaced.
  *
- * `seqs[i]` is the `seq` of data row i (sheet row i + 2), filled in as rows
- * are read. `count` is the number of data rows as last observed, or -1.
+ * `seqs[i]` identifies data row i (sheet row i + 2): the row's `seq`, or --
+ * for a row kept to be inserted with the batch -- a reference whose `seq` is
+ * filled in when the batch is sent. `count` is the number of data rows as
+ * last observed, or -1. `rows` is the whole table as read in this request,
+ * kept until the request inserts or deletes rows in it.
  */
-function supabaseSheet_(credentials, name, definition) {
+function supabaseSheet_(ctx, name, definition, doc) {
+  var credentials = ctx.credentials;
+  var table = definition.table;
   var columns = definition.columns;
   var header = columns.map(function (c) { return c[0]; });
-  var state = { seqs: [], count: -1 };
+  var state = { seqs: [], count: -1, rows: null, rowIndex: null, countGen: -1 };
   // Sheet rows above the data: the header, or none.
   var headerRows = definition.noHeader ? 0 : 1;
   var firstDataRow = headerRows + 1;
+
+  var columnType = {};
+  columns.forEach(function (c) { columnType[c[1]] = c[2]; });
 
   var baseFilters = function () {
     var f = definition.filter;
@@ -16250,11 +16734,85 @@ function supabaseSheet_(credentials, name, definition) {
   };
 
   var request = function (method, params, body, prefer) {
-    return supabaseRequest_(credentials, method, definition.table, params, body, prefer);
+    return supabaseRequest_(credentials, method, table, params, body, prefer);
+  };
+
+  /** A row identity as a number, sending the batch if the row is not stored yet. */
+  var seqOf = function (entry) {
+    if (typeof entry === "number") return entry;
+    if (entry && entry.seq === undefined) ctx.flush();
+    if (!entry || entry.seq === undefined) throw new Error(name + ": qator saqlanmadi.");
+    return entry.seq;
+  };
+
+  // ----- whole-table rows kept for the request
+
+  var keepRows = function (records) {
+    if (!ctx.perRequest) return;
+    state.rows = records;
+    state.rowIndex = null;
+  };
+
+  var dropRows = function () {
+    state.rows = null;
+    state.rowIndex = null;
+  };
+
+  var allPage = function (afterSeq) {
+    return { method: "get", path: table, params: baseFilters().concat([
+      ["select", selectList(0, columns.length - 1)], ["seq", "gt." + afterSeq],
+      ["order", "seq.asc"], ["limit", SUPABASE_PAGE_SIZE]]) };
+  };
+
+  /**
+   * Every data row, paged by seq so a large table is read whole. A table read
+   * together with another (definition.readWith) fetches both in parallel.
+   */
+  var readAll = function () {
+    ctx.beforeRead(table);
+    if (state.rows) return state.rows;
+
+    var calls = [allPage(0)];
+    var companions = [];
+    if (ctx.perRequest && definition.readWith) {
+      definition.readWith.forEach(function (other) {
+        var sheet = doc.getSheetByName(other);
+        if (sheet && sheet.__wantsRows()) {
+          companions.push(sheet);
+          calls.push(allPage(0));
+          calls[calls.length - 1].path = sheet.__table;
+          calls[calls.length - 1].params = sheet.__allPageParams();
+        }
+      });
+    }
+    var answers = supabaseRequestAll_(credentials, calls);
+    if (answers[0] instanceof Error) throw answers[0];
+    for (var c = 0; c < companions.length; c++) {
+      if (!(answers[c + 1] instanceof Error)) companions[c].__adopt(answers[c + 1].json || []);
+    }
+
+    var records = [];
+    var page = answers[0].json || [];
+    while (true) {
+      for (var i = 0; i < page.length; i++) records.push(page[i]);
+      if (page.length < SUPABASE_PAGE_SIZE) break;
+      var next = allPage(page[page.length - 1].seq);
+      page = request(next.method, next.params).json || [];
+    }
+    state.seqs = records.map(function (r) { return r.seq; });
+    state.count = records.length;
+    keepRows(records);
+    return records;
   };
 
   /** Data rows [offset, offset + limit) in sheet order, with their seqs. */
   var readRows = function (offset, limit, fromCol, toCol) {
+    ctx.beforeRead(table);
+    // A table this request has read whole (or always reads whole) is served
+    // from that one read.
+    if (state.rows || (ctx.perRequest && definition.wholeReads)) {
+      return readAll().slice(offset, offset + limit);
+    }
     var records = [];
     var done = 0;
     while (done < limit) {
@@ -16273,26 +16831,40 @@ function supabaseSheet_(credentials, name, definition) {
     return records;
   };
 
-  /** Every data row, paged by seq so a large table is read whole. */
-  var readAll = function () {
-    var records = [];
-    var last = 0;
-    while (true) {
-      var page = request("get", baseFilters().concat([
-        ["select", selectList(0, columns.length - 1)], ["seq", "gt." + last],
-        ["order", "seq.asc"], ["limit", SUPABASE_PAGE_SIZE]
-      ])).json || [];
-      for (var i = 0; i < page.length; i++) records.push(page[i]);
-      if (page.length < SUPABASE_PAGE_SIZE) break;
-      last = page[page.length - 1].seq;
+  // ----- row counts
+
+  /** This table's count in an mbm_counts() answer. */
+  var countIn = function (counts) {
+    var value = counts[table];
+    var f = definition.filter;
+    if (f && f.equals !== undefined) value = value && typeof value === "object" ? (value[f.equals] || 0) : 0;
+    var number = Number(value);
+    return isFinite(number) ? number : -1;
+  };
+
+  /** The row count, if known without asking the database. */
+  var knownCount = function () {
+    if (state.count >= 0) return state.count;
+    if (ctx.counts && state.countGen !== ctx.countsGen) {
+      state.countGen = ctx.countsGen;
+      state.count = countIn(ctx.counts);
     }
-    state.seqs = records.map(function (r) { return r.seq; });
-    state.count = records.length;
-    return records;
+    return state.count;
+  };
+
+  /** Writes whose rows were not counted make the shared answer wrong for this table. */
+  var countUnknown = function () {
+    state.count = -1;
+    state.countGen = ctx.countsGen;
   };
 
   var dataCount = function () {
-    if (state.count >= 0) return state.count;
+    if (knownCount() >= 0) return state.count;
+    ctx.beforeRead(table);
+    if (ctx.perRequest && !ctx.counts && !ctx.noRpc) {
+      ctx.prime();
+      if (knownCount() >= 0) return state.count;
+    }
     var result = request("get", baseFilters().concat([["select", "seq"], ["limit", 1]]), null, "count=exact");
     state.count = supabaseCountFrom_(result);
     return state.count;
@@ -16305,12 +16877,14 @@ function supabaseSheet_(credentials, name, definition) {
     if (missing) readRows(offset, n, 0, 0);
     var out = [];
     for (var j = 0; j < n; j++) {
-      var seq = state.seqs[offset + j];
-      if (seq === undefined) throw new Error(name + ": " + (offset + j + 2) + "-qator topilmadi.");
-      out.push(seq);
+      var entry = state.seqs[offset + j];
+      if (entry === undefined) throw new Error(name + ": " + (offset + j + firstDataRow) + "-qator topilmadi.");
+      out.push(seqOf(entry));
     }
     return out;
   };
+
+  // ----- writes
 
   /** A full or partial row of cells as a database record. */
   var toRecord = function (cells, fromCol) {
@@ -16344,34 +16918,101 @@ function supabaseSheet_(credentials, name, definition) {
 
   var insertRecords = function (records) {
     var f = definition.filter;
+    for (var i = 0; i < records.length; i++) {
+      // NOT NULL columns the caller left out get their default.
+      for (var c = 0; c < columns.length; c++) {
+        if (Object.prototype.hasOwnProperty.call(records[i], columns[c][1])) continue;
+        if (columns[c][3] !== undefined) records[i][columns[c][1]] = supabaseToDb_(columns[c][2], "", columns[c][3]);
+      }
+      if (f && f.equals !== undefined) records[i][f.column] = f.equals;
+    }
+    // The server fills defaults and generated columns: the next whole read
+    // goes to the database.
+    dropRows();
+    if (table === "system_config") ctx.config = null;
+
+    // Positions are tracked only when the row count is already known; an
+    // append that has not looked at the table costs no extra request.
+    var base = knownCount();
+
+    if (ctx.buffering()) {
+      var refs = records.map(function () { return {}; });
+      ctx.queue({ op: "insert", table: table, rows: records, refs: refs });
+      if (base >= 0) {
+        for (var r = 0; r < refs.length; r++) state.seqs[base + r] = refs[r];
+        state.count = base + refs.length;
+      } else countUnknown();
+      return;
+    }
+
+    ctx.beforeRead(table);
     var chunks = chunked(records);
     for (var n = 0; n < chunks.length; n++) {
       var chunk = chunks[n];
-      for (var i = 0; i < chunk.length; i++) {
-        // NOT NULL columns the caller left out get their default.
-        for (var c = 0; c < columns.length; c++) {
-          if (Object.prototype.hasOwnProperty.call(chunk[i], columns[c][1])) continue;
-          if (columns[c][3] !== undefined) chunk[i][columns[c][1]] = supabaseToDb_(columns[c][2], "", columns[c][3]);
-        }
-        if (f && f.equals !== undefined) chunk[i][f.column] = f.equals;
-      }
-      // Positions are tracked only when the row count is already known; an
-      // append that has not looked at the table costs one request, not two.
-      var base = state.count;
       var inserted = request("post", [["select", "seq"]], chunk, "return=representation").json || [];
       if (inserted.length !== chunk.length) {
         throw new Error(name + ": " + chunk.length + " qatordan " + inserted.length + " tasi yozildi.");
       }
       if (base >= 0) {
         for (var k = 0; k < inserted.length; k++) state.seqs[base + k] = inserted[k].seq;
-        state.count = base + inserted.length;
+        base += inserted.length;
+        state.count = base;
       }
     }
+    if (base < 0) countUnknown();
   };
 
-  var updateRecord = function (seq, record) {
+  /** A row kept from this request's whole read, updated the way the database will be. */
+  var updateKeptRow = function (seq, record) {
+    if (!state.rows) return;
+    for (var column in record) {
+      // jsonb comes back re-serialised by the server; read it from there.
+      if (Object.prototype.hasOwnProperty.call(record, column) && columnType[column] === "json") {
+        dropRows();
+        return;
+      }
+    }
+    if (!state.rowIndex) {
+      state.rowIndex = {};
+      for (var i = 0; i < state.rows.length; i++) state.rowIndex[state.rows[i].seq] = i;
+    }
+    var at = state.rowIndex[seq];
+    if (at === undefined) { dropRows(); return; }
+    var kept = {};
+    for (var key in state.rows[at]) {
+      if (Object.prototype.hasOwnProperty.call(state.rows[at], key)) kept[key] = state.rows[at][key];
+    }
+    for (var name2 in record) {
+      if (Object.prototype.hasOwnProperty.call(record, name2)) kept[name2] = record[name2];
+    }
+    state.rows[at] = kept;
+  };
+
+  var updateRecord = function (entry, record) {
+    if (table === "system_config") ctx.config = null;
+    // A row kept for insertion takes the new cells before it is ever sent.
+    if (typeof entry !== "number" && entry.seq === undefined && ctx.buffering()) {
+      var pending = ctx.pending;
+      for (var p = 0; p < pending.length; p++) {
+        if (pending[p].op !== "insert") continue;
+        var at = pending[p].refs.indexOf(entry);
+        if (at < 0) continue;
+        for (var column in record) {
+          if (Object.prototype.hasOwnProperty.call(record, column)) pending[p].rows[at][column] = record[column];
+        }
+        return;
+      }
+    }
+    var seq = seqOf(entry);
+    if (ctx.buffering()) {
+      ctx.queue({ op: "update", table: table, seq: seq, values: record });
+      updateKeptRow(seq, record);
+      return;
+    }
+    ctx.beforeRead(table);
     var updated = request("patch", [["seq", "eq." + seq], ["select", "seq"]], record, "return=representation").json || [];
     if (updated.length !== 1) throw new Error(name + ": yangilanadigan qator topilmadi (seq " + seq + ").");
+    updateKeptRow(seq, record);
   };
 
   /** Writes a block of cells starting at sheet row `row`, column `col`. */
@@ -16400,21 +17041,38 @@ function supabaseSheet_(credentials, name, definition) {
     var position = row - firstDataRow;
     if (howMany < 1) return;
     var targets = seqsFor(position, howMany);
-    var list = "in.(" + targets.join(",") + ")";
-    var changed;
-    if (definition.softDelete) {
-      var stamp = {};
-      stamp[definition.softDelete] = new Date().toISOString();
-      changed = request("patch", [["seq", list], ["select", "seq"]], stamp, "return=representation").json || [];
+    if (table === "system_config") ctx.config = null;
+
+    if (ctx.buffering()) {
+      if (definition.softDelete) {
+        var stamp = new Date().toISOString();
+        for (var t = 0; t < targets.length; t++) {
+          var values = {};
+          values[definition.softDelete] = stamp;
+          ctx.queue({ op: "update", table: table, seq: targets[t], values: values });
+        }
+      } else {
+        ctx.queue({ op: "delete", table: table, seqs: targets });
+      }
     } else {
-      changed = request("delete", [["seq", list], ["select", "seq"]], null, "return=representation").json || [];
-    }
-    if (changed.length !== targets.length) {
-      throw new Error(name + ": " + targets.length + " qatordan " + changed.length + " tasi o'chirildi.");
+      ctx.beforeRead(table);
+      var list = "in.(" + targets.join(",") + ")";
+      var changed;
+      if (definition.softDelete) {
+        var soft = {};
+        soft[definition.softDelete] = new Date().toISOString();
+        changed = request("patch", [["seq", list], ["select", "seq"]], soft, "return=representation").json || [];
+      } else {
+        changed = request("delete", [["seq", list], ["select", "seq"]], null, "return=representation").json || [];
+      }
+      if (changed.length !== targets.length) {
+        throw new Error(name + ": " + targets.length + " qatordan " + changed.length + " tasi o'chirildi.");
+      }
     }
     // Every position below has shifted; the next access re-reads.
     state.seqs = [];
-    state.count = -1;
+    countUnknown();
+    dropRows();
   };
 
   var range = function (row, col, numRows, numCols) {
@@ -16472,7 +17130,8 @@ function supabaseSheet_(credentials, name, definition) {
   };
 
   var sheet = {
-    __supabaseTable: definition.table,
+    __supabaseTable: table,
+    __table: table,
     getName: function () { return name; },
     getLastRow: function () { return dataCount() + headerRows; },
     getDataRange: function () {
@@ -16496,16 +17155,68 @@ function supabaseSheet_(credentials, name, definition) {
     deleteRow: function (row) { removeRows(row, 1); },
     deleteRows: function (row, howMany) { removeRows(row, howMany); },
 
-    // ----- System_Config by key, without reading the whole table -----------
+    /**
+     * The first data row whose database column equals `value`, found by the
+     * database rather than by reading the table: { rowNumber, row } or null.
+     * Only for indexed columns the sheet never had (cafe_sales.request_id).
+     */
+    findFirstRow: function (dbColumn, value) {
+      ctx.beforeRead(table);
+      var found = request("get", baseFilters().concat([
+        ["select", selectList(0, columns.length - 1)], [dbColumn, "eq." + value],
+        ["order", "seq.asc"], ["limit", 1]])).json || [];
+      if (!found.length) return null;
+      var before = request("get", baseFilters().concat([
+        ["select", "seq"], ["seq", "lt." + found[0].seq], ["limit", 1]]), null, "count=exact");
+      var position = supabaseCountFrom_(before);
+      state.seqs[position] = found[0].seq;
+      return { rowNumber: position + firstDataRow, row: toCells(found[0], 0, columns.length - 1) };
+    },
+
+    // ----- System_Config by key -------------------------------------------
     getConfigValue: function (key) {
+      if (ctx.perRequest) {
+        if (!ctx.config) ctx.prime();
+        return Object.prototype.hasOwnProperty.call(ctx.config, key) ? ctx.config[key] : null;
+      }
       var found = request("get", [["select", "value"], ["key", "eq." + key], ["limit", 1]]).json || [];
       return found.length ? (found[0].value === null ? "" : found[0].value) : null;
     },
     setConfigValue: function (key, value) {
-      request("post", [["on_conflict", "key"]],
-        [{ key: String(key), value: value === null || value === undefined ? null : String(value),
-           updated_at: new Date().toISOString() }],
-        "resolution=merge-duplicates,return=minimal");
+      var stored = value === null || value === undefined ? null : String(value);
+      dropRows();
+      if (ctx.buffering()) {
+        ctx.queue({ op: "upsert_config", key: String(key), value: stored });
+      } else {
+        request("post", [["on_conflict", "key"]],
+          [{ key: String(key), value: stored, updated_at: new Date().toISOString() }],
+          "resolution=merge-duplicates,return=minimal");
+      }
+      if (ctx.config) {
+        // A new key is a new row this request did not count.
+        if (!Object.prototype.hasOwnProperty.call(ctx.config, key)) countUnknown();
+        ctx.config[key] = stored === null ? "" : stored;
+      } else {
+        countUnknown();
+      }
+    },
+
+    // ----- for the document ------------------------------------------------
+    /** Forget counts and kept rows; `positions` also forgets row identities. */
+    __forget: function (positions) {
+      state.count = -1;
+      state.countGen = -1;
+      dropRows();
+      if (positions) state.seqs = [];
+    },
+    __wantsRows: function () { return ctx.perRequest && !state.rows && !ctx.touched[table]; },
+    __allPageParams: function () { return allPage(0).params; },
+    /** A whole first page read alongside another table. */
+    __adopt: function (records) {
+      if (records.length >= SUPABASE_PAGE_SIZE || ctx.touched[table]) return;
+      state.seqs = records.map(function (r) { return r.seq; });
+      state.count = records.length;
+      keepRows(records);
     }
   };
 
@@ -16712,7 +17423,7 @@ function storageAction_(action, payload) {
 
   if (action === 'preview_supabase_import') return previewSupabaseImport_(source, credentials);
 
-  var lock = LockService.getScriptLock();
+  var lock = appScriptLock_();
   lock.waitLock(30000);
   try {
     return applySupabaseImport_(source, target, credentials);
