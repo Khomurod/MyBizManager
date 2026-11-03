@@ -867,12 +867,13 @@ composes the message from data it already stored.
    `type="number"` field rejects the grouping spaces; `inputmode` is what raises
    the numeric keypad. `cleanMoneyString`'s rule: the last separator is a decimal
    point only when followed by one or two digits, or nothing.
-8. **Mini App form controls are 16px and the page allows pinch-zoom.** iOS
+8. **Form controls are 16px on a phone and every page allows pinch-zoom.** iOS
    auto-zooms a focused control smaller than 16px; fixing the font size fixes the
-   cause, so `maximum-scale` / `user-scalable=no` are gone from `mini.html` and
-   `tasks.html` and the browser tests refuse to let them back. (`login.html`,
-   `omad_admin.html`, `cafe_admin.html` and `cafe_pos.html` still carry them;
-   changing that is a separate decision.)
+   cause, so `maximum-scale` / `user-scalable=no` are gone from every page —
+   `mini.html` and `tasks.html` first, then `login.html`, `omad_admin.html`,
+   `cafe_admin.html` and `cafe_pos.html` in the 2026-11 redesign (`.ui-input`
+   is `text-base` below 640px). The browser tests refuse to let either back:
+   `tests/ui-redesign.e2e.js` measures every visible field on each page.
 9. **Telegram task cards are HTML and every interpolated value is escaped.**
    The description budget is applied to the **raw** text before escaping, and an
    over-long message drops the description rather than truncating unsafely.

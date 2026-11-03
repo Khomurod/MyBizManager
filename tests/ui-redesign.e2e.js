@@ -257,4 +257,36 @@ describe('Redesigned screens (browser)', () => {
     });
   }
 
+  // Decision 8 (App Brief): every page allows pinch-zoom, so every field must
+  // be at least 16px on a phone -- iOS zooms into a smaller one on focus and
+  // leaves the page zoomed. Fields a script renders (bulk rows, the entry
+  // cart, the task form) are opened first so they are measured too.
+  const ZOOM_PAGES = [
+    ['login.html', 'omad_admin', []],
+    ['omad_admin.html', 'omad_admin', ['#nav-entry', '#nav-bulk', '#nav-settings']],
+    ['cafe_admin.html', 'cafe_admin', [".ui-tabnav button[onclick*='inventory']", ".ui-tabnav button[onclick*='recipes']", ".ui-tabnav button[onclick*='settings']"]],
+    ['cafe_pos.html', 'cafe_seller', []],
+    ['tasks.html', 'omad_admin', ['.fab']]
+  ];
+  for (const [page, role, opens] of ZOOM_PAGES) {
+    test(`${page} allows zoom and has no field iOS would zoom into`, async () => {
+      const { page: tab, context } = await open(page, role, PHONE);
+      const viewport = await tab.getAttribute('meta[name="viewport"]', 'content');
+      assert.ok(!/user-scalable\s*=\s*no/i.test(viewport) && !/maximum-scale/i.test(viewport), viewport);
+      const small = [];
+      const measure = async () => small.push(...await tab.evaluate(() =>
+        [...document.querySelectorAll('input, select, textarea')]
+          .filter(el => !['checkbox', 'radio', 'hidden', 'file', 'range', 'color'].includes(el.type) && el.offsetParent !== null)
+          .filter(el => parseFloat(getComputedStyle(el).fontSize) < 16)
+          .map(el => `${el.id || el.name || el.className} (${getComputedStyle(el).fontSize})`)));
+      await measure();
+      for (const selector of opens) {
+        await tab.click(selector);
+        await measure();
+      }
+      assert.deepStrictEqual([...new Set(small)], []);
+      await context.close();
+    });
+  }
+
 });
