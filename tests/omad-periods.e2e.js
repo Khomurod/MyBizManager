@@ -224,9 +224,8 @@ describe('Omad admin periods (browser)', () => {
   test('history is ordered newest period first and labelled in Uzbek', async () => {
     const { page, context } = await openAdmin();
     const labels = await page.evaluate(() =>
-      [...document.querySelectorAll('#historyList .text-\\[10px\\]')]
-        .map(e => e.textContent.trim())
-        .filter(t => t.includes('•')));
+      [...document.querySelectorAll('#historyList .history-meta')]
+        .map(e => e.textContent.trim()));
 
     assert.ok(labels[0].includes('Yanvar 2027'), `expected Yanvar 2027 first, got ${labels[0]}`);
     assert.ok(labels[1].includes('Dekabr 2026'));

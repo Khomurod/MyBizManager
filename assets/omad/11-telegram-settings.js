@@ -24,8 +24,8 @@ function tgShowMessage(text, isError) {
     if (!box) return;
     box.textContent = text;
     box.className = isError
-        ? "text-[11px] font-bold rounded-lg p-2 bg-red-50 text-red-600 border border-red-100"
-        : "text-[11px] font-bold rounded-lg p-2 bg-green-50 text-green-700 border border-green-100";
+        ? "mt-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-600"
+        : "mt-4 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-700";
 }
 
 function renderTelegramSettings(settings, botInfo) {
@@ -35,13 +35,13 @@ function renderTelegramSettings(settings, botInfo) {
     const tokenEl = document.getElementById('tgTokenStatus');
     if (tokenEl) {
         tokenEl.textContent = s.tokenConfigured ? "✅ O'rnatilgan" : "❌ O'rnatilmagan";
-        tokenEl.className = s.tokenConfigured ? "font-bold text-green-600" : "font-bold text-red-500";
+        tokenEl.className = s.tokenConfigured ? "text-right font-semibold text-emerald-700" : "text-right font-semibold text-red-600";
     }
 
     const botEl = document.getElementById('tgBotStatus');
     if (botEl && botInfo) {
         botEl.textContent = botInfo.username ? `✅ @${botInfo.username}` : "✅ Ulandi";
-        botEl.className = "font-bold text-green-600";
+        botEl.className = "text-right font-semibold text-emerald-700";
     }
 
     const hookEl = document.getElementById('tgWebhookStatus');
@@ -49,13 +49,13 @@ function renderTelegramSettings(settings, botInfo) {
         const hook = s.webhookStatus;
         if (!hook) {
             hookEl.textContent = "Noma'lum";
-            hookEl.className = "font-bold text-slate-400";
+            hookEl.className = "text-right font-semibold text-slate-500";
         } else if (hook.configured) {
             hookEl.textContent = `✅ Faol (${hook.pendingUpdateCount || 0} kutilmoqda)`;
-            hookEl.className = "font-bold text-green-600";
+            hookEl.className = "text-right font-semibold text-emerald-700";
         } else {
             hookEl.textContent = "❌ Sozlanmagan";
-            hookEl.className = "font-bold text-red-500";
+            hookEl.className = "text-right font-semibold text-red-600";
         }
     }
 

@@ -32,9 +32,10 @@ function renderSyncBanner() {
         // so this branch has to carry the "saving is off" note too - otherwise
         // it is only ever shown in the case nobody is in.
         const savingOff = app.snapshotAt ? " Saqlash vaqtincha o'chirilgan." : '';
-        banner.className = 'card border-amber-300 bg-amber-50 text-amber-800 text-xs font-bold';
-        banner.innerHTML = `Ma'lumot yangilanmadi: ${escapeHtmlText(app.loadError + savingOff)}
-            <button onclick="syncData()" class="ml-2 underline">Qayta urinish</button>`;
+        banner.className = 'card ui-alert ui-alert-warning mb-4 items-center';
+        banner.innerHTML = `${uiIcon('triangle-alert', 'text-amber-600')}
+            <span class="flex-1">Ma'lumot yangilanmadi: ${escapeHtmlText(app.loadError + savingOff)}</span>
+            <button onclick="syncData()" class="ui-btn ui-btn-secondary ui-btn-sm shrink-0">${uiIcon('refresh-cw', 'ui-icon-sm')}Qayta urinish</button>`;
         banner.classList.remove('hidden');
         return;
     }
@@ -42,7 +43,7 @@ function renderSyncBanner() {
         // Saying that saving is off matters as much as saying the figures are
         // old: the screen looks ordinary, and somebody would otherwise find out
         // by pressing Save.
-        banner.className = 'card border-slate-200 bg-slate-50 text-slate-500 text-xs font-bold';
+        banner.className = 'card ui-alert ui-alert-info mb-4';
         banner.textContent =
             "Saqlangan ma'lumot ko'rsatilmoqda, yangilanmoqda... Saqlash vaqtincha o'chirilgan.";
         banner.classList.remove('hidden');
@@ -52,11 +53,21 @@ function renderSyncBanner() {
 }
 
 
+/** What the top bar calls each tab. */
+const TAB_TITLES = { dash: 'Hisobot', entry: 'Yangi yozuv', bulk: 'Ommaviy kiritish', history: 'Tarix', settings: 'Sozlamalar' };
+
 function switchTab(t) {
     document.querySelectorAll('.tab-content').forEach(e => e.classList.remove('active'));
-    document.querySelectorAll('.nav-item').forEach(e => e.classList.remove('active'));
+    document.querySelectorAll('.nav-item').forEach(e => {
+        e.classList.remove('active');
+        e.removeAttribute('aria-current');
+    });
     document.getElementById('tab-'+t).classList.add('active');
     document.getElementById('nav-'+t).classList.add('active');
+    document.getElementById('nav-'+t).setAttribute('aria-current', 'page');
+    const title = document.getElementById('pageTitle');
+    if (title) title.textContent = TAB_TITLES[t] || '';
+    window.scrollTo(0, 0);
     // The ledger is not downloaded with the dashboard any more; the first page
     // of it is fetched when somebody actually opens Tarix.
     if (t === 'history') ensureHistoryLoaded();

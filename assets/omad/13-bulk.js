@@ -121,25 +121,24 @@ function addBulkRow(values) {
     const id = `bulkRow${++bulkRowSeq}`;
 
     const row = document.createElement('div');
-    row.className = 'bulk-row card';
+    row.className = 'bulk-row card ui-card p-3 sm:p-4';
     row.id = id;
-    row.style.padding = '12px';
     row.innerHTML =
-        '<div class="flex items-center gap-2 mb-2">' +
-        `<select class="bulk-kind flex-1 min-w-0 p-2 border border-slate-200 rounded bg-white font-bold text-xs" onchange="onBulkKindChange(this)">${bulkKindOptions(kind)}</select>` +
+        '<div class="mb-2 flex items-center gap-2">' +
+        `<select class="bulk-kind ui-input flex-1" aria-label="Qator turi" onchange="onBulkKindChange(this)">${bulkKindOptions(kind)}</select>` +
         '<button type="button" onclick="removeBulkRow(this)" aria-label="Qatorni o\'chirish" ' +
-        'class="text-red-400 text-sm font-bold px-2">✕</button>' +
+        `class="ui-icon-btn size-11 text-red-500 hover:border-red-200 hover:bg-red-50">${uiIcon('trash-2')}</button>` +
         '</div>' +
-        '<div class="grid grid-cols-2 gap-2 mb-2">' +
-        '<select class="bulk-tenant w-full min-w-0 p-2 bg-slate-50 border border-slate-200 rounded font-bold text-xs outline-none"></select>' +
-        `<select class="bulk-period w-full min-w-0 p-2 bg-slate-50 border border-slate-200 rounded font-bold text-xs outline-none">${periodOptions(period)}</select>` +
+        '<div class="mb-2 grid grid-cols-1 gap-2 sm:grid-cols-2">' +
+        '<select class="bulk-tenant ui-input" aria-label="Obyekt"></select>' +
+        `<select class="bulk-period ui-input" aria-label="Oy">${periodOptions(period)}</select>` +
         '</div>' +
-        '<div class="flex gap-2 mb-2">' +
-        `<input type="text" inputmode="decimal" class="bulk-amount flex-1 min-w-0 p-2 border border-slate-200 rounded text-sm font-bold outline-none" placeholder="0" value="${escapeHTML(String(seed.amount || ''))}">` +
-        `<select class="bulk-currency w-20 p-2 border border-slate-200 rounded bg-white font-bold text-xs"><option${seed.currency === 'USD' ? '' : ' selected'}>UZS</option><option${seed.currency === 'USD' ? ' selected' : ''}>USD</option></select>` +
-        `<select class="bulk-method w-24 p-2 border border-slate-200 rounded bg-white font-medium text-xs text-slate-600"><option value="Naqd"${seed.method === 'Bank' ? '' : ' selected'}>Naqd</option><option value="Bank"${seed.method === 'Bank' ? ' selected' : ''}>Bank</option></select>` +
+        '<div class="mb-2 grid grid-cols-[minmax(0,1fr)_5.5rem] gap-2 sm:grid-cols-[minmax(0,1fr)_6rem_7rem]">' +
+        `<input type="text" inputmode="decimal" class="bulk-amount ui-input font-semibold" aria-label="Summa" placeholder="0" value="${escapeHTML(String(seed.amount || ''))}">` +
+        `<select class="bulk-currency ui-input" aria-label="Valyuta"><option${seed.currency === 'USD' ? '' : ' selected'}>UZS</option><option${seed.currency === 'USD' ? ' selected' : ''}>USD</option></select>` +
+        `<select class="bulk-method ui-input col-span-2 sm:col-span-1" aria-label="To'lov usuli"><option value="Naqd"${seed.method === 'Bank' ? '' : ' selected'}>Naqd</option><option value="Bank"${seed.method === 'Bank' ? ' selected' : ''}>Bank</option></select>` +
         '</div>' +
-        `<input type="text" class="bulk-comment w-full p-2 border border-slate-200 rounded text-xs outline-none" placeholder="Izoh" value="${escapeHTML(String(seed.comment || ''))}">`;
+        `<input type="text" class="bulk-comment ui-input" aria-label="Izoh" placeholder="Izoh" value="${escapeHTML(String(seed.comment || ''))}">`;
 
     list.appendChild(row);
 

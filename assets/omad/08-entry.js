@@ -48,9 +48,12 @@ function renderCart() {
     box.classList.remove('hidden');
     if(cart.length === 0) box.classList.add('hidden');
     box.innerHTML = cart.map((item, i) => `
-        <div class="flex justify-between items-center text-xs border-b border-blue-200 last:border-0 pb-1 mb-1">
-            <span class="font-bold text-slate-700">${item.amount.toLocaleString()} ${item.currency} <span class="text-slate-400 font-normal">(${item.method})</span></span>
-            <button onclick="removeCartLine(${i})" class="text-red-400"${entrySaveInFlight ? ' disabled' : ''}><i class="fas fa-times"></i></button>
+        <div class="flex items-center justify-between gap-3 px-3 py-2">
+            <span class="flex min-w-0 items-center gap-2 text-sm">
+                <span class="ui-figure text-slate-900">${item.amount.toLocaleString()} ${item.currency}</span>
+                <span class="ui-badge ui-badge-neutral">${item.method}</span>
+            </span>
+            <button onclick="removeCartLine(${i})" class="ui-icon-btn size-9 border-transparent bg-transparent text-red-500 hover:bg-red-50" aria-label="Qatorni olib tashlash"${entrySaveInFlight ? ' disabled' : ''}>${uiIcon('x')}</button>
         </div>`).join('');
 }
 
@@ -87,39 +90,46 @@ function applyEntryMode() {
     const btnTp = document.getElementById('btn-tenantpaid');
     if(btnTp) {
         btnTp.className = tenantPaid
-            ? "w-full mb-4 py-2 rounded-lg font-bold text-xs border border-amber-500 bg-amber-500 text-white shadow transition-all"
-            : "w-full mb-4 py-2 rounded-lg font-bold text-xs border border-slate-300 bg-white text-slate-500 transition-all";
+            ? "ui-btn ui-btn-block mb-4 justify-start bg-amber-500 text-white hover:bg-amber-600"
+            : "ui-btn ui-btn-secondary ui-btn-block mb-4 justify-start";
+        btnTp.setAttribute('aria-pressed', String(tenantPaid));
     }
+}
+
+/** Marks Kirim or Chiqim as chosen; neither while the tenant-paid mode is on. */
+function setEntrySegment(type) {
+    [['btn-income', 'Income', 'text-emerald-700'], ['btn-expense', 'Expense', 'text-red-700']].forEach(([id, value, tone]) => {
+        const button = document.getElementById(id);
+        if (!button) return;
+        const on = type === value;
+        button.classList.toggle('active', on);
+        button.classList.toggle(tone, on);
+        button.setAttribute('aria-pressed', String(on));
+    });
 }
 
 function setType(type) {
     currentType = type;
-    const btnIn = document.getElementById('btn-income');
-    const btnEx = document.getElementById('btn-expense');
     const sub = document.getElementById('submitBtn');
 
     if(type === 'TenantPaid') {
         // Editing an ordinary entry and then switching mode would submit the
         // wrong shape, so the mode switch always starts clean.
         cancelEdit();
-        btnIn.className = "flex-1 py-2 rounded-md font-bold text-sm text-slate-500 transition-all";
-        btnEx.className = "flex-1 py-2 rounded-md font-bold text-sm text-slate-500 transition-all";
-        sub.className = "w-full bg-amber-600 text-white py-3 rounded-lg font-bold text-sm shadow-lg shadow-amber-200 active:scale-95 transition-all";
+        setEntrySegment(null);
+        sub.className = "ui-btn ui-btn-lg ui-btn-block ui-btn-warning mt-5";
         sub.innerText = "IJARACHI TO'LOVINI SAQLASH";
         renderEntryDropdowns();
         applyEntryMode();
         return;
     }
 
+    setEntrySegment(type);
     if(type === 'Income') {
-        btnIn.className = "flex-1 py-2 rounded-md font-bold text-sm bg-white text-green-600 shadow-sm transition-all";
-        btnEx.className = "flex-1 py-2 rounded-md font-bold text-sm text-slate-500 transition-all";
-        sub.className = "w-full bg-green-600 text-white py-3 rounded-lg font-bold text-sm shadow-lg shadow-green-200 active:scale-95 transition-all";
+        sub.className = "ui-btn ui-btn-lg ui-btn-block ui-btn-success mt-5";
         if(!document.getElementById('editId').value) sub.innerText = "KIRIMNI SAQLASH";
     } else {
-        btnIn.className = "flex-1 py-2 rounded-md font-bold text-sm text-slate-500 transition-all";
-        btnEx.className = "flex-1 py-2 rounded-md font-bold text-sm bg-white text-red-600 shadow-sm transition-all";
-        sub.className = "w-full bg-red-600 text-white py-3 rounded-lg font-bold text-sm shadow-lg shadow-red-200 active:scale-95 transition-all";
+        sub.className = "ui-btn ui-btn-lg ui-btn-block ui-btn-danger mt-5";
         if(!document.getElementById('editId').value) sub.innerText = "CHIQIMNI SAQLASH";
     }
     renderEntryDropdowns();
