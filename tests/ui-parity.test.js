@@ -13,7 +13,9 @@
  *
  * Also checked here: every id a page's scripts look up with getElementById
  * exists somewhere in that page or its scripts. A renamed id breaks its
- * handler silently -- the button still renders and does nothing.
+ * handler silently -- the button still renders and does nothing. And every
+ * Lucide icon a page names must be in assets/icons/lucide.svg, or it renders
+ * as an empty square.
  */
 
 const test = require('node:test');
@@ -71,3 +73,15 @@ for (const page of Object.keys(BASELINE)) {
     assert.deepStrictEqual(missing, [], `${page} looks up missing ids: ${missing.join(', ')}`);
   });
 }
+
+test('every icon a page names is in the committed sprite', () => {
+  const result = require('child_process').spawnSync(process.execPath,
+    [path.join(ROOT, 'scripts', 'build-icons.js'), '--check'], { encoding: 'utf8' });
+  assert.strictEqual(result.status, 0, result.stderr);
+});
+
+test('no page loads Font Awesome or another icon font any more', () => {
+  const pages = Object.keys(BASELINE);
+  const loading = pages.filter(page => /font-awesome|fontawesome|class="fa[srb]? fa-/i.test(pageSource(page).all));
+  assert.deepStrictEqual(loading, []);
+});

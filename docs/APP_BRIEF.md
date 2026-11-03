@@ -82,7 +82,9 @@ Cloudflare Pages (static HTML/JS)         Google Apps Script web app        Goog
   tasks.html + assets/tasks/*                                                 Cafe_Sales, Cafe_Kun_Yakuni
   mini.html + assets/mini/*  (Telegram Mini App)                              Tasks, Task_Occurrences
   assets/session.js  (shared session/transport)  ▲                            Omad_Job_Queue, backups, logs
+  assets/ui.js       (uiIcon helper)             │
   assets/css/app.css (generated Tailwind build)  │
+  assets/icons/lucide.svg (generated sprite)     │
                           Telegram Bot API ──────┘  (webhook + outbound sends)
 ```
 
@@ -94,6 +96,20 @@ Cloudflare Pages (static HTML/JS)         Google Apps Script web app        Goog
   the Tailwind Play CDN, which compiles the stylesheet in the browser on every
   load. `npm run build:css` regenerates it; Cloudflare Pages has no build step,
   which is why the output is in the repository.
+- **Every screen is drawn with one design system** (since 2026-11). Its
+  components are the `.ui-*` classes in `assets/css/tailwind.src.css` —
+  cards, buttons, inputs, badges, alerts, KPI tiles, lists, segmented
+  controls, modals that are bottom sheets on a phone, and the navigation. The
+  icons are Lucide, served as one committed sprite (`assets/icons/lucide.svg`,
+  `npm run build:icons`) and drawn with
+  `<svg class="ui-icon"><use href="assets/icons/lucide.svg#name">` or
+  `uiIcon('name')` from `assets/ui.js`; an icon chosen at run time is declared
+  in a `// ui-icons: a b c` comment so the sprite builder sees it. There is no
+  icon font and no third-party stylesheet or font. The navigation is one set
+  of buttons that is a bottom bar (Omad, Tasks) or a scrolling strip (Café
+  admin) on a phone and a sidebar from 1024px. The Mini App keeps Telegram's
+  own theme variables and safe areas and only borrows the icons and the
+  component shapes.
 
 - **The store is chosen per request by the `OMAD_STORAGE` Script Property**
   (`sheets`, the default, or `supabase`). Every module reads and writes through
@@ -808,6 +824,9 @@ composes the message from data it already stored.
 | a recipe / category / café setting write | bump `Cafe_Catalogue_Rev` via `bumpCafeCatalogueRev_`, or two stale sessions overwrite each other |
 | a café stock write outside a sale | it must go through `adjust_cafe_stock`, or the movement history stops explaining the quantity |
 | a Tailwind class on any page | run `npm run build:css` and commit `assets/css/app.css` |
+| an icon on any page | run `npm run build:icons` (needs `lucide-static`) and commit `assets/icons/lucide.svg`; `tests/ui-parity.test.js` fails on a name the sprite lacks |
+| an element id or a control's handler on a page | `tests/ui-parity.test.js` holds every id and handler the pages had before the redesign; removing one on purpose means removing it from `tests/fixtures/ui-parity-baseline.json` in the same change |
+| a test selector | select by what a person sees (a label, `aria-label`, an id), not by a styling class; the redesign had to rewrite every test that matched a colour class or an emoji |
 | anything a web page loads | it must come after `assets/session.js`, which owns the session and the transport |
 | the Mini App's Tasks tab | `tests/miniapp-tasks-parity.e2e.js` — it drives the real UI, which is the only thing that can catch a capability the API has and the screen does not |
 | a queued Telegram job's send/persist order | `tests/task-telegram-races.test.js` — stale overwrites, duplicate deliveries and obsolete announcements all live in that gap |
@@ -908,7 +927,7 @@ composes the message from data it already stored.
 
     `entrySaveInFlight` is the one that had been missed. A multi-line **edit** is
     one round trip per line, and only the Save button was disabled for it: `＋`,
-    every line's `✕` and `Bekor qilish` all stayed live, so the cart could move
+    every line's remove button and `Bekor qilish` all stayed live, so the cart could move
     under a sequence that was reading it — shifting corrections on to the wrong
     originals and moving the cancellation boundary, which cancelled rows nobody
     asked to remove. The lines are now frozen before the first request
@@ -943,6 +962,16 @@ composes the message from data it already stored.
     message describes a row that is not stored. A cache revision bumped
     while writes are unsent is bumped again once they are stored, or a
     lock-free reader could cache old rows under the new revision.
+
+19. **The interface is static HTML, classic scripts and the committed
+    Tailwind build — no framework, no bundler, no CDN.** The 2026-11 redesign
+    (Preline-style components, a TailAdmin-style sidebar, Lucide icons) was
+    done inside that stack on purpose: Cloudflare Pages deploys this
+    repository as it is, and every handler, id and request stayed where the
+    application and its tests expect it. A visual change restyles and
+    regroups; it does not remove a control, rename an id or alter what a
+    request sends. New styling goes into the `.ui-*` components rather than
+    one-off utility piles, and a new screen uses them.
 
 ## 12. Known limitations and intentional exceptions
 
@@ -1025,10 +1054,10 @@ composes the message from data it already stored.
   the deploy depend on a CSS toolchain is a worse failure mode than the one it
   would catch. A page that adds a class nobody regenerates for loses that one
   piece of styling — visible, and not a correctness problem.
-- **`omad_admin.html` and `tasks.html` still load Font Awesome from a CDN** for
-  their icons. It is a stylesheet plus a webfont rather than an in-browser
-  compiler, so it is a much smaller cost than the Tailwind Play CDN was;
-  self-hosting it means committing font binaries and was left out of scope.
+- **The pages load nothing from a third-party host.** Font Awesome (once loaded
+  from a CDN by `omad_admin.html` and `tasks.html`) was replaced by the
+  committed Lucide sprite in the 2026-11 redesign, and the system font stack
+  replaced webfonts. `tests/ui-parity.test.js` fails if an icon font returns.
 - **The repository is public and its git history contains committed financial
   dumps** — the 2026-04 `diagnostics/` snapshots, with real tenant names and
   amounts. They are no longer in the working tree, but removing files does not
@@ -1053,6 +1082,8 @@ composes the message from data it already stored.
 npm run build            # regenerate script.gs from apps-script/
 npm run build:check      # fail if the bundle is stale
 npm run build:css        # regenerate assets/css/app.css (needs tailwindcss)
+npm run build:icons      # regenerate assets/icons/lucide.svg (needs lucide-static)
+npm run ui:screenshots -- <dir> [filter]  # every screen at five sizes + overflow report
 npm run lint             # static analysis: syntax, duplicates, deploy gating
 npm test                 # unit/integration tests (node --test)
 npm run test:e2e         # Playwright/Chromium browser flows
@@ -1111,6 +1142,17 @@ npm run bench            # sheet passes / bytes / ms per screen (see below)
   has to interact with the page and then assert the **persisted rows** —
   `tests/miniapp-tasks-parity.e2e.js` and `tests/omad-entry-edit-race.e2e.js` are
   both that shape.
+- **The screens are tested for what a person can reach, not for how they
+  look.** `tests/ui-parity.test.js` (unit) pins every element id and control
+  handler the pages had before the 2026-11 redesign, checks every handler is
+  a defined function and every looked-up id exists, and that the icon sprite
+  is complete. `tests/ui-redesign.e2e.js` (browser, against the real backend)
+  opens every section from the navigation the screen shows on a phone and on
+  a desktop, checks the actions people rely on are on screen, uncovered and at
+  least 36px tall, and that no page is wider than a 320px phone.
+  `scripts/ui-screenshots.js` seeds a demo business and photographs every
+  screen at 1440, 1024, 390, 320 and 390×560, listing anything wider than the
+  screen — run it before and after a visual change and look at the pictures.
 - CI (`.github/workflows/ci.yml`) runs static analysis, secret scans (tree *and*
   full history), unit tests and browser tests on **every branch and PR**. On
   `main` only, a green run then deploys: `clasp pull` (live manifest) → stage →

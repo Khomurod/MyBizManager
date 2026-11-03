@@ -7,7 +7,6 @@
     <meta name="theme-color" content="#ffffff">
     <title>Vazifalar</title>
     <link rel="stylesheet" href="assets/css/app.css">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
         /* ==================================================================
            The /tasks layout is written as real CSS rather than utility
@@ -65,7 +64,6 @@
             display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
         }
         .icon-btn:active { transform: scale(0.95); }
-        .icon-btn--ok { border-color: #bbf7d0; background: #f0fdf4; }
 
         /* ------------------------------------------------------------ panels */
         .panels { padding: 14px 16px 4px; }
@@ -194,7 +192,6 @@
         .nav-btn__lbl { font-size: 12px; font-weight: 500; letter-spacing: -0.01em; white-space: nowrap; }
         .nav-btn.active { color: var(--brand); }
         .nav-btn.active .nav-btn__lbl { font-weight: 600; }
-        .nav-btn__dot { position: absolute; }
         @media (max-width: 359px) { .nav-btn__lbl { font-size: 11px; } }
 
         /* The FAB sits above the nav, never on top of it. */
@@ -222,9 +219,6 @@
             .sheet { border-radius: 20px; max-height: 88vh; }
             .sheet__grip { display: none; }
         }
-        .dialog-back { position: fixed; inset: 0; z-index: 110; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(15, 23, 42, 0.55); transition: opacity 0.2s ease-out; }
-        .dialog-back.hidden { display: flex; opacity: 0; pointer-events: none; }
-        .dialog { background: #fff; width: 100%; max-width: 360px; border-radius: 18px; padding: 18px; }
 
         /* --------------------------------------------------------------- forms */
         .field { display: flex; flex-direction: column; min-width: 0; }

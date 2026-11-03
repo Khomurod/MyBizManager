@@ -20,7 +20,9 @@ sheet and the legacy `Omad_Transactions` is kept intact for rollback.
 |---|---|
 | `login.html` | Username and password only. Posts `login`, and stores the signed session it gets back as `omad_session` / `omad_role` / `omad_user` / `omad_session_expires` |
 | `assets/session.js` | Loaded first by every web page: the session, the transport, the four kinds of request failure, and the per-screen snapshot |
-| `assets/css/app.css` | The committed Tailwind build (`npm run build:css`), replacing the Play CDN's in-browser compile |
+| `assets/css/app.css` | The committed Tailwind build (`npm run build:css`) of `assets/css/tailwind.src.css`, which holds the design system's `.ui-*` components |
+| `assets/icons/lucide.svg` | The committed Lucide icon sprite (`npm run build:icons`) — only the icons the pages name |
+| `assets/ui.js` | `uiIcon(name)`: the markup for one sprite icon, for scripts that build HTML |
 | `omad_admin.html` | Omad-D rent admin markup: dashboard, entry, history, settings |
 | `assets/omad/*.js` | The Omad admin application, split by responsibility |
 | `cafe_admin.html` | Café inventory, recipes, categories, settings |

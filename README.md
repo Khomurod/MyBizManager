@@ -54,6 +54,7 @@ with no build step:
 
 ```bash
 npm run build:css      # regenerate assets/css/app.css from the pages
+npm run build:icons    # regenerate assets/icons/lucide.svg (npm install --no-save lucide-static@0.555.0)
 ```
 
 Before pushing, run everything CI runs:
