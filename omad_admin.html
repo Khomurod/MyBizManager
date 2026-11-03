@@ -2,205 +2,285 @@
 <html lang="uz">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>"Omad-D" X/F Ijara To'lovlari</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#ffffff">
+    <title>Omad-D · Ijara va kassa</title>
     <link rel="stylesheet" href="assets/css/app.css">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
-        body { background-color: #f1f5f9; -webkit-tap-highlight-color: transparent; font-family: sans-serif; }
         .tab-content { display: none; }
-        .tab-content.active { display: block; animation: slideUp 0.2s; }
-        @keyframes slideUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        .nav-item.active { color: #2563eb; }
-
-        /* Settings section navigation */
-        .settings-nav-btn { background: #ffffff; border-color: #e2e8f0; color: #64748b; }
-        .settings-nav-btn.active { background: #2563eb; border-color: #2563eb; color: #ffffff; }
+        .tab-content.active { display: block; animation: ui-rise 0.18s ease-out; }
+        @keyframes ui-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+        @media (prefers-reduced-motion: reduce) { .tab-content.active { animation: none; } }
         .settings-section.hidden { display: none; }
-        #settingsNav { scrollbar-width: none; }
-        #settingsNav::-webkit-scrollbar { display: none; }
-        .card { background: white; border-radius: 16px; padding: 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; margin-bottom: 12px; }
-        #loader { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.95); z-index: 100; justify-content: center; align-items: center; flex-direction: column; }
-        
-        /* Modal Animation */
-        #detailModal { transition: opacity 0.2s ease-out; }
-        #detailModal.hidden { pointer-events: none; opacity: 0; }
-        #detailModal:not(.hidden) { pointer-events: auto; opacity: 1; }
-        
-        #detailCard { 
-            transition: transform 0.2s ease-out, opacity 0.2s ease-out; 
-            transform: scale(0.95); 
-            opacity: 0;
-        }
-        #detailModal:not(.hidden) #detailCard { 
-            transform: scale(1); 
-            opacity: 1;
-        }
+        #loader { display: none; position: fixed; inset: 0; background: rgba(248, 250, 252, 0.92); z-index: 120; justify-content: center; align-items: center; flex-direction: column; gap: 12px; }
+        #detailModal.hidden, #expenseModal.hidden { display: none; }
     </style>
 </head>
-<body class="pb-24 select-none text-slate-800">
+<body class="ui-with-sidebar">
 
     <script src="assets/session.js"></script>
+    <script src="assets/ui.js"></script>
     <script src="assets/omad/00-config.js"></script>
 
-    <!-- YUKLANMOQDA -->
-    <div id="loader">
-        <i class="fas fa-circle-notch fa-spin text-4xl text-blue-600 mb-4"></i>
-        <p class="text-gray-500 font-bold text-sm" id="loaderMsg">Yuklanmoqda...</p>
+    <!-- Yuklanmoqda -->
+    <div id="loader" role="status" aria-live="polite">
+        <svg class="ui-icon ui-icon-lg ui-spin text-blue-600" aria-hidden="true"><use href="assets/icons/lucide.svg#loader-circle"></use></svg>
+        <p class="text-sm font-medium text-slate-600" id="loaderMsg">Yuklanmoqda...</p>
     </div>
 
-    <!-- HEADER -->
-    <div class="bg-white px-4 py-3 sticky top-0 z-40 border-b flex justify-between items-center shadow-sm">
-        <div class="flex items-center gap-2">
-            <div class="bg-blue-600 text-white w-8 h-8 rounded-lg flex items-center justify-center font-bold">OD</div>
-            <h1 class="font-bold text-sm tracking-tight leading-tight">"Omad-D" X/F<br>Ijara To'lovlari</h1>
-        </div>
-        <div class="flex flex-col items-end gap-1">
-            <div class="text-[10px] font-bold bg-slate-100 px-2 py-1 rounded text-slate-500 border">
-                <span id="headerMonth">...</span>: $1 = <span id="headerRate">...</span>
+    <!-- Sidebar (desktop) -->
+    <aside class="ui-sidebar" aria-label="Omad-D">
+        <div class="ui-brand">
+            <div class="ui-brand-mark">OD</div>
+            <div class="min-w-0">
+                <p class="ui-brand-name">Omad-D</p>
+                <p class="ui-brand-sub">Ijara va kassa hisobi</p>
             </div>
-            <button onclick="logout()" class="text-[10px] font-bold text-red-500">Chiqish</button>
         </div>
-    </div>
+        <div class="mt-auto space-y-1">
+            <a href="tasks.html" class="ui-side-link">
+                <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#list-checks"></use></svg>
+                Vazifalar paneli
+            </a>
+            <button onclick="logout()" class="ui-side-link">
+                <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#log-out"></use></svg>
+                Chiqish
+            </button>
+        </div>
+    </aside>
+
+    <!-- Top bar -->
+    <header class="ui-topbar">
+        <div class="ui-topbar-row flex-wrap py-2 sm:flex-nowrap sm:py-0">
+            <div class="flex min-w-0 flex-1 items-center gap-3">
+                <div class="ui-brand-mark lg:hidden">OD</div>
+                <div class="min-w-0">
+                    <p class="truncate text-sm font-semibold text-slate-900 lg:text-base" id="pageTitle">Hisobot</p>
+                    <p class="truncate text-xs text-slate-500 lg:hidden">Omad-D · Ijara va kassa</p>
+                </div>
+            </div>
+            <div class="contents sm:flex sm:shrink-0 sm:items-center sm:gap-2">
+                <div class="ui-badge ui-badge-neutral order-last h-8 w-full justify-center gap-1.5 rounded-lg px-2.5 tabular sm:order-none sm:w-auto" title="Tanlangan oy kursi">
+                    <svg class="ui-icon ui-icon-sm text-slate-500" aria-hidden="true"><use href="assets/icons/lucide.svg#circle-dollar-sign"></use></svg>
+                    <span id="headerMonth">...</span>: $1 = <span id="headerRate">...</span>
+                </div>
+                <button onclick="logout()" class="ui-icon-btn lg:hidden" aria-label="Chiqish">
+                    <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#log-out"></use></svg>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <main class="ui-main">
 
     <!-- 1-TAB: ASOSIY (DASHBOARD) -->
-    <div id="tab-dash" class="tab-content active p-4">
+    <div id="tab-dash" class="tab-content active">
+
+        <div class="mb-5 flex flex-wrap items-end justify-between gap-3">
+            <div>
+                <h1 class="ui-page-title">Hisobot</h1>
+                <p class="ui-page-desc">Oy natijalari, kassa va ijara holati</p>
+            </div>
+            <label class="w-full sm:w-56">
+                <span class="sr-only">Davr</span>
+                <select id="dashMonthSelect" class="ui-input" onchange="renderDashboard()"></select>
+            </label>
+        </div>
 
         <!-- Saqlangan ma'lumot / yangilash xatosi -->
-        <div id="syncBanner" class="hidden card"></div>
+        <div id="syncBanner" class="hidden card mb-4"></div>
 
-        <!-- Vaqtni Tanlash -->
-        <div class="flex justify-between items-center mb-4">
-            <h2 class="font-bold text-slate-700 text-lg">Hisobot</h2>
-            <select id="dashMonthSelect" class="bg-white border border-slate-300 text-slate-600 text-xs font-bold rounded-lg px-2 py-1 outline-none shadow-sm" onchange="renderDashboard()">
-                <!-- JS to'ldiradi -->
-            </select>
+        <div class="grid grid-cols-1 gap-4 lg:grid-cols-2 lg:gap-6">
+            <section aria-labelledby="periodTitle">
+                <h2 id="periodTitle" class="ui-eyebrow mb-2">Oy natijasi</h2>
+                <div class="grid grid-cols-2 gap-3 sm:gap-4">
+                    <div class="card ui-kpi">
+                        <div class="ui-kpi-icon bg-emerald-50 text-emerald-600">
+                            <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#trending-up"></use></svg>
+                        </div>
+                        <div class="min-w-0">
+                            <p class="ui-kpi-label">Kirim</p>
+                            <p class="ui-kpi-value" id="dash-income">0</p>
+                        </div>
+                    </div>
+                    <button type="button" onclick="openExpenseModal()" class="card ui-kpi text-left hover:border-slate-300 transition-colors">
+                        <div class="flex items-center justify-between">
+                            <div class="ui-kpi-icon bg-red-50 text-red-600">
+                                <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#trending-down"></use></svg>
+                            </div>
+                            <svg class="ui-icon ui-icon-sm text-slate-400" aria-hidden="true"><use href="assets/icons/lucide.svg#chevron-right"></use></svg>
+                        </div>
+                        <div class="min-w-0">
+                            <p class="ui-kpi-label">Chiqim</p>
+                            <p class="ui-kpi-value" id="dash-expense">0</p>
+                        </div>
+                    </button>
+                </div>
+            </section>
+
+            <!-- Hamyon Holati -->
+            <section aria-labelledby="balanceTitle">
+                <h2 id="balanceTitle" class="ui-eyebrow mb-2">Mavjud balans (UZS)</h2>
+                <div class="grid grid-cols-2 gap-3 sm:gap-4">
+                    <div class="card ui-kpi">
+                        <div class="ui-kpi-icon">
+                            <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#wallet"></use></svg>
+                        </div>
+                        <div class="min-w-0">
+                            <p class="ui-kpi-label">Naqd (seif)</p>
+                            <p class="ui-kpi-value" id="dash-cash-total">0</p>
+                        </div>
+                    </div>
+                    <div class="card ui-kpi">
+                        <div class="ui-kpi-icon bg-blue-50 text-blue-600">
+                            <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#landmark"></use></svg>
+                        </div>
+                        <div class="min-w-0">
+                            <p class="ui-kpi-label">Bank</p>
+                            <p class="ui-kpi-value text-blue-700" id="dash-bank">0</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
         </div>
 
-        <!-- Oylik Proyeksiya -->
-        <div id="projectionCard" class="hidden card !p-3 !mb-4 border-l-4 border-l-blue-500 bg-blue-50">
-            <div class="flex items-center justify-between mb-3">
-                <div>
-                    <p class="text-[10px] text-blue-400 font-bold uppercase tracking-wider">Ushbu Oy Uchun Proyeksiya</p>
-                    <p class="text-[11px] text-slate-500">Ijara rejasi va shablon chiqimlar asosida</p>
+        <div class="mt-4 grid grid-cols-1 gap-4 lg:mt-6 lg:grid-cols-3 lg:gap-6">
+            <!-- Umumiy Qarz (Clickable) -->
+            <button type="button" id="totalDebtCard" onclick="openDebtListModal()"
+                    class="hidden card ui-kpi text-left border-red-200 bg-gradient-to-br from-red-50 to-white hover:border-red-300 transition-colors">
+                <div class="flex items-center justify-between">
+                    <div class="ui-kpi-icon bg-red-100 text-red-600">
+                        <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#circle-alert"></use></svg>
+                    </div>
+                    <span class="ui-badge ui-badge-danger">Ro'yxat
+                        <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#chevron-right"></use></svg>
+                    </span>
                 </div>
-                <i class="fas fa-chart-line text-blue-300"></i>
-            </div>
-            <div class="grid grid-cols-3 gap-2 text-center">
-                <div class="bg-white/80 rounded-lg p-2 border border-blue-100">
-                    <p class="text-[9px] text-slate-400 font-bold uppercase">Kutilgan Kirim</p>
-                    <p id="projection-income" class="text-xs font-bold text-green-600">0</p>
+                <div class="min-w-0">
+                    <p class="ui-kpi-label text-red-700">Jami ijarachilar qarzi</p>
+                    <p class="ui-kpi-value text-red-600" id="dash-total-debt">0</p>
                 </div>
-                <div class="bg-white/80 rounded-lg p-2 border border-blue-100">
-                    <p class="text-[9px] text-slate-400 font-bold uppercase">Shablon Chiqim</p>
-                    <p id="projection-expense" class="text-xs font-bold text-red-500">0</p>
+            </button>
+
+            <!-- Oylik Proyeksiya -->
+            <section id="projectionCard" class="hidden card ui-card lg:col-span-2">
+                <div class="ui-card-header pb-2">
+                    <div>
+                        <h2 class="ui-card-title">Ushbu oy uchun proyeksiya</h2>
+                        <p class="ui-card-desc">Ijara rejasi va shablon chiqimlar asosida</p>
+                    </div>
+                    <div class="ui-kpi-icon shrink-0 bg-blue-50 text-blue-600">
+                        <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#chart-line"></use></svg>
+                    </div>
                 </div>
-                <div class="bg-white/80 rounded-lg p-2 border border-blue-100">
-                    <p class="text-[9px] text-slate-400 font-bold uppercase">Sof Foyda</p>
-                    <p id="projection-net" class="text-xs font-bold text-blue-600">0</p>
+                <div class="grid grid-cols-1 gap-2 px-4 pb-4 sm:grid-cols-3 sm:gap-3 sm:px-5 sm:pb-5">
+                    <div class="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2.5 sm:block">
+                        <p class="text-xs font-medium text-slate-500">Kutilgan kirim</p>
+                        <p id="projection-income" class="ui-figure text-emerald-700 sm:mt-1">0</p>
+                    </div>
+                    <div class="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2.5 sm:block">
+                        <p class="text-xs font-medium text-slate-500">Shablon chiqim</p>
+                        <p id="projection-expense" class="ui-figure text-red-600 sm:mt-1">0</p>
+                    </div>
+                    <div class="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2.5 sm:block">
+                        <p class="text-xs font-medium text-slate-500">Sof foyda</p>
+                        <p id="projection-net" class="ui-figure text-blue-700 sm:mt-1">0</p>
+                    </div>
                 </div>
-            </div>
+            </section>
         </div>
 
-        <!-- Umumiy Qarz (Clickable) -->
-        <div id="totalDebtCard" onclick="openDebtListModal()" class="hidden card !p-3 !mb-4 border-l-4 border-l-red-500 bg-red-50 cursor-pointer active:scale-95 transition-transform">
-            <div class="flex justify-between items-center">
-                <div>
-                    <p class="text-[10px] text-red-400 font-bold uppercase tracking-wider mb-1">Jami Ijarachilar Qarzi</p>
-                    <p class="text-xl font-bold text-red-600 truncate" id="dash-total-debt">0</p>
+        <div class="mt-4 grid grid-cols-1 gap-4 lg:mt-6 lg:grid-cols-3 lg:gap-6">
+            <!-- Ijarachilar Holati -->
+            <section class="ui-card lg:col-span-2" aria-labelledby="statusTitle">
+                <div class="ui-card-header">
+                    <div>
+                        <h2 id="statusTitle" class="ui-card-title">Ijara holati</h2>
+                        <p class="ui-card-desc"><span id="statusMonthLabel"></span> · bosib tafsilotni oching</p>
+                    </div>
                 </div>
-                <div class="text-red-300"><i class="fas fa-chevron-right"></i></div>
-            </div>
-        </div>
+                <div id="tenantStatusList" class="ui-list border-t border-slate-100"></div>
+            </section>
 
-        <!-- Kirim / Chiqim -->
-        <div class="grid grid-cols-2 gap-3 mb-4">
-            <div class="card !p-3 !mb-0 border-l-4 border-l-green-500">
-                <p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">Kirim</p>
-                <p class="text-lg font-bold text-slate-800 truncate" id="dash-income">0</p>
-            </div>
-            <div onclick="openExpenseModal()" class="card !p-3 !mb-0 border-l-4 border-l-red-500 cursor-pointer active:scale-95 transition-transform">
-                <p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">Chiqim</p>
-                <p class="text-lg font-bold text-slate-800 truncate" id="dash-expense">0</p>
-            </div>
-        </div>
-
-        <!-- Hamyon Holati -->
-        <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 mt-6">Mavjud Balans (UZS)</h3>
-        <div class="grid grid-cols-2 gap-2 mb-2">
-            <div class="bg-white border rounded-xl p-3 shadow-sm">
-                <p class="text-[10px] text-slate-400 font-bold uppercase">Naqd (Seif)</p>
-                <p class="font-bold text-slate-700" id="dash-cash-total">0</p>
-            </div>
-            <div class="bg-white border rounded-xl p-3 shadow-sm">
-                <p class="text-[10px] text-slate-400 font-bold uppercase">Bank</p>
-                <p class="font-bold text-blue-600" id="dash-bank">0</p>
-            </div>
-        </div>
-
-        <!-- Ijarachilar Holati (SMART) -->
-        <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 mt-4">Ijara Holati (<span id="statusMonthLabel"></span>)</h3>
-        <div id="tenantStatusList" class="space-y-2"></div>
-
-        <!-- So'nggi amallar: the short list that arrives with the dashboard -->
-        <div id="recentCard" class="hidden mt-6 pb-8">
-            <div class="flex justify-between items-center mb-2">
-                <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider">So'nggi amallar</h3>
-                <button onclick="switchTab('history')" class="text-[10px] font-bold text-blue-500">Hammasi</button>
-            </div>
-            <div id="recentList" class="space-y-2"></div>
+            <!-- So'nggi amallar -->
+            <section id="recentCard" class="hidden ui-card self-start" aria-labelledby="recentTitle">
+                <div class="ui-card-header">
+                    <h2 id="recentTitle" class="ui-card-title">So'nggi amallar</h2>
+                    <button onclick="switchTab('history')" class="ui-btn ui-btn-ghost ui-btn-sm -mr-2 text-blue-600">Hammasi
+                        <svg class="ui-icon ui-icon-sm" aria-hidden="true"><use href="assets/icons/lucide.svg#arrow-right"></use></svg>
+                    </button>
+                </div>
+                <div id="recentList" class="ui-list border-t border-slate-100"></div>
+            </section>
         </div>
     </div>
 
     <!-- 2-TAB: YANGI (ENTRY) -->
-    <div id="tab-entry" class="tab-content p-4">
-        <div class="flex bg-slate-200 rounded-lg p-1 mb-2">
-            <button onclick="setType('Income')" id="btn-income" class="flex-1 py-2 rounded-md font-bold text-sm bg-white text-green-600 shadow-sm transition-all">Kirim</button>
-            <button onclick="setType('Expense')" id="btn-expense" class="flex-1 py-2 rounded-md font-bold text-sm text-slate-500 transition-all">Chiqim</button>
-        </div>
-        <button onclick="setType('TenantPaid')" id="btn-tenantpaid"
-                class="w-full mb-4 py-2 rounded-lg font-bold text-xs border border-slate-300 bg-white text-slate-500 transition-all">
-            🏢 Ijarachi bizning nomimizdan to'ladi
-        </button>
-
-        <div class="card">
-            <input type="hidden" id="editId" value="">
-            <input type="hidden" id="msgId" value="">
-
-            <div class="grid grid-cols-2 gap-3 mb-4">
-                <div>
-                    <label class="block text-[10px] font-bold text-slate-400 mb-1">OY</label>
-                    <select id="entryMonth" class="w-full p-2 bg-slate-50 border border-slate-200 rounded font-bold text-sm outline-none"></select>
-                </div>
-                <div>
-                    <label class="block text-[10px] font-bold text-slate-400 mb-1">OBYEKT</label>
-                    <select id="entryTenant" class="w-full p-2 bg-slate-50 border border-slate-200 rounded font-bold text-sm outline-none"></select>
-                </div>
+    <div id="tab-entry" class="tab-content">
+        <div class="mx-auto max-w-2xl">
+            <div class="mb-5">
+                <h1 class="ui-page-title">Yangi yozuv</h1>
+                <p class="ui-page-desc">Bir amal — bir nechta summa va valyuta bo'lishi mumkin</p>
             </div>
 
-            <label class="block text-[10px] font-bold text-slate-400 mb-1">SUMMA VA VALYUTA</label>
-            <div class="flex gap-2 mb-2">
-                <input type="text" inputmode="decimal" id="tempAmount" placeholder="0" class="flex-1 min-w-0 p-2 border border-slate-200 rounded text-lg font-bold outline-none">
-                <select id="tempCurr" class="w-20 p-2 border border-slate-200 rounded bg-white font-bold text-xs"><option>UZS</option><option>USD</option></select>
+            <div class="ui-seg mb-3" role="group" aria-label="Yozuv turi">
+                <button onclick="setType('Income')" id="btn-income" class="ui-seg-btn active" aria-pressed="true">
+                    <svg class="ui-icon ui-icon-sm" aria-hidden="true"><use href="assets/icons/lucide.svg#trending-up"></use></svg>Kirim
+                </button>
+                <button onclick="setType('Expense')" id="btn-expense" class="ui-seg-btn" aria-pressed="false">
+                    <svg class="ui-icon ui-icon-sm" aria-hidden="true"><use href="assets/icons/lucide.svg#trending-down"></use></svg>Chiqim
+                </button>
             </div>
-            <div class="flex gap-2 mb-4">
-                 <select id="tempMethod" class="flex-1 p-2 border border-slate-200 rounded bg-white font-medium text-sm text-slate-600"><option value="Naqd">Naqd</option><option value="Bank">Bank</option></select>
-                 <button onclick="addToCart()" id="addToCartBtn" class="bg-slate-800 text-white px-4 rounded shadow active:scale-95"><i class="fas fa-plus"></i></button>
-            </div>
-
-            <div id="cartList" class="hidden mb-4 bg-blue-50 border border-blue-100 rounded p-2 space-y-1"></div>
-
-            <div id="tenantPaidNote" class="hidden mb-4 bg-amber-50 border border-amber-200 rounded p-3 text-[11px] text-amber-800">
-                Ijarachiga to'lov sifatida hisoblanadi <b>va</b> shu summada chiqim yoziladi.
-                Kassa va bankdagi pulga ta'sir qilmaydi. Ikkalasi bitta yozuv sifatida saqlanadi.
-            </div>
-
-            <textarea id="entryComment" placeholder="Izoh..." class="w-full p-3 border border-slate-200 rounded mb-4 text-sm h-20 outline-none resize-none"></textarea>
-
-            <button onclick="submitAll()" id="submitBtn" class="w-full bg-green-600 text-white py-3 rounded-lg font-bold text-sm shadow-lg shadow-green-200 active:scale-95 transition-all">
-                KIRIMNI SAQLASH
+            <button onclick="setType('TenantPaid')" id="btn-tenantpaid" aria-pressed="false"
+                    class="ui-btn ui-btn-secondary ui-btn-block mb-4 justify-start">
+                <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#building-2"></use></svg>
+                Ijarachi bizning nomimizdan to'ladi
             </button>
-            <button onclick="cancelEdit()" id="cancelEditBtn" class="hidden w-full mt-2 py-2 text-red-400 text-xs font-bold">Bekor Qilish</button>
+
+            <div class="card ui-card ui-card-body">
+                <input type="hidden" id="editId" value="">
+                <input type="hidden" id="msgId" value="">
+
+                <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <div>
+                        <label class="ui-label" for="entryMonth">Oy</label>
+                        <select id="entryMonth" class="ui-input"></select>
+                    </div>
+                    <div>
+                        <label class="ui-label" for="entryTenant">Obyekt</label>
+                        <select id="entryTenant" class="ui-input"></select>
+                    </div>
+                </div>
+
+                <label class="ui-label mt-4" for="tempAmount">Summa va valyuta</label>
+                <div class="flex gap-2">
+                    <input type="text" inputmode="decimal" id="tempAmount" placeholder="0" class="ui-input ui-input-lg flex-1">
+                    <select id="tempCurr" class="ui-input ui-input-lg w-28 shrink-0" aria-label="Valyuta"><option>UZS</option><option>USD</option></select>
+                </div>
+                <div class="mt-2 flex gap-2">
+                    <select id="tempMethod" class="ui-input flex-1" aria-label="To'lov usuli"><option value="Naqd">Naqd</option><option value="Bank">Bank</option></select>
+                    <button onclick="addToCart()" id="addToCartBtn" class="ui-btn ui-btn-dark shrink-0" aria-label="Summani qo'shish">
+                        <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#plus"></use></svg>
+                        <span class="hidden sm:inline">Qo'shish</span>
+                    </button>
+                </div>
+
+                <div id="cartList" class="hidden mt-4 rounded-xl border border-blue-100 bg-blue-50/60 divide-y divide-blue-100"></div>
+
+                <div id="tenantPaidNote" class="hidden ui-alert ui-alert-warning mt-4">
+                    <svg class="ui-icon mt-0.5 text-amber-600" aria-hidden="true"><use href="assets/icons/lucide.svg#info"></use></svg>
+                    <p>Ijarachiga to'lov sifatida hisoblanadi <b>va</b> shu summada chiqim yoziladi.
+                    Kassa va bankdagi pulga ta'sir qilmaydi. Ikkalasi bitta yozuv sifatida saqlanadi.</p>
+                </div>
+
+                <label class="ui-label mt-4" for="entryComment">Izoh</label>
+                <textarea id="entryComment" placeholder="Izoh..." class="ui-input"></textarea>
+
+                <button onclick="submitAll()" id="submitBtn" class="ui-btn ui-btn-lg ui-btn-block ui-btn-success mt-5">
+                    KIRIMNI SAQLASH
+                </button>
+                <button onclick="cancelEdit()" id="cancelEditBtn" class="hidden ui-btn ui-btn-ghost-danger ui-btn-block mt-2">Bekor Qilish</button>
+            </div>
         </div>
     </div>
 
@@ -212,569 +292,618 @@
       pairs, mixed freely. Each row keeps its own month, so a tenant clearing
       three months goes in one submit.
     -->
-    <div id="tab-bulk" class="tab-content p-4">
-        <div class="flex justify-between items-center mb-4">
-            <h3 class="font-bold text-slate-700">Ommaviy Kiritish</h3>
-            <button onclick="clearBulkGrid()" id="bulkClearBtn" class="text-red-400 text-xs font-bold">Tozalash</button>
-        </div>
-
-        <div class="card">
-            <label class="block text-[10px] font-bold text-slate-400 mb-1">ASOSIY OY</label>
-            <select id="bulkMonth" onchange="onBulkMonthChange()"
-                class="w-full min-w-0 p-2 bg-slate-50 border border-slate-200 rounded font-bold text-sm outline-none mb-1"></select>
-            <p class="text-[11px] text-slate-400 mb-3">
-                Yangi qatorlar shu oy bilan ochiladi. Har bir qatorning oyini alohida o'zgartirsa bo'ladi.
-            </p>
-
-            <div class="grid grid-cols-3 gap-2">
-                <button onclick="fillFromRoster()" id="bulkFillRoster"
-                    class="py-2 rounded-lg font-bold text-[11px] border border-slate-300 bg-white text-slate-600 active:scale-95 transition-all">🏢 Ijarachilardan</button>
-                <button onclick="fillFromLastMonth()" id="bulkFillRepeat"
-                    class="py-2 rounded-lg font-bold text-[11px] border border-slate-300 bg-white text-slate-600 active:scale-95 transition-all">🔁 O'tgan oydan</button>
-                <button onclick="addBulkRow()" id="bulkAddRow"
-                    class="py-2 rounded-lg font-bold text-[11px] border border-slate-300 bg-white text-slate-600 active:scale-95 transition-all">➕ Qator</button>
+    <div id="tab-bulk" class="tab-content">
+        <div class="mb-5 flex flex-wrap items-end justify-between gap-3">
+            <div>
+                <h1 class="ui-page-title">Ommaviy kiritish</h1>
+                <p class="ui-page-desc">Ko'p mustaqil amal — bitta saqlash</p>
             </div>
-        </div>
-
-        <div id="bulkRows" class="space-y-2"></div>
-        <p id="bulkEmpty" class="text-center text-slate-400 text-xs py-8">
-            Hozircha qator yo'q. Ijarachilar ro'yxatidan to'ldiring yoki qator qo'shing.
-        </p>
-
-        <div class="card" id="bulkSummary">
-            <div class="flex justify-between text-xs text-slate-500 mb-1">
-                <span>Qatorlar</span><span id="bulkRowCount" class="font-bold text-slate-700">0</span>
-            </div>
-            <div class="flex justify-between text-xs text-slate-500 mb-1">
-                <span>Jami kirim</span><span id="bulkIncomeTotal" class="font-bold text-green-600">0</span>
-            </div>
-            <div class="flex justify-between text-xs text-slate-500 mb-3">
-                <span>Jami chiqim</span><span id="bulkExpenseTotal" class="font-bold text-red-500">0</span>
-            </div>
-            <p id="bulkError" class="hidden mb-3 bg-red-50 border border-red-200 rounded p-3 text-[11px] text-red-700"></p>
-            <button onclick="submitBulk()" id="bulkSubmitBtn"
-                class="w-full bg-green-600 text-white py-3 rounded-lg font-bold text-sm shadow-lg shadow-green-200 active:scale-95 transition-all">
-                HAMMASINI SAQLASH
+            <button onclick="clearBulkGrid()" id="bulkClearBtn" class="ui-btn ui-btn-ghost-danger ui-btn-sm">
+                <svg class="ui-icon ui-icon-sm" aria-hidden="true"><use href="assets/icons/lucide.svg#trash-2"></use></svg>Tozalash
             </button>
+        </div>
+
+        <div class="grid grid-cols-1 gap-4 lg:grid-cols-3 lg:gap-6">
+            <div class="space-y-4 lg:col-span-2">
+                <div class="card ui-card ui-card-body">
+                    <label class="ui-label" for="bulkMonth">Asosiy oy</label>
+                    <select id="bulkMonth" onchange="onBulkMonthChange()" class="ui-input"></select>
+                    <p class="ui-hint">Yangi qatorlar shu oy bilan ochiladi. Har bir qatorning oyini alohida o'zgartirsa bo'ladi.</p>
+
+                    <div class="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                        <button onclick="fillFromRoster()" id="bulkFillRoster" class="ui-btn ui-btn-secondary">
+                            <svg class="ui-icon ui-icon-sm" aria-hidden="true"><use href="assets/icons/lucide.svg#building-2"></use></svg>Ijarachilardan</button>
+                        <button onclick="fillFromLastMonth()" id="bulkFillRepeat" class="ui-btn ui-btn-secondary">
+                            <svg class="ui-icon ui-icon-sm" aria-hidden="true"><use href="assets/icons/lucide.svg#repeat"></use></svg>O'tgan oydan</button>
+                        <button onclick="addBulkRow()" id="bulkAddRow" class="ui-btn ui-btn-secondary">
+                            <svg class="ui-icon ui-icon-sm" aria-hidden="true"><use href="assets/icons/lucide.svg#plus"></use></svg>Qator</button>
+                    </div>
+                </div>
+
+                <div id="bulkRows" class="space-y-3"></div>
+                <p id="bulkEmpty" class="ui-card ui-empty">
+                    <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#layers"></use></svg>
+                    Hozircha qator yo'q. Ijarachilar ro'yxatidan to'ldiring yoki qator qo'shing.
+                </p>
+            </div>
+
+            <div class="card ui-card ui-card-body self-start lg:sticky lg:top-24" id="bulkSummary">
+                <h2 class="ui-card-title mb-2">Jami</h2>
+                <div class="ui-stat-row"><span class="text-slate-500">Qatorlar</span><span id="bulkRowCount" class="ui-figure text-slate-900">0</span></div>
+                <div class="ui-stat-row"><span class="text-slate-500">Jami kirim</span><span id="bulkIncomeTotal" class="ui-figure text-emerald-700">0</span></div>
+                <div class="ui-stat-row"><span class="text-slate-500">Jami chiqim</span><span id="bulkExpenseTotal" class="ui-figure text-red-600">0</span></div>
+                <p id="bulkError" class="hidden ui-alert ui-alert-danger mt-3"></p>
+                <button onclick="submitBulk()" id="bulkSubmitBtn" class="ui-btn ui-btn-lg ui-btn-block ui-btn-success mt-4">
+                    HAMMASINI SAQLASH
+                </button>
+            </div>
         </div>
     </div>
 
     <!-- 4-TAB: TARIX -->
-    <div id="tab-history" class="tab-content p-4">
-        <div class="flex justify-between items-center mb-4">
-            <h3 class="font-bold text-slate-700">O'tkazmalar Tarixi</h3>
-            <button onclick="syncData()" class="text-blue-500 text-xs font-bold"><i class="fas fa-sync-alt"></i></button>
+    <div id="tab-history" class="tab-content">
+        <div class="mb-5 flex items-end justify-between gap-3">
+            <div>
+                <h1 class="ui-page-title">O'tkazmalar tarixi</h1>
+                <p class="ui-page-desc">Har bir amal guruh sifatida — tahrirlash va bekor qilish shu yerda</p>
+            </div>
+            <button onclick="syncData()" class="ui-icon-btn" aria-label="Yangilash" title="Yangilash">
+                <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#refresh-cw"></use></svg>
+            </button>
         </div>
-        <div id="historyList" class="space-y-3 pb-10"></div>
+        <div id="historyList" class="space-y-3"></div>
     </div>
 
     <!-- 5-TAB: SOZLAMALAR -->
-    <div id="tab-settings" class="tab-content p-4">
+    <div id="tab-settings" class="tab-content">
+        <div class="mb-5">
+            <h1 class="ui-page-title">Sozlamalar</h1>
+            <p class="ui-page-desc">Kurslar, ijarachilar, rejali chiqimlar, Telegram va tizim</p>
+        </div>
 
+        <div class="lg:grid lg:grid-cols-[13rem_minmax(0,1fr)] lg:gap-8">
         <!-- SECTION NAV -->
-        <nav id="settingsNav" class="flex gap-2 overflow-x-auto pb-2 mb-4 -mx-1 px-1">
-            <button onclick="showSettingsSection('rates')" data-section="rates"
-                class="settings-nav-btn shrink-0 px-3 py-2 rounded-xl text-xs font-bold border transition-all">💱 Kurslar</button>
-            <button onclick="showSettingsSection('tenants')" data-section="tenants"
-                class="settings-nav-btn shrink-0 px-3 py-2 rounded-xl text-xs font-bold border transition-all">🏢 Ijarachilar</button>
-            <button onclick="showSettingsSection('expenses')" data-section="expenses"
-                class="settings-nav-btn shrink-0 px-3 py-2 rounded-xl text-xs font-bold border transition-all">🧾 Rejali Chiqim</button>
-            <button onclick="showSettingsSection('telegram')" data-section="telegram"
-                class="settings-nav-btn shrink-0 px-3 py-2 rounded-xl text-xs font-bold border transition-all">📨 Telegram</button>
-            <button onclick="showSettingsSection('system')" data-section="system"
-                class="settings-nav-btn shrink-0 px-3 py-2 rounded-xl text-xs font-bold border transition-all">🗄️ Tizim</button>
+        <nav id="settingsNav" class="ui-subnav mb-4 lg:mb-0 self-start" aria-label="Sozlamalar bo'limlari">
+            <button onclick="showSettingsSection('rates')" data-section="rates" class="settings-nav-btn ui-subnav-item">
+                <svg class="ui-icon ui-icon-sm" aria-hidden="true"><use href="assets/icons/lucide.svg#coins"></use></svg>Kurslar</button>
+            <button onclick="showSettingsSection('tenants')" data-section="tenants" class="settings-nav-btn ui-subnav-item">
+                <svg class="ui-icon ui-icon-sm" aria-hidden="true"><use href="assets/icons/lucide.svg#building-2"></use></svg>Ijarachilar</button>
+            <button onclick="showSettingsSection('expenses')" data-section="expenses" class="settings-nav-btn ui-subnav-item">
+                <svg class="ui-icon ui-icon-sm" aria-hidden="true"><use href="assets/icons/lucide.svg#receipt"></use></svg>Rejali chiqim</button>
+            <button onclick="showSettingsSection('telegram')" data-section="telegram" class="settings-nav-btn ui-subnav-item">
+                <svg class="ui-icon ui-icon-sm" aria-hidden="true"><use href="assets/icons/lucide.svg#send"></use></svg>Telegram</button>
+            <button onclick="showSettingsSection('system')" data-section="system" class="settings-nav-btn ui-subnav-item">
+                <svg class="ui-icon ui-icon-sm" aria-hidden="true"><use href="assets/icons/lucide.svg#server"></use></svg>Tizim</button>
         </nav>
 
+        <div class="min-w-0">
         <!-- A. VALYUTA KURSLARI -->
         <section id="settings-rates" class="settings-section">
-            <div class="card">
-                <h3 class="font-bold mb-1 text-slate-700">Valyuta Kurslari</h3>
-                <p class="text-[11px] text-slate-400 mb-3">
+            <div class="grid grid-cols-1 gap-4 xl:grid-cols-2 xl:items-start">
+            <div class="card ui-card ui-card-body">
+                <h3 class="ui-card-title">Valyuta kurslari</h3>
+                <p class="ui-card-desc mb-4">
                     Har bir yil va oy uchun alohida kurs saqlanadi. Hisob-kitoblarda
                     <b>Sotish (Sell)</b> kursi ishlatiladi.
                 </p>
 
-                <label class="block text-[10px] font-bold text-slate-400 mb-1 uppercase">Davr</label>
-                <div class="grid grid-cols-2 gap-2 mb-3">
-                    <select id="settingRateYear" onchange="onRateSelectorChange()" class="w-full min-w-0 p-2 border rounded-lg text-sm font-bold bg-white"></select>
-                    <select id="settingMonth" onchange="onRateSelectorChange()" class="w-full min-w-0 p-2 border rounded-lg text-sm font-bold bg-white"></select>
+                <span class="ui-label">Davr</span>
+                <div class="grid grid-cols-2 gap-2">
+                    <select id="settingRateYear" onchange="onRateSelectorChange()" class="ui-input" aria-label="Yil"></select>
+                    <select id="settingMonth" onchange="onRateSelectorChange()" class="ui-input" aria-label="Oy"></select>
                 </div>
 
-                <div class="grid grid-cols-2 gap-2 mb-1">
+                <div class="mt-4 grid grid-cols-2 gap-2">
                     <div class="min-w-0">
-                        <label class="block text-[10px] font-bold text-slate-400 mb-1 uppercase">Sotib olish</label>
-                        <input type="text" inputmode="decimal" id="settingRateBuyInput" placeholder="12 000" class="w-full min-w-0 p-2 border rounded-lg text-sm">
+                        <label class="ui-label" for="settingRateBuyInput">Sotib olish</label>
+                        <input type="text" inputmode="decimal" id="settingRateBuyInput" placeholder="12 000" class="ui-input">
                     </div>
                     <div class="min-w-0">
-                        <label class="block text-[10px] font-bold text-slate-400 mb-1 uppercase">Sotish</label>
-                        <input type="text" inputmode="decimal" id="settingRateSellInput" placeholder="12 500" class="w-full min-w-0 p-2 border rounded-lg text-sm">
+                        <label class="ui-label" for="settingRateSellInput">Sotish</label>
+                        <input type="text" inputmode="decimal" id="settingRateSellInput" placeholder="12 500" class="ui-input">
                     </div>
                 </div>
-                <p id="settingRateHint" class="text-[11px] text-slate-400 mb-3"></p>
+                <p id="settingRateHint" class="ui-hint"></p>
 
-                <button onclick="saveRate()" class="w-full py-3 bg-blue-600 text-white rounded-lg font-bold text-sm shadow-md active:scale-95 transition-all">
-                    Kursni Saqlash
+                <button onclick="saveRate()" class="ui-btn ui-btn-primary ui-btn-block mt-4">
+                    <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#save"></use></svg>Kursni Saqlash
                 </button>
             </div>
 
-            <div class="card">
-                <div class="flex items-center justify-between mb-3">
-                    <h3 class="font-bold text-slate-700">Yillik Ko'rinish</h3>
-                    <span id="ratesOverviewYear" class="text-xs font-bold text-slate-500"></span>
+            <div class="card ui-card ui-card-body">
+                <div class="mb-3 flex items-center justify-between">
+                    <h3 class="ui-card-title">Yillik ko'rinish</h3>
+                    <span id="ratesOverviewYear" class="ui-badge ui-badge-neutral"></span>
                 </div>
-                <div id="ratesList" class="text-xs text-slate-500"></div>
+                <div id="ratesList" class="text-sm text-slate-600"></div>
+            </div>
             </div>
         </section>
 
         <!-- B. IJARACHILAR VA IJARA -->
         <section id="settings-tenants" class="settings-section hidden">
-            <div class="card">
-                <h3 class="font-bold mb-3 text-slate-700">Ijarachilar</h3>
+            <div class="grid grid-cols-1 gap-4 xl:grid-cols-2 xl:items-start">
+            <div class="space-y-4">
+            <div class="card ui-card ui-card-body">
+                <h3 class="ui-card-title mb-3">Ijarachilar</h3>
                 <div id="settingsTenantList" class="space-y-2"></div>
             </div>
 
             <!-- Rent schedule editor -->
-            <div id="tenantScheduleCard" class="card hidden">
-                <div class="flex items-center justify-between mb-1">
-                    <h3 class="font-bold text-slate-700">Ijara Jadvali</h3>
-                    <button onclick="closeTenantSchedule()" class="text-slate-400 text-xs font-bold">Yopish</button>
+            <div id="tenantScheduleCard" class="card ui-card ui-card-body hidden">
+                <div class="flex items-center justify-between gap-2">
+                    <h3 class="ui-card-title">Ijara jadvali</h3>
+                    <button onclick="closeTenantSchedule()" class="ui-btn ui-btn-ghost ui-btn-sm">
+                        <svg class="ui-icon ui-icon-sm" aria-hidden="true"><use href="assets/icons/lucide.svg#x"></use></svg>Yopish</button>
                 </div>
-                <p class="text-[11px] text-slate-400 mb-3">
-                    <span id="scheduleTenantName" class="font-bold text-slate-600"></span> —
+                <p class="ui-card-desc mb-4">
+                    <span id="scheduleTenantName" class="font-semibold text-slate-700"></span> —
                     har bir oy uchun amaldagi ijara narxi.
                 </p>
 
-                <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Yil</label>
-                <select id="scheduleYear" onchange="renderTenantSchedule()" class="w-full min-w-0 p-2 border rounded-lg text-sm font-bold bg-white mb-3"></select>
+                <label class="ui-label" for="scheduleYear">Yil</label>
+                <select id="scheduleYear" onchange="renderTenantSchedule()" class="ui-input mb-4"></select>
 
                 <div id="tenantScheduleList" class="mb-4"></div>
 
-                <div class="border-t pt-3">
-                    <h4 class="text-[10px] font-bold text-slate-400 uppercase mb-2">Kelajakdagi Narx O'zgarishi</h4>
+                <div class="border-t border-slate-100 pt-4">
+                    <h4 class="ui-section-title mb-2">Kelajakdagi narx o'zgarishi</h4>
                     <div id="rentChangeList" class="mb-2"></div>
-                    <div class="grid grid-cols-2 gap-2 mb-2">
-                        <select id="rentChangeFrom" class="w-full min-w-0 p-2 border rounded-lg text-sm font-bold bg-white"></select>
-                        <input type="text" inputmode="decimal" id="rentChangeAmount" placeholder="Yangi narx" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                    <div class="grid grid-cols-2 gap-2">
+                        <select id="rentChangeFrom" class="ui-input" aria-label="Qaysi oydan"></select>
+                        <input type="text" inputmode="decimal" id="rentChangeAmount" placeholder="Yangi narx" class="ui-input">
                     </div>
-                    <button onclick="addTenantRentChange()" class="w-full py-2 bg-blue-600 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">Narxni Belgilash</button>
+                    <button onclick="addTenantRentChange()" class="ui-btn ui-btn-primary ui-btn-block mt-2">Narxni Belgilash</button>
                 </div>
             </div>
+            </div>
 
-            <div class="card">
-                <h3 class="font-bold mb-3 text-slate-700">Ijarachi Qo'shish / Tahrirlash</h3>
-                <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Nomi</label>
-                <input type="text" id="newTenantName" placeholder="Masalan: Tehnopark" class="w-full min-w-0 p-2 border rounded-lg text-sm mb-3 bg-white">
+            <div class="card ui-card ui-card-body">
+                <h3 class="ui-card-title mb-4">Ijarachi qo'shish / tahrirlash</h3>
+                <label class="ui-label" for="newTenantName">Nomi</label>
+                <input type="text" id="newTenantName" placeholder="Masalan: Tehnopark" class="ui-input">
 
-                <div class="grid grid-cols-2 gap-2 mb-3">
+                <div class="mt-4 grid grid-cols-2 gap-2">
                     <div class="min-w-0">
-                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Asosiy Narx</label>
-                        <input type="text" inputmode="decimal" id="newTenantRent" placeholder="500" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                        <label class="ui-label" for="newTenantRent">Asosiy narx</label>
+                        <input type="text" inputmode="decimal" id="newTenantRent" placeholder="500" class="ui-input">
                     </div>
                     <div class="min-w-0">
-                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Valyuta</label>
-                        <select id="newTenantCurr" class="w-full min-w-0 p-2 border rounded-lg text-sm font-bold bg-white"><option>USD</option><option>UZS</option></select>
-                    </div>
-                </div>
-
-                <div class="grid grid-cols-2 gap-2 mb-3">
-                    <div class="min-w-0">
-                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Boshlanish</label>
-                        <select id="newTenantStart" class="w-full min-w-0 p-2 border rounded-lg text-sm font-bold bg-white"></select>
-                    </div>
-                    <div class="min-w-0">
-                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Tugash</label>
-                        <select id="newTenantEnd" class="w-full min-w-0 p-2 border rounded-lg text-sm font-bold bg-white"></select>
+                        <label class="ui-label" for="newTenantCurr">Valyuta</label>
+                        <select id="newTenantCurr" class="ui-input"><option>USD</option><option>UZS</option></select>
                     </div>
                 </div>
 
-                <label class="flex items-center gap-2 mb-3 text-xs font-bold text-slate-600">
-                    <input type="checkbox" id="newTenantActive" checked class="w-4 h-4">
+                <div class="mt-4 grid grid-cols-2 gap-2">
+                    <div class="min-w-0">
+                        <label class="ui-label" for="newTenantStart">Boshlanish</label>
+                        <select id="newTenantStart" class="ui-input"></select>
+                    </div>
+                    <div class="min-w-0">
+                        <label class="ui-label" for="newTenantEnd">Tugash</label>
+                        <select id="newTenantEnd" class="ui-input"></select>
+                    </div>
+                </div>
+
+                <label class="ui-check-row mt-2">
+                    <input type="checkbox" id="newTenantActive" checked class="ui-check">
                     Faol
                 </label>
 
-                <button onclick="addTenant()" id="addTenantBtn" class="w-full py-3 bg-slate-800 text-white rounded-lg text-sm font-bold shadow-md active:scale-95 transition-all">+ Qo'shish</button>
+                <button onclick="addTenant()" id="addTenantBtn" class="ui-btn ui-btn-dark ui-btn-block mt-2">+ Qo'shish</button>
+            </div>
             </div>
         </section>
 
         <!-- C. REJALI CHIQIMLAR -->
         <section id="settings-expenses" class="settings-section hidden">
-            <div class="card">
-                <h3 class="font-bold mb-1 text-slate-700">Rejali Chiqimlar</h3>
-                <p class="text-[11px] text-slate-400 mb-3">
+            <div class="grid grid-cols-1 gap-4 xl:grid-cols-2 xl:items-start">
+            <div class="card ui-card ui-card-body">
+                <h3 class="ui-card-title">Rejali chiqimlar</h3>
+                <p class="ui-card-desc mb-3">
                     Faqat proyeksiyaga ta'sir qiladi. Haqiqiy chiqim yozuvi alohida kiritiladi.
                 </p>
                 <div id="templateExpenseList" class="space-y-2"></div>
             </div>
 
-            <div class="card">
-                <h3 class="font-bold mb-3 text-slate-700">Rejali Chiqim Qo'shish</h3>
+            <div class="card ui-card ui-card-body">
+                <h3 class="ui-card-title mb-4">Rejali chiqim qo'shish</h3>
 
-                <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Nomi</label>
-                <input type="text" id="templateExpenseName" placeholder="Masalan: Soliq" class="w-full min-w-0 p-2 border rounded-lg text-sm mb-3 bg-white">
+                <label class="ui-label" for="templateExpenseName">Nomi</label>
+                <input type="text" id="templateExpenseName" placeholder="Masalan: Soliq" class="ui-input">
 
-                <div class="grid grid-cols-2 gap-2 mb-3">
+                <div class="mt-4 grid grid-cols-2 gap-2">
                     <div class="min-w-0">
-                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Summa</label>
-                        <input type="text" inputmode="decimal" id="templateExpenseAmount" placeholder="1 000 000" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                        <label class="ui-label" for="templateExpenseAmount">Summa</label>
+                        <input type="text" inputmode="decimal" id="templateExpenseAmount" placeholder="1 000 000" class="ui-input">
                     </div>
                     <div class="min-w-0">
-                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Valyuta</label>
-                        <select id="templateExpenseCurr" class="w-full min-w-0 p-2 border rounded-lg text-sm font-bold bg-white"><option>UZS</option><option>USD</option></select>
-                    </div>
-                </div>
-
-                <div class="grid grid-cols-2 gap-2 mb-3">
-                    <div class="min-w-0">
-                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Boshlanish</label>
-                        <select id="templateExpenseMonth" class="w-full min-w-0 p-2 border rounded-lg text-sm font-bold bg-white"></select>
-                    </div>
-                    <div class="min-w-0">
-                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Takrorlanish</label>
-                        <select id="templateExpenseFrequency" onchange="onExpenseFrequencyChange()" class="w-full min-w-0 p-2 border rounded-lg text-sm font-bold bg-white"></select>
+                        <label class="ui-label" for="templateExpenseCurr">Valyuta</label>
+                        <select id="templateExpenseCurr" class="ui-input"><option>UZS</option><option>USD</option></select>
                     </div>
                 </div>
 
-                <div id="expenseIntervalRow" class="hidden mb-3">
-                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Necha oyda bir marta</label>
-                    <input type="text" inputmode="numeric" id="templateExpenseInterval" placeholder="4" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                <div class="mt-4 grid grid-cols-2 gap-2">
+                    <div class="min-w-0">
+                        <label class="ui-label" for="templateExpenseMonth">Boshlanish</label>
+                        <select id="templateExpenseMonth" class="ui-input"></select>
+                    </div>
+                    <div class="min-w-0">
+                        <label class="ui-label" for="templateExpenseFrequency">Takrorlanish</label>
+                        <select id="templateExpenseFrequency" onchange="onExpenseFrequencyChange()" class="ui-input"></select>
+                    </div>
                 </div>
 
-                <div id="expenseMonthsRow" class="hidden mb-3">
-                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Qaysi oylarda</label>
-                    <div id="expenseMonthToggles" class="grid grid-cols-4 gap-1"></div>
+                <div id="expenseIntervalRow" class="hidden mt-4">
+                    <label class="ui-label" for="templateExpenseInterval">Necha oyda bir marta</label>
+                    <input type="text" inputmode="numeric" id="templateExpenseInterval" placeholder="4" class="ui-input">
                 </div>
 
-                <div id="expenseEndingRow" class="hidden mb-3">
-                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Tugash Qoidasi</label>
-                    <select id="templateExpenseEndType" onchange="onExpenseFrequencyChange()" class="w-full min-w-0 p-2 border rounded-lg text-sm font-bold bg-white">
+                <div id="expenseMonthsRow" class="hidden mt-4">
+                    <span class="ui-label">Qaysi oylarda</span>
+                    <div id="expenseMonthToggles" class="grid grid-cols-4 gap-1.5"></div>
+                </div>
+
+                <div id="expenseEndingRow" class="hidden mt-4">
+                    <label class="ui-label" for="templateExpenseEndType">Tugash qoidasi</label>
+                    <select id="templateExpenseEndType" onchange="onExpenseFrequencyChange()" class="ui-input">
                         <option value="never">Muddatsiz</option>
                         <option value="until_period">Belgilangan davrgacha</option>
                         <option value="after_occurrences">Belgilangan marta</option>
                     </select>
                 </div>
 
-                <div id="expenseEndPeriodRow" class="hidden mb-3">
-                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Tugash Davri</label>
-                    <select id="templateExpenseEndPeriod" class="w-full min-w-0 p-2 border rounded-lg text-sm font-bold bg-white"></select>
+                <div id="expenseEndPeriodRow" class="hidden mt-4">
+                    <label class="ui-label" for="templateExpenseEndPeriod">Tugash davri</label>
+                    <select id="templateExpenseEndPeriod" class="ui-input"></select>
                 </div>
 
-                <div id="expenseEndCountRow" class="hidden mb-3">
-                    <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Necha marta</label>
-                    <input type="text" inputmode="numeric" id="templateExpenseEndCount" placeholder="12" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                <div id="expenseEndCountRow" class="hidden mt-4">
+                    <label class="ui-label" for="templateExpenseEndCount">Necha marta</label>
+                    <input type="text" inputmode="numeric" id="templateExpenseEndCount" placeholder="12" class="ui-input">
                 </div>
 
-                <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Izoh (ixtiyoriy)</label>
-                <input type="text" id="templateExpenseDescription" placeholder="Qo'shimcha ma'lumot" class="w-full min-w-0 p-2 border rounded-lg text-sm mb-3 bg-white">
+                <label class="ui-label mt-4" for="templateExpenseDescription">Izoh (ixtiyoriy)</label>
+                <input type="text" id="templateExpenseDescription" placeholder="Qo'shimcha ma'lumot" class="ui-input">
 
-                <button onclick="addTemplateExpense()" id="addExpenseBtn" class="w-full py-3 bg-blue-600 text-white rounded-lg text-sm font-bold shadow-md active:scale-95 transition-all">+ Qo'shish</button>
-                <button onclick="clearExpenseForm()" class="w-full mt-2 py-2 text-slate-400 text-xs font-bold">Tozalash</button>
+                <button onclick="addTemplateExpense()" id="addExpenseBtn" class="ui-btn ui-btn-primary ui-btn-block mt-5">+ Qo'shish</button>
+                <button onclick="clearExpenseForm()" class="ui-btn ui-btn-ghost ui-btn-block mt-2">Tozalash</button>
+            </div>
             </div>
         </section>
 
         <!-- D. TELEGRAM -->
         <section id="settings-telegram" class="settings-section hidden">
-            <div class="card">
-                <div class="flex items-center justify-between mb-3">
-                    <h3 class="font-bold text-slate-700">Telegram Holati</h3>
-                    <i class="fab fa-telegram text-slate-300 text-lg"></i>
+            <div class="grid grid-cols-1 gap-4 xl:grid-cols-2 xl:items-start">
+            <div class="card ui-card ui-card-body">
+                <div class="mb-3 flex items-center justify-between">
+                    <h3 class="ui-card-title">Telegram holati</h3>
+                    <svg class="ui-icon text-slate-400" aria-hidden="true"><use href="assets/icons/lucide.svg#send"></use></svg>
                 </div>
 
-                <div class="bg-slate-50 border rounded-xl p-3 space-y-2 text-[11px]">
-                    <div class="flex justify-between items-center gap-2">
-                        <span class="text-slate-500 font-bold uppercase text-[10px]">Bot Tokeni</span>
-                        <span id="tgTokenStatus" class="font-bold text-slate-400 text-right">Tekshirilmoqda...</span>
+                <div class="rounded-xl border border-slate-200 bg-slate-50 px-4 py-1 text-sm">
+                    <div class="ui-stat-row">
+                        <span class="text-slate-600">Bot tokeni</span>
+                        <span id="tgTokenStatus" class="text-right font-semibold text-slate-500">Tekshirilmoqda...</span>
                     </div>
-                    <div class="flex justify-between items-center gap-2">
-                        <span class="text-slate-500 font-bold uppercase text-[10px]">Bot Ulanishi</span>
-                        <span id="tgBotStatus" class="font-bold text-slate-400 text-right">Noma'lum</span>
+                    <div class="ui-stat-row">
+                        <span class="text-slate-600">Bot ulanishi</span>
+                        <span id="tgBotStatus" class="text-right font-semibold text-slate-500">Noma'lum</span>
                     </div>
-                    <div class="flex justify-between items-center gap-2">
-                        <span class="text-slate-500 font-bold uppercase text-[10px]">Webhook</span>
-                        <span id="tgWebhookStatus" class="font-bold text-slate-400 text-right">Noma'lum</span>
+                    <div class="ui-stat-row">
+                        <span class="text-slate-600">Webhook</span>
+                        <span id="tgWebhookStatus" class="text-right font-semibold text-slate-500">Noma'lum</span>
                     </div>
-                    <div class="border-t pt-2 space-y-1">
-                        <div class="flex justify-between gap-2">
-                            <span class="text-slate-400 shrink-0">Oxirgi muvaffaqiyat:</span>
-                            <span id="tgLastSuccess" class="text-right text-slate-600 truncate">—</span>
-                        </div>
-                        <div class="flex justify-between gap-2">
-                            <span class="text-slate-400 shrink-0">Oxirgi xatolik:</span>
-                            <span id="tgLastError" class="text-right text-red-500 truncate">—</span>
-                        </div>
+                    <div class="ui-stat-row">
+                        <span class="shrink-0 text-slate-500">Oxirgi muvaffaqiyat</span>
+                        <span id="tgLastSuccess" class="truncate text-right text-slate-700">—</span>
+                    </div>
+                    <div class="ui-stat-row">
+                        <span class="shrink-0 text-slate-500">Oxirgi xatolik</span>
+                        <span id="tgLastError" class="truncate text-right text-red-600">—</span>
                     </div>
                 </div>
             </div>
 
-            <div class="card">
-                <h3 class="font-bold mb-3 text-slate-700">Telegram Sozlamalari</h3>
-                <div class="space-y-3">
+            <div class="card ui-card ui-card-body">
+                <h3 class="ui-card-title mb-4">Telegram sozlamalari</h3>
+                <div class="space-y-4">
                     <div>
-                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Admin Kaliti (ixtiyoriy)</label>
-                        <input type="password" id="tgAdminKey" autocomplete="off" placeholder="Odatda kerak emas" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
-                        <p class="text-[10px] text-slate-400 mt-1">
+                        <label class="ui-label" for="tgAdminKey">Admin kaliti (ixtiyoriy)</label>
+                        <input type="password" id="tgAdminKey" autocomplete="off" placeholder="Odatda kerak emas" class="ui-input">
+                        <p class="ui-hint">
                             Bo'sh qoldiring — sizning sessiyangiz yetarli. Faqat texnik xizmat uchun
                             <code>OMAD_ADMIN_KEY</code> Script Property qiymati kiritiladi.
                         </p>
                     </div>
                     <div>
-                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Bot Tokeni</label>
-                        <input type="password" id="tgBotToken" autocomplete="off" placeholder="Yangi token kiritish / almashtirish" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
-                        <p class="text-[10px] text-slate-400 mt-1">Bo'sh qoldirilsa mavjud token o'zgarmaydi. Token hech qachon qayta ko'rsatilmaydi.</p>
+                        <label class="ui-label" for="tgBotToken">Bot tokeni</label>
+                        <input type="password" id="tgBotToken" autocomplete="off" placeholder="Yangi token kiritish / almashtirish" class="ui-input">
+                        <p class="ui-hint">Bo'sh qoldirilsa mavjud token o'zgarmaydi. Token hech qachon qayta ko'rsatilmaydi.</p>
                     </div>
                     <div>
-                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Ruxsat Etilgan User ID</label>
-                        <input type="text" inputmode="numeric" id="tgAuthorizedUserId" placeholder="123456789" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                        <label class="ui-label" for="tgAuthorizedUserId">Ruxsat etilgan user ID</label>
+                        <input type="text" inputmode="numeric" id="tgAuthorizedUserId" placeholder="123456789" class="ui-input">
                     </div>
-                    <div>
-                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Hisobot Guruhi ID</label>
-                        <input type="text" id="tgGroupChatId" placeholder="-1001234567890" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                        <div>
+                            <label class="ui-label" for="tgGroupChatId">Hisobot guruhi ID</label>
+                            <input type="text" id="tgGroupChatId" placeholder="-1001234567890" class="ui-input">
+                        </div>
+                        <div>
+                            <label class="ui-label" for="tgTasksGroupChatId">Vazifalar guruhi ID</label>
+                            <input type="text" id="tgTasksGroupChatId" placeholder="-1009876543210" class="ui-input">
+                        </div>
                     </div>
+                    <p class="ui-hint -mt-2">Faqat raqamli ID (masalan -1001234567890). @username ishlamaydi. <a href="tasks.html" class="font-semibold text-blue-600 hover:underline">Vazifalar paneli →</a></p>
                     <div>
-                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Vazifalar Guruhi ID</label>
-                        <input type="text" id="tgTasksGroupChatId" placeholder="-1009876543210" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
-                        <p class="text-[10px] text-slate-400 mt-1">Faqat raqamli ID (masalan -1001234567890). @username ishlamaydi. <a href="tasks.html" class="text-blue-500 font-bold">Vazifalar paneli →</a></p>
-                    </div>
-                    <div>
-                        <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Webhook Manzili</label>
-                        <input type="text" id="tgWebhookUrl" placeholder="https://script.google.com/macros/s/.../exec" class="w-full min-w-0 p-2 border rounded-lg text-sm bg-white">
+                        <label class="ui-label" for="tgWebhookUrl">Webhook manzili</label>
+                        <input type="text" id="tgWebhookUrl" placeholder="https://script.google.com/macros/s/.../exec" class="ui-input">
                     </div>
                 </div>
 
-                <div id="tgMessage" class="hidden text-[11px] font-bold rounded-lg p-2 mt-3"></div>
+                <div id="tgMessage" class="hidden mt-4 rounded-xl p-3 text-sm font-semibold"></div>
 
-                <button onclick="saveTelegramSettings()" id="tgSaveBtn" class="w-full mt-3 py-3 bg-blue-600 text-white rounded-lg text-sm font-bold shadow-md active:scale-95 transition-all">💾 Saqlash</button>
-                <div class="grid grid-cols-3 gap-2 mt-2">
-                    <button onclick="testTelegramConnection()" class="py-2 bg-slate-800 text-white rounded-lg text-[10px] font-bold active:scale-95 transition-all">🔌 Ulanish</button>
-                    <button onclick="sendTelegramTestMessage()" class="py-2 bg-slate-800 text-white rounded-lg text-[10px] font-bold active:scale-95 transition-all">✉️ Test</button>
-                    <button onclick="configureTelegramWebhook()" class="py-2 bg-slate-800 text-white rounded-lg text-[10px] font-bold active:scale-95 transition-all">🔄 Webhook</button>
+                <button onclick="saveTelegramSettings()" id="tgSaveBtn" class="ui-btn ui-btn-primary ui-btn-block mt-5">
+                    <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#save"></use></svg>Saqlash</button>
+                <div class="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                    <button onclick="testTelegramConnection()" class="ui-btn ui-btn-secondary">
+                        <svg class="ui-icon ui-icon-sm" aria-hidden="true"><use href="assets/icons/lucide.svg#plug"></use></svg>Ulanish</button>
+                    <button onclick="sendTelegramTestMessage()" class="ui-btn ui-btn-secondary">
+                        <svg class="ui-icon ui-icon-sm" aria-hidden="true"><use href="assets/icons/lucide.svg#message-circle"></use></svg>Test</button>
+                    <button onclick="configureTelegramWebhook()" class="ui-btn ui-btn-secondary">
+                        <svg class="ui-icon ui-icon-sm" aria-hidden="true"><use href="assets/icons/lucide.svg#webhook"></use></svg>Webhook</button>
                 </div>
+            </div>
             </div>
         </section>
 
         <!-- E. TIZIM VA MA'LUMOTLAR -->
         <section id="settings-system" class="settings-section hidden">
+            <div class="grid grid-cols-1 gap-4 xl:grid-cols-2 xl:items-start">
             <!--
                 Foydalanuvchilar. Parollar faqat serverda, hash ko'rinishida
                 saqlanadi: bu yerda ular ko'rsatilmaydi, faqat o'rnatiladi.
             -->
-            <div class="card">
-                <h3 class="font-bold mb-1 text-slate-700">Foydalanuvchilar</h3>
-                <p class="text-[11px] text-slate-500 mb-3">
+            <div class="card ui-card ui-card-body">
+                <div class="mb-1 flex items-center gap-2">
+                    <svg class="ui-icon text-slate-400" aria-hidden="true"><use href="assets/icons/lucide.svg#users"></use></svg>
+                    <h3 class="ui-card-title">Foydalanuvchilar</h3>
+                </div>
+                <p class="ui-card-desc mb-3">
                     Parol serverda shifrlangan holda saqlanadi va hech qachon brauzerga qaytarilmaydi.
                     Parolni o'zgartirish o'sha foydalanuvchining barcha ochiq sessiyalarini bekor qiladi.
                 </p>
-                <div id="userList" class="bg-slate-50 border rounded-xl p-3 space-y-2 text-[11px] mb-3">
-                    <p class="text-slate-400">Yuklanmoqda...</p>
+                <div id="userList" class="mb-4 space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
+                    <p class="text-slate-500">Yuklanmoqda...</p>
                 </div>
-                <label class="block text-[10px] font-bold text-slate-400 uppercase mb-1">Foydalanuvchi</label>
-                <select id="userAccount" class="w-full border border-slate-300 rounded-xl p-2 text-sm mb-2 bg-white">
+                <label class="ui-label" for="userAccount">Foydalanuvchi</label>
+                <select id="userAccount" class="ui-input">
                     <option value="omad_admin">omad_admin — buxgalteriya</option>
                     <option value="cafe_admin">cafe_admin — kafe boshqaruvi</option>
                     <option value="cafe_seller">cafe_seller — kassa</option>
                 </select>
-                <label class="block text-[10px] font-bold text-slate-400 uppercase mb-1">Yangi parol</label>
-                <input id="userPassword" type="password" autocomplete="new-password"
-                       class="w-full border border-slate-300 rounded-xl p-2 text-sm mb-2" placeholder="Kamida 8 ta belgi">
-                <input id="userPasswordRepeat" type="password" autocomplete="new-password"
-                       class="w-full border border-slate-300 rounded-xl p-2 text-sm mb-3" placeholder="Parolni takrorlang">
-                <button onclick="saveUserPassword()" class="w-full bg-slate-800 text-white py-2.5 rounded-xl text-sm font-bold active:scale-95">
-                    Parolni O'rnatish
+                <label class="ui-label mt-4" for="userPassword">Yangi parol</label>
+                <input id="userPassword" type="password" autocomplete="new-password" class="ui-input" placeholder="Kamida 8 ta belgi">
+                <input id="userPasswordRepeat" type="password" autocomplete="new-password" class="ui-input mt-2" placeholder="Parolni takrorlang" aria-label="Parolni takrorlang">
+                <button onclick="saveUserPassword()" class="ui-btn ui-btn-dark ui-btn-block mt-4">
+                    <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#key-round"></use></svg>Parolni O'rnatish
                 </button>
-                <p id="userMessage" class="hidden text-[11px] font-bold mt-2"></p>
+                <p id="userMessage" class="hidden mt-2 text-sm font-semibold"></p>
             </div>
 
-            <div class="card">
-                <div class="flex items-center justify-between mb-3">
-                    <h3 class="font-bold text-slate-700">Tizim Holati</h3>
-                    <button onclick="loadSystemStatus()" class="text-blue-500 text-xs font-bold"><i class="fas fa-sync-alt"></i></button>
+            <div class="card ui-card ui-card-body">
+                <div class="mb-3 flex items-center justify-between">
+                    <h3 class="ui-card-title">Tizim holati</h3>
+                    <button onclick="loadSystemStatus()" class="ui-icon-btn" aria-label="Yangilash" title="Yangilash">
+                        <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#refresh-cw"></use></svg>
+                    </button>
                 </div>
-                <div id="systemOverview" class="bg-slate-50 border rounded-xl p-3 space-y-2 text-[11px]">
-                    <p class="text-slate-400">Yuklanmoqda...</p>
+                <div id="systemOverview" class="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
+                    <p class="text-slate-500">Yuklanmoqda...</p>
                 </div>
             </div>
 
-            <div class="card">
-                <h3 class="font-bold mb-1 text-slate-700">Zaxira Nusxa</h3>
-                <p class="text-[11px] text-slate-400 mb-3">Har bir yozuvdan oldin avtomatik zaxira olinadi.</p>
-                <div id="backupStatus" class="text-[11px] text-slate-500 mb-3"></div>
-                <button onclick="createBackup()" class="w-full py-3 bg-slate-800 text-white rounded-lg text-sm font-bold shadow-md active:scale-95 transition-all">
-                    Zaxira Nusxa Yaratish
+            <div class="card ui-card ui-card-body">
+                <h3 class="ui-card-title">Zaxira nusxa</h3>
+                <p class="ui-card-desc mb-3">Har bir yozuvdan oldin avtomatik zaxira olinadi.</p>
+                <div id="backupStatus" class="mb-3 text-sm text-slate-600"></div>
+                <button onclick="createBackup()" class="ui-btn ui-btn-dark ui-btn-block">
+                    <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#archive"></use></svg>Zaxira Nusxa Yaratish
                 </button>
             </div>
 
-            <div class="card">
-                <h3 class="font-bold mb-1 text-slate-700">Kutilayotgan Vazifalar</h3>
-                <p class="text-[11px] text-slate-400 mb-3">Telegram hisobotlari alohida navbatda yuboriladi.</p>
-                <div id="jobQueueStatus" class="text-[11px] text-slate-500 mb-3"></div>
+            <div class="card ui-card ui-card-body">
+                <h3 class="ui-card-title">Kutilayotgan vazifalar</h3>
+                <p class="ui-card-desc mb-3">Telegram hisobotlari alohida navbatda yuboriladi.</p>
+                <div id="jobQueueStatus" class="mb-3 text-sm text-slate-600"></div>
                 <div class="grid grid-cols-2 gap-2">
-                    <button onclick="processPendingJobs()" class="py-2 bg-blue-600 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">Hozir Yuborish</button>
-                    <button onclick="retryFailedJobs()" class="py-2 bg-slate-800 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">Xatolarni Qayta</button>
+                    <button onclick="processPendingJobs()" class="ui-btn ui-btn-primary">
+                        <svg class="ui-icon ui-icon-sm" aria-hidden="true"><use href="assets/icons/lucide.svg#send"></use></svg>Hozir Yuborish</button>
+                    <button onclick="retryFailedJobs()" class="ui-btn ui-btn-secondary">
+                        <svg class="ui-icon ui-icon-sm" aria-hidden="true"><use href="assets/icons/lucide.svg#rotate-ccw"></use></svg>Xatolarni Qayta</button>
                 </div>
             </div>
 
-            <div id="migrationCard" class="card">
-                <h3 class="font-bold mb-1 text-slate-700">Ma'lumotlarni Ko'chirish</h3>
-                <p class="text-[11px] text-slate-400 mb-3">
+            <div id="migrationCard" class="card ui-card ui-card-body">
+                <h3 class="ui-card-title">Ma'lumotlarni ko'chirish</h3>
+                <p class="ui-card-desc mb-3">
                     Eski oy nomlarini (Yanvar) yil bilan (2026-01) almashtiradi.
                     Asl varaq hech qachon o'zgartirilmaydi.
                 </p>
-                <div id="migrationStatus" class="text-[11px] text-slate-500 mb-3"></div>
+                <div id="migrationStatus" class="mb-3 text-sm text-slate-600"></div>
 
-                <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Zaxira Yil</label>
-                <select id="migrationFallbackYear" class="w-full min-w-0 p-2 border rounded-lg text-sm font-bold bg-white mb-3"></select>
+                <label class="ui-label" for="migrationFallbackYear">Zaxira yil</label>
+                <select id="migrationFallbackYear" class="ui-input mb-3"></select>
 
-                <div id="migrationPreview" class="hidden text-[11px] bg-slate-50 border rounded-xl p-3 mb-3"></div>
+                <div id="migrationPreview" class="hidden mb-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"></div>
 
                 <div class="grid grid-cols-2 gap-2">
-                    <button onclick="previewMigration()" class="py-2 bg-slate-800 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">1. Ko'rib chiqish</button>
-                    <button onclick="applyMigration()" class="py-2 bg-slate-800 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">2. Ko'chirish</button>
-                    <button onclick="verifyMigration()" class="py-2 bg-slate-800 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">3. Tekshirish</button>
-                    <button onclick="cutoverMigration()" class="py-2 bg-green-600 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">4. Yoqish</button>
+                    <button onclick="previewMigration()" class="ui-btn ui-btn-secondary">1. Ko'rib chiqish</button>
+                    <button onclick="applyMigration()" class="ui-btn ui-btn-secondary">2. Ko'chirish</button>
+                    <button onclick="verifyMigration()" class="ui-btn ui-btn-secondary">3. Tekshirish</button>
+                    <button onclick="cutoverMigration()" class="ui-btn ui-btn-success">4. Yoqish</button>
                 </div>
-                <button onclick="rollbackMigration()" class="w-full mt-2 py-2 text-red-500 text-xs font-bold">Orqaga Qaytarish</button>
+                <button onclick="rollbackMigration()" class="ui-btn ui-btn-ghost-danger ui-btn-block mt-2">Orqaga Qaytarish</button>
             </div>
 
-            <div id="storageCard" class="card">
-                <h3 class="font-bold mb-1 text-slate-700">Supabase Ma'lumotlar Bazasi</h3>
-                <p class="text-[11px] text-slate-400 mb-3">
+            <div id="storageCard" class="card ui-card ui-card-body">
+                <div class="mb-1 flex items-center gap-2">
+                    <svg class="ui-icon text-slate-400" aria-hidden="true"><use href="assets/icons/lucide.svg#database"></use></svg>
+                    <h3 class="ui-card-title">Supabase ma'lumotlar bazasi</h3>
+                </div>
+                <p class="ui-card-desc mb-3">
                     Google Sheets'dagi hamma ma'lumotni Supabase'ga ko'chiradi, har bir katakni va
                     kassa/bank qoldiqlarini solishtiradi, va faqat shundan keyin Supabase'ga o'tadi.
                     Google Sheets hech qachon o'zgartirilmaydi.
                 </p>
-                <div id="storageStatus" class="text-[11px] text-slate-500 mb-3"></div>
-                <div id="storageResult" class="hidden text-[11px] bg-slate-50 border rounded-xl p-3 mb-3"></div>
+                <div id="storageStatus" class="mb-3 text-sm text-slate-600"></div>
+                <div id="storageResult" class="hidden mb-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm"></div>
                 <div class="grid grid-cols-2 gap-2">
-                    <button onclick="previewSupabaseImport()" class="py-2 bg-slate-800 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">1. Ko'rib chiqish</button>
-                    <button onclick="applySupabaseImport()" class="py-2 bg-green-600 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">2. Ko'chirish va o'tish</button>
+                    <button onclick="previewSupabaseImport()" class="ui-btn ui-btn-secondary">1. Ko'rib chiqish</button>
+                    <button onclick="applySupabaseImport()" class="ui-btn ui-btn-success">2. Ko'chirish va o'tish</button>
+                    <button onclick="verifySupabaseImport()" class="ui-btn ui-btn-secondary">Solishtirish</button>
+                    <button onclick="measureStorageSpeed()" class="ui-btn ui-btn-secondary">Tezlikni o'lchash</button>
                 </div>
-                <div class="grid grid-cols-2 gap-2 mt-2">
-                    <button onclick="verifySupabaseImport()" class="py-2 bg-slate-800 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">Solishtirish</button>
-                    <button onclick="measureStorageSpeed()" class="py-2 bg-slate-800 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">Tezlikni o'lchash</button>
-                </div>
-                <button onclick="rollbackSupabaseStorage()" class="w-full mt-2 py-2 text-red-500 text-xs font-bold">Google Sheets'ga Qaytish</button>
+                <button onclick="rollbackSupabaseStorage()" class="ui-btn ui-btn-ghost-danger ui-btn-block mt-2">Google Sheets'ga Qaytish</button>
             </div>
 
-            <div class="card">
-                <div class="flex items-center justify-between mb-1">
-                    <h3 class="font-bold text-slate-700">Tizim Salomatligi</h3>
-                    <button onclick="runHealthCheck()" class="text-blue-500 text-xs font-bold">Tekshirish</button>
+            <div class="card ui-card ui-card-body">
+                <div class="mb-1 flex items-center justify-between gap-2">
+                    <h3 class="ui-card-title">Tizim salomatligi</h3>
+                    <button onclick="runHealthCheck()" class="ui-btn ui-btn-soft-primary ui-btn-sm">
+                        <svg class="ui-icon ui-icon-sm" aria-hidden="true"><use href="assets/icons/lucide.svg#activity"></use></svg>Tekshirish</button>
                 </div>
-                <p class="text-[11px] text-slate-400 mb-3">
+                <p class="ui-card-desc mb-3">
                     Backend, Telegram, Mini App, webhook, trigger, navbat va varaqlar bir joyda.
                 </p>
-                <div id="healthReport" class="space-y-1 text-[11px]">
-                    <p class="text-slate-400">Tekshirish tugmasini bosing.</p>
+                <div id="healthReport" class="space-y-1 text-sm">
+                    <p class="text-slate-500">Tekshirish tugmasini bosing.</p>
                 </div>
             </div>
 
-            <div class="card">
-                <h3 class="font-bold mb-1 text-slate-700">Telegram Mini App</h3>
-                <p class="text-[11px] text-slate-400 mb-3">
+            <div class="card ui-card ui-card-body">
+                <div class="mb-1 flex items-center gap-2">
+                    <svg class="ui-icon text-slate-400" aria-hidden="true"><use href="assets/icons/lucide.svg#smartphone"></use></svg>
+                    <h3 class="ui-card-title">Telegram Mini App</h3>
+                </div>
+                <p class="ui-card-desc mb-3">
                     Bot menyusidagi tugmani Mini App'ga ulaydi va tekshiradi.
                     BotFather'da qo'lda sozlash shart emas.
                 </p>
-                <label class="block text-[10px] text-slate-400 font-bold mb-1 uppercase">Mini App manzili</label>
-                <input id="miniAppUrl" type="url" inputmode="url" placeholder="https://<sayt-manzili>/mini"
-                       class="w-full min-w-0 p-2 border rounded-lg text-sm mb-3">
-                <div id="miniAppStatus" class="text-[11px] text-slate-500 mb-3"></div>
-                <button onclick="configureMiniApp()" class="w-full py-3 bg-slate-800 text-white rounded-lg text-sm font-bold shadow-md active:scale-95 transition-all">
-                    Mini Appni Sozlash
-                </button>
+                <label class="ui-label" for="miniAppUrl">Mini App manzili</label>
+                <input id="miniAppUrl" type="url" inputmode="url" placeholder="https://<sayt-manzili>/mini" class="ui-input mb-3">
+                <div id="miniAppStatus" class="mb-3 text-sm text-slate-600"></div>
+                <button onclick="configureMiniApp()" class="ui-btn ui-btn-dark ui-btn-block">Mini Appni Sozlash</button>
             </div>
 
-            <div class="card">
-                <h3 class="font-bold mb-1 text-slate-700">Ma'lumotlarni Tuzatish</h3>
-                <p class="text-[11px] text-slate-400 mb-3">
+            <div class="card ui-card ui-card-body">
+                <div class="mb-1 flex items-center gap-2">
+                    <svg class="ui-icon text-slate-400" aria-hidden="true"><use href="assets/icons/lucide.svg#wrench"></use></svg>
+                    <h3 class="ui-card-title">Ma'lumotlarni tuzatish</h3>
+                </div>
+                <p class="ui-card-desc mb-3">
                     Eski yozuvlardagi sana xatosini tuzatadi va guruh ID'larini to'ldiradi.
                     Faqat tranzaksiya ID'si bilan isbotlangan sanalar o'zgartiriladi.
                 </p>
-                <div id="maintenanceStatus" class="text-[11px] text-slate-500 mb-3"></div>
+                <div id="maintenanceStatus" class="mb-3 text-sm text-slate-600"></div>
                 <div class="grid grid-cols-2 gap-2">
-                    <button onclick="auditTransactionDates()" class="py-2 bg-slate-800 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">1. Sanalarni Tekshirish</button>
-                    <button onclick="fixTransactionDates()" class="py-2 bg-slate-800 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">2. Sanalarni Tuzatish</button>
-                    <button onclick="backfillEntryGroups()" class="py-2 bg-slate-800 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">Guruh ID'lari</button>
-                    <button onclick="purgeTelegramLogSecrets()" class="py-2 bg-slate-800 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">Loglarni Tozalash</button>
+                    <button onclick="auditTransactionDates()" class="ui-btn ui-btn-secondary">1. Sanalarni Tekshirish</button>
+                    <button onclick="fixTransactionDates()" class="ui-btn ui-btn-secondary">2. Sanalarni Tuzatish</button>
+                    <button onclick="backfillEntryGroups()" class="ui-btn ui-btn-secondary">Guruh ID'lari</button>
+                    <button onclick="purgeTelegramLogSecrets()" class="ui-btn ui-btn-secondary">Loglarni Tozalash</button>
                 </div>
-                <button onclick="rotateWebhookSecret()" class="w-full mt-2 py-2 bg-amber-600 text-white rounded-lg text-xs font-bold active:scale-95 transition-all">Webhook Kalitini Almashtirish</button>
+                <button onclick="rotateWebhookSecret()" class="ui-btn ui-btn-warning ui-btn-block mt-2">
+                    <svg class="ui-icon ui-icon-sm" aria-hidden="true"><use href="assets/icons/lucide.svg#key-round"></use></svg>Webhook Kalitini Almashtirish</button>
             </div>
 
-            <div class="card">
-                <h3 class="font-bold mb-3 text-slate-700">Oxirgi Amallar</h3>
-                <div id="auditList" class="space-y-1 text-[11px] text-slate-500 max-h-64 overflow-y-auto"></div>
+            <div class="card ui-card ui-card-body xl:col-span-2">
+                <h3 class="ui-card-title mb-3">Oxirgi amallar</h3>
+                <div id="auditList" class="max-h-72 space-y-1 overflow-y-auto text-sm text-slate-600"></div>
+            </div>
             </div>
         </section>
+        </div>
+        </div>
     </div>
 
-    <!-- DETAIL MODAL (SCROLL FIX & CENTERED, HIGH Z-INDEX) -->
-    <div id="detailModal" class="hidden fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onclick="closeModal()">
-        <div id="detailCard" class="bg-white w-full max-w-sm rounded-2xl p-5 shadow-2xl max-h-[85vh] flex flex-col" onclick="event.stopPropagation()">
-            
-            <!-- Fixed Header Section -->
-            <div class="flex-none">
-                <div class="flex justify-between items-center mb-2 border-b pb-3">
-                    <div>
-                        <h3 class="font-bold text-lg text-slate-800" id="modalTitle">Ijarachi</h3>
-                        <p class="text-xs text-slate-400" id="modalSubtitle">Tafsilotlar</p>
-                    </div>
-                    <button onclick="closeModal()" class="w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:bg-red-100 hover:text-red-500"><i class="fas fa-times"></i></button>
+    </main>
+
+    <!-- DETAIL MODAL -->
+    <div id="detailModal" class="hidden ui-modal-backdrop" onclick="closeModal()">
+        <div id="detailCard" class="ui-modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle" onclick="event.stopPropagation()">
+            <div class="ui-grabber"></div>
+            <div class="ui-modal-header">
+                <div class="min-w-0">
+                    <h3 class="ui-modal-title truncate" id="modalTitle">Ijarachi</h3>
+                    <p class="text-sm text-slate-500" id="modalSubtitle">Tafsilotlar</p>
                 </div>
-                
+                <button onclick="closeModal()" class="ui-icon-btn" aria-label="Yopish">
+                    <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#x"></use></svg>
+                </button>
+            </div>
+
+            <div class="ui-modal-body">
                 <!-- Debt Explanation Box -->
-                <div id="modalSummaryBox" class="bg-slate-50 rounded-lg p-3 mb-4 text-sm border border-slate-100 space-y-2">
-                    <div class="flex justify-between text-slate-500 items-start">
-                        <span>Ijara Narxi:</span>
+                <div id="modalSummaryBox" class="mb-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-1 text-sm">
+                    <div class="ui-stat-row items-start">
+                        <span class="text-slate-500">Ijara narxi</span>
                         <div class="text-right" id="modalRent">0</div>
                     </div>
-                    <div class="flex justify-between text-slate-500">
-                        <span>To'landi:</span>
-                        <span class="font-bold text-green-600" id="modalPaid">0</span>
+                    <div class="ui-stat-row">
+                        <span class="text-slate-500">To'landi</span>
+                        <span class="ui-figure text-emerald-700" id="modalPaid">0</span>
                     </div>
-                    <div class="border-t border-slate-200 my-1"></div>
-                    <div class="flex justify-between font-bold text-base">
-                        <span>Farq:</span>
+                    <div class="ui-stat-row text-base">
+                        <span class="font-semibold text-slate-900">Farq</span>
                         <span id="modalDiff">0</span>
                     </div>
                 </div>
-                
+
                 <!-- Simple Total for Debt List -->
-                <div id="modalSimpleTotalBox" class="hidden bg-red-50 rounded-lg p-3 mb-4 text-sm border border-red-100 text-center">
-                    <p class="text-xs text-red-400 font-bold uppercase mb-1">Jami Qarz Miqdori</p>
-                    <p class="text-2xl font-bold text-red-600" id="modalTotal">0</p>
+                <div id="modalSimpleTotalBox" class="hidden mb-4 rounded-xl border border-red-200 bg-red-50 p-4 text-center">
+                    <p class="text-sm font-medium text-red-700">Jami qarz miqdori</p>
+                    <p class="mt-1 text-2xl font-semibold text-red-600 tabular" id="modalTotal">0</p>
                 </div>
 
-                <h4 class="text-[10px] font-bold text-slate-400 uppercase mb-2" id="modalListTitle">To'lovlar Tarixi</h4>
-            </div>
-
-            <!-- Scrollable Content Section -->
-            <div id="modalContent" class="space-y-2 overflow-y-auto pr-1 flex-1 min-h-0">
-                <!-- Transactions -->
+                <h4 class="ui-eyebrow mb-2" id="modalListTitle">To'lovlar Tarixi</h4>
+                <div id="modalContent" class="ui-list rounded-xl border border-slate-200"></div>
             </div>
         </div>
     </div>
 
-    <div id="expenseModal" class="hidden fixed inset-0 z-[100] flex items-end justify-center bg-black/50 backdrop-blur-sm p-4" onclick="closeExpenseModal()">
-        <div class="bg-white w-full max-w-md rounded-2xl p-4 shadow-2xl max-h-[85vh] flex flex-col" onclick="event.stopPropagation()">
-            <div class="flex items-center justify-between mb-3">
-                <h3 class="font-bold text-slate-800">Barcha Chiqimlar</h3>
-                <button onclick="closeExpenseModal()" class="w-8 h-8 rounded-full bg-slate-100 text-slate-500"><i class="fas fa-times"></i></button>
+    <div id="expenseModal" class="hidden ui-modal-backdrop" onclick="closeExpenseModal()">
+        <div class="ui-modal" role="dialog" aria-modal="true" aria-labelledby="expenseModalTitle" onclick="event.stopPropagation()">
+            <div class="ui-grabber"></div>
+            <div class="ui-modal-header">
+                <h3 class="ui-modal-title" id="expenseModalTitle">Barcha chiqimlar</h3>
+                <button onclick="closeExpenseModal()" class="ui-icon-btn" aria-label="Yopish">
+                    <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#x"></use></svg>
+                </button>
             </div>
-            <select id="expenseMonthFilter" onchange="renderExpenseModal()" class="w-full border border-slate-200 bg-slate-50 rounded-xl p-3 text-sm font-bold mb-3 outline-none">
-                <option value="Jami Davr">Jami Davr</option>
-            </select>
-            <div id="expenseList" class="space-y-2 overflow-y-auto pr-1"></div>
+            <div class="ui-modal-body">
+                <select id="expenseMonthFilter" onchange="renderExpenseModal()" class="ui-input mb-3" aria-label="Davr">
+                    <option value="Jami Davr">Jami Davr</option>
+                </select>
+                <div id="expenseList" class="space-y-2"></div>
+            </div>
         </div>
     </div>
 
-    <!-- MENU -->
-    <div class="fixed bottom-0 left-0 w-full bg-white border-t border-slate-200 flex justify-between px-4 py-3 text-[10px] font-bold text-slate-400 z-50">
-        <button onclick="switchTab('dash')" id="nav-dash" class="nav-item active flex flex-col items-center gap-1"><i class="fas fa-home text-lg"></i>Asosiy</button>
-        <button onclick="switchTab('entry')" id="nav-entry" class="nav-item flex flex-col items-center gap-1"><i class="fas fa-plus-circle text-lg"></i>Yangi</button>
-        <button onclick="switchTab('bulk')" id="nav-bulk" class="nav-item flex flex-col items-center gap-1"><i class="fas fa-layer-group text-lg"></i>Ommaviy</button>
-        <button onclick="switchTab('history')" id="nav-history" class="nav-item flex flex-col items-center gap-1"><i class="fas fa-history text-lg"></i>Tarix</button>
-        <button onclick="switchTab('settings')" id="nav-settings" class="nav-item flex flex-col items-center gap-1"><i class="fas fa-sliders-h text-lg"></i>Sozlamalar</button>
-    </div>
+    <!-- MENU: bottom bar on a phone, sidebar menu on desktop -->
+    <nav class="ui-appnav" aria-label="Asosiy menyu">
+        <button onclick="switchTab('dash')" id="nav-dash" class="nav-item ui-appnav-item active">
+            <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#layout-dashboard"></use></svg>Asosiy</button>
+        <button onclick="switchTab('entry')" id="nav-entry" class="nav-item ui-appnav-item">
+            <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#circle-plus"></use></svg>Yangi</button>
+        <button onclick="switchTab('bulk')" id="nav-bulk" class="nav-item ui-appnav-item">
+            <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#layers"></use></svg>Ommaviy</button>
+        <button onclick="switchTab('history')" id="nav-history" class="nav-item ui-appnav-item">
+            <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#history"></use></svg>Tarix</button>
+        <button onclick="switchTab('settings')" id="nav-settings" class="nav-item ui-appnav-item">
+            <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#settings"></use></svg>Sozlamalar</button>
+    </nav>
 
-    <!-- DASTUR MANTIQI -->
     <!-- APPLICATION MODULES (load order matters) -->
     <script src="assets/omad/01-state.js"></script>
     <script src="assets/omad/01a-summary.js"></script>

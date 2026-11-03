@@ -2,32 +2,48 @@
 <html lang="uz">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Tizimga Kirish</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#f8fafc">
+  <title>Tizimga kirish · MyBizManager</title>
   <link rel="stylesheet" href="assets/css/app.css">
-  <style>
-    body { background: linear-gradient(160deg, #e2e8f0, #f8fafc); font-family: sans-serif; }
-    .glass { background: rgba(255, 255, 255, 0.55); backdrop-filter: blur(18px); border: 1px solid rgba(255,255,255,0.7); box-shadow: 0 10px 35px rgba(15,23,42,0.12); }
-  </style>
 </head>
-<body class="min-h-screen flex items-center justify-center px-4 text-slate-800">
-  <div class="w-full max-w-sm glass rounded-2xl p-5">
-    <h1 class="text-xl font-bold text-center mb-1">Biznes Ekotizim</h1>
-    <p class="text-xs text-center text-slate-500 mb-5">Tizimga kirish</p>
+<body class="flex min-h-screen flex-col items-center justify-center bg-slate-50 px-4 py-10">
+  <main class="w-full max-w-sm">
+    <div class="mb-6 flex flex-col items-center text-center">
+      <div class="ui-brand-mark size-12 text-base">MB</div>
+      <h1 class="mt-4 text-2xl font-semibold tracking-tight text-slate-900">Biznes Ekotizim</h1>
+      <p class="mt-1 text-sm text-slate-500">Omad-D, kafe va vazifalar — bir joyda</p>
+    </div>
 
-    <form id="loginForm" autocomplete="on">
-      <label for="username" class="block text-[11px] font-bold text-slate-500 mb-1">Foydalanuvchi nomi</label>
-      <input id="username" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false"
-             class="w-full rounded-xl border border-slate-200 bg-white/80 p-3 text-sm outline-none mb-3">
+    <div class="ui-card p-6 shadow-sm">
+      <h2 class="text-base font-semibold text-slate-900">Tizimga kirish</h2>
+      <p class="mb-5 mt-0.5 text-sm text-slate-500">Foydalanuvchi nomi va parolingizni kiriting.</p>
 
-      <label for="password" class="block text-[11px] font-bold text-slate-500 mb-1">Parol</label>
-      <input id="password" name="password" type="password" autocomplete="current-password"
-             class="w-full rounded-xl border border-slate-200 bg-white/80 p-3 text-sm outline-none mb-4" placeholder="••••••">
+      <form id="loginForm" autocomplete="on" novalidate>
+        <label for="username" class="ui-label">Foydalanuvchi nomi</label>
+        <div class="relative">
+          <svg class="ui-icon ui-icon-sm pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" aria-hidden="true"><use href="assets/icons/lucide.svg#user"></use></svg>
+          <input id="username" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false"
+                 class="ui-input pl-10" placeholder="masalan: omad_admin">
+        </div>
 
-      <button type="submit" id="loginBtn" class="w-full rounded-2xl bg-slate-800 text-white font-bold py-3 text-sm active:scale-95 transition-transform">Kirish</button>
-    </form>
-    <p id="loginError" class="hidden text-[11px] text-red-500 font-bold text-center mt-3"></p>
-  </div>
+        <label for="password" class="ui-label mt-4">Parol</label>
+        <div class="relative">
+          <svg class="ui-icon ui-icon-sm pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" aria-hidden="true"><use href="assets/icons/lucide.svg#lock"></use></svg>
+          <input id="password" name="password" type="password" autocomplete="current-password"
+                 class="ui-input pl-10" placeholder="••••••">
+        </div>
+
+        <button type="submit" id="loginBtn" class="ui-btn ui-btn-lg ui-btn-block ui-btn-primary mt-6">Kirish</button>
+      </form>
+      <p id="loginError" role="alert" class="hidden ui-alert ui-alert-danger mt-4 font-medium"></p>
+    </div>
+
+    <p class="mt-6 flex items-center justify-center gap-1.5 text-xs text-slate-500">
+      <svg class="ui-icon ui-icon-sm" aria-hidden="true"><use href="assets/icons/lucide.svg#shield-check"></use></svg>
+      Parollar faqat serverda saqlanadi
+    </p>
+  </main>
 
   <script>
     // The backend URL is repeated here deliberately: login.html loads no

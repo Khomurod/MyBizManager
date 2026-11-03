@@ -49,11 +49,11 @@ function renderOmad() {
         </div>
 
         <div class="grid3" style="margin-top:12px">
-            <button class="btn-primary btn-sm" onclick="openEntrySheet('Income')">➕ Kirim</button>
-            <button class="btn-sm" onclick="openEntrySheet('Expense')">➖ Chiqim</button>
-            <button class="btn-sm" onclick="openTenantPaidSheet()">🏢 Ijarachi</button>
+            <button class="btn-primary btn-sm" onclick="openEntrySheet('Income')">${uiIcon('trending-up')}Kirim</button>
+            <button class="btn-sm" onclick="openEntrySheet('Expense')">${uiIcon('trending-down')}Chiqim</button>
+            <button class="btn-sm" onclick="openTenantPaidSheet()">${uiIcon('building-2')}Ijarachi</button>
         </div>
-        <button class="btn-sm btn-full" style="margin-top:8px" onclick="openBulkSheet()">📋 Ommaviy kiritish</button>
+        <button class="btn-sm btn-full" style="margin-top:8px" onclick="openBulkSheet()">${uiIcon('layers')}Ommaviy kiritish</button>
 
         <h2>Ijarachilar</h2>
         <div class="card list" id="miniTenantList">${tenantRows()}</div>
@@ -134,7 +134,7 @@ function entryRows() {
         return `
         <div class="item">
             <div class="grow">
-                <p class="title ellipsis">${tenantPaid ? '🏢 ' : ''}${escapeHtml(e.tenant)}</p>
+                <p class="title ellipsis">${tenantPaid ? uiIcon('building-2', 'ui-icon-sm') + ' ' : ''}${escapeHtml(e.tenant)}</p>
                 <p class="tiny muted ellipsis">${shortDate(e.date)}${e.lines > 1 && !tenantPaid ? ` · ${e.lines} qator` : ''}${e.comment ? ' · ' + escapeHtml(e.comment) : ''}</p>
                 ${badge}
             </div>
@@ -395,9 +395,9 @@ async function loadOmad() {
 const MINI_BULK_KINDS = ['income', 'expense', 'tenant_paid'];
 
 const MINI_BULK_LABELS = {
-    income: '➕ Kirim',
-    expense: '➖ Chiqim',
-    tenant_paid: "🏢 Ijarachi to'ladi"
+    income: 'Kirim',
+    expense: 'Chiqim',
+    tenant_paid: "Ijarachi to'ladi"
 };
 
 /** How many months back a row may be dated. Three covers a late settlement. */
@@ -433,8 +433,8 @@ function openBulkSheet() {
                 Har bir qator alohida yozuv: o'z oyi, o'z guruhi va o'z hisoboti bilan.
             </p>
             <div class="grid2">
-                <button class="btn-sm" id="mBulkFill" onclick="fillBulkFromDebts()">🏢 Qarzdorlar</button>
-                <button class="btn-sm" id="mBulkAdd" onclick="addBulkRow()">➕ Qator</button>
+                <button class="btn-sm" id="mBulkFill" onclick="fillBulkFromDebts()">${uiIcon('building-2')}Qarzdorlar</button>
+                <button class="btn-sm" id="mBulkAdd" onclick="addBulkRow()">${uiIcon('plus')}Qator</button>
             </div>
             <div id="mBulkRows" style="margin-top:10px"></div>
             <p class="muted tiny" id="mBulkEmpty" style="padding:14px 0;text-align:center">
@@ -474,7 +474,7 @@ function addBulkRow(values) {
         `<select class="bulk-kind" aria-label="Turi" onchange="onBulkKindChange(this)">${
             MINI_BULK_KINDS.map(k => `<option value="${k}"${k === kind ? ' selected' : ''}>${escapeHtml(MINI_BULK_LABELS[k])}</option>`).join('')
         }</select>` +
-        '<button type="button" class="btn-sm" aria-label="Qatorni o\'chirish" onclick="removeBulkRow(this)">✕</button>' +
+        '<button type="button" class="btn-sm" aria-label="Qatorni o\'chirish" onclick="removeBulkRow(this)">' + uiIcon('x') + '</button>' +
         '</div>' +
         '<div class="grid2">' +
         '<select class="bulk-tenant" aria-label="Obyekt"></select>' +

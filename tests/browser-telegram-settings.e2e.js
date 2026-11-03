@@ -280,7 +280,7 @@ describe('Telegram settings panel (browser)', () => {
     // Sozlamalar has five sections now; the Telegram one has to be opened.
     await page.evaluate(() => showSettingsSection('telegram'));
     await page.fill('#tgAdminKey', ADMIN_KEY);
-    await page.click('text=🔌 Ulanish');
+    await page.click('button:has-text("Ulanish")');
 
     await page.waitForFunction(() =>
       document.getElementById('tgBotStatus').textContent.includes('omad_bot'));

@@ -42,10 +42,23 @@
     html, body {
       margin: 0; padding: 0;
       background: var(--bg); color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      font-size: 15px; line-height: 1.4;
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      font-size: 15px; line-height: 1.45;
       overscroll-behavior-y: none;
+      -webkit-font-smoothing: antialiased;
     }
+    /* Spacing is set where it is meant, never by a browser default. */
+    p, h1, h2, h3, ul { margin: 0; }
+
+    /* MyBizManager icons (assets/icons/lucide.svg), in the colour of the text
+       around them -- so they follow Telegram's theme like everything else. */
+    .ui-icon { width: 20px; height: 20px; flex-shrink: 0; fill: none; stroke: currentColor;
+      stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; vertical-align: -0.2em; }
+    .ui-icon-sm { width: 16px; height: 16px; }
+    .ui-spin { animation: spin 0.9s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+    .ico-text { display: inline-flex; align-items: center; gap: 4px; }
 
     /* Room for the tab bar plus the phone's own home indicator. */
     #app {
@@ -56,10 +69,10 @@
     .hidden { display: none !important; }
 
     /* ---------------------------------------------------------- typography */
-    h1 { font-size: 19px; margin: 0; font-weight: 700; }
-    h2 { font-size: 15px; margin: 20px 0 8px; font-weight: 700; }
+    h1 { font-size: 19px; margin: 0; font-weight: 700; letter-spacing: -0.01em; }
+    h2 { font-size: 16px; margin: 22px 0 10px; font-weight: 600; }
     .muted { color: var(--muted); }
-    .tiny { font-size: 12px; }
+    .tiny { font-size: 13px; }
     .num { font-variant-numeric: tabular-nums; font-weight: 700; }
 
     /* -------------------------------------------------------------- layout */
@@ -73,22 +86,26 @@
       background: var(--card); border-radius: 16px; padding: 14px;
     }
     .card + .card { margin-top: 10px; }
+    /* Side by side, two cards are a pair, not a stack. */
+    .grid2 > .card + .card, .grid3 > .card + .card { margin-top: 0; }
 
     .hero { padding: 18px 16px; }
-    .hero .value { font-size: 30px; font-weight: 800; letter-spacing: -0.5px; }
+    .hero .value { font-size: 30px; font-weight: 700; letter-spacing: -0.5px; margin-top: 2px; font-variant-numeric: tabular-nums; }
 
-    .tile .label { font-size: 12px; color: var(--muted); }
-    .tile .value { font-size: 18px; font-weight: 800; margin-top: 2px; }
+    .tile .label { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+    .tile .value { font-size: 19px; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
 
     .list > * + * { border-top: 1px solid var(--line); }
-    .item { padding: 11px 0; display: flex; gap: 10px; align-items: flex-start; }
+    .item { padding: 12px 0; display: flex; gap: 10px; align-items: flex-start; }
+    .item .grow > * + * { margin-top: 2px; }
     .item .grow { flex: 1; min-width: 0; }
     .item .title { font-weight: 600; }
+    .card.list { padding-top: 2px; padding-bottom: 2px; }
     .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     .pill {
-      display: inline-block; padding: 2px 8px; border-radius: 999px;
-      font-size: 11px; font-weight: 700;
+      display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px; border-radius: 999px;
+      font-size: 12px; font-weight: 600; white-space: nowrap;
     }
     .pill.debt { background: color-mix(in srgb, var(--danger) 18%, transparent); color: var(--danger); }
     .pill.ok { background: color-mix(in srgb, var(--success) 18%, transparent); color: var(--success); }
@@ -113,17 +130,18 @@
 
     /* -------------------------------------------------------------- controls
        44px minimum on everything tappable. */
-    button, .btn {
-      font: inherit; font-weight: 700; border: 0; border-radius: 12px;
+    button {
+      font: inherit; font-weight: 600; border: 0; border-radius: 12px;
       min-height: 44px; padding: 0 14px; cursor: pointer;
       background: var(--card); color: var(--text);
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
     }
     button:active { transform: scale(0.98); }
     button[disabled] { opacity: 0.5; }
     .btn-primary { background: var(--accent); color: var(--accent-text); }
     .btn-danger { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
     .btn-full { width: 100%; }
-    /* min-width too: an icon-only button like ✎ is one glyph wide otherwise,
+    /* min-width too: an icon-only button is one glyph wide otherwise,
        which is a sliver to hit with a thumb however tall the button is. */
     .btn-sm { min-height: 36px; min-width: 36px; font-size: 13px; padding: 0 10px; border-radius: 10px; }
 
@@ -158,7 +176,7 @@
       text-align: left; min-height: 1.4em;
     }
     textarea { min-height: 76px; resize: vertical; }
-    label { display: block; font-size: 12px; font-weight: 700; color: var(--muted); margin: 10px 0 4px; }
+    label { display: block; font-size: 13px; font-weight: 600; color: var(--muted); margin: 12px 0 6px; }
 
     .task-toggle-row {
       display: flex; align-items: center; gap: 10px; min-height: 44px;
@@ -207,10 +225,11 @@
     nav button {
       background: none; border-radius: 0; min-height: var(--nav-height);
       display: flex; flex-direction: column; align-items: center; justify-content: center;
-      gap: 3px; font-size: 11px; font-weight: 700; color: var(--muted);
+      gap: 3px; font-size: 12px; font-weight: 600; color: var(--muted);
     }
     nav button[aria-selected="true"] { color: var(--accent); }
-    nav button .ic { font-size: 20px; line-height: 1; }
+    nav button .ic { line-height: 1; display: inline-flex; }
+    nav button .ic .ui-icon { width: 22px; height: 22px; }
 
     /* -------------------------------------------------------- bottom sheet */
     .sheet-backdrop {
@@ -256,7 +275,9 @@
       align-items: center; justify-content: center; text-align: center; gap: 10px;
       padding: 24px;
     }
-    .screen-message .ic { font-size: 46px; }
+    .screen-message .ic { display: flex; align-items: center; justify-content: center; width: 64px; height: 64px;
+      border-radius: 20px; background: var(--card); color: var(--accent); }
+    .screen-message .ic .ui-icon { width: 30px; height: 30px; }
 
     .skeleton {
       background: var(--line); border-radius: 12px; height: 64px;
@@ -282,7 +303,7 @@
   <!-- Shown until the backend has confirmed who this is. Nothing below is
        rendered, and no data is requested, before that. -->
   <div id="gate" class="screen-message">
-    <div class="ic">⏳</div>
+    <div class="ic"><svg class="ui-icon ui-spin" aria-hidden="true"><use href="assets/icons/lucide.svg#loader-circle"></use></svg></div>
     <p class="muted" id="gateText">Tekshirilmoqda...</p>
     <button id="gateRetry" class="btn-primary hidden" onclick="bootstrap()">Qayta urinish</button>
   </div>
@@ -295,9 +316,9 @@
 
   <!-- aria-selected only means anything on a tab, so the roles are stated. -->
   <nav id="nav" class="hidden" role="tablist" aria-label="Bo'limlar">
-    <button role="tab" onclick="switchTab('omad')" id="nav-omad" aria-selected="true"><span class="ic" aria-hidden="true">💰</span>Omad</button>
-    <button role="tab" onclick="switchTab('cafe')" id="nav-cafe" aria-selected="false"><span class="ic" aria-hidden="true">☕</span>Kafe</button>
-    <button role="tab" onclick="switchTab('tasks')" id="nav-tasks" aria-selected="false"><span class="ic" aria-hidden="true">✅</span>Vazifalar</button>
+    <button role="tab" onclick="switchTab('omad')" id="nav-omad" aria-selected="true"><span class="ic" aria-hidden="true"><svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#wallet"></use></svg></span>Omad</button>
+    <button role="tab" onclick="switchTab('cafe')" id="nav-cafe" aria-selected="false"><span class="ic" aria-hidden="true"><svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#coffee"></use></svg></span>Kafe</button>
+    <button role="tab" onclick="switchTab('tasks')" id="nav-tasks" aria-selected="false"><span class="ic" aria-hidden="true"><svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#list-checks"></use></svg></span>Vazifalar</button>
   </nav>
 
   <div id="sheetHost"></div>
@@ -305,6 +326,7 @@
        already watching it when a toast is written in. -->
   <div id="toastHost" aria-live="polite" aria-atomic="true"></div>
 
+  <script src="assets/ui.js"></script>
   <script src="assets/mini/00-config.js"></script>
   <script src="assets/mini/01-api.js"></script>
   <script src="assets/mini/02-format.js"></script>

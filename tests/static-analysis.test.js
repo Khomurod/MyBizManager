@@ -336,7 +336,7 @@ test('every page that uses Tailwind classes links the generated stylesheet', () 
   // A handful the layouts cannot survive without. Not a substitute for looking
   // at the pages, but it catches a stylesheet regenerated from the wrong
   // content globs, which would otherwise be silently almost-empty.
-  for (const utility of ['.hidden', '.flex', '.grid', '.font-bold', '.rounded-2xl']) {
+  for (const utility of ['.hidden', '.flex', '.grid', '.font-bold', '.ui-card', '.ui-btn', '.ui-modal']) {
     assert.ok(css.includes(utility + '{') || css.includes(utility + ','),
       `${utility} is missing from assets/css/app.css — run npm run build:css`);
   }

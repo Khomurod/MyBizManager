@@ -53,11 +53,11 @@ async function loadUserAccounts() {
     try {
         const data = await callBackend(Object.assign({ action: 'list_users' }, adminCredentials()));
         if (!data || data.status !== 'success') {
-            box.innerHTML = `<p class="text-amber-600 font-bold">${escapeHtmlText((data && data.message) || "Ro'yxatni o'qib bo'lmadi.")}</p>`;
+            box.innerHTML = `<p class="text-amber-600 font-semibold">${escapeHtmlText((data && data.message) || "Ro'yxatni o'qib bo'lmadi.")}</p>`;
             return;
         }
         if (!data.users.length) {
-            box.innerHTML = `<p class="text-amber-600 font-bold">Hali birorta parol o'rnatilmagan. Quyida o'rnating.</p>`;
+            box.innerHTML = `<p class="text-amber-600 font-semibold">Hali birorta parol o'rnatilmagan. Quyida o'rnating.</p>`;
             return;
         }
         box.innerHTML = data.users.map(user => statusRow(
@@ -65,7 +65,7 @@ async function loadUserAccounts() {
             escapeHtmlText(user.role) + (user.updatedAt ? ` · ${formatStamp(user.updatedAt)}` : '')
         )).join('');
     } catch (e) {
-        box.innerHTML = `<p class="text-slate-400">Server bilan bog'lanib bo'lmadi.</p>`;
+        box.innerHTML = `<p class="text-slate-500">Server bilan bog'lanib bo'lmadi.</p>`;
     }
 }
 
@@ -73,7 +73,7 @@ function showUserMessage(text, isError) {
     const box = document.getElementById('userMessage');
     if (!box) return;
     box.textContent = text;
-    box.className = `text-[11px] font-bold mt-2 ${isError ? 'text-red-500' : 'text-emerald-600'}`;
+    box.className = `mt-2 text-sm font-semibold ${isError ? 'text-red-600' : 'text-emerald-600'}`;
     box.classList.remove('hidden');
 }
 
@@ -120,9 +120,9 @@ function formatStamp(value) {
 }
 
 function statusRow(label, value, tone = "text-slate-700") {
-    return `<div class="flex justify-between gap-2">
-                <span class="text-slate-400 shrink-0">${label}</span>
-                <span class="${tone} font-bold text-right break-words">${value}</span>
+    return `<div class="flex justify-between gap-3 py-0.5">
+                <span class="shrink-0 text-slate-500">${label}</span>
+                <span class="${tone} break-words text-right font-semibold">${value}</span>
             </div>`;
 }
 
@@ -151,7 +151,7 @@ function renderSystemOverview() {
     if (!box) return;
 
     if (!systemStatus) {
-        box.innerHTML = `<p class="text-slate-400">Server bilan bog'lanib bo'lmadi.</p>`;
+        box.innerHTML = `<p class="text-slate-500">Server bilan bog'lanib bo'lmadi.</p>`;
         return;
     }
 
@@ -159,7 +159,7 @@ function renderSystemOverview() {
     box.innerHTML = [
         statusRow("Tizim versiyasi", `v${systemStatus.schemaVersion}`),
         statusRow("Faol varaq", systemStatus.ledgerActive ? "Yangi (V2)" : "Eski",
-            systemStatus.ledgerActive ? "text-green-600" : "text-slate-700"),
+            systemStatus.ledgerActive ? "text-emerald-700" : "text-slate-700"),
         statusRow("Tranzaksiyalar", String(systemStatus.ledgerActive
             ? systemStatus.counts.ledgerTransactions
             : systemStatus.counts.legacyTransactions)),
@@ -181,7 +181,7 @@ function renderBackupStatus() {
             statusRow("Sababi", backup.lastReason || "—"),
             statusRow("Yozuvlar soni", String(backup.lastTransactionCount || 0))
           ].join('')
-        : `<p class="text-slate-400">Hali zaxira nusxa olinmagan.</p>`;
+        : `<p class="text-slate-500">Hali zaxira nusxa olinmagan.</p>`;
 }
 
 function renderJobQueueStatus() {
@@ -202,8 +202,8 @@ function renderJobQueueStatus() {
     ];
 
     if (failures.length) {
-        rows.push(`<div class="border-t pt-2 mt-2 space-y-1">` + failures.map(f =>
-            `<p class="text-red-500 break-words">${escapeHTML(f.type)}: ${escapeHTML(f.lastError || '')}</p>`
+        rows.push(`<div class="mt-2 border-t border-slate-200 pt-2 space-y-1">` + failures.map(f =>
+            `<p class="text-red-600 break-words">${escapeHTML(f.type)}: ${escapeHTML(f.lastError || '')}</p>`
         ).join('') + `</div>`);
     }
 
@@ -217,13 +217,13 @@ function renderAuditList() {
     const entries = (systemStatus && systemStatus.audit) || [];
     box.innerHTML = entries.length
         ? entries.map(entry => `
-            <div class="border-b border-slate-50 last:border-0 py-1">
+            <div class="border-b border-slate-100 py-1.5 last:border-0">
                 <div class="flex justify-between gap-2">
-                    <span class="font-bold text-slate-600 break-words">${escapeHTML(entry.event)}</span>
-                    <span class="text-slate-400 shrink-0">${formatStamp(entry.at)}</span>
+                    <span class="font-semibold text-slate-600 break-words">${escapeHTML(entry.event)}</span>
+                    <span class="text-slate-500 shrink-0">${formatStamp(entry.at)}</span>
                 </div>
             </div>`).join('')
-        : `<p class="text-slate-400">Amallar tarixi bo'sh.</p>`;
+        : `<p class="text-slate-500">Amallar tarixi bo'sh.</p>`;
 }
 
 // ------------------------------------------------------------------ actions
@@ -353,28 +353,28 @@ async function previewMigration() {
     box.classList.remove('hidden');
 
     if (data.status !== 'success') {
-        box.innerHTML = `<p class="text-red-500 font-bold">${escapeHTML(data.message || 'Xatolik')}</p>`;
+        box.innerHTML = `<p class="text-red-600 font-semibold">${escapeHTML(data.message || 'Xatolik')}</p>`;
         return;
     }
 
     const preview = data.preview;
     const byYear = Object.keys(preview.byYear || {}).sort()
         .map(year => `<div class="flex justify-between"><span>${year}</span><b>${preview.byYear[year]} ta</b></div>`)
-        .join('') || `<p class="text-slate-400">Yozuv yo'q</p>`;
+        .join('') || `<p class="text-slate-500">Yozuv yo'q</p>`;
 
     const unresolved = (preview.unresolved || []).length
-        ? `<div class="border-t pt-2 mt-2">
-             <p class="font-bold text-red-500 mb-1">Yili aniqlanmagan (${preview.unresolved.length} ta):</p>
+        ? `<div class="mt-2 border-t border-slate-200 pt-2">
+             <p class="font-semibold text-red-600 mb-1">Yili aniqlanmagan (${preview.unresolved.length} ta):</p>
              ${preview.unresolved.slice(0, 10).map(row =>
                 `<p class="text-slate-500 break-words">Qator ${row.rowNumber}: ${escapeHTML(row.month)} / ${escapeHTML(row.date)}</p>`).join('')}
            </div>`
-        : `<p class="text-green-600 font-bold border-t pt-2 mt-2">Barcha yozuvlarning yili aniqlandi.</p>`;
+        : `<p class="text-emerald-700 font-semibold border-t pt-2 mt-2">Barcha yozuvlarning yili aniqlandi.</p>`;
 
     box.innerHTML = `
-        <p class="font-bold text-slate-700 mb-2">Jami ${preview.totalRows} ta yozuv</p>
+        <p class="font-semibold text-slate-700 mb-2">Jami ${preview.totalRows} ta yozuv</p>
         <div class="space-y-1">${byYear}</div>
         ${unresolved}
-        <p class="mt-2 ${preview.canApply ? 'text-green-600' : 'text-red-500'} font-bold">
+        <p class="mt-2 ${preview.canApply ? 'text-emerald-700' : 'text-red-600'} font-semibold">
             ${preview.canApply ? "Ko'chirishga tayyor." : "Hali ko'chirib bo'lmaydi."}
         </p>`;
 }
@@ -441,7 +441,7 @@ function describeDateAudit(audit) {
     if (!audit) return "";
     return [
         statusRow("Jami yozuv", audit.total),
-        statusRow("Sanasi to'g'ri", audit.correct, "text-green-600"),
+        statusRow("Sanasi to'g'ri", audit.correct, "text-emerald-700"),
         statusRow("Tuzatish mumkin", audit.transposed, audit.transposed ? "text-amber-600" : "text-slate-700"),
         statusRow("Isbotlanmagan", audit.unprovable, audit.unprovable ? "text-slate-500" : "text-slate-700")
     ].join('');
@@ -515,18 +515,20 @@ async function rotateWebhookSecret() {
 // and status only - never a secret, a chat id or a deployment URL.
 // ==========================================================
 
+// ui-icons: circle-check triangle-alert circle-x
 const HEALTH_TONES = {
-    ok: { dot: 'bg-green-500', text: 'text-slate-600' },
-    warning: { dot: 'bg-amber-500', text: 'text-amber-700' },
-    error: { dot: 'bg-red-500', text: 'text-red-600' }
+    ok: { dot: 'bg-emerald-500', text: 'text-slate-600', icon: 'circle-check', iconTone: 'text-emerald-600', word: 'OK' },
+    warning: { dot: 'bg-amber-500', text: 'text-amber-800', icon: 'triangle-alert', iconTone: 'text-amber-600', word: 'Diqqat' },
+    error: { dot: 'bg-red-500', text: 'text-red-700', icon: 'circle-x', iconTone: 'text-red-600', word: 'Xato' }
 };
 
 function healthRow(check) {
     const tone = HEALTH_TONES[check.status] || HEALTH_TONES.warning;
-    return `<div class="flex items-start gap-2 py-1">
-                <span class="w-2 h-2 rounded-full ${tone.dot} mt-1.5 shrink-0"></span>
-                <span class="font-bold text-slate-600 shrink-0">${check.label}</span>
-                <span class="${tone.text} text-right ml-auto break-words">${check.message}</span>
+    // The icon has a word behind it: status is never colour alone.
+    return `<div class="flex items-start gap-2 border-b border-slate-100 py-2 last:border-0">
+                <span class="mt-0.5 ${tone.iconTone}" title="${tone.word}"><span class="sr-only">${tone.word}: </span>${uiIcon(tone.icon, 'ui-icon-sm')}</span>
+                <span class="shrink-0 font-semibold text-slate-700">${check.label}</span>
+                <span class="${tone.text} ml-auto break-words text-right">${check.message}</span>
             </div>`;
 }
 
@@ -534,14 +536,14 @@ function renderHealthReport(health) {
     const box = document.getElementById('healthReport');
     if (!box) return;
     if (!health) {
-        box.innerHTML = `<p class="text-slate-400">Ma'lumot yo'q.</p>`;
+        box.innerHTML = `<p class="text-slate-500">Ma'lumot yo'q.</p>`;
         return;
     }
     const summary = health.status === 'ok'
-        ? `<p class="font-bold text-green-600 mb-2">✅ Hammasi joyida</p>`
+        ? `<p class="mb-2 flex items-center gap-2 font-semibold text-emerald-700">${uiIcon('circle-check')}Hammasi joyida</p>`
         : health.status === 'warning'
-            ? `<p class="font-bold text-amber-600 mb-2">⚠️ E'tibor talab qiladi</p>`
-            : `<p class="font-bold text-red-600 mb-2">⛔️ Muammo bor</p>`;
+            ? `<p class="mb-2 flex items-center gap-2 font-semibold text-amber-700">${uiIcon('triangle-alert')}E'tibor talab qiladi</p>`
+            : `<p class="mb-2 flex items-center gap-2 font-semibold text-red-700">${uiIcon('circle-x')}Muammo bor</p>`;
     box.innerHTML = summary + (health.checks || []).map(healthRow).join('');
 }
 
@@ -560,12 +562,12 @@ function renderMiniAppStatus(settings) {
 
     const status = settings && settings.miniAppStatus;
     if (!status) {
-        box.innerHTML = `<span class="text-slate-400">Hali sozlanmagan.</span>`;
+        box.innerHTML = `<span class="text-slate-500">Hali sozlanmagan.</span>`;
         return;
     }
     box.innerHTML = status.ready
-        ? `<span class="text-green-600 font-bold">✅ Tayyor</span> <span class="text-slate-400">· ${formatStamp(status.checkedAt)}</span>`
-        : `<span class="text-amber-600 font-bold">⚠️ To'liq sozlanmagan</span> <span class="text-slate-400">· ${formatStamp(status.checkedAt)}</span>`;
+        ? `<span class="ui-badge ui-badge-success">${uiIcon('circle-check')}Tayyor</span> <span class="text-slate-500">· ${formatStamp(status.checkedAt)}</span>`
+        : `<span class="ui-badge ui-badge-warning">${uiIcon('triangle-alert')}To'liq sozlanmagan</span> <span class="text-slate-500">· ${formatStamp(status.checkedAt)}</span>`;
 }
 
 async function configureMiniApp() {
@@ -599,10 +601,10 @@ function renderStorageStatus(storage, importStatus) {
     const box = document.getElementById('storageStatus');
     if (!box || !storage) return;
     const reach = storage.reachable === true
-        ? `<span class="text-green-600 font-bold">ulangan</span>`
+        ? `<span class="text-emerald-700 font-semibold">ulangan</span>`
         : storage.reachable === false
-            ? `<span class="text-red-600 font-bold">javob bermadi</span>`
-            : `<span class="text-slate-400">${escapeHTML(storage.message || "sozlanmagan")}</span>`;
+            ? `<span class="text-red-600 font-semibold">javob bermadi</span>`
+            : `<span class="text-slate-500">${escapeHTML(storage.message || "sozlanmagan")}</span>`;
     const status = importStatus || {};
     box.innerHTML = [
         statusRow("Hozirgi baza", STORAGE_MODE_LABELS[storage.mode] || escapeHTML(storage.mode)),
@@ -620,8 +622,8 @@ function renderStorageResult(data) {
     const lines = [];
     if (data.preview) {
         lines.push(data.preview.ready
-            ? `<p class="font-bold text-green-600 mb-2">✅ Ko'chirishga tayyor</p>`
-            : `<p class="font-bold text-red-600 mb-2">⛔️ ${escapeHTML(data.preview.problem)}</p>`);
+            ? `<p class="mb-2 flex items-center gap-2 font-semibold text-emerald-700">${uiIcon('circle-check')}Ko'chirishga tayyor</p>`
+            : `<p class="mb-2 flex items-center gap-2 font-semibold text-red-700">${uiIcon('circle-x')}${escapeHTML(data.preview.problem)}</p>`);
         Object.keys(data.preview.rows || {}).forEach(name => {
             lines.push(statusRow(escapeHTML(name), `${data.preview.rows[name]} ta qator`));
         });
@@ -629,20 +631,20 @@ function renderStorageResult(data) {
     const verification = data.verification;
     if (verification) {
         lines.push(verification.ok
-            ? `<p class="font-bold text-green-600 mb-2">✅ Har bir katak va qoldiqlar mos</p>`
-            : `<p class="font-bold text-red-600 mb-2">⛔️ Farq topildi</p>`);
+            ? `<p class="mb-2 flex items-center gap-2 font-semibold text-emerald-700">${uiIcon('circle-check')}Har bir katak va qoldiqlar mos</p>`
+            : `<p class="mb-2 flex items-center gap-2 font-semibold text-red-700">${uiIcon('circle-x')}Farq topildi</p>`);
         (verification.sheets || []).forEach(sheet => {
             const diff = (sheet.differences || []).length;
             const note = diff
-                ? `<span class="${sheet.informational ? 'text-amber-600' : 'text-red-600'} font-bold">${diff} ta farq</span>`
-                : `<span class="text-green-600">mos</span>`;
+                ? `<span class="${sheet.informational ? 'text-amber-600' : 'text-red-600'} font-semibold">${diff} ta farq</span>`
+                : `<span class="text-emerald-700">mos</span>`;
             lines.push(statusRow(escapeHTML(sheet.sheet), `${sheet.stored}/${sheet.rows} · ${note}`));
         });
         if (verification.money) {
             const money = verification.money;
             lines.push(statusRow("Kassa / bank / jami", money.ok
-                ? `<span class="text-green-600">${formatUZS(money.balances.cash)} / ${formatUZS(money.balances.bank)} / ${formatUZS(money.balances.total)}</span>`
-                : `<span class="text-red-600 font-bold">mos emas: ${escapeHTML((money.mismatches || []).join(', '))}</span>`));
+                ? `<span class="text-emerald-700">${formatUZS(money.balances.cash)} / ${formatUZS(money.balances.bank)} / ${formatUZS(money.balances.total)}</span>`
+                : `<span class="text-red-600 font-semibold">mos emas: ${escapeHTML((money.mismatches || []).join(', '))}</span>`));
         }
     }
     if (data.note) lines.push(`<p class="text-amber-600 mt-2">${escapeHTML(data.note)}</p>`);
@@ -726,7 +728,7 @@ async function measureStorageSpeed() {
         const b = data.benchmark;
         const cell = (side, key) => (side && !side.error && side[key] !== undefined ? `${side[key]} ms` : '—');
         const rows = [
-            `<p class="font-bold text-slate-700 mb-2">Tezlik (Google serveridan, mediana)</p>`,
+            `<p class="font-semibold text-slate-700 mb-2">Tezlik (Google serveridan, mediana)</p>`,
             statusRow("Bitta sozlama", `Sheets ${cell(b.sheets, 'oneSettingMs')} · Supabase ${cell(b.supabase, 'oneSettingMs')}`),
             statusRow("Butun reestr", `Sheets ${cell(b.sheets, 'wholeLedgerMs')} (${(b.sheets && b.sheets.ledgerRows) || 0} qator) · ` +
                 `Supabase ${cell(b.supabase, 'wholeLedgerMs')} (${(b.supabase && b.supabase.ledgerRows) || 0} qator)`)

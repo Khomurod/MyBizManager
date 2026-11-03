@@ -1,7 +1,300 @@
 /*
   Source for assets/css/app.css. Generated with `npm run build:css`;
   see tailwind.config.js for why the output is committed.
+
+  ============================================================================
+  MyBizManager design system
+  ----------------------------------------------------------------------------
+  One visual language for Omad, Café admin, the till, Tasks and the login
+  page. The Telegram Mini App does not load this file -- it lives inside
+  Telegram's own theme -- but mini.html maps the same tokens (radius, type
+  scale, spacing, status colours, icons) on to Telegram's palette.
+
+  Adapted, not copied, from:
+    - Preline UI (MIT): cards, form controls, buttons, badges, alerts, modals.
+    - TailAdmin (MIT): the sidebar + top bar application shell and KPI cards.
+    - Lucide (ISC): every icon, from one sprite (assets/icons/lucide.svg).
+
+  Rules the components below encode:
+    - Body text is 14px on desktop; anything a person must read is >= 12px.
+      Inputs are 16px on phones so iOS never zooms on focus.
+    - Touch targets are >= 40px; primary actions are 44px.
+    - Status is never colour alone: badges carry a word, and usually an icon.
+    - Surfaces are white on a slate-50 page, 1px slate-200 borders, a hairline
+      shadow, 16px radius for cards and 12px for controls.
+  ============================================================================
 */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  :root {
+    --ui-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+    --ui-safe-b: env(safe-area-inset-bottom, 0px);
+    --ui-safe-t: env(safe-area-inset-top, 0px);
+    --ui-nav-h: 64px;
+    color-scheme: light;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    @apply bg-slate-50 text-slate-800 antialiased;
+    font-family: var(--ui-font);
+    -webkit-tap-highlight-color: transparent;
+  }
+  :focus-visible { outline: 2px solid theme('colors.blue.500'); outline-offset: 2px; }
+  button { -webkit-tap-highlight-color: transparent; }
+  .tabular, .ui-num { font-variant-numeric: tabular-nums; }
+}
+
+@layer components {
+  /* ------------------------------------------------------------- icons */
+  .ui-icon {
+    width: 1.25rem; height: 1.25rem; flex-shrink: 0;
+    fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+  }
+  .ui-icon-sm { width: 1rem; height: 1rem; }
+  .ui-icon-lg { width: 1.5rem; height: 1.5rem; }
+  .ui-spin { animation: ui-spin 0.9s linear infinite; }
+  @keyframes ui-spin { to { transform: rotate(360deg); } }
+
+  /* ---------------------------------------------------- surfaces & text */
+  .ui-card {
+    /* min-width: 0 lets a card in a grid or flex row shrink below its widest
+       line instead of pushing the page sideways on a phone. */
+    @apply bg-white border border-slate-200 rounded-2xl min-w-0;
+    box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
+  }
+  .ui-card-body { @apply p-4 sm:p-5; }
+  .ui-card-header { @apply flex items-start justify-between gap-3 px-4 sm:px-5 pt-4 sm:pt-5 pb-3; }
+  .ui-card-title { @apply text-base font-semibold text-slate-900 leading-6; }
+  .ui-card-desc { @apply text-sm text-slate-500 mt-0.5; }
+  .ui-divider { @apply border-t border-slate-100; }
+  .ui-page-title { @apply text-xl sm:text-2xl font-semibold text-slate-900 tracking-tight; }
+  .ui-page-desc { @apply text-sm text-slate-500 mt-1; }
+  .ui-section-title { @apply text-sm font-semibold text-slate-900; }
+  .ui-eyebrow { @apply text-xs font-semibold uppercase tracking-wide text-slate-500; }
+  .ui-muted { @apply text-slate-500; }
+
+  /* ------------------------------------------------------------ buttons */
+  .ui-btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 h-11 text-sm font-semibold
+      transition-colors select-none whitespace-nowrap
+      disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .ui-btn:active:not(:disabled) { transform: scale(0.98); }
+  .ui-btn-sm { @apply h-9 px-3 text-sm rounded-lg; }
+  .ui-btn-lg { @apply h-12 px-5 text-base; }
+  .ui-btn-block { @apply w-full; }
+  .ui-btn-primary { @apply bg-blue-600 text-white hover:bg-blue-700; }
+  .ui-btn-success { @apply bg-emerald-600 text-white hover:bg-emerald-700; }
+  .ui-btn-warning { @apply bg-amber-500 text-white hover:bg-amber-600; }
+  .ui-btn-danger { @apply bg-red-600 text-white hover:bg-red-700; }
+  .ui-btn-dark { @apply bg-slate-900 text-white hover:bg-slate-800; }
+  .ui-btn-secondary { @apply bg-white text-slate-700 border border-slate-300 hover:bg-slate-50; }
+  .ui-btn-soft { @apply bg-slate-100 text-slate-700 hover:bg-slate-200; }
+  .ui-btn-soft-danger { @apply bg-red-50 text-red-700 hover:bg-red-100; }
+  .ui-btn-soft-primary { @apply bg-blue-50 text-blue-700 hover:bg-blue-100; }
+  .ui-btn-ghost { @apply bg-transparent text-slate-600 hover:bg-slate-100; }
+  .ui-btn-ghost-danger { @apply bg-transparent text-red-600 hover:bg-red-50; }
+  .ui-icon-btn {
+    @apply inline-flex items-center justify-center size-10 shrink-0 rounded-xl border border-slate-200 bg-white
+      text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-colors;
+  }
+  .ui-icon-btn:active { transform: scale(0.96); }
+
+  /* ------------------------------------------------------- form controls */
+  .ui-label { @apply block text-sm font-medium text-slate-700 mb-1.5; }
+  .ui-hint { @apply text-xs text-slate-500 mt-1.5 leading-5; }
+  .ui-field + .ui-field { @apply mt-4; }
+  .ui-input {
+    @apply block w-full min-w-0 h-11 rounded-xl border border-slate-300 bg-white px-3.5 text-base sm:text-sm text-slate-900
+      placeholder:text-slate-400 outline-none transition
+      focus:border-blue-500 focus:ring-4 focus:ring-blue-500/15
+      disabled:bg-slate-50 disabled:text-slate-500;
+  }
+  textarea.ui-input { @apply h-auto py-2.5 min-h-[5rem] resize-y; }
+  select.ui-input {
+    @apply appearance-none pr-10 font-medium;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 0.75rem center; background-size: 1.1rem;
+  }
+  .ui-input-lg { @apply h-12 text-lg font-semibold; }
+  .ui-check { @apply size-5 shrink-0 rounded-md border-slate-300; accent-color: theme('colors.blue.600'); }
+  .ui-check-row { @apply flex items-center gap-3 text-sm font-medium text-slate-700 min-h-[2.75rem] cursor-pointer; }
+
+  /* ------------------------------------------------------------- badges */
+  .ui-badge { @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold whitespace-nowrap; }
+  .ui-badge-neutral { @apply bg-slate-100 text-slate-700; }
+  .ui-badge-brand { @apply bg-blue-50 text-blue-700; }
+  .ui-badge-success { @apply bg-emerald-50 text-emerald-700; }
+  .ui-badge-warning { @apply bg-amber-50 text-amber-800; }
+  .ui-badge-danger { @apply bg-red-50 text-red-700; }
+  .ui-badge-violet { @apply bg-violet-50 text-violet-700; }
+  .ui-badge .ui-icon { width: 0.875rem; height: 0.875rem; }
+
+  /* ------------------------------------------------------------- alerts */
+  .ui-alert { @apply flex gap-3 rounded-xl border px-4 py-3 text-sm leading-5; }
+  .ui-alert-info { @apply border-blue-200 bg-blue-50 text-blue-900; }
+  .ui-alert-warning { @apply border-amber-200 bg-amber-50 text-amber-900; }
+  .ui-alert-danger { @apply border-red-200 bg-red-50 text-red-900; }
+  .ui-alert-success { @apply border-emerald-200 bg-emerald-50 text-emerald-900; }
+
+  /* ------------------------------------------------------- KPI & figures */
+  .ui-kpi { @apply ui-card p-4 sm:p-5 flex flex-col gap-2.5 sm:gap-3 min-w-0; }
+  .ui-kpi-icon { @apply flex items-center justify-center size-9 sm:size-10 rounded-xl bg-slate-100 text-slate-700; }
+  .ui-kpi-label { @apply text-sm text-slate-500; }
+  .ui-kpi-value { @apply font-semibold text-slate-900 tracking-tight tabular-nums truncate; font-size: clamp(1.05rem, 5.2vw, 1.5rem); line-height: 1.3; }
+  .ui-figure { @apply font-semibold tabular-nums; }
+  .ui-stat-row { @apply flex items-center justify-between gap-3 py-2 text-sm; }
+  .ui-stat-row + .ui-stat-row { @apply border-t border-slate-100; }
+
+  /* -------------------------------------------------------------- lists */
+  .ui-list > * + * { @apply border-t border-slate-100; }
+  .ui-list-row { @apply flex items-center gap-3 px-4 sm:px-5 py-3 min-w-0; }
+  .ui-row-action { @apply hover:bg-slate-50 cursor-pointer transition-colors; }
+  .ui-empty { @apply flex flex-col items-center justify-center text-center gap-2 px-6 py-10 text-sm text-slate-500; }
+  .ui-empty .ui-icon { @apply size-8 text-slate-300; }
+  .ui-skeleton { @apply animate-pulse rounded-lg bg-slate-200; }
+  .ui-progress { @apply h-2 w-full overflow-hidden rounded-full bg-slate-100; }
+  .ui-progress-bar { @apply h-full rounded-full transition-all; }
+
+  /* ------------------------------------------------- segmented & tabs */
+  .ui-seg { @apply flex gap-1 rounded-xl bg-slate-100 p-1; }
+  .ui-seg-btn {
+    @apply flex-1 inline-flex items-center justify-center gap-2 h-10 rounded-lg px-3 text-sm font-semibold text-slate-600 transition;
+  }
+  .ui-seg-btn.active, .ui-seg-btn[aria-pressed="true"] { @apply bg-white text-slate-900 shadow-sm; }
+  .ui-chip {
+    @apply inline-flex shrink-0 items-center gap-2 h-10 rounded-xl border border-slate-200 bg-white px-3.5 text-sm font-semibold
+      text-slate-600 hover:bg-slate-50 transition-colors;
+  }
+  .ui-chip.active { @apply border-blue-600 bg-blue-600 text-white hover:bg-blue-700; }
+  .ui-scroll-x { @apply flex gap-2 overflow-x-auto; scrollbar-width: none; }
+  .ui-scroll-x::-webkit-scrollbar { display: none; }
+
+  /* ------------------------------------------------------- modal / sheet */
+  .ui-modal-backdrop {
+    @apply fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-slate-900/50 p-0 sm:p-4;
+    backdrop-filter: blur(2px);
+  }
+  .ui-modal {
+    @apply flex w-full flex-col bg-white shadow-2xl sm:max-w-lg rounded-t-3xl sm:rounded-2xl;
+    max-height: calc(92dvh - var(--ui-safe-t));
+  }
+  .ui-modal-wide { @apply sm:max-w-2xl; }
+  .ui-modal-header { @apply flex items-start justify-between gap-3 px-5 pt-5 pb-3; }
+  .ui-modal-title { @apply text-lg font-semibold text-slate-900; }
+  .ui-modal-body { @apply min-h-0 flex-1 overflow-y-auto px-5 pb-5; padding-bottom: calc(1.25rem + var(--ui-safe-b)); }
+  .ui-grabber { @apply mx-auto mt-2.5 h-1.5 w-10 rounded-full bg-slate-200 sm:hidden; }
+
+  /* -------------------------------------------------------- app shell */
+  .ui-sidebar {
+    @apply hidden lg:flex fixed inset-y-0 left-0 z-40 w-64 flex-col border-r border-slate-200 bg-white px-4 py-5;
+  }
+  .ui-brand { @apply flex items-center gap-3 px-2; }
+  .ui-brand-mark {
+    @apply flex size-10 shrink-0 items-center justify-center rounded-xl bg-blue-600 text-sm font-bold text-white;
+  }
+  .ui-brand-name { @apply text-sm font-semibold leading-5 text-slate-900; }
+  .ui-brand-sub { @apply text-xs leading-4 text-slate-500; }
+  .ui-side-label { @apply px-3 pt-6 pb-2 text-xs font-semibold uppercase tracking-wide text-slate-400; }
+  .ui-side-link {
+    @apply flex w-full items-center gap-3 rounded-xl px-3 h-11 text-sm font-medium text-slate-600
+      hover:bg-slate-100 hover:text-slate-900 transition-colors text-left;
+  }
+  .ui-side-link .ui-icon { @apply text-slate-400; }
+  .ui-side-link.active { @apply bg-blue-50 text-blue-700; }
+  .ui-side-link.active .ui-icon { @apply text-blue-600; }
+  .ui-with-sidebar { @apply lg:pl-64; }
+  .ui-topbar {
+    @apply sticky top-0 z-30 border-b border-slate-200 bg-white/90;
+    padding-top: var(--ui-safe-t);
+    backdrop-filter: saturate(1.4) blur(10px);
+  }
+  .ui-topbar-row { @apply flex min-h-[3.75rem] items-center justify-between gap-3 px-4 sm:px-6 lg:px-8; }
+  .ui-main { @apply mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-8 pt-5 lg:pt-8; padding-bottom: calc(var(--ui-nav-h) + var(--ui-safe-b) + 1.5rem); }
+  @media (min-width: 1024px) { .ui-main { padding-bottom: 3rem; } }
+  /*
+    The app's main navigation, one set of buttons for every size: a bar along
+    the bottom of a phone, the menu down the sidebar from 1024px. One element
+    per destination, so ids and handlers never exist twice.
+  */
+  .ui-appnav {
+    @apply fixed inset-x-0 bottom-0 z-40 grid grid-flow-col auto-cols-fr border-t border-slate-200 bg-white/95;
+    padding-bottom: var(--ui-safe-b);
+    backdrop-filter: saturate(1.4) blur(10px);
+  }
+  .ui-appnav-item {
+    @apply flex flex-col items-center justify-center gap-1 text-xs font-medium text-slate-500 transition-colors;
+    height: var(--ui-nav-h);
+  }
+  .ui-appnav-item .ui-icon { width: 1.375rem; height: 1.375rem; }
+  .ui-appnav-item.active { @apply text-blue-600; }
+  @media (min-width: 1024px) {
+    .ui-appnav {
+      @apply flex flex-col gap-1 border-0 bg-transparent px-4;
+      top: 6.25rem; bottom: auto; right: auto; width: 16rem; padding-bottom: 0; backdrop-filter: none; z-index: 41;
+    }
+    .ui-appnav-item {
+      @apply h-11 flex-row justify-start gap-3 rounded-xl px-3 text-sm text-slate-600 hover:bg-slate-100 hover:text-slate-900;
+    }
+    .ui-appnav-item .ui-icon { width: 1.25rem; height: 1.25rem; @apply text-slate-400; }
+    .ui-appnav-item.active { @apply bg-blue-50 text-blue-700; }
+    .ui-appnav-item.active .ui-icon { @apply text-blue-600; }
+  }
+
+  /*
+    For an app with more destinations than a bottom bar can label (Café
+    admin's six): a strip of tabs under the top bar that scrolls on a phone,
+    the sidebar menu from 1024px. Still one element per destination.
+  */
+  .ui-tabnav {
+    @apply sticky z-20 flex gap-1 overflow-x-auto border-b border-slate-200 bg-white/95 px-3 py-2;
+    top: calc(3.75rem + var(--ui-safe-t)); scrollbar-width: none; backdrop-filter: saturate(1.4) blur(10px);
+  }
+  .ui-tabnav::-webkit-scrollbar { display: none; }
+  .ui-tabnav-item {
+    @apply inline-flex shrink-0 items-center gap-2 h-10 rounded-xl px-3 text-sm font-semibold text-slate-600 hover:bg-slate-100 transition-colors;
+  }
+  .ui-tabnav-item.active { @apply bg-blue-50 text-blue-700; }
+  .ui-tabnav-item .ui-icon { width: 1.125rem; height: 1.125rem; }
+  @media (min-width: 1024px) {
+    .ui-tabnav {
+      @apply fixed flex-col gap-1 overflow-visible border-0 bg-transparent px-4 py-0;
+      top: 6.25rem; left: 0; width: 16rem; z-index: 41; backdrop-filter: none;
+    }
+    .ui-tabnav-item { @apply h-11 w-full justify-start gap-3 font-medium; }
+    .ui-tabnav-item .ui-icon { @apply text-slate-400; width: 1.25rem; height: 1.25rem; }
+    .ui-tabnav-item.active .ui-icon { @apply text-blue-600; }
+  }
+
+  /* A page's own sections: chips that scroll on a phone, a column on desktop. */
+  .ui-subnav { @apply flex gap-2 overflow-x-auto pb-1 -mx-4 px-4 sm:mx-0 sm:px-0; scrollbar-width: none; }
+  .ui-subnav::-webkit-scrollbar { display: none; }
+  .ui-subnav-item {
+    @apply inline-flex shrink-0 items-center gap-2 h-10 rounded-xl border border-slate-200 bg-white px-3.5 text-sm font-semibold
+      text-slate-600 hover:bg-slate-50 transition-colors;
+  }
+  .ui-subnav-item.active { @apply border-blue-600 bg-blue-600 text-white; }
+  .ui-subnav-item.active .ui-icon { @apply text-white; }
+  @media (min-width: 1024px) {
+    .ui-subnav { @apply sticky top-24 flex-col gap-1 overflow-visible m-0 p-0; }
+    .ui-subnav-item { @apply h-11 w-full border-transparent bg-transparent px-3 font-medium hover:bg-white; }
+    .ui-subnav-item .ui-icon { @apply text-slate-400; }
+    .ui-subnav-item.active { @apply border-slate-200 bg-white text-blue-700 shadow-sm; }
+    .ui-subnav-item.active .ui-icon { @apply text-blue-600; }
+  }
+
+  .ui-bottomnav {
+    @apply lg:hidden fixed inset-x-0 bottom-0 z-40 grid border-t border-slate-200 bg-white/95;
+    padding-bottom: var(--ui-safe-b);
+    backdrop-filter: saturate(1.4) blur(10px);
+  }
+  .ui-bottomnav-item {
+    @apply flex flex-col items-center justify-center gap-1 text-xs font-medium text-slate-500 transition-colors;
+    height: var(--ui-nav-h);
+  }
+  .ui-bottomnav-item.active { @apply text-blue-600; }
+  .ui-bottomnav-item .ui-icon { width: 1.375rem; height: 1.375rem; }
+}

@@ -2,19 +2,20 @@
 <html lang="uz">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Kafel Boshqaruv</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#ffffff">
+  <title>Kafe boshqaruvi · MyBizManager</title>
   <link rel="stylesheet" href="assets/css/app.css">
   <style>
-    body { background: #eef2f7; font-family: sans-serif; }
-    .glass { background: rgba(255,255,255,0.65); backdrop-filter: blur(15px); border: 1px solid rgba(255,255,255,0.8); box-shadow: 0 6px 26px rgba(15,23,42,0.10); }
-    .tab.active { color: #2563eb; border-color: #2563eb; }
     .screen { display: none; }
-    .screen.active { display: block; }
+    .screen.active { display: block; animation: ui-rise 0.18s ease-out; }
+    @keyframes ui-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+    @media (prefers-reduced-motion: reduce) { .screen.active { animation: none; } }
   </style>
 </head>
-<body class="pb-24 text-slate-800">
+<body class="ui-with-sidebar">
   <script src="assets/session.js"></script>
+  <script src="assets/ui.js"></script>
   <script>
     const GOOGLE_APP_URL = "https://script.google.com/macros/s/AKfycbzhKyEOGZbVdtpSd7fa6aTDZf1QsqWQeOpWRxrb7bYpzWWDQxUXZID8JNzGMfDtCA2W/exec";
 
@@ -57,206 +58,278 @@
     }
   </script>
 
-  <header class="sticky top-0 z-20 bg-white/80 backdrop-blur-md border-b border-slate-200 p-4">
-    <div class="flex items-center justify-between">
-      <h1 class="text-base font-bold">Kafel Boshqaruv</h1>
-      <button onclick="logout()" class="text-xs font-bold text-red-500">Chiqish</button>
+  <aside class="ui-sidebar" aria-label="Kafe boshqaruvi">
+    <div class="ui-brand">
+      <div class="ui-brand-mark bg-amber-500"><svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#coffee"></use></svg></div>
+      <div class="min-w-0">
+        <p class="ui-brand-name">Kafe boshqaruvi</p>
+        <p class="ui-brand-sub">Ombor, retseptlar, hisobot</p>
+      </div>
+    </div>
+    <div class="mt-auto">
+      <button onclick="logout()" class="ui-side-link"><svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#log-out"></use></svg>Chiqish</button>
+    </div>
+  </aside>
+
+  <header class="ui-topbar">
+    <div class="ui-topbar-row">
+      <div class="flex min-w-0 items-center gap-3">
+        <div class="ui-brand-mark bg-amber-500 lg:hidden"><svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#coffee"></use></svg></div>
+        <div class="min-w-0">
+          <h1 class="truncate text-base font-semibold text-slate-900">Kafe boshqaruvi</h1>
+          <p class="truncate text-xs text-slate-500 lg:hidden">MyBizManager</p>
+        </div>
+      </div>
+      <button onclick="logout()" class="ui-icon-btn lg:hidden" aria-label="Chiqish" title="Chiqish"><svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#log-out"></use></svg></button>
     </div>
   </header>
 
-  <main class="p-4 space-y-3">
-    <div id="cafeBanner" class="hidden glass rounded-2xl p-3 text-xs font-bold"></div>
-    <div class="glass rounded-2xl p-1 grid grid-cols-6 gap-1">
-      <button class="tab active rounded-xl py-2 text-[11px] font-bold border border-transparent" onclick="switchTab('dash', this)">Kassa</button>
-      <button class="tab rounded-xl py-2 text-[11px] font-bold border border-transparent" onclick="switchTab('inventory', this)">Ombor</button>
-      <button class="tab rounded-xl py-2 text-[11px] font-bold border border-transparent" onclick="switchTab('recipes', this)">Retseptlar</button>
-      <button class="tab rounded-xl py-2 text-[11px] font-bold border border-transparent" onclick="switchTab('categories', this)">Kategoriyalar</button>
-      <button class="tab rounded-xl py-2 text-[11px] font-bold border border-transparent" onclick="switchTab('settings', this)">Sozlamalar</button>
-      <button class="tab rounded-xl py-2 text-[11px] font-bold border border-transparent" onclick="switchTab('reports', this)">Hisobotlar</button>
-    </div>
+  <nav class="ui-tabnav" aria-label="Kafe bo'limlari">
+    <button class="tab ui-tabnav-item active" onclick="switchTab('dash', this)"><svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#chart-line"></use></svg>Kassa</button>
+    <button class="tab ui-tabnav-item" onclick="switchTab('inventory', this)"><svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#package"></use></svg>Ombor</button>
+    <button class="tab ui-tabnav-item" onclick="switchTab('recipes', this)"><svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#chef-hat"></use></svg>Retseptlar</button>
+    <button class="tab ui-tabnav-item" onclick="switchTab('categories', this)"><svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#tags"></use></svg>Kategoriyalar</button>
+    <button class="tab ui-tabnav-item" onclick="switchTab('settings', this)"><svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#settings"></use></svg>Sozlamalar</button>
+    <button class="tab ui-tabnav-item" onclick="switchTab('reports', this)"><svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#file-text"></use></svg>Hisobotlar</button>
+  </nav>
 
-    <section id="screen-dash" class="screen active space-y-3">
-      <div class="glass rounded-2xl p-4">
-        <label for="dashFilter" class="block text-[11px] font-bold text-slate-500 uppercase mb-2">Davr filtri</label>
-        <select id="dashFilter" onchange="renderDashboard()" class="w-full rounded-xl border border-slate-200 bg-white/80 p-3 text-sm">
-          <option value="today">Bugun</option>
-          <option value="yesterday">Kecha</option>
-          <option value="month">Shu oy</option>
-          <option value="all">Jami Davr</option>
-        </select>
-      </div>
-      <div class="glass rounded-2xl p-4">
-        <p id="dashRevenueLabel" class="text-[11px] font-bold text-slate-500 uppercase">Bugungi tushum</p>
-        <p id="dashRevenue" class="text-2xl font-bold text-blue-600 mt-1">0 UZS</p>
-      </div>
-      <div class="grid grid-cols-2 gap-3">
-        <div class="glass rounded-2xl p-4">
-          <p class="text-[11px] font-bold text-slate-500 uppercase">Jami foyda</p>
-          <p id="dashProfit" class="text-lg font-bold text-emerald-600 mt-1">0 UZS</p>
+  <main class="mx-auto w-full max-w-6xl px-4 pb-16 pt-5 sm:px-6 lg:px-8 lg:pt-8">
+    <div id="cafeBanner" class="hidden mb-4"></div>
+
+    <section id="screen-dash" class="screen active">
+      <div class="mb-5 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 class="ui-page-title">Kassa</h2>
+          <p class="ui-page-desc">Tushum va foyda tanlangan davr bo'yicha</p>
         </div>
-        <div class="glass rounded-2xl p-4">
-          <p class="text-[11px] font-bold text-slate-500 uppercase">Top mahsulot</p>
-          <p id="dashTop" class="text-sm font-bold mt-1">-</p>
+        <label class="w-full sm:w-56">
+          <span class="sr-only">Davr filtri</span>
+          <select id="dashFilter" onchange="renderDashboard()" class="ui-input">
+            <option value="today">Bugun</option>
+            <option value="yesterday">Kecha</option>
+            <option value="month">Shu oy</option>
+            <option value="all">Jami Davr</option>
+          </select>
+        </label>
+      </div>
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <div class="ui-kpi">
+          <div class="ui-kpi-icon bg-blue-50 text-blue-600"><svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#banknote"></use></svg></div>
+          <div class="min-w-0">
+            <p id="dashRevenueLabel" class="ui-kpi-label">Bugungi tushum</p>
+            <p id="dashRevenue" class="ui-kpi-value text-blue-700">0 UZS</p>
+          </div>
+        </div>
+        <div class="ui-kpi">
+          <div class="ui-kpi-icon bg-emerald-50 text-emerald-600"><svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#trending-up"></use></svg></div>
+          <div class="min-w-0">
+            <p class="ui-kpi-label">Jami foyda</p>
+            <p id="dashProfit" class="ui-kpi-value text-emerald-700">0 UZS</p>
+          </div>
+        </div>
+        <div class="ui-kpi">
+          <div class="ui-kpi-icon bg-amber-50 text-amber-600"><svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#sparkles"></use></svg></div>
+          <div class="min-w-0">
+            <p class="ui-kpi-label">Top mahsulot</p>
+            <p id="dashTop" class="mt-1 truncate text-base font-semibold text-slate-900">-</p>
+          </div>
         </div>
       </div>
     </section>
 
-    <section id="screen-inventory" class="screen space-y-3">
-      <div class="glass rounded-2xl p-4">
-        <h2 class="font-bold mb-3">Omborga Qo'shish</h2>
-        <input id="invName" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-2" placeholder="Masalan: Cola 0.5L">
-
-        <label class="block text-[11px] font-bold text-slate-500 mb-1">Turi</label>
-        <select id="invType" onchange="toggleInventoryForm()" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-2 bg-white">
-          <option value="product">Mahsulot (to'g'ridan sotiladi)</option>
-          <option value="ingredient">Ingredient (retseptda ishlatiladi)</option>
-        </select>
-
-        <div class="grid grid-cols-2 gap-2 mb-2">
-          <input id="invQty" type="number" class="rounded-xl border border-slate-200 p-3 text-sm" placeholder="Miqdor">
-          <input id="invUnit" class="rounded-xl border border-slate-200 p-3 text-sm" placeholder="Birlik (dona/kg/l)">
-        </div>
-        <input id="invTotal" type="number" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-2" placeholder="Jami xarajat (UZS)">
-
-        <div id="productExtras" class="space-y-2">
-          <select id="invCategory" class="w-full rounded-xl border border-slate-200 p-3 text-sm bg-white"></select>
-          <input id="invSellPrice" type="number" class="w-full rounded-xl border border-slate-200 p-3 text-sm" placeholder="Sotuv narxi (UZS)">
-          <label class="flex items-center gap-2 text-xs font-bold text-slate-500">
-            <input id="invIsBulk" type="checkbox" onchange="toggleInventoryForm()" class="w-4 h-4">
-            O'lchovli mahsulot (kg/l bo'yicha sotiladi)
-          </label>
-          <div id="bulkExtras" class="hidden">
-            <input id="invGramsPerServing" type="number" class="w-full rounded-xl border border-slate-200 p-3 text-sm" placeholder="1 porsiya necha gramm?">
-            <p class="text-[10px] text-slate-400 mt-1">Kun yakunida qoldiqqa qarab avtomatik kalibrlanadi.</p>
+    <section id="screen-inventory" class="screen">
+      <div class="mb-5">
+        <h2 class="ui-page-title">Ombor</h2>
+        <p class="ui-page-desc">Mahsulotlar, ingredientlar va ularning harakati</p>
+      </div>
+      <div class="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_22rem] lg:items-start">
+        <div class="order-2 space-y-4 lg:order-1">
+          <div id="lowStockCard" class="hidden ui-card ui-card-body border-amber-200 bg-amber-50/60">
+            <h3 class="mb-2 flex items-center gap-2 text-sm font-semibold text-amber-900"><svg class="ui-icon ui-icon-sm text-amber-600" aria-hidden="true"><use href="assets/icons/lucide.svg#triangle-alert"></use></svg>Kam qolgan</h3>
+            <div id="lowStockList" class="space-y-1"></div>
+          </div>
+          <div id="inventoryList" class="space-y-3"></div>
+          <div class="ui-card ui-card-body">
+            <h3 class="ui-card-title">Ombor harakati</h3>
+            <p class="ui-card-desc mb-3">Sotuvdan tashqari har bir kirim va chiqim — sababi bilan.</p>
+            <div id="movementList" class="space-y-1"></div>
           </div>
         </div>
 
-        <button onclick="addInventory()" class="w-full mt-3 rounded-xl bg-slate-800 text-white py-3 font-bold text-sm active:scale-95">Omborga Saqlash</button>
-      </div>
-      <div id="lowStockCard" class="hidden glass rounded-2xl p-4 border-l-4 border-l-amber-400">
-        <h2 class="font-bold mb-2 text-sm">Kam qolgan</h2>
-        <div id="lowStockList" class="space-y-1"></div>
-      </div>
-      <div id="inventoryList" class="space-y-2"></div>
-      <div class="glass rounded-2xl p-4">
-        <h2 class="font-bold mb-2 text-sm">Ombor harakati</h2>
-        <p class="text-[11px] text-slate-500 mb-2">
-          Sotuvdan tashqari har bir kirim va chiqim — sababi bilan.
-        </p>
-        <div id="movementList" class="space-y-1"></div>
-      </div>
-    </section>
+        <div class="order-1 ui-card ui-card-body lg:sticky lg:top-24 lg:order-2">
+          <h3 class="ui-card-title mb-4">Omborga qo'shish</h3>
+          <label class="ui-label" for="invName">Nomi</label>
+          <input id="invName" class="ui-input" placeholder="Masalan: Cola 0.5L">
 
-    <section id="screen-recipes" class="screen space-y-3">
-      <div class="glass rounded-2xl p-4">
-        <h2 id="recipeFormTitle" class="font-bold mb-3">Retsept Yaratish</h2>
-        <input id="recipeEditId" type="hidden">
-        <input id="recipeName" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-2" placeholder="Masalan: Hot Dog">
-        <label class="block text-[11px] font-bold text-slate-500 mb-1">Kategoriya</label>
-        <select id="recipeCategory" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-3 bg-white"></select>
+          <label class="ui-label mt-4" for="invType">Turi</label>
+          <select id="invType" onchange="toggleInventoryForm()" class="ui-input">
+            <option value="product">Mahsulot (to'g'ridan sotiladi)</option>
+            <option value="ingredient">Ingredient (retseptda ishlatiladi)</option>
+          </select>
 
-        <label class="block text-[11px] font-bold text-slate-500 mb-1">Ingredient</label>
-        <div class="flex gap-2 mb-2">
-          <select id="ingredientSelect" class="flex-1 rounded-xl border border-slate-200 p-3 text-sm"></select>
-          <input id="ingredientQty" type="number" class="w-24 rounded-xl border border-slate-200 p-3 text-sm" placeholder="Miqdor">
+          <div class="mt-4 grid grid-cols-2 gap-2">
+            <input id="invQty" type="number" class="ui-input" placeholder="Miqdor" aria-label="Miqdor">
+            <input id="invUnit" class="ui-input" placeholder="Birlik (dona/kg/l)" aria-label="Birlik">
+          </div>
+          <input id="invTotal" type="number" class="ui-input mt-2" placeholder="Jami xarajat (UZS)" aria-label="Jami xarajat">
+
+          <div id="productExtras" class="mt-2 space-y-2">
+            <select id="invCategory" class="ui-input" aria-label="Kategoriya"></select>
+            <input id="invSellPrice" type="number" class="ui-input" placeholder="Sotuv narxi (UZS)" aria-label="Sotuv narxi">
+            <label class="ui-check-row">
+              <input id="invIsBulk" type="checkbox" onchange="toggleInventoryForm()" class="ui-check">
+              O'lchovli mahsulot (kg/l bo'yicha sotiladi)
+            </label>
+            <div id="bulkExtras" class="hidden">
+              <input id="invGramsPerServing" type="number" class="ui-input" placeholder="1 porsiya necha gramm?" aria-label="1 porsiya necha gramm">
+              <p class="ui-hint">Kun yakunida qoldiqqa qarab avtomatik kalibrlanadi.</p>
+            </div>
+          </div>
+
+          <button onclick="addInventory()" class="ui-btn ui-btn-dark ui-btn-block mt-4"><svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#plus"></use></svg>Omborga Saqlash</button>
         </div>
-        <button onclick="addIngredient()" class="w-full rounded-xl bg-blue-600 text-white py-2 font-bold text-sm mb-3 active:scale-95">Ingredient Qo'shish</button>
-        <div id="recipeDraft" class="space-y-1 mb-3"></div>
-        <!--
-          Read-only on purpose. The cost is the sum of what the ingredients
-          cost right now, recomputed by the server on every save, so it cannot
-          be typed into disagreeing with the stock it will actually consume.
-        -->
-        <div class="text-sm font-bold mb-2">Tannarx: <span id="recipeCost">0</span> UZS
-          <span class="block text-[10px] font-normal text-slate-400">Ombordagi joriy tannarxdan avtomatik hisoblanadi.</span>
+      </div>
+    </section>
+
+    <section id="screen-recipes" class="screen">
+      <div class="mb-5">
+        <h2 class="ui-page-title">Retseptlar</h2>
+        <p class="ui-page-desc">Tannarx ombordagi narxdan avtomatik hisoblanadi</p>
+      </div>
+      <div class="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_24rem] lg:items-start">
+        <div class="order-2 space-y-3 lg:order-1">
+          <div id="recipeHealth" class="space-y-2"></div>
+          <div id="recipeList" class="space-y-3"></div>
         </div>
-        <input id="recipeSellPrice" type="number" oninput="renderRecipeMarginNote(recipeDraftCost())" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-2" placeholder="Sotuv narxi (UZS)">
-        <p id="recipeMarginNote" class="hidden text-[11px] font-bold mb-2"></p>
-        <label class="flex items-center gap-2 text-xs font-bold text-slate-500 mb-3">
-          <input id="recipeActive" type="checkbox" class="w-4 h-4" checked>
-          Sotuvda (belgilanmasa POS menyusida ko'rinmaydi)
-        </label>
-        <button onclick="saveRecipe()" id="recipeSaveBtn" class="w-full rounded-xl bg-emerald-600 text-white py-3 font-bold text-sm active:scale-95">Retseptni Saqlash</button>
-        <button onclick="cancelRecipeEdit()" id="recipeCancelBtn" class="hidden w-full mt-2 rounded-xl bg-slate-100 text-slate-600 py-2 font-bold text-xs">Bekor qilish</button>
-      </div>
-      <div id="recipeHealth" class="space-y-2"></div>
-      <div id="recipeList" class="space-y-2"></div>
-    </section>
+        <div class="order-1 ui-card ui-card-body lg:sticky lg:top-24 lg:order-2">
+          <h3 id="recipeFormTitle" class="ui-card-title mb-4">Retsept Yaratish</h3>
+          <input id="recipeEditId" type="hidden">
+          <label class="ui-label" for="recipeName">Nomi</label>
+          <input id="recipeName" class="ui-input" placeholder="Masalan: Hot Dog">
+          <label class="ui-label mt-4" for="recipeCategory">Kategoriya</label>
+          <select id="recipeCategory" class="ui-input"></select>
 
-    <section id="screen-categories" class="screen space-y-3">
-      <div class="glass rounded-2xl p-4">
-        <h2 class="font-bold mb-3">Kategoriya Qo'shish</h2>
-        <div class="flex gap-2 mb-3">
-          <input id="newCategoryInput" class="flex-1 rounded-xl border border-slate-200 p-3 text-sm" placeholder="Masalan: Ichimliklar">
-          <button onclick="addCategory()" class="rounded-xl bg-emerald-600 text-white px-4 font-bold text-sm active:scale-95">+ Qo'shish</button>
+          <label class="ui-label mt-4" for="ingredientSelect">Ingredient</label>
+          <div class="grid grid-cols-[minmax(0,1fr)_6.5rem] gap-2">
+            <select id="ingredientSelect" class="ui-input"></select>
+            <input id="ingredientQty" type="number" class="ui-input" placeholder="Miqdor" aria-label="Ingredient miqdori">
+          </div>
+          <button onclick="addIngredient()" class="ui-btn ui-btn-soft-primary ui-btn-block mt-2"><svg class="ui-icon ui-icon-sm" aria-hidden="true"><use href="assets/icons/lucide.svg#plus"></use></svg>Ingredient Qo'shish</button>
+          <div id="recipeDraft" class="mt-3 space-y-1"></div>
+          <!--
+            Read-only on purpose. The cost is the sum of what the ingredients
+            cost right now, recomputed by the server on every save, so it cannot
+            be typed into disagreeing with the stock it will actually consume.
+          -->
+          <div class="mt-4 rounded-xl bg-slate-50 px-3 py-2.5 text-sm">
+            <p class="flex items-center justify-between font-semibold text-slate-900">Tannarx <span class="tabular"><span id="recipeCost">0</span> UZS</span></p>
+            <p class="text-xs text-slate-500">Ombordagi joriy tannarxdan avtomatik hisoblanadi.</p>
+          </div>
+          <label class="ui-label mt-4" for="recipeSellPrice">Sotuv narxi (UZS)</label>
+          <input id="recipeSellPrice" type="number" oninput="renderRecipeMarginNote(recipeDraftCost())" class="ui-input" placeholder="Sotuv narxi (UZS)">
+          <p id="recipeMarginNote" class="hidden mt-2 text-sm font-semibold"></p>
+          <label class="ui-check-row mt-2">
+            <input id="recipeActive" type="checkbox" class="ui-check" checked>
+            Sotuvda (belgilanmasa POS menyusida ko'rinmaydi)
+          </label>
+          <button onclick="saveRecipe()" id="recipeSaveBtn" class="ui-btn ui-btn-success ui-btn-block mt-2"><svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#save"></use></svg>Retseptni Saqlash</button>
+          <button onclick="cancelRecipeEdit()" id="recipeCancelBtn" class="hidden ui-btn ui-btn-ghost ui-btn-block mt-2">Bekor qilish</button>
         </div>
-        <p class="text-[11px] text-slate-500 mb-1">Kategoriyalar tartibini o'zgartirish POS menyuidagi tartibni ham o'zgartiradi.</p>
-      </div>
-      <div id="categoryList" class="space-y-2"></div>
-    </section>
-
-    <section id="screen-settings" class="screen space-y-3">
-      <div class="glass rounded-2xl p-4">
-        <h2 class="font-bold mb-3">Sozlamalar</h2>
-        <label for="dailyRevenueTarget" class="block text-[11px] font-bold text-slate-500 uppercase mb-1">Kunlik Tushum Maqsadi (UZS)</label>
-        <input id="dailyRevenueTarget" type="number" min="0" step="1000" class="w-full rounded-xl border border-slate-200 p-3 text-sm" placeholder="Masalan: 1000000">
-        <p class="text-[11px] text-slate-500 mt-2">POS oynasida bugungi tushum ushbu maqsadga nisbatan progress sifatida ko'rsatiladi.</p>
-        <button onclick="saveCafeSettings()" class="w-full mt-3 rounded-xl bg-blue-600 text-white py-3 font-bold text-sm active:scale-95">Sozlamani Saqlash</button>
       </div>
     </section>
 
-    <section id="screen-reports" class="screen space-y-3">
-      <div class="glass rounded-2xl p-4">
-        <h2 class="font-bold text-sm">Kun Yakunlash Hisobotlari</h2>
-        <p class="text-[11px] text-slate-500 mt-1">Sotuvchilar topshirgan kunlik yakunlar shu yerda ko'rinadi.</p>
+    <section id="screen-categories" class="screen">
+      <div class="mb-5">
+        <h2 class="ui-page-title">Kategoriyalar</h2>
+        <p class="ui-page-desc">Kategoriyalar tartibini o'zgartirish POS menyuidagi tartibni ham o'zgartiradi.</p>
       </div>
-      <div id="reportsList" class="space-y-2"></div>
+      <div class="mx-auto max-w-2xl">
+        <div class="ui-card ui-card-body mb-4">
+          <label class="ui-label" for="newCategoryInput">Yangi kategoriya</label>
+          <div class="flex gap-2">
+            <input id="newCategoryInput" class="ui-input flex-1" placeholder="Masalan: Ichimliklar">
+            <button onclick="addCategory()" class="ui-btn ui-btn-success shrink-0"><svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#plus"></use></svg><span class="max-[379px]:hidden">Qo'shish</span></button>
+          </div>
+        </div>
+        <div id="categoryList" class="space-y-2"></div>
+      </div>
+    </section>
+
+    <section id="screen-settings" class="screen">
+      <div class="mb-5">
+        <h2 class="ui-page-title">Sozlamalar</h2>
+        <p class="ui-page-desc">Kassa oynasidagi kunlik maqsad</p>
+      </div>
+      <div class="ui-card ui-card-body max-w-xl">
+        <label for="dailyRevenueTarget" class="ui-label">Kunlik tushum maqsadi (UZS)</label>
+        <input id="dailyRevenueTarget" type="number" min="0" step="1000" class="ui-input" placeholder="Masalan: 1000000">
+        <p class="ui-hint">POS oynasida bugungi tushum ushbu maqsadga nisbatan progress sifatida ko'rsatiladi.</p>
+        <button onclick="saveCafeSettings()" class="ui-btn ui-btn-primary ui-btn-block mt-4"><svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#save"></use></svg>Sozlamani Saqlash</button>
+      </div>
+    </section>
+
+    <section id="screen-reports" class="screen">
+      <div class="mb-5">
+        <h2 class="ui-page-title">Kun yakunlash hisobotlari</h2>
+        <p class="ui-page-desc">Sotuvchilar topshirgan kunlik yakunlar shu yerda ko'rinadi.</p>
+      </div>
+      <div id="reportsList" class="grid grid-cols-1 gap-3 md:grid-cols-2"></div>
     </section>
   </main>
 
-  <div id="editInvModal" class="hidden fixed inset-0 z-40 bg-black/45 p-4 flex items-end justify-center">
-    <div class="glass w-full max-w-md rounded-2xl p-4 max-h-[90vh] overflow-y-auto" onclick="event.stopPropagation()">
-      <div class="flex justify-between items-center mb-3">
-        <h3 class="font-bold">Mahsulotni Tahrirlash</h3>
-        <button onclick="closeEditModal()" class="w-8 h-8 rounded-full bg-slate-100">✕</button>
+  <div id="editInvModal" class="hidden ui-modal-backdrop">
+    <div class="ui-modal" role="dialog" aria-modal="true" aria-labelledby="editInvTitle" onclick="event.stopPropagation()">
+      <div class="ui-grabber"></div>
+      <div class="ui-modal-header">
+        <h3 id="editInvTitle" class="ui-modal-title">Mahsulotni Tahrirlash</h3>
+        <button onclick="closeEditModal()" class="ui-icon-btn" aria-label="Yopish"><svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#x"></use></svg></button>
       </div>
-      <input id="editId" type="hidden">
-      <input id="editName" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-2" placeholder="Nomi">
-      <select id="editType" onchange="toggleEditForm()" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-2 bg-white">
-        <option value="product">Mahsulot</option>
-        <option value="ingredient">Ingredient</option>
-      </select>
-      <div class="grid grid-cols-2 gap-2 mb-2">
-        <input id="editQty" type="number" class="rounded-xl border border-slate-200 p-3 text-sm" placeholder="Miqdor">
-        <input id="editUnit" class="rounded-xl border border-slate-200 p-3 text-sm" placeholder="Birlik">
-      </div>
-      <input id="editTotal" type="number" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-2" placeholder="Jami xarajat">
-      <div id="editProductExtras" class="space-y-2">
-        <select id="editCategory" class="w-full rounded-xl border border-slate-200 p-3 text-sm bg-white"></select>
-        <input id="editSellPrice" type="number" class="w-full rounded-xl border border-slate-200 p-3 text-sm" placeholder="Sotuv narxi">
-        <label class="flex items-center gap-2 text-xs font-bold text-slate-500">
-          <input id="editIsBulk" type="checkbox" onchange="toggleEditForm()" class="w-4 h-4">
-          O'lchovli
-        </label>
-        <div id="editBulkExtras" class="hidden">
-          <input id="editGramsPerServing" type="number" class="w-full rounded-xl border border-slate-200 p-3 text-sm" placeholder="1 porsiya gr">
+      <div class="ui-modal-body">
+        <input id="editId" type="hidden">
+        <label class="ui-label" for="editName">Nomi</label>
+        <input id="editName" class="ui-input" placeholder="Nomi">
+        <label class="ui-label mt-4" for="editType">Turi</label>
+        <select id="editType" onchange="toggleEditForm()" class="ui-input">
+          <option value="product">Mahsulot</option>
+          <option value="ingredient">Ingredient</option>
+        </select>
+        <div class="mt-4 grid grid-cols-2 gap-2">
+          <input id="editQty" type="number" class="ui-input" placeholder="Miqdor" aria-label="Miqdor">
+          <input id="editUnit" class="ui-input" placeholder="Birlik" aria-label="Birlik">
         </div>
+        <input id="editTotal" type="number" class="ui-input mt-2" placeholder="Jami xarajat" aria-label="Jami xarajat">
+        <div id="editProductExtras" class="mt-2 space-y-2">
+          <select id="editCategory" class="ui-input" aria-label="Kategoriya"></select>
+          <input id="editSellPrice" type="number" class="ui-input" placeholder="Sotuv narxi" aria-label="Sotuv narxi">
+          <label class="ui-check-row">
+            <input id="editIsBulk" type="checkbox" onchange="toggleEditForm()" class="ui-check">
+            O'lchovli
+          </label>
+          <div id="editBulkExtras" class="hidden">
+            <input id="editGramsPerServing" type="number" class="ui-input" placeholder="1 porsiya gr" aria-label="1 porsiya gramm">
+          </div>
+        </div>
+        <button onclick="saveInventoryEdit()" class="ui-btn ui-btn-success ui-btn-block mt-4"><svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#save"></use></svg>Saqlash</button>
       </div>
-      <button onclick="saveInventoryEdit()" class="w-full mt-3 rounded-xl bg-emerald-600 text-white py-3 font-bold text-sm active:scale-95">Saqlash</button>
     </div>
   </div>
 
-  <div id="addStockModal" class="hidden fixed inset-0 z-40 bg-black/45 p-4 flex items-end justify-center" onclick="closeAddStockModal()">
-    <div class="glass w-full max-w-md rounded-2xl p-4 max-h-[90vh] overflow-y-auto" onclick="event.stopPropagation()">
-      <div class="flex justify-between items-center mb-3">
-        <h3 class="font-bold">Omborga Kirim Qo'shish</h3>
-        <button onclick="closeAddStockModal()" class="w-8 h-8 rounded-full bg-slate-100">X</button>
+  <div id="addStockModal" class="hidden ui-modal-backdrop" onclick="closeAddStockModal()">
+    <div class="ui-modal" role="dialog" aria-modal="true" aria-labelledby="addStockTitle" onclick="event.stopPropagation()">
+      <div class="ui-grabber"></div>
+      <div class="ui-modal-header">
+        <h3 id="addStockTitle" class="ui-modal-title">Omborga Kirim Qo'shish</h3>
+        <button onclick="closeAddStockModal()" class="ui-icon-btn" aria-label="Yopish"><svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#x"></use></svg></button>
       </div>
-      <input id="addStockId" type="hidden">
-      <p id="addStockItemName" class="text-sm font-bold text-slate-700 mb-3"></p>
-      <input id="addStockQty" type="number" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-2" placeholder="Qancha qo'shildi?">
-      <input id="addStockCost" type="number" class="w-full rounded-xl border border-slate-200 p-3 text-sm" placeholder="Ushbu partiya narxi (UZS)?">
-      <button onclick="submitAddStock()" class="w-full mt-3 rounded-xl bg-emerald-600 text-white py-3 font-bold text-sm active:scale-95">Kirimni Saqlash</button>
+      <div class="ui-modal-body">
+        <input id="addStockId" type="hidden">
+        <p id="addStockItemName" class="mb-4 text-sm font-semibold text-slate-900"></p>
+        <label class="ui-label" for="addStockQty">Qancha qo'shildi?</label>
+        <input id="addStockQty" type="number" class="ui-input" placeholder="Qancha qo'shildi?">
+        <label class="ui-label mt-4" for="addStockCost">Ushbu partiya narxi (UZS)</label>
+        <input id="addStockCost" type="number" class="ui-input" placeholder="Ushbu partiya narxi (UZS)?">
+        <button onclick="submitAddStock()" class="ui-btn ui-btn-success ui-btn-block mt-5"><svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#plus"></use></svg>Kirimni Saqlash</button>
+      </div>
     </div>
   </div>
 
@@ -265,38 +338,46 @@
     spoiled, staff drank it, or the count was simply wrong. All of it used to be
     entered by editing the quantity, which leaves no trace and races the till.
   -->
-  <div id="removeStockModal" class="hidden fixed inset-0 z-40 bg-black/45 p-4 flex items-end justify-center" onclick="closeRemoveStockModal()">
-    <div class="glass w-full max-w-md rounded-2xl p-4 max-h-[90vh] overflow-y-auto" onclick="event.stopPropagation()">
-      <div class="flex justify-between items-center mb-3">
-        <h3 class="font-bold">Ombordan Chiqim</h3>
-        <button onclick="closeRemoveStockModal()" class="w-8 h-8 rounded-full bg-slate-100">X</button>
+  <div id="removeStockModal" class="hidden ui-modal-backdrop" onclick="closeRemoveStockModal()">
+    <div class="ui-modal" role="dialog" aria-modal="true" aria-labelledby="removeStockTitle" onclick="event.stopPropagation()">
+      <div class="ui-grabber"></div>
+      <div class="ui-modal-header">
+        <h3 id="removeStockTitle" class="ui-modal-title">Ombordan Chiqim</h3>
+        <button onclick="closeRemoveStockModal()" class="ui-icon-btn" aria-label="Yopish"><svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#x"></use></svg></button>
       </div>
-      <input id="removeStockId" type="hidden">
-      <p id="removeStockItemName" class="text-sm font-bold text-slate-700 mb-1"></p>
-      <p id="removeStockAvailable" class="text-[11px] text-slate-500 mb-3"></p>
-      <label class="block text-[11px] font-bold text-slate-500 mb-1">Sababi</label>
-      <select id="removeStockReason" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-2 bg-white">
-        <option value="spoilage">Buzilgan / yaroqsiz</option>
-        <option value="waste">Chiqindi / to'kilgan</option>
-        <option value="internal">Ichki iste'mol</option>
-        <option value="correction">Tuzatish (sanoq xato edi)</option>
-      </select>
-      <input id="removeStockQty" type="number" class="w-full rounded-xl border border-slate-200 p-3 text-sm mb-2" placeholder="Qancha kamaydi?">
-      <input id="removeStockNote" maxlength="200" class="w-full rounded-xl border border-slate-200 p-3 text-sm" placeholder="Qisqacha izoh (majburiy)">
-      <button onclick="submitRemoveStock()" class="w-full mt-3 rounded-xl bg-red-600 text-white py-3 font-bold text-sm active:scale-95">Chiqimni Saqlash</button>
+      <div class="ui-modal-body">
+        <input id="removeStockId" type="hidden">
+        <p id="removeStockItemName" class="text-sm font-semibold text-slate-900"></p>
+        <p id="removeStockAvailable" class="mb-4 text-sm text-slate-500"></p>
+        <label class="ui-label" for="removeStockReason">Sababi</label>
+        <select id="removeStockReason" class="ui-input">
+          <option value="spoilage">Buzilgan / yaroqsiz</option>
+          <option value="waste">Chiqindi / to'kilgan</option>
+          <option value="internal">Ichki iste'mol</option>
+          <option value="correction">Tuzatish (sanoq xato edi)</option>
+        </select>
+        <label class="ui-label mt-4" for="removeStockQty">Qancha kamaydi?</label>
+        <input id="removeStockQty" type="number" class="ui-input" placeholder="Qancha kamaydi?">
+        <label class="ui-label mt-4" for="removeStockNote">Izoh (majburiy)</label>
+        <input id="removeStockNote" maxlength="200" class="ui-input" placeholder="Qisqacha izoh (majburiy)">
+        <button onclick="submitRemoveStock()" class="ui-btn ui-btn-danger ui-btn-block mt-5"><svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#minus"></use></svg>Chiqimni Saqlash</button>
+      </div>
     </div>
   </div>
 
-  <div id="reportDetailModal" class="hidden fixed inset-0 z-40 bg-black/45 p-4 flex items-end justify-center" onclick="closeReportModal()">
-    <div class="glass w-full max-w-xl rounded-2xl p-4 max-h-[90vh] overflow-y-auto" onclick="event.stopPropagation()">
-      <div class="flex justify-between items-center mb-3">
+  <div id="reportDetailModal" class="hidden ui-modal-backdrop" onclick="closeReportModal()">
+    <div class="ui-modal ui-modal-wide" role="dialog" aria-modal="true" aria-labelledby="reportDetailTitle" onclick="event.stopPropagation()">
+      <div class="ui-grabber"></div>
+      <div class="ui-modal-header">
         <div>
-          <h3 class="font-bold">Hisobot Tafsiloti</h3>
-          <p id="reportDetailMeta" class="text-[11px] text-slate-500 mt-1"></p>
+          <h3 id="reportDetailTitle" class="ui-modal-title">Hisobot Tafsiloti</h3>
+          <p id="reportDetailMeta" class="mt-0.5 text-sm text-slate-500"></p>
         </div>
-        <button onclick="closeReportModal()" class="w-8 h-8 rounded-full bg-slate-100">X</button>
+        <button onclick="closeReportModal()" class="ui-icon-btn" aria-label="Yopish"><svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#x"></use></svg></button>
       </div>
-      <div id="reportDetailSummary" class="space-y-2"></div>
+      <div class="ui-modal-body">
+        <div id="reportDetailSummary" class="space-y-2"></div>
+      </div>
     </div>
   </div>
 
@@ -454,36 +535,35 @@
     function renderInventory() {
       const box = document.getElementById("inventoryList");
       if (!state.inventory.length) {
-        box.innerHTML = `<div class="glass rounded-2xl p-3 text-center text-xs font-bold text-slate-500">Ombor bo'sh</div>`;
+        box.innerHTML = `<div class="ui-card ui-empty">${uiIcon('package')}Ombor bo'sh</div>`;
         return;
       }
       box.innerHTML = state.inventory.map(item => {
         const typeLabel = item.type === "product"
-          ? `<span class="text-[10px] font-bold bg-emerald-100 text-emerald-600 rounded-full px-2 py-[2px]">Mahsulot</span>`
-          : `<span class="text-[10px] font-bold bg-slate-100 text-slate-500 rounded-full px-2 py-[2px]">Ingredient</span>`;
-        const catBadge = item.category ? `<span class="text-[10px] font-bold bg-blue-100 text-blue-600 rounded-full px-2 py-[2px]">${item.category}</span>` : "";
-        const bulkBadge = item.isBulk ? `<span class="text-[10px] font-bold bg-amber-100 text-amber-600 rounded-full px-2 py-[2px]">O'lchovli • ${item.gramsPerServing || 0}g</span>` : "";
-        const sell = item.type === "product" ? `<p class="text-xs text-emerald-600 font-bold">Sotuv: ${(item.sellPrice || 0).toLocaleString()} UZS</p>` : "";
+          ? `<span class="ui-badge ui-badge-success">Mahsulot</span>`
+          : `<span class="ui-badge ui-badge-neutral">Ingredient</span>`;
+        const catBadge = item.category ? `<span class="ui-badge ui-badge-brand">${item.category}</span>` : "";
+        const bulkBadge = item.isBulk ? `<span class="ui-badge ui-badge-warning">${uiIcon('scale')}O'lchovli · ${item.gramsPerServing || 0}g</span>` : "";
+        const sell = item.type === "product" ? `<div><p class="text-xs text-slate-500">Sotuv narxi</p><p class="ui-figure text-emerald-700">${(item.sellPrice || 0).toLocaleString()} UZS</p></div>` : "";
         return `
-          <div class="glass rounded-2xl p-3">
-            <div class="flex items-start justify-between gap-2">
-              <div class="flex-1">
-                <div class="flex flex-wrap items-center gap-1 mb-1">
-                  <p class="font-bold text-sm">${item.name}</p>
-                  ${typeLabel}
-                  ${catBadge}
-                  ${bulkBadge}
-                </div>
-                <p class="text-xs text-slate-500">${item.qty} ${item.unit} • Jami: ${(item.totalCost || 0).toLocaleString()} UZS</p>
-                <p class="text-xs font-bold text-blue-600">Birlik tannarx: ${(item.unitCost || 0).toLocaleString()} UZS/${item.unit}</p>
-                ${sell}
-              </div>
-              <div class="flex flex-col gap-1">
-                <button onclick="openEditModal('${item.id}')" class="text-[10px] font-bold bg-slate-100 text-slate-700 rounded-lg px-2 py-1">Tahrirlash</button>
-                <button onclick="openAddStockModal('${item.id}')" class="text-[10px] font-bold bg-emerald-100 text-emerald-700 rounded-lg px-2 py-1">+ Kirim</button>
-                <button onclick="openRemoveStockModal('${item.id}')" class="text-[10px] font-bold bg-amber-100 text-amber-700 rounded-lg px-2 py-1">− Chiqim</button>
-                <button onclick="deleteInventory('${item.id}')" class="text-[10px] font-bold bg-red-100 text-red-600 rounded-lg px-2 py-1">O'chirish</button>
-              </div>
+          <div class="ui-card p-4">
+            <div class="flex flex-wrap items-center gap-1.5">
+              <p class="mr-1 text-[15px] font-semibold text-slate-900">${item.name}</p>
+              ${typeLabel}
+              ${catBadge}
+              ${bulkBadge}
+            </div>
+            <div class="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
+              <div><p class="text-xs text-slate-500">Qoldiq</p><p class="ui-figure text-slate-900">${item.qty} ${item.unit}</p></div>
+              <div><p class="text-xs text-slate-500">Birlik tannarx</p><p class="ui-figure text-blue-700">${(item.unitCost || 0).toLocaleString()} UZS/${item.unit}</p></div>
+              <div><p class="text-xs text-slate-500">Jami xarajat</p><p class="ui-figure text-slate-900">${(item.totalCost || 0).toLocaleString()} UZS</p></div>
+              ${sell}
+            </div>
+            <div class="mt-3 flex flex-wrap gap-2 border-t border-slate-100 pt-3">
+              <button onclick="openAddStockModal('${item.id}')" class="ui-btn ui-btn-sm bg-emerald-50 text-emerald-700 hover:bg-emerald-100">${uiIcon('plus', 'ui-icon-sm')}Kirim</button>
+              <button onclick="openRemoveStockModal('${item.id}')" class="ui-btn ui-btn-sm bg-amber-50 text-amber-800 hover:bg-amber-100">${uiIcon('minus', 'ui-icon-sm')}Chiqim</button>
+              <button onclick="openEditModal('${item.id}')" class="ui-btn ui-btn-soft ui-btn-sm">${uiIcon('pencil', 'ui-icon-sm')}Tahrirlash</button>
+              <button onclick="deleteInventory('${item.id}')" class="ui-btn ui-btn-ghost-danger ui-btn-sm ml-auto">${uiIcon('trash-2', 'ui-icon-sm')}O'chirish</button>
             </div>
           </div>`;
       }).join("");
@@ -671,9 +751,10 @@
       const rows = (state.health && state.health.lowStock) || [];
       card.classList.toggle("hidden", rows.length === 0);
       list.innerHTML = rows.map(row => `
-        <div class="flex justify-between items-center text-xs">
-          <span class="font-bold ${row.out ? "text-red-600" : "text-amber-700"}">${escapeHtml(row.name)}</span>
-          <span class="text-slate-500">${Number(row.qty).toLocaleString()} ${escapeHtml(row.unit)} ${row.out ? "• tugadi" : `• chegara ${row.threshold}`}</span>
+        <div class="flex items-center justify-between gap-2 text-sm">
+          <span class="font-semibold ${row.out ? "text-red-700" : "text-amber-900"}">${escapeHtml(row.name)}</span>
+          <span class="flex items-center gap-2 text-slate-600 tabular">${Number(row.qty).toLocaleString()} ${escapeHtml(row.unit)}
+            ${row.out ? `<span class="ui-badge ui-badge-danger">tugadi</span>` : `<span class="ui-badge ui-badge-warning">chegara ${row.threshold}</span>`}</span>
         </div>`).join("");
     }
 
@@ -683,20 +764,20 @@
       if (!box) return;
       const rows = state.movements || [];
       if (!rows.length) {
-        box.innerHTML = `<p class="text-xs text-slate-400">Hozircha harakat yo'q.</p>`;
+        box.innerHTML = `<p class="text-sm text-slate-500">Hozircha harakat yo'q.</p>`;
         return;
       }
       box.innerHTML = rows.slice(0, 20).map(row => `
-        <div class="flex justify-between items-start gap-2 text-[11px] border-b border-slate-100 pb-1">
-          <div>
-            <p class="font-bold text-slate-700">${escapeHtml(row.name)}
-              <span class="${row.direction === "in" ? "text-emerald-600" : "text-red-600"}">
+        <div class="flex items-start justify-between gap-2 border-b border-slate-100 py-2 text-sm last:border-0">
+          <div class="min-w-0">
+            <p class="font-semibold text-slate-900">${escapeHtml(row.name)}
+              <span class="tabular ${row.direction === "in" ? "text-emerald-700" : "text-red-600"}">
                 ${row.direction === "in" ? "+" : "−"}${Number(row.qty).toLocaleString()} ${escapeHtml(row.unit)}
               </span>
             </p>
-            <p class="text-slate-500">${escapeHtml(row.reasonLabel)}${row.note ? " • " + escapeHtml(row.note) : ""}</p>
+            <p class="text-xs text-slate-500">${escapeHtml(row.reasonLabel)}${row.note ? " · " + escapeHtml(row.note) : ""}</p>
           </div>
-          <span class="text-slate-400 whitespace-nowrap">${escapeHtml(formatMovementDate(row.date))}</span>
+          <span class="whitespace-nowrap text-xs text-slate-500">${escapeHtml(formatMovementDate(row.date))}</span>
         </div>`).join("");
     }
 
@@ -780,11 +861,11 @@
       const total = recipeDraftCost();
       document.getElementById("recipeDraft").innerHTML = state.recipeDraft.map((i, idx) => {
         const item = state.inventory.find(inv => inv.id === i.inventoryId);
-        const gone = item ? "" : `<span class="text-[10px] font-bold text-red-500">omborda yo'q</span>`;
+        const gone = item ? "" : `<span class="ui-badge ui-badge-danger">omborda yo'q</span>`;
         return `
-        <div class="flex justify-between items-center text-xs bg-slate-50 rounded-xl p-2">
-          <span>${escapeHtml(item ? item.name : i.name)} • ${i.qty} ${gone}</span>
-          <button onclick="removeRecipeIngredient(${idx})" class="text-red-500 font-bold">O'chirish</button>
+        <div class="flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 py-1.5 pl-3 pr-1.5 text-sm">
+          <span class="min-w-0 truncate">${escapeHtml(item ? item.name : i.name)} · <b class="tabular">${i.qty}</b> ${gone}</span>
+          <button onclick="removeRecipeIngredient(${idx})" class="ui-btn ui-btn-ghost-danger ui-btn-sm shrink-0" aria-label="Ingredientni olib tashlash">${uiIcon('x', 'ui-icon-sm')}</button>
         </div>`;
       }).join("");
       document.getElementById("recipeCost").innerText = total.toLocaleString();
@@ -804,7 +885,7 @@
       note.classList.toggle("hidden", !problem);
       if (problem) {
         note.textContent = problem.text;
-        note.className = `text-[11px] font-bold mb-2 ${problem.bad ? "text-red-600" : "text-amber-600"}`;
+        note.className = `mt-2 text-sm font-semibold ${problem.bad ? "text-red-600" : "text-amber-700"}`;
       }
     }
 
@@ -941,7 +1022,7 @@
     function renderRecipes() {
       const box = document.getElementById("recipeList");
       if (!state.recipes.length) {
-        box.innerHTML = `<div class="glass rounded-2xl p-3 text-center text-xs font-bold text-slate-500">Retseptlar yo'q</div>`;
+        box.innerHTML = `<div class="ui-card ui-empty">${uiIcon('chef-hat')}Retseptlar yo'q</div>`;
         return;
       }
       box.innerHTML = state.recipes.map(r => {
@@ -952,22 +1033,24 @@
         const missing = (r.ingredients || []).filter(line =>
           !state.inventory.some(i => i.id === line.inventoryId));
         return `
-        <div class="glass rounded-2xl p-3 ${inactive ? "opacity-60" : ""}">
-          <div class="flex justify-between items-center gap-2">
-            <p class="font-bold text-sm">${escapeHtml(r.name)}</p>
-            <div class="flex items-center gap-1">
-              ${inactive ? `<span class="text-[10px] font-bold bg-slate-200 text-slate-600 rounded-full px-2 py-[2px]">Sotuvda emas</span>` : ""}
-              <span class="text-[10px] font-bold bg-blue-100 text-blue-600 rounded-full px-2 py-[2px]">${escapeHtml(r.category || "—")}</span>
+        <div class="ui-card p-4 ${inactive ? "bg-slate-50" : ""}">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <p class="text-[15px] font-semibold ${inactive ? "text-slate-500" : "text-slate-900"}">${escapeHtml(r.name)}</p>
+            <div class="flex items-center gap-1.5">
+              ${inactive ? `<span class="ui-badge ui-badge-neutral">${uiIcon('eye-off')}Sotuvda emas</span>` : `<span class="ui-badge ui-badge-success">Sotuvda</span>`}
+              <span class="ui-badge ui-badge-brand">${escapeHtml(r.category || "—")}</span>
             </div>
           </div>
-          <p class="text-xs text-slate-500 mt-1">Tannarx: ${cost.toLocaleString()} UZS</p>
-          <p class="text-xs text-emerald-600 font-bold">Sotuv narxi: ${sell.toLocaleString()} UZS</p>
-          ${problem ? `<p class="text-[11px] font-bold mt-1 ${problem.bad ? "text-red-600" : "text-amber-600"}">${escapeHtml(problem.text)}</p>` : ""}
-          ${missing.length ? `<p class="text-[11px] font-bold text-red-600 mt-1">Ombordan o'chirilgan ingredient: ${escapeHtml(missing.map(m => m.name).join(", "))}</p>` : ""}
-          <div class="flex gap-1 mt-2">
-            <button onclick="editRecipe('${escapeHtml(r.id)}')" class="text-[10px] font-bold bg-slate-100 text-slate-700 rounded-lg px-2 py-1">Tahrirlash</button>
-            <button onclick="retireRecipe('${escapeHtml(r.id)}')" class="text-[10px] font-bold ${inactive ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"} rounded-lg px-2 py-1">
-              ${inactive ? "Sotuvga qaytarish" : "Sotuvdan olish"}
+          <div class="mt-3 grid grid-cols-2 gap-3 text-sm">
+            <div><p class="text-xs text-slate-500">Tannarx</p><p class="ui-figure text-slate-900">${cost.toLocaleString()} UZS</p></div>
+            <div><p class="text-xs text-slate-500">Sotuv narxi</p><p class="ui-figure text-emerald-700">${sell.toLocaleString()} UZS</p></div>
+          </div>
+          ${problem ? `<p class="mt-2 flex items-start gap-1.5 text-sm font-semibold ${problem.bad ? "text-red-600" : "text-amber-700"}">${uiIcon('triangle-alert', 'ui-icon-sm mt-0.5')}${escapeHtml(problem.text)}</p>` : ""}
+          ${missing.length ? `<p class="mt-2 flex items-start gap-1.5 text-sm font-semibold text-red-600">${uiIcon('circle-alert', 'ui-icon-sm mt-0.5')}Ombordan o'chirilgan ingredient: ${escapeHtml(missing.map(m => m.name).join(", "))}</p>` : ""}
+          <div class="mt-3 flex flex-wrap gap-2 border-t border-slate-100 pt-3">
+            <button onclick="editRecipe('${escapeHtml(r.id)}')" class="ui-btn ui-btn-soft ui-btn-sm">${uiIcon('pencil', 'ui-icon-sm')}Tahrirlash</button>
+            <button onclick="retireRecipe('${escapeHtml(r.id)}')" class="ui-btn ui-btn-sm ${inactive ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-100" : "bg-amber-50 text-amber-800 hover:bg-amber-100"}">
+              ${inactive ? uiIcon('rotate-ccw', 'ui-icon-sm') + "Sotuvga qaytarish" : uiIcon('archive', 'ui-icon-sm') + "Sotuvdan olish"}
             </button>
           </div>
         </div>`;
@@ -988,12 +1071,16 @@
 
       const card = (colour, title, lines) => {
         if (!lines.length) return;
+        const alert = colour === "red" ? "ui-alert-danger" : "ui-alert-warning";
         cards.push(`
-          <div class="glass rounded-2xl p-3 border-l-4 border-l-${colour}-400">
-            <p class="font-bold text-xs mb-1">${escapeHtml(title)}</p>
-            <ul class="text-[11px] text-slate-600 space-y-[2px]">
-              ${lines.map(line => `<li>${escapeHtml(line)}</li>`).join("")}
-            </ul>
+          <div class="ui-alert ${alert}">
+            ${uiIcon(colour === "red" ? 'circle-alert' : 'triangle-alert', 'ui-icon-sm mt-0.5')}
+            <div class="min-w-0">
+              <p class="mb-1 font-semibold">${escapeHtml(title)}</p>
+              <ul class="list-disc space-y-0.5 pl-4">
+                ${lines.map(line => `<li>${escapeHtml(line)}</li>`).join("")}
+              </ul>
+            </div>
           </div>`);
       };
 
@@ -1053,19 +1140,19 @@
     function renderCategories() {
       const box = document.getElementById("categoryList");
       if (!state.categories.length) {
-        box.innerHTML = `<div class="glass rounded-2xl p-3 text-center text-xs font-bold text-slate-500">Kategoriyalar yo'q</div>`;
+        box.innerHTML = `<div class="ui-card ui-empty">${uiIcon('tags')}Kategoriyalar yo'q</div>`;
         return;
       }
       box.innerHTML = state.categories.map((cat, idx) => `
-        <div class="glass rounded-2xl p-3 flex items-center justify-between">
-          <div class="flex items-center gap-2">
-            <span class="text-[10px] font-bold text-slate-400">#${idx + 1}</span>
-            <p class="font-bold text-sm">${cat}</p>
+        <div class="ui-card flex items-center justify-between gap-2 py-2 pl-4 pr-2">
+          <div class="flex min-w-0 items-center gap-3">
+            <span class="flex size-7 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-xs font-semibold text-slate-600 tabular">${idx + 1}</span>
+            <p class="truncate text-sm font-semibold text-slate-900">${cat}</p>
           </div>
-          <div class="flex items-center gap-1">
-            <button onclick="moveCategory(${idx}, -1)" class="w-9 h-9 rounded-xl bg-slate-100 active:scale-95">⬆️</button>
-            <button onclick="moveCategory(${idx}, 1)" class="w-9 h-9 rounded-xl bg-slate-100 active:scale-95">⬇️</button>
-            <button onclick="deleteCategory(${idx})" class="w-9 h-9 rounded-xl bg-red-100 text-red-600 active:scale-95">❌</button>
+          <div class="flex shrink-0 items-center gap-1">
+            <button onclick="moveCategory(${idx}, -1)" class="ui-icon-btn" aria-label="Yuqoriga" title="Yuqoriga">${uiIcon('arrow-up', 'ui-icon-sm')}</button>
+            <button onclick="moveCategory(${idx}, 1)" class="ui-icon-btn" aria-label="Pastga" title="Pastga">${uiIcon('arrow-down', 'ui-icon-sm')}</button>
+            <button onclick="deleteCategory(${idx})" class="ui-icon-btn text-red-600 hover:border-red-200 hover:bg-red-50" aria-label="O'chirish" title="O'chirish">${uiIcon('trash-2', 'ui-icon-sm')}</button>
           </div>
         </div>`).join("");
     }
@@ -1121,14 +1208,14 @@
         // so this branch has to carry the "saving is off" note too - otherwise
         // it is only ever shown in the case nobody is in.
         const savingOff = state.snapshotAt ? " Saqlash vaqtincha o'chirilgan." : "";
-        banner.className = "glass rounded-2xl p-3 text-xs font-bold text-amber-700 flex items-center justify-between gap-2";
-        banner.innerHTML = `<span>${escapeHtmlText(state.loadError + savingOff)}</span>
-          <button onclick="syncData()" class="rounded-xl bg-amber-500 text-white px-3 py-2 text-[11px] font-bold active:scale-95">Qayta urinish</button>`;
+        banner.className = "ui-alert ui-alert-warning mb-4 items-center";
+        banner.innerHTML = `${uiIcon('triangle-alert', 'text-amber-600')}<span class="flex-1">${escapeHtmlText(state.loadError + savingOff)}</span>
+          <button onclick="syncData()" class="ui-btn ui-btn-warning ui-btn-sm shrink-0">${uiIcon('refresh-cw', 'ui-icon-sm')}Qayta urinish</button>`;
         banner.classList.remove("hidden");
         return;
       }
       if (state.snapshotAt) {
-        banner.className = "glass rounded-2xl p-3 text-xs font-bold text-slate-500";
+        banner.className = "ui-alert ui-alert-info mb-4";
         banner.textContent =
           "Saqlangan ma'lumot ko'rsatilmoqda, yangilanmoqda... Saqlash vaqtincha o'chirilgan.";
         banner.classList.remove("hidden");
@@ -1144,33 +1231,33 @@
         .sort((a, b) => new Date(b.report?.date || 0) - new Date(a.report?.date || 0));
 
       if (!orderedReports.length) {
-        box.innerHTML = `<div class="glass rounded-2xl p-3 text-center text-xs font-bold text-slate-500">Hisobotlar hali yo'q</div>`;
+        box.innerHTML = `<div class="ui-card ui-empty md:col-span-2">${uiIcon('file-text')}Hisobotlar hali yo'q</div>`;
         return;
       }
 
       const more = state.closeReportsTotal > orderedReports.length
-        ? `<button onclick="showMoreClosings()" class="glass w-full rounded-2xl p-3 text-center text-xs font-bold text-slate-500">
+        ? `<button onclick="showMoreClosings()" class="ui-btn ui-btn-secondary ui-btn-block md:col-span-2">
              Yana ko'rsatish (${state.closeReportsTotal - orderedReports.length} ta qoldi)
            </button>`
         : "";
 
       box.innerHTML = orderedReports.map(({ report, index }) => `
-        <button onclick="openReportModal(${index})" class="glass w-full rounded-2xl p-4 text-left active:scale-[0.99] transition-transform">
+        <button onclick="openReportModal(${index})" class="ui-card w-full p-4 text-left transition hover:border-blue-300 hover:shadow-md">
           <div class="flex items-start justify-between gap-3">
-            <div>
-              <p class="font-bold text-sm">${escapeHtml(formatDateTime(report.date))}</p>
-              <p class="text-xs text-slate-500 mt-1">Sotuvchi: ${escapeHtml(report.seller || "Noma'lum")}</p>
+            <div class="min-w-0">
+              <p class="flex items-center gap-1.5 text-sm font-semibold text-slate-900">${uiIcon('calendar-days', 'ui-icon-sm text-slate-400')}${escapeHtml(formatDateTime(report.date))}</p>
+              <p class="mt-1 text-sm text-slate-500">Sotuvchi: ${escapeHtml(report.seller || "Noma'lum")}</p>
             </div>
-            <span class="text-[10px] font-bold bg-blue-100 text-blue-600 rounded-full px-2 py-[2px]">Ko'rish</span>
+            <span class="ui-badge ui-badge-brand">Ko'rish${uiIcon('chevron-right')}</span>
           </div>
-          <div class="grid grid-cols-2 gap-2 mt-3 text-xs">
-            <div class="rounded-xl bg-white/70 p-3">
-              <p class="text-slate-500 font-bold uppercase text-[10px]">Jami tushum</p>
-              <p class="font-bold text-blue-600 mt-1">${formatCurrency(report.totalRevenue)}</p>
+          <div class="mt-3 grid grid-cols-2 gap-2">
+            <div class="rounded-xl bg-slate-50 p-3">
+              <p class="text-xs text-slate-500">Jami tushum</p>
+              <p class="ui-figure mt-1 text-blue-700">${formatCurrency(report.totalRevenue)}</p>
             </div>
-            <div class="rounded-xl bg-white/70 p-3">
-              <p class="text-slate-500 font-bold uppercase text-[10px]">Jami foyda</p>
-              <p class="font-bold text-emerald-600 mt-1">${formatCurrency(report.totalProfit)}</p>
+            <div class="rounded-xl bg-slate-50 p-3">
+              <p class="text-xs text-slate-500">Jami foyda</p>
+              <p class="ui-figure mt-1 text-emerald-700">${formatCurrency(report.totalProfit)}</p>
             </div>
           </div>
         </button>
@@ -1187,19 +1274,19 @@
         ? summary.map(item => {
             const profitValue = item.netProfit ?? item.profit ?? 0;
             return `
-              <div class="rounded-2xl bg-white/70 p-3 shadow-sm">
+              <div class="rounded-xl border border-slate-200 bg-white p-3">
                 <div class="flex items-start justify-between gap-3">
-                  <div>
-                    <p class="font-bold text-sm">${escapeHtml(item.name || "Mahsulot")}</p>
-                    <p class="text-xs text-slate-500 mt-1">Qoldiq: ${Number(item.leftover || 0).toLocaleString()} ${escapeHtml(item.unit || "")}</p>
+                  <div class="min-w-0">
+                    <p class="text-sm font-semibold text-slate-900">${escapeHtml(item.name || "Mahsulot")}</p>
+                    <p class="mt-1 text-xs text-slate-500">Qoldiq: ${Number(item.leftover || 0).toLocaleString()} ${escapeHtml(item.unit || "")}</p>
                     <p class="text-xs text-slate-500">Haqiqiy porsiya: ${Number(item.actualGramsPerServing || 0).toLocaleString()} g</p>
                   </div>
-                  <p class="text-sm font-bold text-emerald-600">${formatCurrency(profitValue)}</p>
+                  <p class="ui-figure shrink-0 text-sm text-emerald-700">${formatCurrency(profitValue)}</p>
                 </div>
               </div>
             `;
           }).join("")
-        : `<div class="glass rounded-2xl p-3 text-center text-xs font-bold text-slate-500">Bu hisobot uchun tafsilot topilmadi</div>`;
+        : `<div class="ui-empty">${uiIcon('inbox')}Bu hisobot uchun tafsilot topilmadi</div>`;
 
       document.getElementById("reportDetailModal").classList.remove("hidden");
     }
@@ -1317,7 +1404,7 @@
       if (!state.loaded) {
         ["inventoryList", "recipeList", "categoryList"].forEach(id => {
           const box = document.getElementById(id);
-          if (box) box.innerHTML = `<div class="glass rounded-2xl p-3 text-xs font-bold text-slate-500">Yuklanmoqda...</div>`;
+          if (box) box.innerHTML = `<div class="ui-card ui-empty">${uiIcon('loader-circle', 'ui-spin')}Yuklanmoqda...</div>`;
         });
       }
 

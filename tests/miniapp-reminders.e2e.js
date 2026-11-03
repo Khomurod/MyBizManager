@@ -292,7 +292,7 @@ describe('Mini App reminders', () => {
   test('the list shows what a task will remind about', async () => {
     const { page, context } = await openMini();
     const text = await page.textContent('#tab-tasks');
-    assert.match(text, /🔔/);
+    assert.match(text, /Eslatma: /);
     await context.close();
   });
 

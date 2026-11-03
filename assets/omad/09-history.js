@@ -33,36 +33,41 @@ function tenantPaidCardMarkup(rows) {
     const expense = rows.find(r => r.type === 'Expense');
     const purpose = (expense && expense.comment) || income.comment || "";
     return `
-        <div class="flex items-center gap-3 min-w-0">
-            <div class="w-1 h-8 rounded-full bg-amber-400"></div>
+        <div class="flex min-w-0 flex-1 basis-48 items-start gap-3">
+            <div class="flex size-10 shrink-0 items-center justify-center rounded-xl bg-amber-50 text-amber-600">${uiIcon('building-2')}</div>
             <div class="min-w-0">
-                <p class="font-bold text-slate-700 text-sm truncate">🏢 ${income.tenant}</p>
-                <p class="text-[10px] text-amber-600 font-bold">Bizning nomimizdan to'ladi</p>
-                <p class="text-[10px] text-slate-400 truncate">${income.date} • ${periodLabel(recordPeriod(income))}</p>
-                <p class="text-[10px] text-slate-400 truncate">${purpose}</p>
+                <p class="truncate text-sm font-semibold text-slate-900">${income.tenant}</p>
+                <span class="ui-badge ui-badge-warning mt-0.5 max-w-full whitespace-normal">Bizning nomimizdan to'ladi</span>
+                <p class="history-meta mt-1 truncate text-xs text-slate-500">${income.date} · ${periodLabel(recordPeriod(income))}</p>
+                <p class="truncate text-xs text-slate-500">${purpose}</p>
             </div>
         </div>
-        <div class="flex items-center gap-3 shrink-0">
-            <div class="text-right">
-                <p class="font-bold text-slate-700 text-sm">${income.amount.toLocaleString()} ${income.currency}</p>
-                <p class="text-[10px] text-slate-400">${income.method} • kassaga 0</p>
-            </div>
-            <button onclick="editTx('${income.id}')" class="bg-slate-50 p-2 rounded text-slate-400 hover:text-blue-600"><i class="fas fa-pen text-xs"></i></button>
-            <button onclick="deleteTx('${income.id}')" class="bg-slate-50 p-2 rounded text-slate-400 hover:text-red-500"><i class="fas fa-trash text-xs"></i></button>
-        </div>`;
+        <div class="shrink-0 text-right">
+            <p class="ui-figure text-sm text-slate-900">${income.amount.toLocaleString()} ${income.currency}</p>
+            <p class="text-xs text-slate-500">${income.method} · kassaga 0</p>
+        </div>
+        ${historyActionsMarkup(income.id)}`;
+}
+
+/** Edit and cancel for one business action: labelled, and big enough to tap. */
+function historyActionsMarkup(id) {
+    return `
+            <div class="flex w-full shrink-0 justify-end gap-1 border-t border-slate-100 pt-2 sm:w-auto sm:border-0 sm:pt-0">
+                <button onclick="editTx('${id}')" class="ui-icon-btn size-9 text-slate-500 hover:text-blue-600" aria-label="Tahrirlash" title="Tahrirlash">${uiIcon('pencil', 'ui-icon-sm')}</button>
+                <button onclick="deleteTx('${id}')" class="ui-icon-btn size-9 text-slate-500 hover:border-red-200 hover:bg-red-50 hover:text-red-600" aria-label="Bekor qilish" title="Bekor qilish">${uiIcon('trash-2', 'ui-icon-sm')}</button>
+            </div>`;
 }
 
 function ordinaryRowMarkup(t) {
+    // ui-icons: arrow-down arrow-up
+    const income = t.type === 'Income';
     return `
-        <div class="flex items-center gap-3 min-w-0">
-            <div class="w-1 h-8 rounded-full ${t.type === 'Income' ? 'bg-green-400' : 'bg-red-400'}"></div>
-            <div class="min-w-0"><p class="font-bold text-slate-700 text-sm truncate">${t.tenant}</p><p class="text-[10px] text-slate-400">${t.date} • ${periodLabel(recordPeriod(t))}</p></div>
+        <div class="flex min-w-0 flex-1 basis-40 items-center gap-3">
+            <div class="flex size-10 shrink-0 items-center justify-center rounded-xl ${income ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-600'}">${uiIcon(income ? 'arrow-down' : 'arrow-up')}</div>
+            <div class="min-w-0"><p class="truncate text-sm font-semibold text-slate-900">${t.tenant}</p><p class="history-meta truncate text-xs text-slate-500">${t.date} · ${periodLabel(recordPeriod(t))}</p></div>
         </div>
-        <div class="flex items-center gap-3 shrink-0">
-            <div class="text-right"><p class="font-bold text-slate-700 text-sm">${t.amount.toLocaleString()} ${t.currency}</p><p class="text-[10px] text-slate-400">${t.method}</p></div>
-            <button onclick="editTx('${t.id}')" class="bg-slate-50 p-2 rounded text-slate-400 hover:text-blue-600"><i class="fas fa-pen text-xs"></i></button>
-            <button onclick="deleteTx('${t.id}')" class="bg-slate-50 p-2 rounded text-slate-400 hover:text-red-500"><i class="fas fa-trash text-xs"></i></button>
-        </div>`;
+        <div class="shrink-0 text-right"><p class="ui-figure text-sm ${income ? 'text-emerald-700' : 'text-slate-900'}">${t.amount.toLocaleString()} ${t.currency}</p><p class="text-xs text-slate-500">${income ? 'Kirim' : 'Chiqim'} · ${t.method}</p></div>
+        ${historyActionsMarkup(t.id)}`;
 }
 
 /**
@@ -153,7 +158,7 @@ function renderHistory() {
 
     if (paged && !app.historyLoaded && !app.historyLoading) {
         const hint = document.createElement('button');
-        hint.className = "w-full bg-white border border-slate-200 rounded-lg py-3 text-xs font-bold text-slate-500";
+        hint.className = "ui-btn ui-btn-secondary ui-btn-block";
         hint.textContent = "Tarixni yuklash";
         hint.onclick = () => loadHistoryPage(true);
         list.appendChild(hint);
@@ -168,7 +173,7 @@ function renderHistory() {
         const cards = tenantPaid ? [tenantPaidCardMarkup(rows)] : rows.map(ordinaryRowMarkup);
         cards.forEach(markup => {
             const div = document.createElement('div');
-            div.className = "bg-white p-3 rounded-lg border border-slate-100 shadow-sm flex justify-between items-center gap-2";
+            div.className = "ui-card flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-4 py-3";
             div.innerHTML = markup;
             list.appendChild(div);
         });
@@ -176,14 +181,14 @@ function renderHistory() {
 
     if (app.historyError) {
         const problem = document.createElement('div');
-        problem.className = "card border-amber-300 bg-amber-50 text-amber-800 text-xs font-bold";
+        problem.className = "card ui-alert ui-alert-warning";
         problem.textContent = app.historyError;
         list.appendChild(problem);
     }
 
     if (app.historyLoading) {
         const busy = document.createElement('p');
-        busy.className = "text-center text-xs font-bold text-slate-400 py-4";
+        busy.className = "ui-empty";
         busy.textContent = "Yuklanmoqda...";
         list.appendChild(busy);
         return;
@@ -196,7 +201,7 @@ function renderHistory() {
 
     if (hasMore || app.historyError) {
         const more = document.createElement('button');
-        more.className = "w-full mt-2 bg-white border border-slate-200 rounded-lg py-3 text-xs font-bold text-slate-500";
+        more.className = "ui-btn ui-btn-secondary ui-btn-block mt-2";
         more.textContent = app.historyError
             ? "Qayta urinish"
             : `Yana ko'rsatish (${remaining} ta qoldi)`;
@@ -232,27 +237,27 @@ function renderExpenseModal() {
     // is the difference between a partial list and a wrong one.
     const partial = app.historyMode === 'paged' && app.historyHasMore
         ? `<button onclick="loadHistoryPage(false)"
-                class="w-full mb-2 bg-white border border-slate-200 rounded-lg py-2 text-[11px] font-bold text-slate-500">
+                class="ui-btn ui-btn-secondary ui-btn-block mb-2 whitespace-normal">
                 Yana ${Math.max(0, app.historyTotal - app.historyOffset)} ta amal yuklanmagan — yuklash
            </button>`
         : '';
 
     if (!expenses.length) {
         list.innerHTML = partial +
-            `<div class="text-center text-xs font-bold text-slate-400 py-8">Chiqimlar topilmadi</div>`;
+            `<div class="ui-empty">${uiIcon('inbox')}Chiqimlar topilmadi</div>`;
         return;
     }
 
     list.innerHTML = partial + expenses.map(t => `
-        <div class="bg-slate-50 border border-slate-200 rounded-xl p-3">
-            <div class="flex justify-between items-start gap-2">
-                <div>
-                    <p class="font-bold text-sm text-slate-700">${t.tenant}</p>
-                    <p class="text-[11px] text-slate-400">${t.date} • ${periodLabel(recordPeriod(t))}</p>
+        <div class="rounded-xl border border-slate-200 bg-white p-3">
+            <div class="flex items-start justify-between gap-2">
+                <div class="min-w-0">
+                    <p class="truncate text-sm font-semibold text-slate-900">${t.tenant}</p>
+                    <p class="text-xs text-slate-500">${t.date} · ${periodLabel(recordPeriod(t))}</p>
                 </div>
-                <p class="font-bold text-red-600 text-sm">${t.amount.toLocaleString()} ${t.currency}</p>
+                <p class="ui-figure shrink-0 text-sm text-red-600">${t.amount.toLocaleString()} ${t.currency}</p>
             </div>
-            <p class="text-[11px] text-slate-500 mt-1">${t.comment || "Izoh yo'q"}</p>
+            <p class="mt-1 text-sm text-slate-600">${t.comment || "Izoh yo'q"}</p>
         </div>
     `).join('');
 }

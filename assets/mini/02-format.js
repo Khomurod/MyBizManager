@@ -110,7 +110,7 @@ function openSheet(title, bodyHtml, onMount) {
             <div class="grabber"></div>
             <div class="between" style="margin-bottom:6px">
               <h1>${escapeHtml(title)}</h1>
-              <button class="btn-sm" onclick="closeSheet()" aria-label="Yopish">✕</button>
+              <button class="btn-sm" onclick="closeSheet()" aria-label="Yopish">${uiIcon('x')}</button>
             </div>
             ${bodyHtml}
           </div>

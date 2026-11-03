@@ -18,14 +18,14 @@ function renderRatesOverview() {
     list.innerHTML = periodsInYear(year).map(period => {
         const entry = findRateEntry(period);
         if(!entry) {
-            return `<div class="flex justify-between gap-2 py-0.5">
-                        <span class="text-slate-400">${MONTH_LABELS[periodMonth(period) - 1]}</span>
-                        <span class="text-slate-300">belgilanmagan</span>
+            return `<div class="ui-stat-row">
+                        <span class="text-slate-500">${MONTH_LABELS[periodMonth(period) - 1]}</span>
+                        <span class="text-slate-400">belgilanmagan</span>
                     </div>`;
         }
-        return `<div class="flex justify-between gap-2 py-0.5">
-                    <span class="text-slate-500">${MONTH_LABELS[periodMonth(period) - 1]}</span>
-                    <span class="text-slate-700 font-bold whitespace-nowrap">
+        return `<div class="ui-stat-row">
+                    <span class="text-slate-600">${MONTH_LABELS[periodMonth(period) - 1]}</span>
+                    <span class="ui-figure whitespace-nowrap text-slate-900">
                         ${entry.buy.toLocaleString()} / ${entry.sell.toLocaleString()}
                     </span>
                 </div>`;
@@ -54,40 +54,40 @@ function renderTenantList() {
 
         const disabledMonths = getDisabledMonths(t);
         const legacyMonths = disabledMonths.length ? `
-            <div class="grid grid-cols-4 gap-1 mt-2">
+            <div class="mt-3 grid grid-cols-4 gap-1.5 sm:grid-cols-6">
                 ${MONTH_LABELS.map((month, monthIndex) => {
                     const disabled = disabledMonths.includes(month);
-                    return `<button onclick="toggleTenantMonth(${i}, '${month}')"
-                        class="${disabled ? 'bg-red-50 text-red-500 border-red-200' : 'bg-green-50 text-green-700 border-green-200'} border rounded-md py-1 text-[10px] font-bold active:scale-95 transition-all">
+                    return `<button onclick="toggleTenantMonth(${i}, '${month}')" aria-pressed="${!disabled}"
+                        class="${disabled ? 'bg-red-50 text-red-700 border-red-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'} h-9 rounded-lg border text-xs font-semibold transition-colors">
                         ${MONTH_SHORT_LABELS[monthIndex]}</button>`;
                 }).join('')}
             </div>` : '';
 
         return `
-        <div class="bg-slate-50 p-3 rounded-lg text-xs border ${t.active ? '' : 'opacity-60'}" data-tenant="${escapeHTML(t.name)}">
-            <div class="flex justify-between items-start gap-2">
+        <div class="rounded-xl border border-slate-200 bg-white p-3 text-sm ${t.active ? '' : 'bg-slate-50'}" data-tenant="${escapeHTML(t.name)}">
+            <div class="flex items-start justify-between gap-2">
                 <div class="min-w-0">
-                    <p class="font-bold text-slate-700 truncate">${escapeHTML(t.name)}
-                        ${t.active ? '' : '<span class="text-[10px] font-normal text-slate-400">(faol emas)</span>'}
+                    <p class="flex flex-wrap items-center gap-2 font-semibold text-slate-900"><span class="truncate">${escapeHTML(t.name)}</span>
+                        ${t.active ? '<span class="ui-badge ui-badge-success">Faol</span>' : '<span class="ui-badge ui-badge-neutral">faol emas</span>'}
                     </p>
-                    <p class="text-[10px] text-slate-400">${window}</p>
-                    <p class="tenant-current-rent text-[11px] text-slate-600 mt-1">
+                    <p class="mt-0.5 text-xs text-slate-500">${window}</p>
+                    <p class="tenant-current-rent mt-1 text-sm text-slate-700">
                         ${periodShortLabel(period)}:
-                        <b>${rentNow > 0 ? `${rentNow.toLocaleString()} ${t.currency}` : "ijara yo'q"}</b>
-                        <span class="text-slate-400">(${RENT_SOURCE_LABELS[source] || source})</span>
+                        <b class="tabular">${rentNow > 0 ? `${rentNow.toLocaleString()} ${t.currency}` : "ijara yo'q"}</b>
+                        <span class="text-xs text-slate-500">(${RENT_SOURCE_LABELS[source] || source})</span>
                     </p>
                 </div>
-                <div class="flex gap-3 shrink-0">
-                    <button onclick="openTenantSchedule(${i})" title="Jadval" class="text-slate-500"><i class="fas fa-calendar-alt"></i></button>
-                    <button onclick="editTenant(${i})" title="Tahrirlash" class="text-blue-400"><i class="fas fa-pen"></i></button>
+                <div class="flex shrink-0 gap-1">
+                    <button onclick="openTenantSchedule(${i})" title="Jadval" aria-label="Ijara jadvali" class="ui-icon-btn size-9">${uiIcon('calendar-days', 'ui-icon-sm')}</button>
+                    <button onclick="editTenant(${i})" title="Tahrirlash" aria-label="Tahrirlash" class="ui-icon-btn size-9 hover:text-blue-600">${uiIcon('pencil', 'ui-icon-sm')}</button>
                     ${t.active
-                        ? `<button onclick="removeTenant(${i})" title="Faolsizlantirish" class="text-red-400"><i class="fas fa-times"></i></button>`
-                        : `<button onclick="reactivateTenant(${i})" title="Qayta faollashtirish" class="text-green-500"><i class="fas fa-undo"></i></button>`}
+                        ? `<button onclick="removeTenant(${i})" title="Faolsizlantirish" aria-label="Faolsizlantirish" class="ui-icon-btn size-9 hover:border-red-200 hover:bg-red-50 hover:text-red-600">${uiIcon('ban', 'ui-icon-sm')}</button>`
+                        : `<button onclick="reactivateTenant(${i})" title="Qayta faollashtirish" aria-label="Qayta faollashtirish" class="ui-icon-btn size-9 hover:text-emerald-600">${uiIcon('rotate-ccw', 'ui-icon-sm')}</button>`}
                 </div>
             </div>
             ${legacyMonths}
         </div>`;
-    }).join('') : `<p class="text-xs text-slate-400">Ijarachi qo'shilmagan.</p>`;
+    }).join('') : `<div class="ui-empty">${uiIcon('building-2')}Ijarachi qo'shilmagan.</div>`;
 
     populateTenantPeriodSelectors();
 }
@@ -115,25 +115,25 @@ function renderPlannedExpenseList() {
         ? app.templateExpenses.map(expense => {
             const occurrence = plannedExpenseOccurrence(expense, period);
             return `
-            <div class="bg-slate-50 p-3 rounded-lg text-xs border" data-expense="${expense.id}">
-                <div class="flex justify-between items-start gap-2">
+            <div class="rounded-xl border border-slate-200 bg-white p-3 text-sm" data-expense="${expense.id}">
+                <div class="flex items-start justify-between gap-2">
                     <div class="min-w-0">
-                        <p class="font-bold text-slate-700 truncate">${escapeHTML(expense.name)}</p>
-                        <p class="expense-schedule text-[10px] text-slate-400">${escapeHTML(describePlannedExpense(expense))}</p>
-                        <p class="text-slate-600 mt-1">${expense.amount.toLocaleString()} ${expense.currency}</p>
+                        <p class="truncate font-semibold text-slate-900">${escapeHTML(expense.name)}</p>
+                        <p class="expense-schedule text-xs text-slate-500">${escapeHTML(describePlannedExpense(expense))}</p>
+                        <p class="ui-figure mt-1 text-slate-900">${expense.amount.toLocaleString()} ${expense.currency}</p>
                         ${occurrence
-                            ? `<p class="text-[10px] text-blue-600 font-bold mt-1">${periodShortLabel(period)}: ${occurrence}-marta</p>`
-                            : `<p class="text-[10px] text-slate-300 mt-1">${periodShortLabel(period)}: kutilmaydi</p>`}
-                        ${expense.description ? `<p class="text-[10px] text-slate-400 mt-1">${escapeHTML(expense.description)}</p>` : ''}
+                            ? `<span class="ui-badge ui-badge-brand mt-1.5">${periodShortLabel(period)}: ${occurrence}-marta</span>`
+                            : `<span class="ui-badge ui-badge-neutral mt-1.5">${periodShortLabel(period)}: kutilmaydi</span>`}
+                        ${expense.description ? `<p class="mt-1 text-xs text-slate-500">${escapeHTML(expense.description)}</p>` : ''}
                     </div>
-                    <div class="flex gap-3 shrink-0">
-                        <button onclick="editTemplateExpense('${expense.id}')" class="text-blue-400"><i class="fas fa-pen"></i></button>
-                        <button onclick="removeTemplateExpense('${expense.id}')" class="text-red-400"><i class="fas fa-trash-alt"></i></button>
+                    <div class="flex shrink-0 gap-1">
+                        <button onclick="editTemplateExpense('${expense.id}')" class="ui-icon-btn size-9 hover:text-blue-600" aria-label="Tahrirlash" title="Tahrirlash">${uiIcon('pencil', 'ui-icon-sm')}</button>
+                        <button onclick="removeTemplateExpense('${expense.id}')" class="ui-icon-btn size-9 hover:border-red-200 hover:bg-red-50 hover:text-red-600" aria-label="O'chirish" title="O'chirish">${uiIcon('trash-2', 'ui-icon-sm')}</button>
                     </div>
                 </div>
             </div>`;
         }).join('')
-        : `<div class="text-center text-xs font-bold text-slate-400 py-4 bg-slate-50 rounded-lg border border-dashed">Rejali chiqimlar yo'q</div>`;
+        : `<div class="ui-empty rounded-xl border border-dashed border-slate-200">${uiIcon('receipt')}Rejali chiqimlar yo'q</div>`;
 }
 
 /** Frequency options and the month toggles, built once. */
@@ -148,7 +148,7 @@ function initPlannedExpenseControls() {
     if(toggles && toggles.children.length === 0) {
         toggles.innerHTML = MONTH_SHORT_LABELS.map((label, index) =>
             `<button type="button" data-month="${index + 1}" onclick="toggleExpenseMonth(this)"
-                class="expense-month-toggle border border-slate-200 rounded-md py-1 text-[10px] font-bold bg-white text-slate-600 active:scale-95 transition-all">${label}</button>`
+                class="expense-month-toggle h-9 rounded-lg border border-slate-200 bg-white text-xs font-semibold text-slate-700 transition-colors">${label}</button>`
         ).join('');
     }
 

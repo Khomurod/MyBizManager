@@ -74,20 +74,20 @@ function renderDashboard() {
         let percent = isAllTime ? 100 : Math.min((paidUZS / rentUZS) * 100, 100);
 
         if(isAllTime) {
-            status = `<span class="text-blue-600 font-bold">${Math.round(paidUZS).toLocaleString()} UZS</span>`;
+            status = `<span class="ui-badge ui-badge-brand tabular">${Math.round(paidUZS).toLocaleString()} UZS</span>`;
             barColor = "bg-blue-500";
         } else if(rentUZS === 0) {
-             status = `<span class="text-slate-400">Narx yo'q</span>`;
+             status = `<span class="ui-badge ui-badge-neutral">Narx yo'q</span>`;
              percent = 0;
              barColor = "bg-slate-300";
         } else if(diff >= -1000 && diff <= 1000) {
-            status = `<span class="text-green-600 font-bold"><i class="fas fa-check-circle"></i> To'landi</span>`;
-            barColor = "bg-green-500";
+            status = `<span class="ui-badge ui-badge-success">${uiIcon('circle-check')} To'landi</span>`;
+            barColor = "bg-emerald-500";
         } else if(diff > 1000) {
-            status = `<span class="text-blue-600 font-bold">+${Math.round(diff).toLocaleString()} ortiqcha</span>`;
+            status = `<span class="ui-badge ui-badge-brand tabular">+${Math.round(diff).toLocaleString()} ortiqcha</span>`;
             barColor = "bg-blue-500";
         } else {
-            status = `<span class="text-red-500 font-bold">-${Math.round(Math.abs(diff)).toLocaleString()} qarz</span>`;
+            status = `<span class="ui-badge ui-badge-danger tabular">-${Math.round(Math.abs(diff)).toLocaleString()} qarz</span>`;
             totalPeriodDebt += Math.abs(diff); // Add to total debt
         }
 
@@ -98,22 +98,25 @@ function renderDashboard() {
         const rentForPeriod = isAllTime ? 0 : effectiveTenantRent(tenant, period);
 
         const div = document.createElement('div');
-        div.className = "bg-white border border-slate-100 rounded-lg p-3 active:scale-95 transition-transform cursor-pointer";
+        div.className = "ui-row-action px-4 py-3 sm:px-5";
+        div.setAttribute('role', 'button');
+        div.tabIndex = 0;
         div.onclick = () => openTenantModal(tenant.name, period, rentForPeriod, tenant.currency, monthRate);
+        div.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); div.onclick(); } };
 
         div.innerHTML = `
-            <div class="flex justify-between items-center mb-2">
-                <div class="flex items-center gap-2">
-                    <span class="font-bold text-sm text-slate-700">${tenant.name}</span>
-                    <span class="text-[10px] bg-slate-100 px-1 rounded text-slate-500">${isAllTime ? 'Jami' : 'Ijara'}: ${isAllTime ? '-' : rentForPeriod + ' ' + tenant.currency}</span>
+            <div class="flex items-center justify-between gap-3">
+                <div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                    <span class="truncate text-sm font-semibold text-slate-900">${tenant.name}</span>
+                    <span class="ui-badge bg-slate-100 text-slate-600 font-medium tabular">${isAllTime ? 'Jami' : 'Ijara'}: ${isAllTime ? '-' : rentForPeriod + ' ' + tenant.currency}</span>
                 </div>
-                <div class="text-[10px]">${status}</div>
+                <div class="shrink-0">${status}</div>
             </div>
-            <div class="w-full bg-slate-100 rounded-full h-2 mb-1">
-                <div class="${barColor} h-2 rounded-full" style="width: ${percent}%"></div>
-            </div>
-            <div class="text-right text-[10px] text-slate-400">
-                To'landi: ${(Math.round(paidUZS)).toLocaleString()} UZS
+            <div class="mt-2.5 flex items-center gap-3">
+                <div class="ui-progress flex-1">
+                    <div class="ui-progress-bar ${barColor}" style="width: ${percent}%"></div>
+                </div>
+                <span class="shrink-0 text-xs text-slate-500 tabular">To'landi: ${(Math.round(paidUZS)).toLocaleString()} UZS</span>
             </div>
         `;
         list.appendChild(div);
@@ -150,18 +153,21 @@ function renderRecentActivity() {
     list.innerHTML = entries.slice(0, 6).map(entry => {
         const income = entry.type !== 'Expense';
         const pair = entry.kind === 'tenant_paid_expense';
+        const tone = pair ? 'bg-amber-50 text-amber-600' : (income ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-600');
+        // ui-icons: building-2 arrow-down arrow-up
+        const icon = pair ? 'building-2' : (income ? 'arrow-down' : 'arrow-up');
         return `
-        <div class="bg-white p-3 rounded-lg border border-slate-100 shadow-sm flex justify-between items-center gap-2">
-            <div class="flex items-center gap-3 min-w-0">
-                <div class="w-1 h-8 rounded-full ${pair ? 'bg-amber-400' : (income ? 'bg-green-400' : 'bg-red-400')}"></div>
+        <div class="flex items-center justify-between gap-3 px-4 py-3 sm:px-5">
+            <div class="flex min-w-0 items-center gap-3">
+                <div class="flex size-9 shrink-0 items-center justify-center rounded-xl ${tone}">${uiIcon(icon, 'ui-icon-sm')}</div>
                 <div class="min-w-0">
-                    <p class="font-bold text-slate-700 text-sm truncate">${pair ? '🏢 ' : ''}${escapeHtmlText(entry.tenant)}</p>
-                    <p class="text-[10px] text-slate-400 truncate">${escapeHtmlText(entry.date)} • ${escapeHtmlText(entry.periodLabel)}${entry.lines > 1 ? ' • ' + entry.lines + ' qator' : ''}</p>
+                    <p class="truncate text-sm font-semibold text-slate-900">${escapeHtmlText(entry.tenant)}</p>
+                    <p class="truncate text-xs text-slate-500">${escapeHtmlText(entry.date)} · ${escapeHtmlText(entry.periodLabel)}${entry.lines > 1 ? ' · ' + entry.lines + ' qator' : ''}</p>
                 </div>
             </div>
-            <div class="text-right shrink-0">
-                <p class="font-bold text-slate-700 text-sm">${Math.round(Number(entry.amountUZS) || 0).toLocaleString()} UZS</p>
-                <p class="text-[10px] text-slate-400">${pair ? "kassaga 0" : (income ? 'Kirim' : 'Chiqim')}</p>
+            <div class="shrink-0 text-right">
+                <p class="ui-figure text-sm text-slate-900">${Math.round(Number(entry.amountUZS) || 0).toLocaleString()} UZS</p>
+                <p class="text-xs text-slate-500">${pair ? "kassaga 0" : (income ? 'Kirim' : 'Chiqim')}</p>
             </div>
         </div>`;
     }).join('');
@@ -200,24 +206,24 @@ function openDebtListModal() {
     list.innerHTML = "";
 
     if (debtors.length === 0) {
-        list.innerHTML = `<p class="text-center text-slate-400 text-sm py-4">Qarzdorlik mavjud emas</p>`;
+        list.innerHTML = `<div class="ui-empty">${uiIcon('circle-check')}Qarzdorlik mavjud emas</div>`;
     } else {
         debtors.forEach(d => {
             const row = document.createElement('div');
-            row.className = "flex justify-between items-center p-3 border-b border-slate-50 last:border-0 hover:bg-slate-50 rounded-lg";
+            row.className = "flex items-center justify-between gap-3 px-3 py-3";
             row.innerHTML = `
-                <div class="flex items-center gap-3">
-                    <div class="bg-red-50 w-8 h-8 rounded-full flex items-center justify-center text-red-500 font-bold text-xs">
+                <div class="flex min-w-0 items-center gap-3">
+                    <div class="flex size-9 shrink-0 items-center justify-center rounded-full bg-red-50 text-sm font-semibold text-red-600">
                         ${d.name.charAt(0)}
                     </div>
-                    <div>
-                        <p class="text-sm font-bold text-slate-700">${d.name}</p>
-                        <p class="text-[10px] text-slate-400">Ijara: ${Math.round(d.rent).toLocaleString()} UZS</p>
+                    <div class="min-w-0">
+                        <p class="truncate text-sm font-semibold text-slate-900">${d.name}</p>
+                        <p class="text-xs text-slate-500 tabular">Ijara: ${Math.round(d.rent).toLocaleString()} UZS</p>
                     </div>
                 </div>
-                <div class="text-right">
-                    <span class="font-bold text-red-500">-${Math.round(d.debt).toLocaleString()}</span>
-                    <p class="text-[10px] text-slate-400">Qarz</p>
+                <div class="shrink-0 text-right">
+                    <span class="ui-figure text-red-600">-${Math.round(d.debt).toLocaleString()}</span>
+                    <p class="text-xs text-slate-500">Qarz</p>
                 </div>
             `;
             list.appendChild(row);
@@ -292,35 +298,35 @@ async function openTenantModal(tenantName, period, rentAmount, rentCurr, monthRa
     } else {
         let rateInfo = "";
         if(rentCurr === 'USD') {
-            rateInfo = `<div class="text-[10px] text-slate-400 font-normal">Buy: 1 USD - ${selectedMonthRates.buy.toLocaleString()} UZS</div><div class="text-[10px] text-slate-400 font-normal">Sell: 1 USD - ${selectedMonthRates.sell.toLocaleString()} UZS</div>`;
+            rateInfo = `<div class="text-xs text-slate-500">Buy: 1 USD - ${selectedMonthRates.buy.toLocaleString()} UZS</div><div class="text-xs text-slate-500">Sell: 1 USD - ${selectedMonthRates.sell.toLocaleString()} UZS</div>`;
         }
-        document.getElementById('modalRent').innerHTML = `<div class="font-bold text-slate-700">${rentAmount} ${rentCurr}</div>${rateInfo}<div class="text-xs font-normal text-slate-500">~${Math.round(expectedRentUZS).toLocaleString()} UZS</div>`;
+        document.getElementById('modalRent').innerHTML = `<div class="ui-figure text-slate-900">${rentAmount} ${rentCurr}</div>${rateInfo}<div class="text-xs text-slate-500">~${Math.round(expectedRentUZS).toLocaleString()} UZS</div>`;
 
         const diff = totalPaidUZS - expectedRentUZS;
         const diffEl = document.getElementById('modalDiff');
         if(diff < -1000) {
             diffEl.innerText = `${Math.round(diff).toLocaleString()} UZS (QARZ)`;
-            diffEl.className = "font-bold text-red-500";
+            diffEl.className = "ui-figure text-red-600";
         } else if (diff > 1000) {
             diffEl.innerText = `+${Math.round(diff).toLocaleString()} UZS (ORTIQCHA)`;
-            diffEl.className = "font-bold text-blue-500";
+            diffEl.className = "ui-figure text-blue-600";
         } else {
             diffEl.innerText = "0 UZS (TO'LANDI)";
-            diffEl.className = "font-bold text-green-500";
+            diffEl.className = "ui-figure text-emerald-600";
         }
     }
 
     document.getElementById('modalPaid').innerText = `${Math.round(totalPaidUZS).toLocaleString()} UZS`;
 
     const list = document.getElementById('modalContent');
-    list.innerHTML = `<p class="text-center text-slate-400 text-sm py-4">Yuklanmoqda...</p>`;
+    list.innerHTML = `<div class="ui-empty">${uiIcon('loader-circle', 'ui-spin')}Yuklanmoqda...</div>`;
     document.getElementById('detailModal').classList.remove('hidden');
 
     const txs = await tenantPaymentRows(tenantName, period);
     list.innerHTML = "";
 
     if(txs.length === 0) {
-        list.innerHTML = `<p class="text-center text-slate-400 text-sm py-4">To'lovlar mavjud emas</p>`;
+        list.innerHTML = `<div class="ui-empty">${uiIcon('inbox')}To'lovlar mavjud emas</div>`;
     } else {
         txs.forEach(t => {
             let detailText = "";
@@ -328,21 +334,21 @@ async function openTenantModal(tenantName, period, rentAmount, rentCurr, monthRa
                 // The rate stored on the transaction, not today's rate.
                 const inUZS = transactionUZS(t);
                 const usedRate = Number(t.rateUsed) || getPeriodRateByType(recordPeriod(t), RATE_TYPE_ACTUAL);
-                detailText = `<div class="text-[10px] text-slate-400 text-right mt-0.5">Kurs: 1 USD - ${usedRate.toLocaleString()} UZS<br>= ${Math.round(inUZS).toLocaleString()} UZS</div>`;
+                detailText = `<div class="mt-0.5 text-right text-xs text-slate-500 tabular">Kurs: 1 USD - ${usedRate.toLocaleString()} UZS<br>= ${Math.round(inUZS).toLocaleString()} UZS</div>`;
             }
 
             const row = document.createElement('div');
-            row.className = "flex justify-between items-center p-2 border-b border-slate-50 last:border-0";
+            row.className = "flex items-center justify-between gap-3 px-3 py-3";
             row.innerHTML = `
                 <div class="flex items-center gap-3">
-                    <div class="bg-blue-50 w-8 h-8 rounded-full flex items-center justify-center text-blue-500"><i class="fas ${t.method === 'Naqd' ? 'fa-wallet' : 'fa-university'}"></i></div>
+                    <div class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600">${uiIcon(t.method === 'Naqd' ? 'wallet' : 'landmark', 'ui-icon-sm') /* ui-icons: wallet landmark */}</div>
                     <div>
-                        <p class="text-xs text-slate-400 font-bold">${t.date}</p>
+                        <p class="text-sm font-medium text-slate-900">${t.date}</p>
                         <p class="text-xs text-slate-500">${t.method}</p>
                     </div>
                 </div>
                 <div class="text-right">
-                    <span class="font-bold text-slate-700">${t.amount.toLocaleString()} ${t.currency}</span>
+                    <span class="ui-figure text-slate-900">${t.amount.toLocaleString()} ${t.currency}</span>
                     ${detailText}
                 </div>
             `;

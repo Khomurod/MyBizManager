@@ -305,19 +305,19 @@ function renderTenantSchedule() {
     list.innerHTML = tenantScheduleForYear(tenant, year).map(row => {
         const owed = row.rent > 0;
         return `
-        <div class="flex items-center justify-between gap-2 py-2 border-b border-slate-50 last:border-0" data-period="${row.period}">
+        <div class="flex items-center justify-between gap-2 border-b border-slate-100 py-2 last:border-0" data-period="${row.period}">
             <div class="min-w-0">
-                <p class="text-xs font-bold text-slate-700">${MONTH_LABELS[periodMonth(row.period) - 1]}</p>
-                <p class="text-[10px] text-slate-400">${RENT_SOURCE_LABELS[row.source] || row.source}</p>
+                <p class="text-sm font-medium text-slate-900">${MONTH_LABELS[periodMonth(row.period) - 1]}</p>
+                <p class="text-xs text-slate-500">${RENT_SOURCE_LABELS[row.source] || row.source}</p>
             </div>
-            <div class="flex items-center gap-2 shrink-0">
-                <span class="schedule-rent text-xs font-bold ${owed ? 'text-slate-700' : 'text-slate-300'} whitespace-nowrap">
+            <div class="flex shrink-0 items-center gap-1.5">
+                <span class="schedule-rent whitespace-nowrap text-sm font-semibold tabular ${owed ? 'text-slate-900' : 'text-slate-400'}">
                     ${owed ? `${row.rent.toLocaleString()} ${row.currency}` : "yo'q"}
                 </span>
-                <button onclick="setTenantException('${row.period}')" title="Istisno"
-                    class="w-7 h-7 rounded-lg bg-blue-50 text-blue-600 text-[10px] font-bold active:scale-95">✎</button>
-                <button onclick="toggleNoRentPeriod('${row.period}')" title="Ijara yo'q"
-                    class="w-7 h-7 rounded-lg ${row.source === 'no_rent' ? 'bg-red-500 text-white' : 'bg-slate-100 text-slate-500'} text-[10px] font-bold active:scale-95">0</button>
+                <button onclick="setTenantException('${row.period}')" title="Istisno" aria-label="Istisno narx"
+                    class="ui-icon-btn size-9 text-blue-600">${uiIcon('pencil', 'ui-icon-sm')}</button>
+                <button onclick="toggleNoRentPeriod('${row.period}')" title="Ijara yo'q" aria-label="Ijara yo'q" aria-pressed="${row.source === 'no_rent'}"
+                    class="ui-icon-btn size-9 text-xs font-bold ${row.source === 'no_rent' ? 'border-red-500 bg-red-500 text-white hover:bg-red-600 hover:text-white' : ''}">0</button>
             </div>
         </div>`;
     }).join('');
@@ -331,14 +331,14 @@ function renderRentChangeList(tenant) {
 
     box.innerHTML = (tenant.rentChanges || []).length
         ? tenant.rentChanges.map(change => `
-            <div class="flex items-center justify-between gap-2 text-[11px] py-1">
-                <span class="text-slate-500">${periodLabel(change.fromPeriod)} dan</span>
-                <span class="flex items-center gap-2 shrink-0">
-                    <b class="text-slate-700">${change.amount.toLocaleString()} ${tenant.currency}</b>
-                    <button onclick="removeTenantRentChange('${change.fromPeriod}')" class="text-red-400">✕</button>
+            <div class="flex items-center justify-between gap-2 py-1 text-sm">
+                <span class="text-slate-600">${periodLabel(change.fromPeriod)} dan</span>
+                <span class="flex shrink-0 items-center gap-2">
+                    <b class="tabular text-slate-900">${change.amount.toLocaleString()} ${tenant.currency}</b>
+                    <button onclick="removeTenantRentChange('${change.fromPeriod}')" class="ui-icon-btn size-8 text-red-500" aria-label="O'zgarishni olib tashlash">${uiIcon('x', 'ui-icon-sm')}</button>
                 </span>
             </div>`).join('')
-        : `<p class="text-[11px] text-slate-400">Rejalashtirilgan o'zgarish yo'q.</p>`;
+        : `<p class="text-sm text-slate-500">Rejalashtirilgan o'zgarish yo'q.</p>`;
 }
 
 function updateScheduleTenant(changes) {

@@ -22,7 +22,7 @@ function renderAllTasks() {
     const failed = document.getElementById('loadWarn');
     if (failed) {
         failed.textContent = TASKS_STATE.loadError
-            ? "⚠️ " + TASKS_STATE.loadError + " — ko'rsatilayotgan ro'yxat eskirgan bo'lishi mumkin."
+            ? TASKS_STATE.loadError + " — ko'rsatilayotgan ro'yxat eskirgan bo'lishi mumkin."
             : '';
         failed.classList.toggle('hidden', !TASKS_STATE.loadError);
     }
@@ -73,17 +73,17 @@ function occCanCompleteHere(occ) {
 /** The line that replaces the button when only the group can finish it. */
 function occProofHint(occ) {
     const text = occ && occ.displayStatus === 'WaitingProof'
-        ? '📷 Rasm kutilmoqda — guruhda so\'ralgan xabarga javob berilishi kerak'
-        : '📷 Rasm bilan tasdiqlanadi — Telegram guruhida bajarilgan deb belgilanadi';
-    return '<p class="t-note">' + escapeTaskHtml(text) + '</p>';
+        ? 'Rasm kutilmoqda — guruhda so\'ralgan xabarga javob berilishi kerak'
+        : 'Rasm bilan tasdiqlanadi — Telegram guruhida bajarilgan deb belgilanadi';
+    return '<p class="t-note">' + uiIcon('camera') + '<span>' + escapeTaskHtml(text) + '</span></p>';
 }
 
 /** One occurrence card. `mode` picks which actions appear. */
 function occCard(occ, mode) {
     const extras = [];
     if (mode === 'completed') {
-        if (occ.completedByName) extras.push('✓ ' + escapeTaskHtml(occ.completedByName));
-        if (occ.hasProof) extras.push('🖼 Rasm bor');
+        if (occ.completedByName) extras.push(uiIcon('user-check') + escapeTaskHtml(occ.completedByName));
+        if (occ.hasProof) extras.push(uiIcon('image') + 'Rasm bor');
     }
 
     let actions = '';
@@ -91,15 +91,15 @@ function occCard(occ, mode) {
         // One prominent action, one subordinate icon — not two equal halves.
         const skip =
             '<button onclick="tasksSkip(\'' + occ.id + '\')" class="btn btn--ghost btn--icon" ' +
-            'aria-label="O\'tkazib yuborish" title="O\'tkazib yuborish">⏭</button>';
+            'aria-label="O\'tkazib yuborish" title="O\'tkazib yuborish">' + uiIcon('skip-forward') + '</button>';
         actions = occCanCompleteHere(occ)
             ? '<div class="acts">' +
-              '<button onclick="tasksCompleteOcc(\'' + occ.id + '\')" class="btn btn--primary">✅ Bajarildi</button>' +
+              '<button onclick="tasksCompleteOcc(\'' + occ.id + '\')" class="btn btn--primary">' + uiIcon('check') + 'Bajarildi</button>' +
               skip + '</div>'
             : occProofHint(occ) + '<div class="acts">' + skip + '</div>';
     } else if (mode === 'completed') {
         actions = '<div class="subacts">' +
-            '<button onclick="tasksReopen(\'' + occ.id + '\')" class="lnk">↩ Qayta ochish</button>' +
+            '<button onclick="tasksReopen(\'' + occ.id + '\')" class="lnk">' + uiIcon('rotate-ccw') + 'Qayta ochish</button>' +
             '</div>';
     } else if (mode === 'upcoming') {
         // Future work is shown, not actioned: completing something that has not
@@ -108,7 +108,7 @@ function occCard(occ, mode) {
         actions =
             '<div class="subacts">' +
             '<button onclick="tasksSkip(\'' + occ.id + '\', \'' + label + '\')" class="lnk lnk--muted">' +
-            '⏭ O\'tkazish</button>' +
+            uiIcon('skip-forward') + 'O\'tkazish</button>' +
             '</div>';
     }
 
@@ -125,10 +125,10 @@ function occCard(occ, mode) {
         '</div>';
 }
 
-function section(title, items, mode, tone) {
+function section(title, items, mode, tone, icon) {
     if (!items || !items.length) return '';
     return '<section class="sec' + (tone ? ' sec--' + tone : '') + '">' +
-        '<h2 class="sec__h">' + escapeTaskHtml(title) + '<span class="sec__n">' + items.length + '</span></h2>' +
+        '<h2 class="sec__h">' + (icon ? uiIcon(icon) : '') + escapeTaskHtml(title) + '<span class="sec__n">' + items.length + '</span></h2>' +
         items.map(o => occCard(o, mode)).join('') +
         '</section>';
 }
@@ -137,10 +137,10 @@ function section(title, items, mode, tone) {
  * A collapsed group. Used for work that is not today's business — the future
  * and the already-finished — so Today opens on what actually needs doing.
  */
-function foldSection(title, items, mode) {
+function foldSection(title, items, mode, icon) {
     if (!items || !items.length) return '';
     return '<details class="fold">' +
-        '<summary>' + escapeTaskHtml(title) + '<span class="sec__n">' + items.length + '</span></summary>' +
+        '<summary>' + (icon ? uiIcon(icon) : '') + escapeTaskHtml(title) + '<span class="sec__n">' + items.length + '</span></summary>' +
         '<div class="fold__body">' + items.map(o => occCard(o, mode)).join('') + '</div>' +
         '</details>';
 }
@@ -153,33 +153,34 @@ function renderTodayPanel() {
     const total = t.overdue.length + t.needsAttention.length + t.waitingProof.length +
         t.upcoming.length + t.completedToday.length;
     if (total === 0) {
-        panel.innerHTML = emptyNote("Bugun uchun vazifa yo'q.\n➕ tugmasi bilan qo'shing.");
+        panel.innerHTML = emptyNote("Bugun uchun vazifa yo'q.\n+ tugmasi bilan qo'shing.");
         return;
     }
 
     const live = t.overdue.length + t.needsAttention.length + t.waitingProof.length;
     const allClear = live === 0
-        ? '<p class="empty">Bugungi ishlar tugadi. 🎉</p>'
+        ? '<p class="empty">Bugungi ishlar tugadi.</p>'
         : '';
 
     // Overdue first, then today's work, then pending proofs. Future and
     // finished work is folded away so it never dominates the screen.
+    // ui-icons: clock-alert calendar-days camera calendar-clock circle-check
     panel.innerHTML =
-        section("🔴 Muddati o'tgan", t.overdue, 'open', 'danger') +
-        section('📌 Bugun bajarilishi kerak', t.needsAttention, 'open') +
-        section('⏳ Rasm kutilmoqda', t.waitingProof, 'open', 'warn') +
+        section("Muddati o'tgan", t.overdue, 'open', 'danger', 'clock-alert') +
+        section('Bugun bajarilishi kerak', t.needsAttention, 'open', '', 'calendar-days') +
+        section('Rasm kutilmoqda', t.waitingProof, 'open', 'warn', 'camera') +
         allClear +
-        foldSection('🗓 Kelgusi ishlar', t.upcoming, 'upcoming') +
-        foldSection('✅ Bugun bajarilgan', t.completedToday, 'completed');
+        foldSection('Kelgusi ishlar', t.upcoming, 'upcoming', 'calendar-clock') +
+        foldSection('Bugun bajarilgan', t.completedToday, 'completed', 'circle-check');
 }
 
 /** Definition-level actions: quiet text controls under a divider. */
 function defActionsRow(task, extra) {
     return '<div class="subacts">' +
         (extra || '') +
-        '<button onclick="openTaskForm(\'' + task.id + '\')" class="lnk">✏️ Tahrirlash</button>' +
+        '<button onclick="openTaskForm(\'' + task.id + '\')" class="lnk">' + uiIcon('pencil') + 'Tahrirlash</button>' +
         (task.status !== 'cancelled'
-            ? '<button onclick="tasksCancel(\'' + task.id + '\')" class="lnk lnk--danger">🗑 Bekor qilish</button>'
+            ? '<button onclick="tasksCancel(\'' + task.id + '\')" class="lnk lnk--danger">' + uiIcon('ban') + 'Bekor qilish</button>'
             : '') +
         '</div>';
 }
@@ -196,7 +197,7 @@ function renderTasksPanel() {
         const live = occ && (occ.displayStatus === 'Open' || occ.displayStatus === 'Overdue' ||
             occ.displayStatus === 'WaitingProof');
         const act = live && occCanCompleteHere(occ)
-            ? '<button onclick="tasksCompleteOcc(\'' + occ.id + '\')" class="lnk lnk--ok">✅ Bajarildi</button>'
+            ? '<button onclick="tasksCompleteOcc(\'' + occ.id + '\')" class="lnk lnk--ok">' + uiIcon('check') + 'Bajarildi</button>'
             : '';
         const proofNote = live && !occCanCompleteHere(occ) ? occProofHint(occ) : '';
         return '<div class="card' + (occ ? cardFlagClass(occ.displayStatus) : '') + '">' +
@@ -205,7 +206,7 @@ function renderTasksPanel() {
             '<div class="badges">' + taskPriorityBadge(task.priority) +
             (occ ? taskStatusBadge(occ.displayStatus) : '') + '</div>' +
             '</div>' +
-            (occ ? taskWhenLine(occ) : '<p class="when">🕓 Muddatsiz</p>') +
+            (occ ? taskWhenLine(occ) : '<p class="when">' + uiIcon('clock') + 'Muddatsiz</p>') +
             taskMetaLine({
                 responsible: task.responsible,
                 photoRequired: task.photoRequired
@@ -228,9 +229,9 @@ function renderRoutinesPanel() {
         const stats = task.stats || {};
         const today = task.todayOccurrence;
         const pauseBtn = task.status === 'paused'
-            ? '<button onclick="tasksResume(\'' + task.id + '\')" class="lnk lnk--ok">▶️ Davom ettirish</button>'
+            ? '<button onclick="tasksResume(\'' + task.id + '\')" class="lnk lnk--ok">' + uiIcon('play') + 'Davom ettirish</button>'
             : (task.status === 'active'
-                ? '<button onclick="tasksPause(\'' + task.id + '\')" class="lnk lnk--warn">⏸ To\'xtatish</button>'
+                ? '<button onclick="tasksPause(\'' + task.id + '\')" class="lnk lnk--warn">' + uiIcon('pause') + 'To\'xtatish</button>'
                 : '');
 
         let todayRow = '';
@@ -238,14 +239,14 @@ function renderRoutinesPanel() {
             const live = today.displayStatus === 'Open' || today.displayStatus === 'Overdue' ||
                 today.displayStatus === 'WaitingProof';
             const skip = '<button onclick="tasksSkip(\'' + today.id + '\')" class="btn btn--ghost btn--icon" ' +
-                'style="min-height:42px;width:42px;" aria-label="Bugun o\'tkazish" title="Bugun o\'tkazish">⏭</button>';
+                'style="min-height:42px;width:42px;" aria-label="Bugun o\'tkazish" title="Bugun o\'tkazish">' + uiIcon('skip-forward') + '</button>';
             todayRow = '<div class="today-strip">' +
                 '<span>Bugun: ' + taskStatusBadge(today.displayStatus) + '</span>' +
                 (live
                     ? '<span class="today-strip__act acts" style="margin:0;">' +
                       (occCanCompleteHere(today)
                           ? '<button onclick="tasksCompleteOcc(\'' + today.id + '\')" class="btn btn--primary" ' +
-                            'style="min-height:42px;padding:0 14px;">✅ Bajarildi</button>'
+                            'style="min-height:42px;padding:0 14px;">' + uiIcon('check') + 'Bajarildi</button>'
                           : '') +
                       skip + '</span>'
                     : '') +
@@ -258,17 +259,17 @@ function renderRoutinesPanel() {
             '<div class="row__grow"><p class="t-title">' + escapeTaskHtml(task.title) + '</p></div>' +
             '<div class="badges">' + taskPriorityBadge(task.priority) + taskDefStatusBadge(task.status) + '</div>' +
             '</div>' +
-            '<p class="when">🔁 ' + escapeTaskHtml(task.recurrenceLabel || '') +
-            (task.dueTime ? ' • ' + escapeTaskHtml(task.dueTime) : '') + '</p>' +
+            '<p class="when">' + uiIcon('repeat') + escapeTaskHtml(task.recurrenceLabel || '') +
+            (task.dueTime ? ' · ' + escapeTaskHtml(task.dueTime) : '') + '</p>' +
             taskMetaLine(
                 { responsible: task.responsible, photoRequired: task.photoRequired },
                 (task.reminderTimes && task.reminderTimes.length)
-                    ? ['🔔 ' + task.reminderTimes.map(escapeTaskHtml).join(', ')]
+                    ? [uiIcon('bell') + task.reminderTimes.map(escapeTaskHtml).join(', ')]
                     : []) +
             '<div class="stats">' +
-            '<span class="stat">🔥 ' + (stats.streak || 0) + ' kun</span>' +
+            '<span class="stat" title="Ketma-ket kunlar">' + uiIcon('flame') + (stats.streak || 0) + ' kun</span>' +
             (stats.completionRate !== null && stats.completionRate !== undefined
-                ? '<span class="stat">📊 ' + stats.completionRate + '%</span>' : '') +
+                ? '<span class="stat" title="Bajarilish darajasi">' + uiIcon('chart-pie') + stats.completionRate + '%</span>' : '') +
             '</div>' +
             todayRow +
             defActionsRow(task, pauseBtn) +
@@ -291,28 +292,28 @@ function renderGoalsPanel() {
             // photo-proof work, so the tick is replaced by what it is waiting for.
             const btn = done
                 ? '<button onclick="tasksReopen(\'' + step.id + '\')" class="step__btn" ' +
-                  'aria-label="Qayta ochish" title="Qayta ochish">↩</button>'
+                  'aria-label="Qayta ochish" title="Qayta ochish">' + uiIcon('rotate-ccw') + '</button>'
                 : (occCanCompleteHere(step)
                     ? '<button onclick="tasksCompleteOcc(\'' + step.id + '\')" class="step__btn step__btn--ok" ' +
-                      'aria-label="Bajarildi" title="Bajarildi">✅</button>'
-                    : '<span class="step__btn" aria-label="Rasm bilan tasdiqlanadi" ' +
-                      'title="Rasm bilan tasdiqlanadi — Telegram guruhida">📷</span>');
+                      'aria-label="Bajarildi" title="Bajarildi">' + uiIcon('check') + '</button>'
+                    : '<span class="step__btn step__btn--proof" role="img" aria-label="Rasm bilan tasdiqlanadi" ' +
+                      'title="Rasm bilan tasdiqlanadi — Telegram guruhida">' + uiIcon('camera') + '</span>');
             // The step title is stored as "<goal> — <step>"; show only the step.
             const short = step.title.split(' — ').slice(1).join(' — ') || step.title;
             return '<div class="step' + (done ? ' step--done' : '') + '">' +
-                '<span class="step__txt">' + (done ? '☑ ' : '☐ ') + escapeTaskHtml(short) + '</span>' +
+                '<span class="step__txt"><span class="sr-only">' + (done ? 'Bajarilgan: ' : 'Ochiq: ') + '</span>' + escapeTaskHtml(short) + '</span>' +
                 btn +
                 '</div>';
         }).join('');
 
         return '<div class="card">' +
             '<div class="row">' +
-            '<div class="row__grow"><p class="t-title t-title--lg">🎯 ' + escapeTaskHtml(task.title) + '</p></div>' +
+            '<div class="row__grow"><p class="t-title t-title--lg">' + escapeTaskHtml(task.title) + '</p></div>' +
             '<div class="badges">' + taskDefStatusBadge(task.status) + '</div>' +
             '</div>' +
             taskMetaLine({ responsible: task.responsible, photoRequired: task.photoRequired }) +
             '<div class="prog__head"><span>Jarayon</span>' +
-            '<span>' + progress.done + '/' + progress.total + ' • ' + progress.percent + '%</span></div>' +
+            '<span class="tabular">' + progress.done + '/' + progress.total + ' · ' + progress.percent + '%</span></div>' +
             '<div class="prog"><div class="prog__fill" style="width:' + progress.percent + '%"></div></div>' +
             '<div class="steps">' + steps + '</div>' +
             defActionsRow(task) +
@@ -327,7 +328,7 @@ function renderCompletedPanel() {
     const items = view.recentCompleted || [];
     if (!items.length) { panel.innerHTML = emptyNote("Hali bajarilgan vazifa yo'q."); return; }
     panel.innerHTML = '<section class="sec">' +
-        '<h2 class="sec__h">✅ Bajarilgan<span class="sec__n">' + items.length + '</span></h2>' +
+        '<h2 class="sec__h">' + uiIcon('circle-check') + 'Bajarilgan<span class="sec__n">' + items.length + '</span></h2>' +
         items.map(o => occCard(o, 'completed')).join('') +
         '</section>';
 }
