@@ -44,10 +44,10 @@ function escapeTaskHtml(value) {
 
 const TASK_PRIORITY_LABELS = { low: 'Past', normal: 'Oddiy', high: 'Yuqori', urgent: 'Shoshilinch' };
 const TASK_PRIORITY_CLASSES = {
-    low: 'bg-slate-100 text-slate-500',
-    normal: 'bg-blue-50 text-blue-600',
-    high: 'bg-orange-50 text-orange-600',
-    urgent: 'bg-red-50 text-red-600'
+    low: 'bg-slate-100 text-slate-600',
+    normal: 'bg-blue-50 text-blue-700',
+    high: 'bg-orange-50 text-orange-700',
+    urgent: 'bg-red-50 text-red-700'
 };
 
 const TASK_STATUS_LABELS = {
@@ -55,9 +55,9 @@ const TASK_STATUS_LABELS = {
     Overdue: "Muddati o'tgan", Cancelled: 'Bekor qilingan', Skipped: "O'tkazilgan"
 };
 const TASK_STATUS_CLASSES = {
-    Open: 'bg-blue-50 text-blue-600', WaitingProof: 'bg-amber-50 text-amber-700',
-    Completed: 'bg-green-50 text-green-700', Overdue: 'bg-red-50 text-red-600',
-    Cancelled: 'bg-slate-100 text-slate-500', Skipped: 'bg-slate-100 text-slate-500'
+    Open: 'bg-blue-50 text-blue-700', WaitingProof: 'bg-amber-50 text-amber-800',
+    Completed: 'bg-emerald-50 text-emerald-700', Overdue: 'bg-red-50 text-red-700',
+    Cancelled: 'bg-slate-100 text-slate-600', Skipped: 'bg-slate-100 text-slate-600'
 };
 
 /**
@@ -72,18 +72,18 @@ function taskPriorityBadge(priority) {
 }
 
 function taskStatusBadge(display) {
-    return '<span class="badge ' + (TASK_STATUS_CLASSES[display] || 'bg-slate-100 text-slate-500') + '">' +
+    return '<span class="badge ' + (TASK_STATUS_CLASSES[display] || 'bg-slate-100 text-slate-600') + '">' +
         (TASK_STATUS_LABELS[display] || display) + '</span>';
 }
 
 function taskDefStatusBadge(status) {
     const map = {
-        active: ['Faol', 'bg-green-50 text-green-700'],
-        paused: ["To'xtatilgan", 'bg-amber-50 text-amber-700'],
-        completed: ['Yakunlangan', 'bg-blue-50 text-blue-600'],
-        cancelled: ['Bekor', 'bg-slate-100 text-slate-500']
+        active: ['Faol', 'bg-emerald-50 text-emerald-700'],
+        paused: ["To'xtatilgan", 'bg-amber-50 text-amber-800'],
+        completed: ['Yakunlangan', 'bg-blue-50 text-blue-700'],
+        cancelled: ['Bekor', 'bg-slate-100 text-slate-600']
     };
-    const entry = map[status] || ['—', 'bg-slate-100 text-slate-500'];
+    const entry = map[status] || ['—', 'bg-slate-100 text-slate-600'];
     return '<span class="badge ' + entry[1] + '">' + entry[0] + '</span>';
 }
 
@@ -95,27 +95,27 @@ function taskDefStatusBadge(status) {
 function taskWhenLine(occ) {
     const label = occ.dueLabel || '';
     if (occ.displayStatus === 'Completed') {
-        return '<p class="when when--done">✅ Bajarildi' +
-            (occ.lateLabel ? ' • ' + escapeTaskHtml(occ.lateLabel) + ' kech'
-                : (occ.onTime === true ? ' • o\'z vaqtida' : '')) + '</p>';
+        return '<p class="when when--done">' + uiIcon('circle-check') + 'Bajarildi' +
+            (occ.lateLabel ? ' · ' + escapeTaskHtml(occ.lateLabel) + ' kech'
+                : (occ.onTime === true ? ' · o\'z vaqtida' : '')) + '</p>';
     }
     if (occ.displayStatus === 'Overdue') {
-        return '<p class="when when--late">⏰ ' + escapeTaskHtml(label || 'Muddati o\'tgan') +
-            (occ.lateLabel ? ' • ' + escapeTaskHtml(occ.lateLabel) + ' kech' : '') + '</p>';
+        return '<p class="when when--late">' + uiIcon('clock-alert') + escapeTaskHtml(label || 'Muddati o\'tgan') +
+            (occ.lateLabel ? ' · ' + escapeTaskHtml(occ.lateLabel) + ' kech' : '') + '</p>';
     }
     if (occ.displayStatus === 'WaitingProof') {
-        return '<p class="when when--wait">📷 Rasm kutilmoqda' +
-            (label ? ' • ' + escapeTaskHtml(label) : '') + '</p>';
+        return '<p class="when when--wait">' + uiIcon('camera') + 'Rasm kutilmoqda' +
+            (label ? ' · ' + escapeTaskHtml(label) : '') + '</p>';
     }
-    if (!label) return '<p class="when">🕓 Muddatsiz</p>';
-    return '<p class="when">🕓 ' + escapeTaskHtml(label) + '</p>';
+    if (!label) return '<p class="when">' + uiIcon('clock') + 'Muddatsiz</p>';
+    return '<p class="when">' + uiIcon('clock') + escapeTaskHtml(label) + '</p>';
 }
 
 /** Secondary metadata: who owns it, and whether a photo is needed. */
 function taskMetaLine(occ, extras) {
     const parts = [];
-    if (occ.responsible) parts.push('👤 ' + escapeTaskHtml(occ.responsible));
-    if (occ.photoRequired) parts.push('📷 Rasm');
+    if (occ.responsible) parts.push(uiIcon('user') + escapeTaskHtml(occ.responsible));
+    if (occ.photoRequired) parts.push('<b class="inline-flex items-center gap-1 font-semibold text-amber-700">' + uiIcon('camera') + 'Rasm talab</b>');
     (extras || []).forEach(part => parts.push(part));
     if (!parts.length) return '';
     return '<p class="meta">' + parts.map(p => '<span>' + p + '</span>').join('') + '</p>';

@@ -68,7 +68,7 @@ function repeaterRow(inputHtml, label) {
     row.className = 'rep__row';
     row.innerHTML = inputHtml +
         '<button type="button" class="rep__del" onclick="removeRepeaterRow(this)" ' +
-        'aria-label="' + label + '" title="' + label + '">✕</button>';
+        'aria-label="' + label + '" title="' + label + '">' + uiIcon('x') + '</button>';
     return row;
 }
 

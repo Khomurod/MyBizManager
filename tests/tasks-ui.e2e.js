@@ -172,7 +172,7 @@ describe('Tasks UI (browser)', () => {
 
   test('creating a task posts a well-formed save_task on the session', async () => {
     const { page, context, backendRequests } = await open();
-    await page.click('button:has-text("+")');
+    await page.click('button.fab');
     await page.waitForSelector('#taskModal:not(.hidden)');
     await page.fill('#fTitle', 'Yangi test vazifa');
     await page.selectOption('#fType', 'once');
