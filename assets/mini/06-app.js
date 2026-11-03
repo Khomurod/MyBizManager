@@ -20,7 +20,8 @@ function showGate(icon, message, retry) {
     document.getElementById('nav').classList.add('hidden');
     const gate = document.getElementById('gate');
     gate.classList.remove('hidden');
-    gate.querySelector('.ic').textContent = icon;
+    // ui-icons: hourglass lock smartphone triangle-alert loader-circle
+    gate.querySelector('.ic').innerHTML = uiIcon(icon, icon === 'loader-circle' ? 'ui-spin' : '');
     document.getElementById('gateText').textContent = message;
     document.getElementById('gateRetry').classList.toggle('hidden', !retry);
 }
@@ -53,7 +54,7 @@ function failAuth(error) {
     // it goes rather than staying behind the gate.
     if (!recoverable) clearMiniSnapshot();
     const stale = recoverable;
-    showGate(stale ? '⌛' : '🔒', error && error.message ? error.message : OPEN_IN_TELEGRAM_MESSAGE, stale);
+    showGate(stale ? 'hourglass' : 'lock', error && error.message ? error.message : OPEN_IN_TELEGRAM_MESSAGE, stale);
     closeSheet();
 }
 
@@ -115,7 +116,7 @@ function hydrateMiniSnapshot() {
 
 async function bootstrap() {
     if (!telegramInitData()) {
-        showGate('📱', OPEN_IN_TELEGRAM_MESSAGE, false);
+        showGate('smartphone', OPEN_IN_TELEGRAM_MESSAGE, false);
         return;
     }
 
@@ -123,7 +124,7 @@ async function bootstrap() {
     // request below is then a refresh rather than a wait. With nothing stored
     // this is exactly the old behaviour — the gate, and no application.
     const painted = hydrateMiniSnapshot();
-    if (!painted) showGate('⏳', 'Tekshirilmoqda...', false);
+    if (!painted) showGate('loader-circle', 'Tekshirilmoqda...', false);
 
     // In the same order guard as loadOmad: a save made on the stored figures
     // while this was in flight refreshes them, and that newer answer wins.
@@ -161,7 +162,7 @@ async function bootstrap() {
             drainMiniOutbox();
             return;
         }
-        showGate('⚠️', error.message || 'Xatolik', true);
+        showGate('triangle-alert', error.message || 'Xatolik', true);
     }
 }
 

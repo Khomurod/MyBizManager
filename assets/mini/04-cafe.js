@@ -16,7 +16,7 @@ function renderCafe() {
     host.innerHTML = `
         <div class="between" style="margin-bottom:12px">
             <h1>Kafe</h1>
-            <button class="btn-sm" onclick="loadCafe()" aria-label="Yangilash">↻</button>
+            <button class="btn-sm" onclick="loadCafe()" aria-label="Yangilash">${uiIcon('refresh-cw')}</button>
         </div>
 
         <div class="card hero">

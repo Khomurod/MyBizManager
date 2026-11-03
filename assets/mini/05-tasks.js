@@ -143,7 +143,7 @@ function occurrenceRows(list) {
         const actions = occurrenceActions(o, s);
         // Who finished it and how late, which the phone never showed before.
         const credit = s.completed
-            ? (o.completedByName ? ' · ✓ ' + escapeHtml(o.completedByName) : '') +
+            ? (o.completedByName ? ' · ' + escapeHtml(o.completedByName) : '') +
               (o.lateLabel ? ' · ' + escapeHtml(o.lateLabel) + ' kech' : ' · o\'z vaqtida')
             : '';
         return `
@@ -157,11 +157,11 @@ function occurrenceRows(list) {
                 </div>
                 ${priorityPill(o.priority)}
                 ${statusPill(o, s)}
-                ${o.hasProof ? '<span class="pill ok">🖼</span>' : (o.photoRequired ? '<span class="pill info">📷</span>' : '')}
+                ${o.hasProof ? `<span class="pill ok">${uiIcon('image', 'ui-icon-sm')}Rasm bor</span>` : (o.photoRequired ? `<span class="pill warn">${uiIcon('camera', 'ui-icon-sm')}Rasm</span>` : '')}
             </div>
-            ${s.waitingProof ? `<p class="tiny muted">📷 Guruhda so'ralgan xabarga rasm bilan javob berilishi kerak.</p>` : ''}
+            ${s.waitingProof ? `<p class="tiny ico-text" style="color:var(--warning)">${uiIcon('camera', 'ui-icon-sm')}Guruhda so'ralgan xabarga rasm bilan javob berilishi kerak.</p>` : ''}
             <div class="row">${actions}
-                <button class="btn-sm" onclick="openTaskSheet('${escapeHtml(o.taskId)}')" aria-label="Tahrirlash">✎</button>
+                <button class="btn-sm" onclick="openTaskSheet('${escapeHtml(o.taskId)}')" aria-label="Tahrirlash">${uiIcon('pencil')}</button>
             </div>
         </div>`;
     }).join('');
@@ -177,7 +177,7 @@ function reminderSummary(task) {
     const times = (task && task.reminderTimes) || [];
     if (!times.length) return '';
     const daily = task.type === 'once' && task.remindDaily ? ' (har kuni)' : '';
-    return ` · 🔔 ${escapeHtml(times.join(', '))}${daily}`;
+    return ` · <span class="ico-text">${uiIcon('bell', 'ui-icon-sm')}<span class="sr-only">Eslatma: </span>${escapeHtml(times.join(', '))}${daily}</span>`;
 }
 
 /**
@@ -221,7 +221,7 @@ function routineSection(view) {
                 // The full board shows the completion rate next to the streak;
                 // the phone showed neither unless the streak was non-zero.
                 const rate = (stats.completionRate !== null && stats.completionRate !== undefined)
-                    ? ` · 📊 ${stats.completionRate}%` : '';
+                    ? ` · ${stats.completionRate}%` : '';
                 const cadence = [
                     escapeHtml(t.recurrenceLabel || ''),
                     t.dueTime ? escapeHtml(t.dueTime) : ''
@@ -231,15 +231,15 @@ function routineSection(view) {
                     <div class="row" style="align-items:flex-start">
                         <div class="grow">
                             <p class="title ellipsis">${escapeHtml(t.title)}</p>
-                            <p class="tiny muted">🔁 ${cadence}${reminderSummary(t)}</p>
-                            <p class="tiny muted">🔥 ${Number(stats.streak) || 0} kun${rate}${t.responsible ? ' · ' + escapeHtml(t.responsible) : ''}${t.photoRequired ? ' · 📷' : ''}</p>
+                            <p class="tiny muted ico-text" style="flex-wrap:wrap">${uiIcon('repeat', 'ui-icon-sm')}${cadence}${reminderSummary(t)}</p>
+                            <p class="tiny muted ico-text" style="flex-wrap:wrap">${uiIcon('flame', 'ui-icon-sm')}${Number(stats.streak) || 0} kun${rate}${t.responsible ? ' · ' + escapeHtml(t.responsible) : ''}${t.photoRequired ? ` · <span class="ico-text" style="color:var(--warning)">${uiIcon('camera', 'ui-icon-sm')}Rasm</span>` : ''}</p>
                         </div>
                         ${priorityPill(t.priority)}
                         ${defStatusPill(t.status)}
                     </div>
                     ${t.description ? `<p class="tiny muted">${escapeHtml(t.description)}</p>` : ''}
                     <div class="row">
-                        <button class="btn-sm" onclick="openTaskSheet('${escapeHtml(t.id)}')" aria-label="Tahrirlash">✎ Tahrirlash</button>
+                        <button class="btn-sm" onclick="openTaskSheet('${escapeHtml(t.id)}')" aria-label="Tahrirlash">${uiIcon('pencil', 'ui-icon-sm')}Tahrirlash</button>
                         ${routinePauseButton(t)}
                     </div>
                 </div>`;
@@ -272,7 +272,7 @@ function goalSection(view) {
                     <div class="row" style="align-items:flex-start">
                         <div class="grow">
                             <p class="title ellipsis">${escapeHtml(t.title)}</p>
-                            ${t.responsible || t.photoRequired ? `<p class="tiny muted">${t.responsible ? escapeHtml(t.responsible) : ''}${t.responsible && t.photoRequired ? ' · ' : ''}${t.photoRequired ? '📷' : ''}</p>` : ''}
+                            ${t.responsible || t.photoRequired ? `<p class="tiny muted">${t.responsible ? escapeHtml(t.responsible) : ''}${t.responsible && t.photoRequired ? ' · ' : ''}${t.photoRequired ? `<span class="ico-text" style="color:var(--warning)">${uiIcon('camera', 'ui-icon-sm')}Rasm</span>` : ''}</p>` : ''}
                         </div>
                         ${defStatusPill(t.status)}
                         <span class="pill info">${done}/${total}</span>
@@ -281,7 +281,7 @@ function goalSection(view) {
                     <div class="bar"><span style="width:${Math.max(2, percent)}%"></span></div>
                     ${goalStepRows(t)}
                     <div class="row">
-                        <button class="btn-sm" onclick="openTaskSheet('${escapeHtml(t.id)}')" aria-label="Tahrirlash">✎ Tahrirlash</button>
+                        <button class="btn-sm" onclick="openTaskSheet('${escapeHtml(t.id)}')" aria-label="Tahrirlash">${uiIcon('pencil', 'ui-icon-sm')}Tahrirlash</button>
                     </div>
                 </div>`;
             }).join('')}
@@ -301,17 +301,17 @@ function goalStepRows(goal) {
         const id = escapeHtml(step.id);
         let action = '';
         if (s.completed) {
-            action = `<button class="btn-sm" onclick="taskAction('reopen_occurrence','${id}')" aria-label="Qayta ochish">↩</button>`;
+            action = `<button class="btn-sm" onclick="taskAction('reopen_occurrence','${id}')" aria-label="Qayta ochish">${uiIcon('rotate-ccw')}</button>`;
         } else if (s.cancelled || s.skipped) {
             action = '';
         } else if (s.waitingProof) {
-            action = '<span class="pill warn" title="Guruhda rasm kutilmoqda">📷</span>';
+            action = `<span class="pill warn" title="Guruhda rasm kutilmoqda">${uiIcon('camera', 'ui-icon-sm')}Rasm</span>`;
         } else {
-            action = `<button class="btn-sm btn-primary" onclick="taskAction('complete_occurrence','${id}')" aria-label="Bajarildi">✅</button>`;
+            action = `<button class="btn-sm btn-primary" onclick="taskAction('complete_occurrence','${id}')" aria-label="Bajarildi">${uiIcon('check')}</button>`;
         }
         return `
             <div class="step-row">
-                <span class="grow tiny${s.completed ? ' step-done' : ''}">${s.completed ? '☑' : '☐'} ${escapeHtml(short)}${step.photoRequired ? ' 📷' : ''}</span>
+                <span class="grow tiny${s.completed ? ' step-done' : ''}"><span class="sr-only">${s.completed ? 'Bajarilgan: ' : 'Ochiq: '}</span>${escapeHtml(short)}${step.photoRequired ? ` <span class="ico-text" style="color:var(--warning)">${uiIcon('camera', 'ui-icon-sm')}</span>` : ''}</span>
                 ${s.cancelled || s.skipped ? statusPill(step, s) : ''}
                 ${action}
             </div>`;
@@ -382,7 +382,7 @@ async function taskAction(action, occurrenceId, taskId, extra) {
         // Every action used to toast "Bajarildi", so skipping a day or resuming a
         // routine both reported a completion that had not happened.
         toast(body.awaitingProof
-            ? (body.message || '📷 Rasm kutilmoqda')
+            ? (body.message || 'Rasm kutilmoqda')
             : (TASK_ACTION_DONE_TOAST[action] || 'Saqlandi'));
     } catch (error) {
         if (error.unauthorized) return failAuth(error);
@@ -430,7 +430,7 @@ function addReminderTime(value) {
     row.innerHTML =
         `<input type="time" style="flex:1;min-width:0" value="${escapeHtml(value || '')}">` +
         '<button type="button" class="btn-sm" aria-label="Eslatmani o\'chirish" ' +
-        'onclick="removeReminderTime(this)">✕</button>';
+        'onclick="removeReminderTime(this)">' + uiIcon('x') + '</button>';
     list.appendChild(row);
     syncReminderControls();
     if (!value) {
@@ -581,11 +581,11 @@ function addGoalStep(step) {
         `value="${escapeHtml(value.title || '')}">` +
         '<select class="mini-step-photo" aria-label="Rasm tasdiqi">' +
         `<option value="" ${override === '' ? 'selected' : ''}>Meros</option>` +
-        `<option value="yes" ${override === 'yes' ? 'selected' : ''}>📷 Ha</option>` +
+        `<option value="yes" ${override === 'yes' ? 'selected' : ''}>Rasm: ha</option>` +
         `<option value="no" ${override === 'no' ? 'selected' : ''}>Yo'q</option>` +
         '</select>' +
         '<button type="button" class="btn-sm" aria-label="Bosqichni o\'chirish" ' +
-        'onclick="removeGoalStep(this)">✕</button>';
+        'onclick="removeGoalStep(this)">' + uiIcon('x') + '</button>';
     list.appendChild(row);
     syncGoalStepControls();
     if (!value.title) {
@@ -751,15 +751,15 @@ function openTaskSheet(taskId) {
         <label class="task-toggle-row" style="margin-top:14px">
             <input type="checkbox" id="tPhotoRequired"
                    ${existing && existing.photoRequired ? 'checked' : ''}>
-            <span>📷 Rasm tasdiqi talab qilinsin</span>
+            <span class="ico-text">${uiIcon('camera', 'ui-icon-sm')}Rasm tasdiqi talab qilinsin</span>
         </label>
         <p class="tiny muted">Bunday vazifa faqat Telegram guruhiga yuborilgan rasm bilan
-            bajarilgan bo'ladi.${groupMissing ? " ⚠️ Vazifalar guruhi hozir sozlanmagan." : ''}</p>
+            bajarilgan bo'ladi.${groupMissing ? " Diqqat: Vazifalar guruhi hozir sozlanmagan." : ''}</p>
 
         <label class="task-toggle-row" style="margin-top:14px">
             <input type="checkbox" id="tRemindOn" onchange="syncReminderControls()"
                    ${reminderTimes.length ? 'checked' : ''}>
-            <span>🔔 Eslatma yuborilsin</span>
+            <span class="ico-text">${uiIcon('bell', 'ui-icon-sm')}Eslatma yuborilsin</span>
         </label>
 
         <div id="tReminderBlock" class="${reminderTimes.length ? '' : 'hidden'}">
