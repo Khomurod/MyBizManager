@@ -164,6 +164,7 @@ function renderTodayPanel() {
 
     // Overdue first, then today's work, then pending proofs. Future and
     // finished work is folded away so it never dominates the screen.
+    // ui-icons: clock-alert calendar-days camera calendar-clock circle-check
     panel.innerHTML =
         section("Muddati o'tgan", t.overdue, 'open', 'danger', 'clock-alert') +
         section('Bugun bajarilishi kerak', t.needsAttention, 'open', '', 'calendar-days') +

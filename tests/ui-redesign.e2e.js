@@ -141,6 +141,22 @@ describe('Redesigned screens (browser)', () => {
     assert.ok(hit, `${what} is not covered by anything else`);
   }
 
+  /**
+   * Every icon on screen names a symbol the sprite has. An icon whose name
+   * reaches uiIcon() through a variable is invisible to the sprite builder
+   * unless declared in a `ui-icons:` comment, and a missing one renders as
+   * an empty gap -- so this looks at what was actually drawn.
+   */
+  async function assertIconsResolve(page, what) {
+    const missing = await page.evaluate(async () => {
+      const uses = [...document.querySelectorAll('use')].map(u => u.getAttribute('href') || '');
+      const names = [...new Set(uses.filter(h => h.includes('lucide.svg#')).map(h => h.split('#')[1]))];
+      const sprite = await (await fetch('assets/icons/lucide.svg')).text();
+      return names.filter(name => !sprite.includes(`id="${name}"`));
+    });
+    assert.deepStrictEqual(missing, [], `${what} draws icons the sprite lacks -- declare them in a ui-icons: comment and run npm run build:icons`);
+  }
+
   async function noOverflow(page, width, what) {
     const wide = await page.evaluate(() => document.documentElement.scrollWidth);
     assert.ok(wide <= width + 1, `${what} is ${wide}px wide on a ${width}px screen`);
@@ -160,6 +176,7 @@ describe('Redesigned screens (browser)', () => {
         await page.click(`[data-section="${section}"]`);
         assert.ok(await page.locator(`#settings-${section}`).isVisible(), `settings ${section} opens`);
       }
+      await assertIconsResolve(page, 'this screen');
       assert.deepStrictEqual(errors, []);
       await context.close();
     });
@@ -203,6 +220,7 @@ describe('Redesigned screens (browser)', () => {
       for (const label of ['Kirim', 'Chiqim', 'Tahrirlash', "O'chirish"]) {
         await assertReachable(page, `#inventoryList button:has-text("${label}")`, `stock action ${label}`);
       }
+      await assertIconsResolve(page, 'this screen');
       assert.deepStrictEqual(errors, []);
       await context.close();
     });
@@ -217,6 +235,7 @@ describe('Redesigned screens (browser)', () => {
     await page.click('button:has-text("Savat jami")');
     await page.waitForSelector('#cartModal:not(.hidden)');
     await assertReachable(page, '#cartList button:has-text("O\'chirish")', 'remove from cart');
+    await assertIconsResolve(page, 'the POS');
     await context.close();
   });
 
@@ -229,6 +248,7 @@ describe('Redesigned screens (browser)', () => {
     await assertReachable(page, '#sellBtn', 'Sotish');
     await assertReachable(page, 'button:has-text("Kun Yakunlash")', 'Kun Yakunlash');
     await assertReachable(page, 'button[aria-label="Bugungi Cheklar"]', 'today\'s receipts');
+    await assertIconsResolve(page, 'the POS');
     await context.close();
   });
 
@@ -243,6 +263,7 @@ describe('Redesigned screens (browser)', () => {
       }
       assert.match(await page.textContent('#panel-today'), /Rasm bilan tasdiqlanadi/);
       await assertReachable(page, '.fab', 'new task');
+      await assertIconsResolve(page, 'this screen');
       assert.deepStrictEqual(errors, []);
       await context.close();
     });
