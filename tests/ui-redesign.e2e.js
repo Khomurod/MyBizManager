@@ -263,7 +263,7 @@ describe('Redesigned screens (browser)', () => {
   // cart, the task form) are opened first so they are measured too.
   const ZOOM_PAGES = [
     ['login.html', 'omad_admin', []],
-    ['omad_admin.html', 'omad_admin', ['#nav-entry', '#nav-bulk', '#nav-settings']],
+    ['omad_admin.html', 'omad_admin', ['#nav-entry', '#nav-bulk', ['#bulkAddRow', '#bulkRows .bulk-row'], '#nav-settings']],
     ['cafe_admin.html', 'cafe_admin', [".ui-tabnav button[onclick*='inventory']", ".ui-tabnav button[onclick*='recipes']", ".ui-tabnav button[onclick*='settings']"]],
     ['cafe_pos.html', 'cafe_seller', []],
     ['tasks.html', 'omad_admin', ['.fab']]
@@ -280,8 +280,11 @@ describe('Redesigned screens (browser)', () => {
           .filter(el => parseFloat(getComputedStyle(el).fontSize) < 16)
           .map(el => `${el.id || el.name || el.className} (${getComputedStyle(el).fontSize})`)));
       await measure();
-      for (const selector of opens) {
+      // An entry is a selector to click, or [click, what must then exist].
+      for (const step of opens) {
+        const [selector, expected] = Array.isArray(step) ? step : [step, null];
         await tab.click(selector);
+        if (expected) assert.ok(await tab.locator(expected).count() > 0, `${selector} rendered ${expected}`);
         await measure();
       }
       assert.deepStrictEqual([...new Set(small)], []);
