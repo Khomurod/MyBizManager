@@ -253,16 +253,16 @@ describe('Café Admin catalogue (browser)', () => {
     });
 
     await page.evaluate(() => openRemoveStockModal('cheese'));
-    await page.click('#removeStockModal button.bg-red-600');
+    await page.click('#removeStockModal button:has-text("Chiqimni Saqlash")');
     assert.ok(dialogs.some(d => /Miqdor/.test(d)), 'a missing quantity is refused');
 
     await page.fill('#removeStockQty', '0.5');
-    await page.click('#removeStockModal button.bg-red-600');
+    await page.click('#removeStockModal button:has-text("Chiqimni Saqlash")');
     assert.ok(dialogs.some(d => /sabab/i.test(d)), 'a missing reason is refused');
 
     await page.fill('#removeStockNote', "to'kildi");
     await page.selectOption('#removeStockReason', 'waste');
-    await page.click('#removeStockModal button.bg-red-600');
+    await page.click('#removeStockModal button:has-text("Chiqimni Saqlash")');
     // The stock the screen ends up showing is the server's answer: the movement
     // response carries the authoritative inventory and it is applied at once,
     // and a further `get_cafe_data` follows in the background for the movement
@@ -304,7 +304,7 @@ describe('Café Admin catalogue (browser)', () => {
       await page.fill('#removeStockQty', '0.5');
       await page.fill('#removeStockNote', "to'kildi");
       await page.selectOption('#removeStockReason', 'waste');
-      await page.click('#removeStockModal button.bg-red-600');
+      await page.click('#removeStockModal button:has-text("Chiqimni Saqlash")');
     };
 
     await spill();
@@ -329,7 +329,7 @@ describe('Café Admin catalogue (browser)', () => {
     await page.evaluate(() => openRemoveStockModal('cheese'));
     await page.fill('#removeStockQty', '0.25');
     await page.fill('#removeStockNote', 'yana');
-    await page.click('#removeStockModal button.bg-red-600');
+    await page.click('#removeStockModal button:has-text("Chiqimni Saqlash")');
     await waitForCall(sent, 'adjust_cafe_stock', 3);
 
     const third = sent.filter(p => p.action === 'adjust_cafe_stock')[2];
@@ -368,7 +368,7 @@ describe('Café Admin catalogue (browser)', () => {
     await page.evaluate(() => openAddStockModal('flour'));
     await page.fill('#addStockQty', '5');
     await page.fill('#addStockCost', '120000');
-    await page.click('#addStockModal button.bg-emerald-600');
+    await page.click('#addStockModal button:has-text("Kirimni Saqlash")');
     await page.waitForFunction(() => document.getElementById('addStockModal').classList.contains('hidden'));
 
     const move = sent.filter(p => p.action === 'adjust_cafe_stock').pop();

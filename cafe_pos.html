@@ -2,51 +2,25 @@
 <html lang="uz">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Sotuvchi Oynasi</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#ffffff">
+  <title>Kafe kassasi · MyBizManager</title>
   <link rel="stylesheet" href="assets/css/app.css">
   <style>
-    body { background: #edf2f7; font-family: sans-serif; }
-    .glass { background: rgba(255,255,255,0.7); backdrop-filter: blur(15px); border: 1px solid rgba(255,255,255,0.8); box-shadow: 0 6px 22px rgba(15,23,42,0.10); }
-    .item-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .modal { transition: opacity .2s ease; }
-    .pulse-ok { animation: pop .35s ease; }
-    @keyframes pop { 0%{transform:scale(.85);opacity:.3} 100%{transform:scale(1);opacity:1} }
-    .progress-track { height: 12px; border-radius: 999px; background: rgba(148,163,184,0.22); overflow: hidden; }
-    .progress-fill {
-      height: 100%;
-      width: 0%;
-      border-radius: 999px;
-      transition: width .45s ease, filter .35s ease, box-shadow .35s ease, background .35s ease;
-    }
-    .progress-orange { background: linear-gradient(90deg, #f97316, #fb923c); }
-    .progress-green { background: linear-gradient(90deg, #22c55e, #16a34a); }
+    /* The day's target: the bar keeps its colour steps and the small party at 100%. */
+    .progress-track { height: 10px; border-radius: 999px; background: #f1f5f9; overflow: hidden; }
+    .progress-fill { height: 100%; width: 0%; border-radius: 999px; transition: width .45s ease, box-shadow .35s ease, background .35s ease; }
+    .progress-orange { background: #f59e0b; }
+    .progress-green { background: #10b981; }
     .progress-gold { background: linear-gradient(90deg, #facc15, #f59e0b); }
-    .progress-glow { filter: saturate(1.2); box-shadow: 0 0 0 1px rgba(251,191,36,0.55), 0 0 18px rgba(250,204,21,0.75); }
+    .progress-glow { box-shadow: 0 0 0 1px rgba(251,191,36,0.55), 0 0 14px rgba(250,204,21,0.7); }
     .progress-wrap { position: relative; overflow: hidden; }
     .progress-wrap.celebrate { animation: progress-pulse .75s ease; }
-    @keyframes progress-pulse {
-      0% { transform: scale(1); }
-      35% { transform: scale(1.01); }
-      65% { transform: scale(0.998); }
-      100% { transform: scale(1); }
-    }
+    @keyframes progress-pulse { 0% { transform: scale(1); } 35% { transform: scale(1.01); } 65% { transform: scale(0.998); } 100% { transform: scale(1); } }
     .progress-confetti { pointer-events: none; position: absolute; inset: 0; overflow: hidden; }
-    .progress-confetti span {
-      position: absolute;
-      top: 60%;
-      width: 6px;
-      height: 10px;
-      border-radius: 2px;
-      opacity: 0;
-      transform: translateY(0) rotate(0deg);
-    }
+    .progress-confetti span { position: absolute; top: 60%; width: 6px; height: 10px; border-radius: 2px; opacity: 0; }
     .progress-wrap.celebrate .progress-confetti span { animation: confetti-burst .85s ease-out; }
-    @keyframes confetti-burst {
-      0% { opacity: 0; transform: translateY(0) rotate(0deg); }
-      15% { opacity: 1; }
-      100% { opacity: 0; transform: translateY(-52px) rotate(220deg); }
-    }
+    @keyframes confetti-burst { 0% { opacity: 0; transform: translateY(0) rotate(0deg); } 15% { opacity: 1; } 100% { opacity: 0; transform: translateY(-52px) rotate(220deg); } }
     .progress-confetti span:nth-child(1) { left: 6%; background: #f97316; animation-delay: .02s; }
     .progress-confetti span:nth-child(2) { left: 16%; background: #f59e0b; animation-delay: .05s; }
     .progress-confetti span:nth-child(3) { left: 26%; background: #22c55e; animation-delay: .03s; }
@@ -57,10 +31,28 @@
     .progress-confetti span:nth-child(8) { left: 76%; background: #34d399; animation-delay: .06s; }
     .progress-confetti span:nth-child(9) { left: 86%; background: #f97316; animation-delay: .02s; }
     .progress-confetti span:nth-child(10) { left: 93%; background: #eab308; animation-delay: .09s; }
+    @media (prefers-reduced-motion: reduce) { .progress-wrap.celebrate, .progress-wrap.celebrate .progress-confetti span { animation: none; } }
+    .pulse-ok { animation: pop .35s ease; }
+    @keyframes pop { 0% { transform: scale(.85); opacity: .3; } 100% { transform: scale(1); opacity: 1; } }
+
+    /* Phone: the total and Sotish sit on the thumb, the cart is a sheet.
+       From 1024px the cart is a panel beside the menu, always open, the way a
+       till on a counter is used. */
+    .pos-footer { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; padding: 12px 16px calc(12px + var(--ui-safe-b)); }
+    .pos-main { padding-bottom: calc(10.5rem + var(--ui-safe-b)); }
+    @media (min-width: 1024px) {
+      .pos-main { padding-right: 25rem; padding-bottom: 2.5rem; }
+      #cartModal { display: flex !important; position: fixed; top: 4.75rem; right: 0; bottom: 10rem; left: auto; width: 24rem;
+        background: transparent; backdrop-filter: none; padding: 0 1rem 0 0; z-index: 20; align-items: stretch; }
+      #cartModal > .ui-modal { max-height: none; height: 100%; border-radius: 1rem; box-shadow: 0 1px 2px rgba(16,24,40,.05); border: 1px solid #e2e8f0; }
+      #cartModal .pos-cart-close, #cartModal .ui-grabber, .pos-cart-open-hint { display: none; }
+      .pos-footer { left: auto; width: 24rem; right: 1rem; bottom: 1rem; border-radius: 1rem; border: 1px solid #e2e8f0; padding: 14px; }
+    }
   </style>
 </head>
-<body class="pb-32 text-slate-800">
+<body>
   <script src="assets/session.js"></script>
+  <script src="assets/ui.js"></script>
   <script>
     const GOOGLE_APP_URL = "https://script.google.com/macros/s/AKfycbzhKyEOGZbVdtpSd7fa6aTDZf1QsqWQeOpWRxrb7bYpzWWDQxUXZID8JNzGMfDtCA2W/exec";
 
@@ -101,80 +93,113 @@
     }
   </script>
 
-  <header class="sticky top-0 z-20 bg-white/80 backdrop-blur-md border-b border-slate-200 p-4">
-    <div class="flex justify-between items-center">
-      <h1 class="font-bold text-base">Kafe POS</h1>
-      <div class="flex items-center gap-2">
-        <button onclick="openReceiptsModal()" class="glass rounded-full px-3 py-2 text-[11px] font-bold text-slate-700">Bugungi Cheklar</button>
-        <button onclick="logout()" class="text-xs font-bold text-red-500">Chiqish</button>
+  <header class="ui-topbar">
+    <div class="ui-topbar-row">
+      <div class="flex min-w-0 items-center gap-3">
+        <div class="ui-brand-mark bg-amber-500">
+          <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#coffee"></use></svg>
+        </div>
+        <div class="min-w-0">
+          <h1 class="truncate text-base font-semibold text-slate-900">Kafe POS</h1>
+          <p class="truncate text-xs text-slate-500">Kassa · MyBizManager</p>
+        </div>
+      </div>
+      <div class="flex shrink-0 items-center gap-2">
+        <button onclick="openReceiptsModal()" class="ui-btn ui-btn-secondary ui-btn-sm" aria-label="Bugungi Cheklar">
+          <svg class="ui-icon ui-icon-sm" aria-hidden="true"><use href="assets/icons/lucide.svg#receipt"></use></svg><span class="max-[379px]:hidden">Bugungi Cheklar</span></button>
+        <button onclick="logout()" class="ui-icon-btn" aria-label="Chiqish" title="Chiqish">
+          <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#log-out"></use></svg>
+        </button>
       </div>
     </div>
   </header>
 
-  <main class="p-4">
-    <div id="posBanner" class="hidden glass rounded-2xl p-3 mb-3 text-xs font-bold"></div>
-    <div id="dailyProgressCard" class="progress-wrap glass rounded-2xl p-3 mb-3">
+  <main class="pos-main mx-auto w-full max-w-7xl px-4 pt-4 sm:px-6 lg:pt-6">
+    <div id="posBanner" class="hidden mb-3"></div>
+    <div id="dailyProgressCard" class="progress-wrap ui-card ui-card-body mb-4">
       <div class="progress-confetti" aria-hidden="true">
         <span></span><span></span><span></span><span></span><span></span>
         <span></span><span></span><span></span><span></span><span></span>
       </div>
-      <div class="flex items-center justify-between gap-2 mb-2">
-        <p class="text-[11px] font-bold uppercase text-slate-500">Kunlik Tushum Maqsadi</p>
-        <p id="dailyProgressText" class="text-xs font-bold text-slate-700">0 / 0 UZS</p>
+      <div class="mb-2.5 flex items-center justify-between gap-2">
+        <p class="flex items-center gap-2 text-sm font-medium text-slate-600">
+          <svg class="ui-icon ui-icon-sm text-amber-500" aria-hidden="true"><use href="assets/icons/lucide.svg#target"></use></svg>
+          Kunlik tushum maqsadi</p>
+        <p id="dailyProgressText" class="ui-figure text-sm text-slate-900">0 / 0 UZS</p>
       </div>
       <div class="progress-track">
         <div id="dailyProgressFill" class="progress-fill progress-orange"></div>
       </div>
-      <p id="dailyProgressHint" class="text-[11px] font-bold text-slate-500 mt-2">Maqsad hali belgilanmagan.</p>
+      <p id="dailyProgressHint" class="mt-2 text-sm text-slate-500">Maqsad hali belgilanmagan.</p>
     </div>
-    <div id="categories" class="flex gap-2 overflow-x-auto pb-2 mb-3"></div>
-    <div id="itemsGrid" class="grid item-grid gap-3"></div>
-    <button onclick="openCloseDayModal()" class="w-full mt-4 rounded-2xl bg-amber-500 text-white py-3 font-bold text-sm active:scale-95">Kun Yakunlash</button>
+    <div id="categories" class="ui-scroll-x mb-4 pb-1" role="tablist" aria-label="Kategoriyalar"></div>
+    <div id="itemsGrid" class="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4"></div>
+    <button onclick="openCloseDayModal()" class="ui-btn ui-btn-lg ui-btn-block ui-btn-warning mt-6 lg:w-auto">
+      <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#archive"></use></svg>Kun Yakunlash</button>
   </main>
 
-  <div id="cartModal" class="modal hidden fixed inset-0 z-30 bg-black/45 p-4 flex items-end" onclick="closeCart()">
-    <div class="glass w-full rounded-2xl p-4 max-h-[78vh] overflow-y-auto" onclick="event.stopPropagation()">
-      <div class="flex justify-between mb-3">
-        <h3 class="font-bold">Savat</h3>
-        <button class="text-sm text-slate-500" onclick="closeCart()">Yopish</button>
+  <div id="cartModal" class="hidden ui-modal-backdrop" onclick="closeCart()">
+    <div class="ui-modal" role="dialog" aria-modal="true" aria-labelledby="cartTitle" onclick="event.stopPropagation()">
+      <div class="ui-grabber"></div>
+      <div class="ui-modal-header">
+        <h3 id="cartTitle" class="ui-modal-title flex items-center gap-2">
+          <svg class="ui-icon text-slate-400" aria-hidden="true"><use href="assets/icons/lucide.svg#shopping-cart"></use></svg>Savat</h3>
+        <button class="pos-cart-close ui-btn ui-btn-ghost ui-btn-sm" onclick="closeCart()">Yopish</button>
       </div>
-      <div id="cartList" class="space-y-2"></div>
+      <div class="ui-modal-body">
+        <div id="cartList" class="space-y-2"></div>
+      </div>
     </div>
   </div>
 
-  <div id="closeDayModal" class="hidden fixed inset-0 z-40 bg-black/45 p-4 flex items-end">
-    <div class="glass w-full rounded-2xl p-4 max-h-[88vh] overflow-y-auto" onclick="event.stopPropagation()">
-      <div class="flex justify-between mb-3">
-        <h3 class="font-bold">Kun Yakunlash</h3>
-        <button onclick="closeCloseDayModal()" class="w-8 h-8 rounded-full bg-slate-100">✕</button>
+  <div id="closeDayModal" class="hidden ui-modal-backdrop">
+    <div class="ui-modal" role="dialog" aria-modal="true" aria-labelledby="closeDayTitle" onclick="event.stopPropagation()">
+      <div class="ui-grabber"></div>
+      <div class="ui-modal-header">
+        <h3 id="closeDayTitle" class="ui-modal-title">Kun Yakunlash</h3>
+        <button onclick="closeCloseDayModal()" class="ui-icon-btn" aria-label="Yopish">
+          <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#x"></use></svg></button>
       </div>
-      <p class="text-[11px] text-slate-500 mb-3">O'lchovli mahsulotlar uchun bugun qolgan miqdorni kiriting. Sizdan ishlatilgan hajm va haqiqiy porsiya tannarxi avtomatik hisoblanadi.</p>
-      <div id="closeDayList" class="space-y-2 mb-3"></div>
-      <div id="closeDaySummary" class="glass rounded-2xl p-3 text-xs space-y-1 mb-3"></div>
-      <button onclick="submitCloseDay()" class="w-full rounded-xl bg-emerald-600 text-white py-3 font-bold text-sm active:scale-95">Kunni Yopish va Saqlash</button>
+      <div class="ui-modal-body">
+        <p class="mb-3 text-sm text-slate-500">O'lchovli mahsulotlar uchun bugun qolgan miqdorni kiriting. Sizdan ishlatilgan hajm va haqiqiy porsiya tannarxi avtomatik hisoblanadi.</p>
+        <div id="closeDayList" class="mb-3 space-y-2"></div>
+        <div id="closeDaySummary" class="mb-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-1 text-sm"></div>
+        <button onclick="submitCloseDay()" class="ui-btn ui-btn-lg ui-btn-block ui-btn-success">
+          <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#check"></use></svg>Kunni Yopish va Saqlash</button>
+      </div>
     </div>
   </div>
 
-  <div id="receiptsModal" class="hidden fixed inset-0 z-40 bg-black/45 p-4 flex items-end" onclick="closeReceiptsModal()">
-    <div class="glass w-full rounded-2xl p-4 max-h-[82vh] overflow-y-auto" onclick="event.stopPropagation()">
-      <div class="flex justify-between items-center mb-3">
+  <div id="receiptsModal" class="hidden ui-modal-backdrop" onclick="closeReceiptsModal()">
+    <div class="ui-modal" role="dialog" aria-modal="true" aria-labelledby="receiptsTitle" onclick="event.stopPropagation()">
+      <div class="ui-grabber"></div>
+      <div class="ui-modal-header">
         <div>
-          <h3 class="font-bold">Bugungi Cheklar</h3>
-          <p class="text-[11px] text-slate-500 mt-1">Bugun ushbu qurilmada sotilgan cheklar ro'yxati.</p>
+          <h3 id="receiptsTitle" class="ui-modal-title">Bugungi Cheklar</h3>
+          <p class="mt-0.5 text-sm text-slate-500">Bugun ushbu qurilmada sotilgan cheklar ro'yxati.</p>
         </div>
-        <button onclick="closeReceiptsModal()" class="w-8 h-8 rounded-full bg-slate-100">X</button>
+        <button onclick="closeReceiptsModal()" class="ui-icon-btn" aria-label="Yopish">
+          <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#x"></use></svg></button>
       </div>
-      <div id="receiptsList" class="space-y-2"></div>
+      <div class="ui-modal-body">
+        <div id="receiptsList" class="space-y-2"></div>
+      </div>
     </div>
   </div>
 
-  <footer class="fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-md border-t border-slate-200 p-3">
-    <button onclick="openCart()" class="w-full text-left mb-2 glass rounded-xl p-3">
-      <p class="text-xs text-slate-500 font-bold">Savat jami</p>
-      <p id="cartTotal" class="font-bold text-lg">0 UZS</p>
+  <footer class="pos-footer border-t border-slate-200 bg-white/95 backdrop-blur">
+    <button onclick="openCart()" class="mb-2 flex w-full items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-left hover:bg-slate-100">
+      <span>
+        <span class="block text-sm text-slate-500">Savat jami</span>
+        <span id="cartTotal" class="ui-figure block text-xl text-slate-900">0 UZS</span>
+      </span>
+      <span class="pos-cart-open-hint flex items-center gap-1 text-sm font-semibold text-blue-600">Savat
+        <svg class="ui-icon ui-icon-sm" aria-hidden="true"><use href="assets/icons/lucide.svg#chevron-right"></use></svg></span>
     </button>
-    <button id="sellBtn" onclick="sell()" class="w-full rounded-2xl bg-blue-600 text-white py-4 text-base font-bold active:scale-95">Sotish</button>
-    <div id="okAnim" class="hidden mt-2 text-center text-emerald-600 text-sm font-bold">Muvaffaqiyatli sotildi!</div>
+    <button id="sellBtn" onclick="sell()" class="ui-btn ui-btn-lg ui-btn-block ui-btn-primary h-14 text-lg">
+      <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#shopping-cart"></use></svg>Sotish</button>
+    <div id="okAnim" class="hidden mt-2 flex items-center justify-center gap-1.5 text-sm font-semibold text-emerald-600">
+      <svg class="ui-icon ui-icon-sm" aria-hidden="true"><use href="assets/icons/lucide.svg#circle-check"></use></svg>Muvaffaqiyatli sotildi!</div>
   </footer>
 
   <script>
@@ -397,12 +422,12 @@
       const box = document.getElementById("categories");
       const list = getDisplayCategories();
       if (list.length === 1 && !state.menu.length) {
-        box.innerHTML = `<div class="glass rounded-full px-4 py-2 text-xs font-bold text-slate-500">Kategoriyalar topilmadi</div>`;
+        box.innerHTML = `<div class="ui-chip text-slate-500">Kategoriyalar topilmadi</div>`;
         return;
       }
       if (!list.includes(state.category)) state.category = ALL_LABEL;
       box.innerHTML = list.map(c => `
-        <button onclick="setCategory('${c.replace(/'/g, "\\'")}')" class="shrink-0 rounded-full px-4 py-2 text-xs font-bold ${state.category === c ? 'bg-blue-600 text-white' : 'glass text-slate-700'}">${c}</button>
+        <button onclick="setCategory('${c.replace(/'/g, "\\'")}')" role="tab" aria-selected="${state.category === c}" class="ui-chip ${state.category === c ? 'active' : ''}">${c}</button>
       `).join("");
     }
 
@@ -412,20 +437,25 @@
         : state.menu.filter(i => i.category === state.category);
       const grid = document.getElementById("itemsGrid");
       if (!state.menu.length) {
-        grid.innerHTML = `<div class="col-span-2 glass rounded-2xl p-4 text-center text-xs font-bold text-slate-500">Menyu bo'sh. Admin Ombor yoki Retseptlar qo'shishi kerak.</div>`;
+        grid.innerHTML = `<div class="ui-card ui-empty col-span-full">${uiIcon('package')}Menyu bo'sh. Admin Ombor yoki Retseptlar qo'shishi kerak.</div>`;
         return;
       }
       if (!filtered.length) {
-        grid.innerHTML = `<div class="col-span-2 glass rounded-2xl p-4 text-center text-xs font-bold text-slate-500">Ushbu kategoriyada mahsulot yo'q</div>`;
+        grid.innerHTML = `<div class="ui-card ui-empty col-span-full">${uiIcon('inbox')}Ushbu kategoriyada mahsulot yo'q</div>`;
         return;
       }
       grid.innerHTML = filtered.map(item => {
-        const bulkTag = item.isBulk ? `<span class="text-[10px] font-bold bg-amber-100 text-amber-600 rounded-full px-2 py-[1px] ml-1">${item.gramsPerServing}g</span>` : "";
+        const bulkTag = item.isBulk ? `<span class="ui-badge ui-badge-warning">${item.gramsPerServing}g</span>` : "";
         return `
-          <button onclick="addToCart('${item.id}')" class="glass rounded-2xl p-4 text-left active:scale-95 transition-transform">
-            <p class="font-bold text-sm">${item.name} ${bulkTag}</p>
-            <p class="text-[10px] text-slate-500 mt-1">${item.category}</p>
-            <p class="text-blue-600 font-bold mt-2">${item.price.toLocaleString()} UZS</p>
+          <button onclick="addToCart('${item.id}')" class="ui-card flex min-h-[7.5rem] flex-col justify-between gap-2 p-4 text-left transition hover:border-blue-300 hover:shadow-md active:scale-[.98]">
+            <span class="block">
+              <span class="block text-[15px] font-semibold leading-5 text-slate-900">${item.name}</span>
+              <span class="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-slate-500">${item.category} ${bulkTag}</span>
+            </span>
+            <span class="flex items-center justify-between gap-2">
+              <span class="ui-figure whitespace-nowrap text-[15px] text-blue-700 sm:text-base">${item.price.toLocaleString()} UZS</span>
+              <span class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-600 max-[379px]:hidden">${uiIcon('plus', 'ui-icon-sm')}</span>
+            </span>
           </button>`;
       }).join("");
     }
@@ -474,14 +504,14 @@
 
       if (state.loadError) {
         const closeOff = state.snapshotAt ? " Kun yakunlash vaqtincha o'chirilgan." : "";
-        banner.className = "glass rounded-2xl p-3 mb-3 text-xs font-bold text-amber-700 flex items-center justify-between gap-2";
-        banner.innerHTML = `<span>${escapeHtmlText(state.loadError + closeOff)}</span>
-          <button onclick="syncMenu()" class="rounded-xl bg-amber-500 text-white px-3 py-2 text-[11px] font-bold active:scale-95">Qayta urinish</button>`;
+        banner.className = "ui-alert ui-alert-warning mb-3 items-center";
+        banner.innerHTML = `${uiIcon('triangle-alert', 'text-amber-600')}<span class="flex-1">${escapeHtmlText(state.loadError + closeOff)}</span>
+          <button onclick="syncMenu()" class="ui-btn ui-btn-warning ui-btn-sm shrink-0">${uiIcon('refresh-cw', 'ui-icon-sm')}Qayta urinish</button>`;
         banner.classList.remove("hidden");
         return;
       }
       if (state.snapshotAt) {
-        banner.className = "glass rounded-2xl p-3 mb-3 text-xs font-bold text-slate-500";
+        banner.className = "ui-alert ui-alert-info mb-3";
         banner.textContent =
           "Saqlangan ro'yxat ko'rsatilmoqda, yangilanmoqda... Kun yakunlash vaqtincha o'chirilgan.";
         banner.classList.remove("hidden");
@@ -530,9 +560,9 @@
 
       if (!state.loaded) {
         document.getElementById("categories").innerHTML =
-          `<div class="glass rounded-full px-4 py-2 text-xs font-bold text-slate-500">Yuklanmoqda...</div>`;
+          `<div class="ui-chip text-slate-500">Yuklanmoqda...</div>`;
         document.getElementById("itemsGrid").innerHTML =
-          `<div class="col-span-2 glass rounded-2xl p-4 text-center text-xs font-bold text-slate-500">Menyu yuklanmoqda...</div>`;
+          `<div class="ui-card ui-empty col-span-full">${uiIcon('loader-circle', 'ui-spin')}Menyu yuklanmoqda...</div>`;
       }
 
       try {
@@ -587,14 +617,14 @@
       const total = state.cart.reduce((s, i) => s + (i.price * i.qty), 0);
       document.getElementById("cartTotal").innerText = `${total.toLocaleString()} UZS`;
       document.getElementById("cartList").innerHTML = state.cart.length ? state.cart.map(i => `
-        <div class="flex justify-between items-center bg-slate-50 rounded-xl p-3">
-          <div>
-            <p class="font-bold text-sm">${i.name}</p>
-            <p class="text-xs text-slate-500">${i.qty} x ${i.price.toLocaleString()} UZS</p>
+        <div class="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-3">
+          <div class="min-w-0">
+            <p class="truncate text-sm font-semibold text-slate-900">${i.name}</p>
+            <p class="text-sm text-slate-500 tabular">${i.qty} × ${i.price.toLocaleString()} UZS</p>
           </div>
-          <button onclick="removeCartItem('${i.id}')" class="text-red-500 text-xs font-bold">O'chirish</button>
+          <button onclick="removeCartItem('${i.id}')" class="ui-btn ui-btn-soft-danger ui-btn-sm shrink-0">${uiIcon('trash-2', 'ui-icon-sm')}O'chirish</button>
         </div>
-      `).join("") : `<p class="text-xs text-slate-400 font-bold">Savat bo'sh</p>`;
+      `).join("") : `<div class="ui-empty">${uiIcon('shopping-cart')}Savat bo'sh</div>`;
     }
 
     function openCart() { document.getElementById("cartModal").classList.remove("hidden"); }
@@ -603,19 +633,19 @@
     function renderSessionSales() {
       const box = document.getElementById("receiptsList");
       if (!state.sessionSales.length) {
-        box.innerHTML = `<div class="glass rounded-2xl p-3 text-center text-xs font-bold text-slate-500">Bugungi cheklar hali yo'q</div>`;
+        box.innerHTML = `<div class="ui-empty">${uiIcon('receipt')}Bugungi cheklar hali yo'q</div>`;
         return;
       }
 
       box.innerHTML = state.sessionSales.map(sale => `
-        <div class="rounded-2xl bg-white/75 p-3 shadow-sm">
+        <div class="rounded-xl border border-slate-200 bg-white p-3">
           <div class="flex items-start justify-between gap-3">
-            <div>
-              <p class="font-bold text-sm">${formatReceiptTime(sale.date)}</p>
-              <p class="text-xs text-slate-500 mt-1">Jami: ${formatMoney(sale.total)}</p>
-              <p class="text-[11px] text-slate-400 mt-1">${(sale.items || []).length} ta pozitsiya</p>
+            <div class="min-w-0">
+              <p class="flex items-center gap-1.5 text-sm font-semibold text-slate-900">${uiIcon('clock', 'ui-icon-sm text-slate-400')}${formatReceiptTime(sale.date)}</p>
+              <p class="mt-1 text-sm text-slate-700">Jami: <b class="tabular">${formatMoney(sale.total)}</b></p>
+              <p class="mt-0.5 text-xs text-slate-500">${(sale.items || []).length} ta pozitsiya</p>
             </div>
-            <button onclick="voidSale('${sale.id}')" class="rounded-xl bg-red-100 px-3 py-2 text-[11px] font-bold text-red-600">Bekor qilish</button>
+            <button onclick="voidSale('${sale.id}')" class="ui-btn ui-btn-soft-danger ui-btn-sm shrink-0">${uiIcon('ban', 'ui-icon-sm')}Bekor qilish</button>
           </div>
         </div>
       `).join("");
@@ -886,21 +916,21 @@
       const list = document.getElementById("closeDayList");
       const bulkProducts = state.menu.filter(m => m.__kind === "product" && m.isBulk);
       if (!bulkProducts.length) {
-        list.innerHTML = `<div class="glass rounded-2xl p-3 text-center text-xs font-bold text-slate-500">O'lchovli mahsulotlar yo'q</div>`;
+        list.innerHTML = `<div class="ui-empty rounded-xl border border-dashed border-slate-200">${uiIcon('scale')}O'lchovli mahsulotlar yo'q</div>`;
       } else {
         list.innerHTML = bulkProducts.map(p => {
           const sold = getBulkSoldTotal(p.inventoryId);
           const openingInv = state.openingInventory.find(i => i.id === p.inventoryId) || state.inventory.find(i => i.id === p.inventoryId) || {};
           const currentInv = state.inventory.find(i => i.id === p.inventoryId) || openingInv;
           return `
-            <div class="glass rounded-2xl p-3" data-inventory-id="${p.inventoryId}">
-              <p class="font-bold text-sm">${p.name}</p>
-              <p class="text-[11px] text-slate-500">Boshlang'ich: ${(openingInv.qty || 0)} ${openingInv.unit || "kg"} • Hozirgi qoldiq: <b>${(currentInv.qty || 0).toLocaleString()}</b> ${currentInv.unit || "kg"} • Bugun sotildi: <b>${sold}</b> porsiya</p>
-              <div class="grid grid-cols-2 gap-2 mt-2">
-                <input type="number" class="close-initial rounded-xl border border-slate-200 p-2 text-sm bg-white" placeholder="Boshlang'ich (${openingInv.unit || "kg"})" value="${openingInv.qty || 0}">
-                <input type="number" step="0.01" class="close-leftover rounded-xl border border-slate-200 p-2 text-sm" placeholder="Qoldiq (${openingInv.unit || "kg"})">
+            <div class="rounded-xl border border-slate-200 bg-white p-3" data-inventory-id="${p.inventoryId}">
+              <p class="text-sm font-semibold text-slate-900">${p.name}</p>
+              <p class="mt-0.5 text-xs text-slate-500">Boshlang'ich: ${(openingInv.qty || 0)} ${openingInv.unit || "kg"} · Hozirgi qoldiq: <b>${(currentInv.qty || 0).toLocaleString()}</b> ${currentInv.unit || "kg"} · Bugun sotildi: <b>${sold}</b> porsiya</p>
+              <div class="mt-2 grid grid-cols-2 gap-2">
+                <input type="number" class="close-initial ui-input" aria-label="Boshlang'ich" placeholder="Boshlang'ich (${openingInv.unit || "kg"})" value="${openingInv.qty || 0}">
+                <input type="number" step="0.01" class="close-leftover ui-input" aria-label="Qoldiq" placeholder="Qoldiq (${openingInv.unit || "kg"})">
               </div>
-              <p class="close-calc text-[11px] font-bold text-emerald-600 mt-2 hidden"></p>
+              <p class="close-calc mt-2 hidden text-sm font-semibold text-emerald-600"></p>
             </div>`;
         }).join("");
 
@@ -911,8 +941,8 @@
 
       const sum = document.getElementById("closeDaySummary");
       sum.innerHTML = `
-        <div class="flex justify-between"><span>Bugungi tushum</span><b>${state.todayRevenue.toLocaleString()} UZS</b></div>
-        <div class="flex justify-between"><span>Joriy foyda</span><b class="text-emerald-600">${state.todayProfit.toLocaleString()} UZS</b></div>
+        <div class="ui-stat-row"><span class="text-slate-600">Bugungi tushum</span><b class="tabular">${state.todayRevenue.toLocaleString()} UZS</b></div>
+        <div class="ui-stat-row"><span class="text-slate-600">Joriy foyda</span><b class="tabular text-emerald-700">${state.todayProfit.toLocaleString()} UZS</b></div>
       `;
     }
 
@@ -1069,7 +1099,7 @@
         if (initial <= 0 || leftover < 0 || leftover > initial) {
           calc.classList.remove("hidden");
           calc.innerText = "Noto'g'ri qoldiq";
-          calc.className = "close-calc text-[11px] font-bold text-red-500 mt-2";
+          calc.className = "close-calc mt-2 text-sm font-semibold text-red-600";
           return;
         }
 
@@ -1082,7 +1112,7 @@
         const netProfit = revenue - consumedCost;
 
         calc.classList.remove("hidden");
-        calc.className = "close-calc text-[11px] font-bold text-emerald-600 mt-2";
+        calc.className = "close-calc mt-2 text-sm font-semibold text-emerald-600";
         calc.innerHTML = `Sarflandi: <b>${consumed.toFixed(2)} ${openingInv.unit || inv.unit || "kg"}</b> - Haqiqiy porsiya: <b>${actualGramsPerServing}g</b> - Tannarx/porsiya: <b>${actualCostPerServing.toLocaleString()} UZS</b> - Net foyda: <b>${netProfit.toLocaleString()} UZS</b>`;
       });
     }

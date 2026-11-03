@@ -244,6 +244,31 @@
     .ui-appnav-item.active .ui-icon { @apply text-blue-600; }
   }
 
+  /*
+    For an app with more destinations than a bottom bar can label (Café
+    admin's six): a strip of tabs under the top bar that scrolls on a phone,
+    the sidebar menu from 1024px. Still one element per destination.
+  */
+  .ui-tabnav {
+    @apply sticky z-20 flex gap-1 overflow-x-auto border-b border-slate-200 bg-white/95 px-3 py-2;
+    top: calc(3.75rem + var(--ui-safe-t)); scrollbar-width: none; backdrop-filter: saturate(1.4) blur(10px);
+  }
+  .ui-tabnav::-webkit-scrollbar { display: none; }
+  .ui-tabnav-item {
+    @apply inline-flex shrink-0 items-center gap-2 h-10 rounded-xl px-3 text-sm font-semibold text-slate-600 hover:bg-slate-100 transition-colors;
+  }
+  .ui-tabnav-item.active { @apply bg-blue-50 text-blue-700; }
+  .ui-tabnav-item .ui-icon { width: 1.125rem; height: 1.125rem; }
+  @media (min-width: 1024px) {
+    .ui-tabnav {
+      @apply fixed flex-col gap-1 overflow-visible border-0 bg-transparent px-4 py-0;
+      top: 6.25rem; left: 0; width: 16rem; z-index: 41; backdrop-filter: none;
+    }
+    .ui-tabnav-item { @apply h-11 w-full justify-start gap-3 font-medium; }
+    .ui-tabnav-item .ui-icon { @apply text-slate-400; width: 1.25rem; height: 1.25rem; }
+    .ui-tabnav-item.active .ui-icon { @apply text-blue-600; }
+  }
+
   /* A page's own sections: chips that scroll on a phone, a column on desktop. */
   .ui-subnav { @apply flex gap-2 overflow-x-auto pb-1 -mx-4 px-4 sm:mx-0 sm:px-0; scrollbar-width: none; }
   .ui-subnav::-webkit-scrollbar { display: none; }
