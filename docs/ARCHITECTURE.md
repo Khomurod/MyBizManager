@@ -748,12 +748,21 @@ that at once and the movement list / low-stock refresh becomes a background,
 coalesced `get_cafe_data` rather than something the response waits for. A refresh
 requested while one is running is queued instead of dropped.
 
-The **café POS** keeps its one-request architecture and adds the guard it was
-missing: `Sotish` is disabled and relabelled `Sotilmoqda...` for the length of
-the request, so a double tap can no longer count one receipt twice locally — or,
-worse, mint a second request id after the first cleared and ring up a real second
-sale. Backend idempotency on `requestId` is unchanged and is still what makes a
-genuine retry safe.
+The **café POS** no longer waits for the server at all. Sotish keeps the sale in
+an outbox on the device (`cafe_pos_outbox_<cashier>`), empties the cart in the
+same step — which is what stops a double tap — and sends it in the background,
+one sale at a time, under the request id minted at Sotish (App Brief §12). The
+day's figures move only on the server's confirmation, a receipt already counted
+is recognised by its id, and close-day is refused while the outbox holds
+anything. A device that cannot keep the outbox falls back to the old path, where
+`Sotish` is disabled and relabelled `Sotilmoqda...` for the request. Backend
+idempotency on `requestId` is unchanged and is what makes every resend safe.
+
+The **Omad save** asks for the dashboard on its own answer
+(`includeDashboard: true` → `withOmadDashboard_` in `20_api.gs`), so the screen
+no longer spends a second Apps Script start-up on `get_omad_data` after each
+write; and the **task board** paints its stored list on open and moves a ticked
+card before the server answers (App Brief §12).
 
 **Full-screen loaders are for work that genuinely needs the screen.** Initial
 loads, migrations, cutover, backups, maintenance and the whole-list `save_omad`

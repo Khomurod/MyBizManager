@@ -662,26 +662,31 @@ async function deleteTx(id) {
         if(cancellingEntry) return;
         cancellingEntry = true;
         const requestBase = `web_cancel_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const writeSeq = nextOmadWrite_();
+        let last = null;
         showLoader(true);
         try {
             const ids = entryGroupRows(groupId).map(t => t.id);
             for(let i = 0; i < ids.length; i++) {
-                await callBackend({
+                // The last cancellation brings the figures back with it: only
+                // then is the whole group gone.
+                last = await callBackend({
                     action: 'cancel_transaction',
                     transactionId: ids[i],
                     requestId: `${requestBase}_${i}`,
-                    reason: 'cancelled from history'
+                    reason: 'cancelled from history',
+                    includeDashboard: i === ids.length - 1
                 });
             }
         } finally {
             showLoader(false);
             cancellingEntry = false;
         }
-        // Background, like every other confirmed write. A foreground `syncData`
-        // re-hydrates the stored snapshot first, which marks this live screen
-        // stale and makes `callBackend` refuse the next write until the refresh
-        // returns — the same trap the entry path already avoids.
-        settleOmadWriteInBackground_();
+        // Never a foreground `syncData`: that re-hydrates the stored snapshot
+        // first, which marks this live screen stale and makes `callBackend`
+        // refuse the next write until the refresh returns — the same trap the
+        // entry path already avoids.
+        settleOmadWrite_(last, writeSeq);
         return;
     }
 

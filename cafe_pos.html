@@ -116,6 +116,7 @@
 
   <main class="pos-main mx-auto w-full max-w-7xl px-4 pt-4 sm:px-6 lg:pt-6">
     <div id="posBanner" class="hidden mb-3"></div>
+    <div id="posOutboxBanner" class="hidden mb-3" role="status" aria-live="polite"></div>
     <div id="dailyProgressCard" class="progress-wrap ui-card ui-card-body mb-4">
       <div class="progress-confetti" aria-hidden="true">
         <span></span><span></span><span></span><span></span><span></span>
@@ -557,6 +558,9 @@
     async function syncMenu() {
       if (state.refreshing) return;
       state.refreshing = true;
+      // A sale confirmed while this read is on its way may be missing from the
+      // answer, which would then replace the day's figures without it.
+      const confirmedBefore = posConfirmedSeq;
 
       if (!state.loaded) {
         document.getElementById("categories").innerHTML =
@@ -591,6 +595,8 @@
         state.refreshing = false;
         renderPos();
       }
+      // Read once more rather than show a day that is short of a sale.
+      if (posConfirmedSeq !== confirmedBefore && !state.loadError) return syncMenu();
     }
 
     function setCategory(category) {
@@ -632,12 +638,14 @@
 
     function renderSessionSales() {
       const box = document.getElementById("receiptsList");
-      if (!state.sessionSales.length) {
+      // Sales still on this device come first: they are the ones that need an eye.
+      const unsent = posOutboxRows();
+      if (!state.sessionSales.length && !unsent) {
         box.innerHTML = `<div class="ui-empty">${uiIcon('receipt')}Bugungi cheklar hali yo'q</div>`;
         return;
       }
 
-      box.innerHTML = state.sessionSales.map(sale => `
+      box.innerHTML = unsent + state.sessionSales.map(sale => `
         <div class="rounded-xl border border-slate-200 bg-white p-3">
           <div class="flex items-start justify-between gap-3">
             <div class="min-w-0">
@@ -682,7 +690,7 @@
     }
 
     /**
-     * Whether a sale is already on its way to the server.
+     * Whether a sale is already on its way to the server by the direct path.
      *
      * The button had no lock. Two taps a moment apart both read the *same*
      * pending request id, so the server correctly answered the second one
@@ -698,10 +706,340 @@
      */
     let selling = false;
 
+
+    // ==================================================================
+    // Sales leave through an outbox: Sotish never waits for the server
+    // ------------------------------------------------------------------
+    // A sale used to hold the button ("Sotilmoqda...") for the whole round
+    // trip -- the till, Apps Script, the database and back, about three
+    // seconds measured, with a customer waiting. Now the sale is written to
+    // this device first, the cart empties at once, and the sale is sent in
+    // the background.
+    //
+    // Nothing about money moves to the till. The server still prices every
+    // sale, checks and moves the stock and stores the receipt; the day's
+    // takings, the progress bar and the stock on screen change only when it
+    // confirms. What makes sending later safe is the request id: each sale
+    // keeps the one it was given when Sotish was pressed, and the server
+    // resolves a repeated id to the receipt the first attempt created, so a
+    // resend -- after a dropped connection, a closed tab, the next shift --
+    // can never ring a sale up twice.
+    //
+    // A sale is in one of two states here:
+    //   pending  being sent, or waiting for the connection. Sent again on its
+    //            own: on a timer, when the device is back online, when the
+    //            till is shown again and the next time it is opened.
+    //   failed   the server refused it (not enough stock, an item retired).
+    //            Shown in red with the server's reason, to be retried, put
+    //            back in the cart or discarded -- never resent by itself and
+    //            never dropped silently. The goods have usually left with the
+    //            customer, so the stock needs a look before Qayta.
+    // A confirmed sale leaves the outbox and becomes an ordinary receipt.
+    //
+    // The outbox belongs to the cashier who rang the sales up, and is only
+    // sent while that cashier is signed in. The day cannot be closed while it
+    // holds anything: close-day totals what the server has recorded.
+    // ==================================================================
+
+    /** Delays between automatic resends while there is no connection. */
+    const POS_OUTBOX_RETRY_MS = [3000, 10000, 30000, 60000];
+
+    let posOutboxDrain = null;
+    let posOutboxTimer = null;
+    let posOutboxFailures = 0;
+    let posOutboxOffline = false;
+    /** Bumped by every confirmed sale, so a refresh can tell it raced one. */
+    let posConfirmedSeq = 0;
+
+    function posOutboxKey() {
+      const user = sessionUser();
+      return user ? `cafe_pos_outbox_${user}` : "";
+    }
+
+    function readPosOutbox() {
+      const key = posOutboxKey();
+      if (!key) return [];
+      try {
+        const list = JSON.parse(localStorage.getItem(key) || "[]");
+        return Array.isArray(list)
+          ? list.filter(item => item && item.payload && item.payload.requestId && Array.isArray(item.lines))
+          : [];
+      } catch (e) {
+        return [];
+      }
+    }
+
+    /** Whether the list was stored. A full or disabled storage says no. */
+    function writePosOutbox(list) {
+      const key = posOutboxKey();
+      if (!key) return false;
+      try {
+        if (list.length) localStorage.setItem(key, JSON.stringify(list));
+        else localStorage.removeItem(key);
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    function updatePosOutboxItem(id, changes) {
+      return writePosOutbox(readPosOutbox().map(item => (item.id === id ? Object.assign({}, item, changes) : item)));
+    }
+
+    function removePosOutboxItem(id) {
+      writePosOutbox(readPosOutbox().filter(item => item.id !== id));
+    }
+
+    /** No answer, or none the till can read, or a busy minute: worth sending again as it is. */
+    function isTransientSaleError(error) {
+      const kind = error && error.kind;
+      return kind === API_ERROR_NETWORK || kind === API_ERROR_PARSE || kind === API_ERROR_THROTTLED;
+    }
+
+    function showSoldAnimation() {
+      const ok = document.getElementById("okAnim");
+      ok.classList.remove("hidden");
+      ok.classList.add("pulse-ok");
+      setTimeout(() => { ok.classList.add("hidden"); ok.classList.remove("pulse-ok"); }, 900);
+    }
+
+    /**
+     * Puts one sale the server confirmed into the day's figures.
+     *
+     * The server's own receipt is what is counted -- its total and profit,
+     * not the till's estimate -- and the stock it sent back replaces the
+     * till's. A receipt already on screen (the answer to a resend whose first
+     * attempt was counted, or one a refresh already brought) is not counted
+     * twice.
+     */
+    function recordConfirmedSale(answer, payload, soldLines) {
+      const sale = (answer && answer.sale) || payload;
+      if (answer && Array.isArray(answer.inventory)) state.inventory = answer.inventory;
+      if (!state.sessionSales.some(existing => String(existing.id) === String(sale.id))) {
+        state.sales.unshift(sale);
+        state.sessionSales.unshift(sale);
+        soldLines.forEach(i => {
+          state.todaySold[i.id] = (state.todaySold[i.id] || 0) + i.qty;
+        });
+        state.todayRevenue += Number(sale.total || 0);
+        state.todayProfit += Number(sale.profit || 0);
+      }
+      posConfirmedSeq++;
+      buildMenu();
+      renderItems();
+      renderSessionSales();
+      updateProgressBar();
+      if (!document.getElementById("closeDayModal").classList.contains("hidden")) {
+        renderCloseDayList();
+        recomputeCloseDay();
+      }
+    }
+
+    /**
+     * Rings up what is in the cart. Returns at once as far as the cashier is
+     * concerned; the promise settles when the outbox has been sent, which is
+     * only of interest to a test.
+     */
     async function sell() {
+      // The guard against a second submission is that the cart is emptied in
+      // the same moment the sale is queued: a second tap finds it empty. The
+      // flag covers the direct path, which still waits.
       if (selling) return;
       if (!state.cart.length) return alert("Savat bo'sh");
 
+      // Only what was ordered. The price, the cost, the profit and the stock
+      // movement are the server's to decide -- it holds the catalogue, and a
+      // screen that has been open all day may not.
+      const soldLines = state.cart.map(i => ({
+        id: i.id,
+        kind: i.__kind,
+        inventoryId: i.inventoryId || null,
+        recipeId: i.recipeId || null,
+        name: i.name,
+        qty: i.qty
+      }));
+      const requestId = `pos_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      const payload = {
+        action: "save_sale",
+        id: Date.now().toString(),
+        requestId,
+        date: new Date().toISOString(),
+        seller: localStorage.getItem("omad_user") || "seller",
+        items: soldLines
+      };
+      // For the receipt list until the server's own total arrives. Display only.
+      const estimate = state.cart.reduce((sum, i) => sum + (Number(i.price) || 0) * i.qty, 0);
+
+      const list = readPosOutbox();
+      list.push({ id: requestId, payload, lines: soldLines, estimate, status: "pending", error: "", at: Date.now() });
+      if (!writePosOutbox(list) || !readPosOutbox().some(item => item.id === requestId)) {
+        return sellDirectly();
+      }
+
+      state.cart = [];
+      renderCart();
+      closeCart();
+      showSoldAnimation();
+      renderSessionSales();
+      renderPosOutboxBanner();
+      return drainPosOutbox();
+    }
+
+    /** Sends the outbox; one sender at a time, so a sale is never in flight twice. */
+    function drainPosOutbox() {
+      if (!posOutboxDrain) {
+        posOutboxDrain = runPosOutbox().finally(() => { posOutboxDrain = null; });
+      }
+      return posOutboxDrain;
+    }
+
+    async function runPosOutbox() {
+      clearTimeout(posOutboxTimer);
+      let offline = false;
+      // Each sale is sent at most once per pass, even if storage stops taking
+      // the change that says it has gone.
+      const sent = new Set();
+      for (;;) {
+        const next = readPosOutbox().find(item => item.status === "pending" && !sent.has(item.id));
+        if (!next) break;
+        sent.add(next.id);
+        try {
+          const answer = await callCafeApi(next.payload);
+          removePosOutboxItem(next.id);
+          recordConfirmedSale(answer, next.payload, next.lines);
+        } catch (e) {
+          if (e && e.isAuthFailure) {
+            // Kept as it is: it goes out once this cashier signs in again.
+            signOut();
+            return;
+          }
+          if (isTransientSaleError(e)) {
+            offline = true;
+            break;
+          }
+          const reason = (e && e.message) || "Sotuv saqlanmadi.";
+          updatePosOutboxItem(next.id, { status: "failed", error: reason });
+          renderSessionSales();
+          renderPosOutboxBanner();
+          alert("Sotuv saqlanmadi: " + reason);
+        }
+      }
+
+      posOutboxOffline = offline;
+      if (offline) {
+        const delay = POS_OUTBOX_RETRY_MS[Math.min(posOutboxFailures, POS_OUTBOX_RETRY_MS.length - 1)];
+        posOutboxFailures++;
+        posOutboxTimer = setTimeout(drainPosOutbox, delay);
+      } else {
+        posOutboxFailures = 0;
+      }
+      renderSessionSales();
+      renderPosOutboxBanner();
+    }
+
+    function retryPosSale(id) {
+      updatePosOutboxItem(id, { status: "pending", error: "" });
+      posOutboxFailures = 0;
+      renderSessionSales();
+      renderPosOutboxBanner();
+      drainPosOutbox();
+    }
+
+    /** A refused sale was stored nowhere: its lines go back in the cart to be corrected. */
+    function returnPosSaleToCart(id) {
+      const item = readPosOutbox().find(entry => entry.id === id);
+      if (!item || item.status !== "failed") return;
+      item.lines.forEach(line => {
+        const menuItem = state.menu.find(m => m.id === line.id);
+        if (!menuItem) return;
+        const existing = state.cart.find(c => c.id === line.id);
+        if (existing) existing.qty += line.qty;
+        else state.cart.push({ ...menuItem, qty: line.qty });
+      });
+      removePosOutboxItem(id);
+      renderCart();
+      renderSessionSales();
+      renderPosOutboxBanner();
+      closeReceiptsModal();
+      openCart();
+    }
+
+    function discardPosSale(id) {
+      const item = readPosOutbox().find(entry => entry.id === id);
+      if (!item || item.status !== "failed") return;
+      if (!confirm("Bu sotuv serverda saqlanmagan. Butunlay o'chirilsinmi?")) return;
+      removePosOutboxItem(id);
+      renderSessionSales();
+      renderPosOutboxBanner();
+    }
+
+    /** The outbox rows, oldest first, for the receipt list. */
+    function posOutboxRows() {
+      return readPosOutbox().map(item => {
+        const id = escapeHtmlText(item.id);
+        const when = formatReceiptTime(item.payload.date);
+        const count = `${item.lines.length} ta pozitsiya`;
+        if (item.status === "failed") {
+          return `
+            <div class="rounded-xl border border-red-200 bg-red-50 p-3" data-outbox="failed">
+              <p class="flex items-center gap-1.5 text-sm font-semibold text-red-700">${uiIcon('circle-alert', 'ui-icon-sm')}Saqlanmadi · ${when}</p>
+              <p class="mt-1 text-sm text-red-700">${escapeHtmlText(item.error)}</p>
+              <p class="mt-0.5 text-xs text-slate-600">≈ ${formatMoney(item.estimate)} · ${count}</p>
+              <div class="mt-2 grid grid-cols-3 gap-2">
+                <button onclick="retryPosSale('${id}')" class="ui-btn ui-btn-secondary ui-btn-sm">Qayta</button>
+                <button onclick="returnPosSaleToCart('${id}')" class="ui-btn ui-btn-secondary ui-btn-sm">Savatga</button>
+                <button onclick="discardPosSale('${id}')" class="ui-btn ui-btn-soft-danger ui-btn-sm">O'chirish</button>
+              </div>
+            </div>`;
+        }
+        return `
+          <div class="rounded-xl border border-blue-200 bg-blue-50 p-3" data-outbox="pending">
+            <p class="flex items-center gap-1.5 text-sm font-semibold text-slate-900">${uiIcon('loader-circle', 'ui-icon-sm ui-spin text-blue-600')}${when}</p>
+            <p class="mt-1 text-sm text-slate-700">Jami: <b class="tabular">≈ ${formatMoney(item.estimate)}</b></p>
+            <p class="mt-0.5 text-xs text-slate-500">${count} · ${posOutboxOffline ? "Aloqa kutilmoqda..." : "Yuborilmoqda..."}</p>
+          </div>`;
+      }).join("");
+    }
+
+    /** One line on the till itself, so an unsent or refused sale is never only in a closed modal. */
+    function renderPosOutboxBanner() {
+      const banner = document.getElementById("posOutboxBanner");
+      if (!banner) return;
+      const list = readPosOutbox();
+      const failed = list.filter(item => item.status === "failed");
+      if (!list.length) {
+        banner.classList.add("hidden");
+        return;
+      }
+      if (failed.length) {
+        banner.className = "ui-alert ui-alert-danger mb-3 items-center";
+        const waiting = list.length - failed.length;
+        banner.innerHTML = `${uiIcon('circle-alert')}<span class="flex-1">${failed.length} ta sotuv saqlanmadi: ${escapeHtmlText(failed[0].error)}${waiting ? ` (yana ${waiting} ta yuborilmoqda)` : ""}</span>
+          <button onclick="openReceiptsModal()" class="ui-btn ui-btn-danger ui-btn-sm shrink-0">Ko'rish</button>`;
+      } else {
+        banner.className = "ui-alert ui-alert-info mb-3 items-center";
+        banner.innerHTML = `${uiIcon('loader-circle', 'ui-spin')}<span class="flex-1">${list.length} ta sotuv ${posOutboxOffline ? "aloqa kutmoqda" : "yuborilmoqda"}...</span>`;
+      }
+      banner.classList.remove("hidden");
+    }
+
+    // Sent again as soon as there is a reason to think it would now get through.
+    window.addEventListener("online", () => { posOutboxFailures = 0; drainPosOutbox(); });
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") drainPosOutbox();
+    });
+    // Another tab of this till changed the outbox.
+    window.addEventListener("storage", event => {
+      if (event.key === posOutboxKey()) { renderSessionSales(); renderPosOutboxBanner(); }
+    });
+
+    /**
+     * The old way, kept for a device that cannot keep the outbox (storage full
+     * or switched off): the sale is sent while the button waits, and a failure
+     * leaves the cart and the request id exactly as they were, so pressing
+     * Sotish again is the retry the server already knows how to answer.
+     */
+    async function sellDirectly() {
       const button = document.getElementById("sellBtn");
       const sellLabel = button ? button.textContent : "";
       selling = true;
@@ -737,33 +1075,12 @@
         const answer = await callCafeApi(payload);
         clearPendingSaleId();
 
-        const sale = (answer && answer.sale) || payload;
-        state.sales.unshift(sale);
-        state.sessionSales.unshift(sale);
-        soldLines.forEach(i => {
-          state.todaySold[i.id] = (state.todaySold[i.id] || 0) + i.qty;
-        });
-        state.todayRevenue += Number(sale.total || 0);
-        state.todayProfit += Number(sale.profit || 0);
-        // The authoritative stock comes back with the sale, so the till shows
-        // what the sheet holds rather than its own running guess.
-        if (answer && Array.isArray(answer.inventory)) state.inventory = answer.inventory;
-        buildMenu();
+        recordConfirmedSale(answer, payload, soldLines);
 
         state.cart = [];
         renderCart();
-        renderItems();
-        renderSessionSales();
-        updateProgressBar();
         closeCart();
-        if (!document.getElementById("closeDayModal").classList.contains("hidden")) {
-          renderCloseDayList();
-          recomputeCloseDay();
-        }
-        const ok = document.getElementById("okAnim");
-        ok.classList.remove("hidden");
-        ok.classList.add("pulse-ok");
-        setTimeout(() => { ok.classList.add("hidden"); ok.classList.remove("pulse-ok"); }, 900);
+        showSoldAnimation();
       } catch (e) {
         // The request id is kept so a retry resolves to the same sale, and the
         // reason is shown: "not enough stock" is not a network problem.
@@ -891,6 +1208,13 @@
      * is safe on stale data (the server prices and checks it); this is not.
      */
     function closeDayIsSafe() {
+      // Close-day totals what the server has recorded, so a sale still on this
+      // device would be missing from the day it was rung up in.
+      const unsent = readPosOutbox().length;
+      if (unsent) {
+        alert(`${unsent} ta sotuv hali serverga yuborilmagan. Kun yakunlashdan oldin ular saqlanishi kerak — "Bugungi Cheklar"ni oching.`);
+        return false;
+      }
       if (!state.loaded) {
         alert("Ma'lumot hali yuklanmadi. Avval yangilang.");
         return false;
@@ -1118,14 +1442,19 @@
     }
 
     function logout() {
+      const unsent = readPosOutbox().length;
+      if (unsent && !confirm(`${unsent} ta sotuv hali yuborilmagan. Ular shu qurilmada qoladi va siz qayta kirganingizda yuboriladi. Chiqasizmi?`)) return;
       signOut();
     }
 
     window.onload = () => {
       renderCart();
-      // Paint from the last catalogue that loaded, then refresh over it.
+      renderPosOutboxBanner();
+      // Paint from the last catalogue that loaded, then refresh over it, and
+      // only then send what an earlier visit left unsent: a sale the server
+      // already has is then recognised on the list instead of counted again.
       hydrateFromSnapshot();
-      syncMenu();
+      syncMenu().then(drainPosOutbox);
     };
   </script>
 </body>

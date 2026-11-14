@@ -162,86 +162,14 @@ async function syncData(options = {}) {
         }
         if (data) {
             const remote = data.data || data.payload || data;
-
-            // Three shapes, in order of what the server said rather than of
-            // what this client hopes for:
-            //   * a summary and no rows  -> history is fetched page by page;
-            //   * rows                   -> the whole ledger is in hand;
-            //   * neither (a very old backend) -> leave what is on screen.
-            app.summary = (remote.summary && remote.summary.periods) ? remote.summary : null;
-            app.recent = Array.isArray(remote.recent) ? remote.recent : [];
-            app.historyMode = remote.historyMode === 'paged' ? 'paged'
-                : (Array.isArray(remote.transactions) ? 'full' : app.historyMode);
-
-            if (Array.isArray(remote.transactions)) {
-                app.transactions = remote.transactions;
-                app.historyLoaded = true;
-                app.historyHasMore = false;
-                app.historyOffset = 0;
-                app.historyTotal = 0;
-            } else if (app.historyMode === 'paged') {
-                // A refresh after a save has to drop the page that is on
-                // screen: it was built from rows the save has just changed.
-                app.transactions = [];
-                app.historyLoaded = false;
-                app.historyOffset = 0;
-                app.historyTotal = 0;
-                app.historyHasMore = false;
-            }
-            app.historyError = '';
-
-            if(typeof remote.rate === 'number') {
-                // A very old single-rate payload. It has no period of its own,
-                // so it applies to the current one.
-                app.rates[currentPeriod()] = normalizeRateEntry(remote.rate);
-            } else if (remote.rates) {
-                app.rates = normalizeRatesMap(remote.rates);
-            }
-
-            app.rates = normalizeRatesMap(app.rates);
-
-            if(remote.tenants && remote.tenants.length > 0) {
-                app.tenants = remote.tenants.map(normalizeTenantObject);
-            } else {
-                 app.tenants = [ 
-                    {name: "Tehnopark", rent: 0, currency: "USD", disabledMonths: []},
-                    {name: "Bunyodbek", rent: 0, currency: "USD", disabledMonths: []}
-                ].map(normalizeTenantObject);
-            }
-
-            app.templateExpenses = Array.isArray(remote.templateExpenses)
-                ? remote.templateExpenses.map(normalizeTemplateExpense)
-                : [];
-
+            applyOmadDashboard(remote);
             // The migration status used to be a second request fired the
             // moment this one returned - another Apps Script round trip before
             // the dashboard could decide whether the ledger was live. It is
             // four property reads, so it rides along with the data now. The
             // separate call remains for an older backend that does not send it.
-            if (remote.migration) {
-                app.migration = remote.migration;
-                app.ledgerActive = app.migration.activeSheet === 'Omad_Transactions_V2';
-            } else {
-                await loadMigrationState();
-            }
-
-            app.snapshotAt = 0;
-            app.loadError = '';
-            // The snapshot stores what the *dashboard* needs, which since the
-            // summary arrived is a few kilobytes rather than the whole ledger.
-            // The history page is deliberately not kept: it is fetched fresh,
-            // and a stale page of financial rows is exactly what nobody should
-            // be offered to edit.
-            writeSnapshot('omad', {
-                transactions: app.historyMode === 'full' ? app.transactions : [],
-                summary: app.summary,
-                recent: app.recent,
-                historyMode: app.historyMode,
-                rates: app.rates,
-                tenants: app.tenants,
-                templateExpenses: app.templateExpenses,
-                migration: app.migration
-            });
+            if (!remote.migration) await loadMigrationState();
+            confirmOmadDashboard();
         }
     } catch (e) {
         // Whatever was on screen stays on screen. Emptying it would replace
@@ -251,9 +179,104 @@ async function syncData(options = {}) {
     }
     renderAll();
     if (!background) showLoader(false);
-    // A sync after a save dropped the loaded history page, because it was built
-    // from rows the save has moved. If somebody is looking at Tarix, fetch the
-    // first page again rather than leaving them in front of a button.
+    reloadHistoryIfShown();
+}
+
+/**
+ * Puts one dashboard answer from the server into `app`.
+ *
+ * Three shapes, in order of what the server said rather than of what this
+ * client hopes for:
+ *   * a summary and no rows  -> history is fetched page by page;
+ *   * rows                   -> the whole ledger is in hand;
+ *   * neither (a very old backend) -> leave what is on screen.
+ *
+ * Used by a load and by a save whose answer carried the fresh figures
+ * (`includeDashboard`), so the two can never disagree about what an answer
+ * means. Nothing is rendered or stored here: see `confirmOmadDashboard`.
+ */
+function applyOmadDashboard(remote) {
+    app.summary = (remote.summary && remote.summary.periods) ? remote.summary : null;
+    app.recent = Array.isArray(remote.recent) ? remote.recent : [];
+    app.historyMode = remote.historyMode === 'paged' ? 'paged'
+        : (Array.isArray(remote.transactions) ? 'full' : app.historyMode);
+
+    if (Array.isArray(remote.transactions)) {
+        app.transactions = remote.transactions;
+        app.historyLoaded = true;
+        app.historyHasMore = false;
+        app.historyOffset = 0;
+        app.historyTotal = 0;
+    } else if (app.historyMode === 'paged') {
+        // A refresh after a save has to drop the page that is on
+        // screen: it was built from rows the save has just changed.
+        app.transactions = [];
+        app.historyLoaded = false;
+        app.historyOffset = 0;
+        app.historyTotal = 0;
+        app.historyHasMore = false;
+    }
+    app.historyError = '';
+
+    if(typeof remote.rate === 'number') {
+        // A very old single-rate payload. It has no period of its own,
+        // so it applies to the current one.
+        app.rates[currentPeriod()] = normalizeRateEntry(remote.rate);
+    } else if (remote.rates) {
+        app.rates = normalizeRatesMap(remote.rates);
+    }
+
+    app.rates = normalizeRatesMap(app.rates);
+
+    if(remote.tenants && remote.tenants.length > 0) {
+        app.tenants = remote.tenants.map(normalizeTenantObject);
+    } else {
+         app.tenants = [
+            {name: "Tehnopark", rent: 0, currency: "USD", disabledMonths: []},
+            {name: "Bunyodbek", rent: 0, currency: "USD", disabledMonths: []}
+        ].map(normalizeTenantObject);
+    }
+
+    app.templateExpenses = Array.isArray(remote.templateExpenses)
+        ? remote.templateExpenses.map(normalizeTemplateExpense)
+        : [];
+
+    if (remote.migration) {
+        app.migration = remote.migration;
+        app.ledgerActive = app.migration.activeSheet === 'Omad_Transactions_V2';
+    }
+}
+
+/**
+ * Marks what is on screen as the server's live answer and keeps a copy for the
+ * next open.
+ *
+ * The snapshot stores what the *dashboard* needs, which since the summary
+ * arrived is a few kilobytes rather than the whole ledger. The history page is
+ * deliberately not kept: it is fetched fresh, and a stale page of financial
+ * rows is exactly what nobody should be offered to edit.
+ */
+function confirmOmadDashboard() {
+    app.snapshotAt = 0;
+    app.loadError = '';
+    writeSnapshot('omad', {
+        transactions: app.historyMode === 'full' ? app.transactions : [],
+        summary: app.summary,
+        recent: app.recent,
+        historyMode: app.historyMode,
+        rates: app.rates,
+        tenants: app.tenants,
+        templateExpenses: app.templateExpenses,
+        migration: app.migration
+    });
+}
+
+/**
+ * A new answer dropped the loaded history page, because it was built from
+ * rows a save has moved. If somebody is looking at Tarix, fetch the first page
+ * again rather than leaving them in front of a button.
+ */
+function reloadHistoryIfShown() {
     const historyTab = document.getElementById('tab-history');
     if (historyTab && historyTab.classList.contains('active')) ensureHistoryLoaded();
 }

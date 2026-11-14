@@ -58,9 +58,14 @@ test('cancelling an entry refreshes in the background and refuses a second click
 
   assert.match(cancel, /if\(cancellingEntry\) return/,
     'the guard is explicit rather than an overlay side effect');
-  assert.match(cancel, /settleOmadWriteInBackground_\(\)/);
+  // Settled with the figures the last cancellation brought back, or in the
+  // background when there are none -- never by a foreground sync.
+  assert.match(cancel, /settleOmadWrite_\(last, writeSeq\)/);
   assert.doesNotMatch(cancel.slice(0, cancel.indexOf('const grouped')), /await syncData\(\)/,
     'a foreground sync would rehydrate the snapshot and refuse the next write');
+  const app = read('assets/omad/12-app.js');
+  const settle = app.slice(app.indexOf('function settleOmadWrite_('), app.indexOf('function settleOmadWrite_(') + 1200);
+  assert.match(settle, /settleOmadWriteInBackground_\(\)/, 'no figures means the background refresh, as before');
 });
 
 // ------------------------------------------------------------------- Mini App

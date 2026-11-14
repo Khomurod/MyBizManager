@@ -457,14 +457,18 @@ async function submitBulk() {
     setBulkSaveLock(true);
     showLoader(true);
     let saved = null;
+    let answer = null;
+    const writeSeq = nextOmadWrite_();
     try {
         const response = await callBackend({
             action: 'create_transaction_bulk',
             requestId: requestId,
             source: 'Web',
             createdBy: localStorage.getItem('omad_user') || 'web',
-            entries: entries
+            entries: entries,
+            includeDashboard: true
         });
+        answer = response;
 
         if (!isSuccessResponse(response)) {
             // The grid and the request id both stay, so pressing again is a
@@ -491,10 +495,10 @@ async function submitBulk() {
     alert(saved.duplicate
         ? 'Bu yozuvlar allaqachon saqlangan.'
         : `${saved.count} ta yozuv saqlandi.`);
-    // Out of band and coalesced, like every other accounting write: the money is
-    // stored, and the figures are a fresh read of it. Deliberately outside the
-    // try above, so a failed *refresh* can never be reported as a failed save.
-    settleOmadWriteInBackground_();
+    // The figures came back with the save; a background refresh only when they
+    // did not. Deliberately outside the try above, so a failed *refresh* can
+    // never be reported as a failed save.
+    settleOmadWrite_(answer, writeSeq);
 }
 
 // ------------------------------------------------------------- wiring

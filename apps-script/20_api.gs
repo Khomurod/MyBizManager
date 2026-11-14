@@ -165,14 +165,14 @@ function doPost(e) {
     if (action === 'tenant_paid_expense') {
       var pairAccess = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
       if (!pairAccess.ok) return authRefusal_(pairAccess);
-      return tenantPaidExpenseAction_(payload, doc, configSheet);
+      return withOmadDashboard_(tenantPaidExpenseAction_(payload, doc, configSheet), doc, configSheet, payload);
     }
 
     // ---- Append-only ledger -----------------------------------------------
     if (isLedgerAction_(action)) {
       var ledgerAccess = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
       if (!ledgerAccess.ok) return authRefusal_(ledgerAccess);
-      return ledgerAction_(action, payload, doc);
+      return withOmadDashboard_(ledgerAction_(action, payload, doc), doc, configSheet, payload);
     }
 
     // ---- Retry queue ------------------------------------------------------
@@ -460,6 +460,36 @@ function readOmadDashboardPayload_(doc, configSheet) {
   };
   body.recent = omadRecentForPeriod_(doc, model, "", OMAD_READ_MODEL_RECENT);
   return body;
+}
+
+/**
+ * The dashboard, carried back on the answer to a web write that asked for it.
+ *
+ * After every save the screen used to ask for the dashboard in a second
+ * request: a whole second Apps Script start-up (about two seconds, measured)
+ * to learn figures this execution can compute from what it has just written.
+ * A client that sends `includeDashboard: true` gets them on the save's own
+ * answer instead. Only a stored write carries them, and building them can
+ * never turn a stored write into a failure: if they cannot be read, the answer
+ * goes back without them and the screen refreshes the way it always did.
+ */
+function withOmadDashboard_(output, doc, configSheet, payload) {
+  if (!payload || payload.includeDashboard !== true) return output;
+  if (!output || typeof output.getContent !== "function") return output;
+  var body;
+  try {
+    body = JSON.parse(output.getContent());
+  } catch (parseError) {
+    return output;
+  }
+  if (!body || body.status !== "success") return output;
+  try {
+    body.dashboard = readOmadDashboardPayload_(doc, configSheet);
+  } catch (error) {
+    debugLog_(doc, "dashboard_after_write_failed", redactSecrets_(error).slice(0, 300));
+    return output;
+  }
+  return jsonOutput_(body);
 }
 
 /** How many business actions one history page carries. */
