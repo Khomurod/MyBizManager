@@ -97,17 +97,35 @@ describe('Café POS sales outbox (browser)', () => {
       localStorage.setItem('omad_user', 'kassir');
       localStorage.setItem('omad_session_expires', String(Date.now() + 86400000));
       if (s.outbox && !sessionStorage.getItem('__seeded')) {
-        s.outbox.forEach(item => localStorage.setItem('cafe_pos_outbox_kassir_' + item.id, JSON.stringify(item)));
+        s.outbox.forEach(item => localStorage.setItem('cafe_pos_outbox:kassir:' + item.id, JSON.stringify(item)));
         sessionStorage.setItem('__seeded', '1');
       }
       // The outbox cannot be written while this is true; a test can flip it.
       window.__breakOutbox = !!s.brokenStorage;
-      const original = Storage.prototype.setItem;
+      // The pending direct attempt cannot be kept in sessionStorage either.
+      window.__breakPending = !!s.brokenSession;
+      // Storage takes a sale but cannot list it back or take it out again.
+      window.__hideOutbox = false;
+      const isOutbox = key => String(key).indexOf('cafe_pos_outbox:') === 0;
+      const { setItem, getItem, removeItem, key: keyAt } = Storage.prototype;
       Storage.prototype.setItem = function (key, value) {
-        if (window.__breakOutbox && String(key).indexOf('cafe_pos_outbox_') === 0) throw new Error('QuotaExceededError');
-        return original.call(this, key, value);
+        if (window.__breakOutbox && isOutbox(key)) throw new Error('QuotaExceededError');
+        if (window.__breakPending && key === 'cafe_pending_sale') throw new Error('QuotaExceededError');
+        return setItem.call(this, key, value);
       };
-    }, { token: backend.token, outbox: options.outbox || null, brokenStorage: !!options.brokenStorage });
+      Storage.prototype.getItem = function (key) {
+        if (window.__breakPending && key === 'cafe_pending_sale') throw new Error('SecurityError');
+        return getItem.call(this, key);
+      };
+      Storage.prototype.removeItem = function (key) {
+        if (window.__hideOutbox && isOutbox(key)) throw new Error('SecurityError');
+        return removeItem.call(this, key);
+      };
+      Storage.prototype.key = function (index) {
+        if (window.__hideOutbox) throw new Error('SecurityError');
+        return keyAt.call(this, index);
+      };
+    }, { token: backend.token, outbox: options.outbox || null, brokenStorage: !!options.brokenStorage, brokenSession: !!options.brokenSession });
     await context.route('**script.google.com/**', async route => {
       let payload = {};
       try { payload = JSON.parse(route.request().postData() || '{}'); } catch (e) { payload = {}; }
@@ -340,6 +358,70 @@ describe('Café POS sales outbox (browser)', () => {
     await second.evaluate(() => { addToCart('product_i_water'); return sell(); });
     const seen = await Promise.all([page, second].map(tab => tab.evaluate(() => readPosOutbox().length)));
     assert.deepStrictEqual(seen, [2, 2], 'each tab sees both sales');
+    await context.close();
+  });
+
+  test('a sale stored but not readable back goes the direct way under the id it was stored with', async () => {
+    const backend = boot();
+    const { page, context, control } = await openPos(backend, { sale: 'lost' });
+    await page.evaluate(async () => { window.__hideOutbox = true; addToCart('product_i_cola'); await sell(); });
+    assert.strictEqual(await page.evaluate(() => state.cart.length), 1, 'the direct way: the cart waits for the answer');
+
+    // Storage recovers: the record it kept goes out on the next pass, and the
+    // cashier presses Sotish again for the cart still on screen.
+    control.sale = 'answer';
+    await page.evaluate(async () => { window.__hideOutbox = false; await drainPosOutbox(); await sell(); });
+    assert.strictEqual(new Set(control.sent.map(p => p.requestId)).size, 1, 'every attempt under the one id');
+    assert.strictEqual(storedSales(backend.gas).length, 1, 'one checkout, one sale');
+    assert.deepStrictEqual(await page.evaluate(() => ({ cart: state.cart.length, revenue: state.todayRevenue, unsent: readPosOutbox().length })),
+      { cart: 0, revenue: 9000, unsent: 0 });
+    await context.close();
+  });
+
+  test('a direct sale on a device where no storage works is still retried under its id', async () => {
+    const backend = boot();
+    const { page, context, control } = await openPos(backend, { sale: 'lost', brokenStorage: true, brokenSession: true });
+    await page.evaluate(async () => { addToCart('product_i_cola'); await sell(); });
+    control.sale = 'answer';
+    await page.evaluate(() => sell());
+    assert.strictEqual(control.sent.length, 2);
+    assert.strictEqual(control.sent[0].requestId, control.sent[1].requestId, 'the same cart, the same id');
+    assert.strictEqual(storedSales(backend.gas).length, 1, 'one checkout, one sale');
+    await context.close();
+  });
+
+  test('another cashier whose name starts with this one\'s keeps their unsent sales to themselves', async () => {
+    const backend = boot();
+    const { page, context, control } = await openPos(backend);
+    const result = await page.evaluate(async () => {
+      // A key of the same kind, for the cashier "kassir_b".
+      const other = posOutboxPrefix().replace('kassir', 'kassir_b') + 'pos_other';
+      const payload = {
+        action: 'save_sale', id: '1790000000002', requestId: 'pos_other', date: new Date().toISOString(), seller: 'kassir_b',
+        items: [{ id: 'product_i_cola', kind: 'product', inventoryId: 'i_cola', recipeId: null, name: 'Cola', qty: 1 }]
+      };
+      localStorage.setItem(other, JSON.stringify({ id: 'pos_other', payload, lines: payload.items, estimate: 9000, status: 'pending', error: '', at: Date.now() }));
+      await drainPosOutbox();
+      return { seen: readPosOutbox().length, kept: localStorage.getItem(other) !== null };
+    });
+    assert.deepStrictEqual(result, { seen: 0, kept: true }, 'not listed here, and left where it was');
+    assert.deepStrictEqual(control.sent, [], 'and not sent by this cashier');
+    await context.close();
+  });
+
+  test('a sale another tab of the till confirms reaches this tab\'s figures', async () => {
+    const backend = boot();
+    const { page, context } = await openPos(backend);
+    const second = await context.newPage();
+    await second.goto(`${base}/cafe_pos.html`);
+    await second.waitForFunction(() => state.loaded && state.menu.length > 0);
+
+    await page.evaluate(async () => { addToCart('product_i_cola'); await sell(); });
+    await second.waitForFunction(() => state.todayRevenue === 9000, null, { timeout: 8000 });
+    const there = await second.evaluate(() => ({
+      receipts: state.sessionSales.length, stock: state.inventory.find(item => item.id === 'i_cola').qty
+    }));
+    assert.deepStrictEqual(there, { receipts: 1, stock: 39 });
     await context.close();
   });
 });

@@ -692,7 +692,8 @@ test('Sotish queues the sale and empties the cart before anything is sent', () =
   assert.match(handler, /writePosOutboxItem\(item\)/, 'the sale is kept on the device first, as its own record');
   assert.match(handler.slice(0, emptied), /if \(hasUnresolvedDirectSale\(\)\) return sellDirectly\(\)/,
     'an unanswered direct attempt for this cart is retried under its own id');
-  assert.match(handler, /return sellDirectly\(\)/, 'and a device that cannot keep it waits as before');
+  assert.match(handler, /return sellDirectly\(requestId\)/,
+    'and a device that cannot keep it waits as before, under the id the outbox gave the sale');
   assert.match(handler, /return drainPosOutbox\(\)/);
   // Only what was ordered: the server prices it.
   assert.doesNotMatch(handler, /total:|profit:/);
@@ -702,7 +703,7 @@ test('Sotish queues the sale and empties the cart before anything is sent', () =
 
 test('the direct sale path still locks Sotish while its sale is in flight', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'cafe_pos.html'), 'utf8');
-  const handler = source.slice(source.indexOf('async function sellDirectly()'), source.indexOf('async function voidSale('));
+  const handler = source.slice(source.indexOf('async function sellDirectly('), source.indexOf('async function voidSale('));
   assert.match(handler, /Sotilmoqda\.\.\./);
   assert.match(handler, /button\.disabled = true/);
   assert.match(handler, /finally \{[\s\S]*selling = false;[\s\S]*button\.disabled = false/,
@@ -712,7 +713,7 @@ test('the direct sale path still locks Sotish while its sale is in flight', () =
   assert.match(handler, /recordConfirmedSale\(answer, payload, soldLines\)/);
   assert.doesNotMatch(handler, /state\.cart\.forEach/);
   // The request id lifecycle is what the server dedupes on; it must not change.
-  assert.match(handler, /pendingSaleId\(\)/);
+  assert.match(handler, /pendingSaleId\(queuedId\)/);
   assert.match(handler, /clearPendingSaleId\(\)/);
 });
 

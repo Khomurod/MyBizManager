@@ -676,19 +676,30 @@
      * connection resolves to the sale the first attempt created instead of
      * ringing it up twice.
      */
-    function pendingSaleId() {
+    function pendingSaleId(queuedId) {
       // Kept with the cart it was minted for: the server answers a repeated id
       // with the first sale whatever the new request holds, so the id is only
-      // the retry's when the cart is the same.
+      // the retry's when the cart is the same. `queuedId` is the id the outbox
+      // already gave this cart before it fell back to the direct path.
       const cart = cartSignature();
       const stored = readPendingSale();
       if (stored && stored.cart === cart) return stored.id;
-      const value = `pos_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      const value = queuedId || `pos_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      pendingSaleInMemory = { id: value, cart };
       try { sessionStorage.setItem("cafe_pending_sale", JSON.stringify({ id: value, cart })); } catch (e) {}
       return value;
     }
 
+    /**
+     * The direct path is the one a device with broken storage takes, and
+     * sessionStorage may be as broken as the outbox: the attempt is also held
+     * here, so a retry on the open page goes under its id whatever storage does.
+     * sessionStorage is what carries it across a reload.
+     */
+    let pendingSaleInMemory = null;
+
     function readPendingSale() {
+      if (pendingSaleInMemory) return pendingSaleInMemory;
       try {
         const raw = sessionStorage.getItem("cafe_pending_sale") || "";
         if (!raw) return null;
@@ -711,6 +722,7 @@
     }
 
     function clearPendingSaleId() {
+      pendingSaleInMemory = null;
       try { sessionStorage.removeItem("cafe_pending_sale"); } catch (e) {}
     }
 
@@ -777,17 +789,21 @@
     let posConfirmedSeq = 0;
 
     /**
-     * Each sale is its own key, `cafe_pos_outbox_<cashier>_<requestId>`.
+     * Each sale is its own key, `cafe_pos_outbox:<cashier>:<requestId>`.
      *
      * One list under one key would be read, changed and written back whole,
      * so two tabs of the till adding or removing a sale at the same moment
      * could each write a list without the other's sale -- and a sale lost from
      * storage is never sent. With a key per sale, adding, settling and
      * removing one never rewrites another.
+     *
+     * The cashier's name is closed by a colon, which a username cannot hold
+     * (letters, digits and `_`): with `_` there, `ann`'s prefix would also
+     * match every key of `ann_b`, and one cashier would send another's sales.
      */
     function posOutboxPrefix() {
       const user = sessionUser();
-      return user ? `cafe_pos_outbox_${user}_` : "";
+      return user ? `cafe_pos_outbox:${user}:` : "";
     }
 
     /**
@@ -931,7 +947,12 @@
 
       const item = { id: requestId, payload, lines: soldLines, estimate, status: "pending", error: "", at: Date.now() };
       if (!writePosOutboxItem(item) || !readPosOutbox().some(entry => entry.id === requestId)) {
-        return sellDirectly();
+        // The device cannot be relied on to keep it, so it goes the old way. A
+        // record that was written but cannot be read back may still be there
+        // for a later pass to send: it is taken out if it can be, and the direct
+        // attempt goes under its id either way, so the server holds one sale.
+        removePosOutboxItem(requestId);
+        return sellDirectly(requestId);
       }
       // A different cart was rung up: whatever the unanswered direct attempt was,
       // the cashier has moved on from it.
@@ -1102,10 +1123,23 @@
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") drainPosOutbox();
     });
-    // Another tab of this till changed the outbox.
+    // Another tab of this till changed the outbox. A pending sale leaving it
+    // is that tab's sale confirmed, and this tab's figures and stock are a
+    // sale behind until it reads them again: once, after the other tab's
+    // backlog has settled, and a read already on its way is repeated by
+    // syncMenu's own check (the count it watches moves here too).
+    let posPeerRefreshTimer = null;
     window.addEventListener("storage", event => {
       const prefix = posOutboxPrefix();
-      if (prefix && event.key && event.key.indexOf(prefix) === 0) { renderSessionSales(); renderPosOutboxBanner(); }
+      if (!prefix || !event.key || event.key.indexOf(prefix) !== 0) return;
+      renderSessionSales();
+      renderPosOutboxBanner();
+      if (event.newValue !== null) return;
+      let was = null;
+      try { was = JSON.parse(event.oldValue || "null"); } catch (e) { was = null; }
+      if (!was || was.status === "failed") return;   // a refusal set aside, not a sale
+      clearTimeout(posPeerRefreshTimer);
+      posPeerRefreshTimer = setTimeout(() => { posConfirmedSeq++; syncMenu(); }, 1000);
     });
 
     /**
@@ -1114,7 +1148,7 @@
      * leaves the cart and the request id exactly as they were, so pressing
      * Sotish again is the retry the server already knows how to answer.
      */
-    async function sellDirectly() {
+    async function sellDirectly(queuedId) {
       const button = document.getElementById("sellBtn");
       const sellLabel = button ? button.textContent : "";
       selling = true;
@@ -1126,7 +1160,7 @@
       // Only what was ordered. The price, the cost, the profit and the stock
       // movement are the server's to decide -- it holds the catalogue, and a
       // screen that has been open all day may not.
-      const requestId = pendingSaleId();
+      const requestId = pendingSaleId(queuedId);
       // Captured before the round trip, because the counters below run after it
       // and the cart is not necessarily what it was by then.
       const soldLines = state.cart.map(i => ({
@@ -1149,6 +1183,9 @@
       try {
         const answer = await callCafeApi(payload);
         clearPendingSaleId();
+        // A record of this sale the outbox could not take out (see sell) has
+        // nothing left to send.
+        removePosOutboxItem(requestId);
 
         recordConfirmedSale(answer, payload, soldLines);
 

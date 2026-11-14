@@ -1068,8 +1068,10 @@ composes the message from data it already stored.
   is always kept. The tenant-paid pair, the bulk entry and
   the web form still wait for the server.
 - **A café sale leaves through an outbox on the till** (`cafe_pos.html`; one
-  `localStorage` key per sale, `cafe_pos_outbox_<cashier>_<requestId>`, so two
-  tabs adding or settling sales never rewrite each other's). Sotish empties the cart at
+  `localStorage` key per sale, `cafe_pos_outbox:<cashier>:<requestId>`, so two
+  tabs adding or settling sales never rewrite each other's; the colon, which no
+  username can hold, closes the name, so `ann`'s prefix never matches a key of
+  `ann_b`). Sotish empties the cart at
   once; the sale is listed in "Bugungi Cheklar" as `Yuborilmoqda...` with the
   till's estimate, and a line on the till says how many are unsent. It is sent
   in order, one at a time, with the request id minted at Sotish, and resent on
@@ -1089,9 +1091,15 @@ composes the message from data it already stored.
   the cashier and the device: it is sent only while that cashier is signed in
   there. A device that cannot keep it (storage full or off) waits for the
   server as the till always did; that direct attempt's request id is kept
-  with the cart it was minted for, and the same cart pressed again is sent
-  directly under it (even once storage works again), so a lost answer is never
-  rung up twice. Close-day is refused while the outbox holds anything.
+  with the cart it was minted for (in `sessionStorage` and in memory, so the
+  open page keeps it even when `sessionStorage` is broken too), and the same
+  cart pressed again is sent directly under it (even once storage works
+  again), so a lost answer is never rung up twice. A sale storage took but
+  cannot list back is taken out where possible and sent directly under the id
+  it was stored with, so a copy a later pass finds resolves to the same sale.
+  When another tab of the till confirms a sale, this tab reads its figures
+  again (once, a second after that tab's backlog settles). Close-day is
+  refused while the outbox holds anything.
 - **An Omad web write brings the dashboard back with it.** The entry, edit,
   cancellation, tenant-paid and bulk forms send `includeDashboard: true`; the
   server attaches the dashboard (`withOmadDashboard_`, computed after the

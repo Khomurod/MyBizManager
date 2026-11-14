@@ -749,7 +749,7 @@ coalesced `get_cafe_data` rather than something the response waits for. A refres
 requested while one is running is queued instead of dropped.
 
 The **café POS** no longer waits for the server at all. Sotish keeps the sale in
-an outbox on the device (one key per sale, `cafe_pos_outbox_<cashier>_<requestId>`), empties the cart in the
+an outbox on the device (one key per sale, `cafe_pos_outbox:<cashier>:<requestId>`), empties the cart in the
 same step — which is what stops a double tap — and sends it in the background,
 one sale at a time, under the request id minted at Sotish (App Brief §12). The
 day's figures move only on the server's confirmation, a receipt already counted
