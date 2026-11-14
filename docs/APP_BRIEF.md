@@ -1204,6 +1204,10 @@ npm run bench            # sheet passes / bytes / ms per screen (see below)
   `scripts/ui-screenshots.js` seeds a demo business and photographs every
   screen at 1440, 1024, 390, 320 and 390×560, listing anything wider than the
   screen — run it before and after a visual change and look at the pictures.
+- **The browser job runs on `ubuntu-24.04`, not `ubuntu-latest`.** When the
+  latest image became Ubuntu 26.04 (2026-11), Playwright 1.56.1 could not
+  install Chromium there and the job — which the deploy waits for — failed
+  before any test ran. Move the pin and the Playwright version together.
 - CI (`.github/workflows/ci.yml`) runs static analysis, secret scans (tree *and*
   full history), unit tests and browser tests on **every branch and PR**. On
   `main` only, a green run then deploys: `clasp pull` (live manifest) → stage →
