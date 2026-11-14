@@ -11,8 +11,66 @@
 // skip stay as quiet text or icon controls.
 // ==========================================================
 
+/** The board as drawn: the server's view with this screen's unconfirmed ticks on it. */
+let TASKS_RENDER_VIEW = null;
+
+/**
+ * The server's view with every tick still on its way shown as done.
+ *
+ * Display only: a copy is changed, never `TASKS_STATE.view`, so the server's
+ * next answer is the truth and the overlay is simply re-applied to whatever
+ * is still pending. A ticked card moves from today's open lists to "Bugun
+ * bajarilgan", and is marked so it offers no action until it is confirmed.
+ */
+function taskViewWithPending(view) {
+    if (!view || !pendingTaskCompletions.length) return view;
+    const pending = new Set(pendingTaskCompletions);
+    const copy = JSON.parse(JSON.stringify(view));
+    const marked = new Map();
+    const mark = occ => {
+        if (!occ || !pending.has(occ.id) || occ.displayStatus === 'Completed') return occ;
+        occ.displayStatus = 'Completed';
+        occ.status = 'Completed';
+        occ.pendingDone = true;
+        if (!marked.has(occ.id)) marked.set(occ.id, occ);
+        return occ;
+    };
+    const today = copy.today;
+    if (today) {
+        const moved = [];
+        ['overdue', 'needsAttention'].forEach(key => {
+            today[key] = (today[key] || []).filter(occ => {
+                if (!pending.has(occ.id)) return true;
+                moved.push(mark(occ));
+                return false;
+            });
+        });
+        today.completedToday = moved.concat(today.completedToday || []);
+    }
+    (copy.tasks || []).forEach(task => {
+        mark(task.occurrence);
+        mark(task.todayOccurrence);
+        if (Array.isArray(task.stepOccurrences)) {
+            const before = task.stepOccurrences.filter(step => step.displayStatus === 'Completed').length;
+            task.stepOccurrences.forEach(mark);
+            const after = task.stepOccurrences.filter(step => step.displayStatus === 'Completed').length;
+            if (task.progress && after !== before) {
+                const done = Number(task.progress.done || 0) + (after - before);
+                const total = Number(task.progress.total || 0);
+                task.progress = Object.assign({}, task.progress, {
+                    done: done,
+                    percent: total ? Math.min(100, Math.round(done * 100 / total)) : 0
+                });
+            }
+        }
+    });
+    copy.recentCompleted = Array.from(marked.values()).concat(copy.recentCompleted || []);
+    return copy;
+}
+
 function renderAllTasks() {
-    const view = TASKS_STATE.view;
+    const view = taskViewWithPending(TASKS_STATE.view);
+    TASKS_RENDER_VIEW = view;
     const stamp = document.getElementById('nowStamp');
     if (stamp) stamp.textContent = view ? (view.nowLabel || '') : '';
 
@@ -21,10 +79,14 @@ function renderAllTasks() {
 
     const failed = document.getElementById('loadWarn');
     if (failed) {
-        failed.textContent = TASKS_STATE.loadError
-            ? TASKS_STATE.loadError + " — ko'rsatilayotgan ro'yxat eskirgan bo'lishi mumkin."
-            : '';
-        failed.classList.toggle('hidden', !TASKS_STATE.loadError);
+        let text = '';
+        if (TASKS_STATE.loadError) {
+            text = TASKS_STATE.loadError + " — ko'rsatilayotgan ro'yxat eskirgan bo'lishi mumkin.";
+        } else if (TASKS_STATE.snapshotAt) {
+            text = "Saqlangan ro'yxat ko'rsatilmoqda, yangilanmoqda...";
+        }
+        failed.textContent = text;
+        failed.classList.toggle('hidden', !text);
     }
 
     if (!TASKS_STATE.view) {
@@ -98,9 +160,11 @@ function occCard(occ, mode) {
               skip + '</div>'
             : occProofHint(occ) + '<div class="acts">' + skip + '</div>';
     } else if (mode === 'completed') {
-        actions = '<div class="subacts">' +
-            '<button onclick="tasksReopen(\'' + occ.id + '\')" class="lnk">' + uiIcon('rotate-ccw') + 'Qayta ochish</button>' +
-            '</div>';
+        actions = occ.pendingDone
+            ? '<p class="meta"><span>' + uiIcon('loader-circle', 'ui-spin') + 'Saqlanmoqda...</span></p>'
+            : '<div class="subacts">' +
+              '<button onclick="tasksReopen(\'' + occ.id + '\')" class="lnk">' + uiIcon('rotate-ccw') + 'Qayta ochish</button>' +
+              '</div>';
     } else if (mode === 'upcoming') {
         // Future work is shown, not actioned: completing something that has not
         // come round yet is almost always a misclick.
@@ -147,7 +211,7 @@ function foldSection(title, items, mode, icon) {
 
 function renderTodayPanel() {
     const panel = document.getElementById('panel-today');
-    const view = TASKS_STATE.view;
+    const view = TASKS_RENDER_VIEW;
     if (!view) { panel.innerHTML = emptyNote('...'); return; }
     const t = view.today;
     const total = t.overdue.length + t.needsAttention.length + t.waitingProof.length +
@@ -187,7 +251,7 @@ function defActionsRow(task, extra) {
 
 function renderTasksPanel() {
     const panel = document.getElementById('panel-tasks');
-    const view = TASKS_STATE.view;
+    const view = TASKS_RENDER_VIEW;
     if (!view) return;
     const tasks = view.tasks.filter(t => t.type === 'once');
     if (!tasks.length) { panel.innerHTML = emptyNote("Bir martalik vazifalar yo'q."); return; }
@@ -220,7 +284,7 @@ function renderTasksPanel() {
 
 function renderRoutinesPanel() {
     const panel = document.getElementById('panel-routines');
-    const view = TASKS_STATE.view;
+    const view = TASKS_RENDER_VIEW;
     if (!view) return;
     const routines = view.tasks.filter(t => t.type === 'routine');
     if (!routines.length) { panel.innerHTML = emptyNote("Muntazam vazifalar yo'q."); return; }
@@ -279,7 +343,7 @@ function renderRoutinesPanel() {
 
 function renderGoalsPanel() {
     const panel = document.getElementById('panel-goals');
-    const view = TASKS_STATE.view;
+    const view = TASKS_RENDER_VIEW;
     if (!view) return;
     const goals = view.tasks.filter(t => t.type === 'goal');
     if (!goals.length) { panel.innerHTML = emptyNote("Maqsadlar yo'q."); return; }
@@ -290,7 +354,9 @@ function renderGoalsPanel() {
             const done = step.displayStatus === 'Completed';
             // A photo-proof step is finished in the group like any other
             // photo-proof work, so the tick is replaced by what it is waiting for.
-            const btn = done
+            const btn = done && step.pendingDone
+                ? '<span class="step__btn" role="img" aria-label="Saqlanmoqda" title="Saqlanmoqda">' + uiIcon('loader-circle', 'ui-spin') + '</span>'
+                : done
                 ? '<button onclick="tasksReopen(\'' + step.id + '\')" class="step__btn" ' +
                   'aria-label="Qayta ochish" title="Qayta ochish">' + uiIcon('rotate-ccw') + '</button>'
                 : (occCanCompleteHere(step)
@@ -323,7 +389,7 @@ function renderGoalsPanel() {
 
 function renderCompletedPanel() {
     const panel = document.getElementById('panel-completed');
-    const view = TASKS_STATE.view;
+    const view = TASKS_RENDER_VIEW;
     if (!view) return;
     const items = view.recentCompleted || [];
     if (!items.length) { panel.innerHTML = emptyNote("Hali bajarilgan vazifa yo'q."); return; }

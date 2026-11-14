@@ -54,7 +54,11 @@ jobs:
 
   browser:
     name: Browser flows
-    runs-on: ubuntu-latest
+    # Pinned rather than ubuntu-latest: when the latest image moved to Ubuntu
+    # 26.04, Playwright 1.56.1 could no longer install Chromium's system
+    # dependencies on it, and this job (which the deploy needs) failed before a
+    # single test ran. Move the pin together with the Playwright version.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 

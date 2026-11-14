@@ -207,6 +207,8 @@ Cloudflare Pages (static HTML/JS)         Google Apps Script web app        Goog
 ### Café
 - **POS** sends *which items and how many*; the server prices, costs, checks
   stock, moves stock and writes the sale — see [§6](#6-important-business-rules).
+  Sotish does not wait for it: the sale leaves through an outbox on the device
+  (§12), and the day's figures move when the server confirms.
 - **Void** restores stock from the stored receipt. On Supabase the receipt row
   is stamped `voided_at` and hidden rather than deleted.
 - **Close day** totals revenue and profit from recorded sales and accepts only
@@ -450,7 +452,12 @@ business actions recorded in one submission:
   cover is refused by name.
 - `saveCafeSale_` runs entirely **under the script lock** (read-modify-write on
   stock), and is keyed by `requestId` — a retry or double tap answers
-  `duplicate: true` and moves stock once.
+  `duplicate: true` and moves stock once. The till's outbox depends on exactly
+  this: a sale keeps the id it was given when Sotish was pressed for every
+  resend, and a receipt the till already counted is never counted again.
+- **The day cannot be closed while the till holds an unsent sale.** Close-day
+  totals what the server has recorded, so `closeDayIsSafe` refuses while
+  anything is pending or refused in that cashier's outbox.
 - A **void restores stock from the stored receipt**, never from an inventory the
   browser supplies; voiding twice is a no-op. **The financial void proceeds even
   when the stock cannot be put back** — an item deleted since the sale has
@@ -831,6 +838,8 @@ composes the message from data it already stored.
 | the Mini App's Tasks tab | `tests/miniapp-tasks-parity.e2e.js` — it drives the real UI, which is the only thing that can catch a capability the API has and the screen does not |
 | a queued Telegram job's send/persist order | `tests/task-telegram-races.test.js` — stale overwrites, duplicate deliveries and obsolete announcements all live in that gap |
 | `assets/omad/12-app.js`'s `submitViaLedger` | it **overrides** the same-named function in `08-entry.js`; editing only `08-entry.js` changes nothing at runtime |
+| `save_sale`'s answer | the till's outbox counts a confirmed sale from `answer.sale` (its id, total, profit) and replaces its stock with `answer.inventory`; a duplicate must keep answering with the original receipt — `tests/cafe-pos-outbox.e2e.js` |
+| a new Omad write from the web | send `includeDashboard: true` and settle with `settleOmadWrite_`, or the screen pays a second Apps Script start-up for its figures — `tests/omad-save-dashboard.e2e.js` |
 | the bulk grid on either client | freeze the rows **before** the first await and lock every control behind it; a grid edited mid-save means the request that went out and the rows on screen describe different money |
 
 ## 11. Decisions that must be preserved
@@ -923,8 +932,11 @@ composes the message from data it already stored.
     The rule this replaced an overlay with is that **wherever the overlay was the
     only thing preventing a second submission, an explicit in-flight guard takes
     its place** — `taskMutationInFlight` on the task board *and in the Mini App*,
-    `selling` in the POS, `cancellingEntry` for a group cancellation, and
-    `entrySaveInFlight` for an Omad entry. Never fewer guards, only visible ones.
+    in the POS the cart emptied in the same step the sale is queued (and
+    `selling` on the direct path), `cancellingEntry` for a group cancellation,
+    and `entrySaveInFlight` for an Omad entry. Never fewer guards, only visible
+    ones. On the task board a "Bajarildi" pressed while another change is in
+    flight is *queued*, not refused: ticks go out in order, one at a time.
 
     `entrySaveInFlight` is the one that had been missed. A multi-line **edit** is
     one round trip per line, and only the Save button was disabled for it: `＋`,
@@ -997,6 +1009,11 @@ composes the message from data it already stored.
   save). On the spreadsheet nothing changed. Each round trip still costs
   ~0.3 s from Apps Script to the database; the rest of the wait is Apps
   Script itself, which only leaving it (a Cloudflare Worker) removes.
+  Measured against the live deployment on 2026-11-13: any request, even one
+  refused before the store is opened, takes **1.9–3.0 s (median 2.1 s)** —
+  Apps Script start-up plus its redirect — while one database call takes
+  0.1–0.3 s (Supabase edge logs). That floor is why the till, the task board
+  and the Omad save now stop waiting for answers they do not need.
 - **A kept write is lost if the execution is killed outright** (Apps Script's
   time limit) between the write and the end of its batch; an exception still
   sends it, exactly as an immediate write would have stood. A queue job's
@@ -1050,6 +1067,60 @@ composes the message from data it already stored.
   record); a new form always mints new ids. Correcting a refused entry replaces it in one write, so one of the two
   is always kept. The tenant-paid pair, the bulk entry and
   the web form still wait for the server.
+- **A café sale leaves through an outbox on the till** (`cafe_pos.html`; one
+  `localStorage` key per sale, `cafe_pos_outbox:<cashier>:<requestId>`, so two
+  tabs adding or settling sales never rewrite each other's; the colon, which no
+  username can hold, closes the name, so `ann`'s prefix never matches a key of
+  `ann_b`). Sotish empties the cart at
+  once; the sale is listed in "Bugungi Cheklar" as `Yuborilmoqda...` with the
+  till's estimate, and a line on the till says how many are unsent. It is sent
+  in order, one at a time, with the request id minted at Sotish, and resent on
+  a timer, on `online`, when the till is shown again and after the next load
+  (after the list has loaded, so a receipt the server already has is
+  recognised by its id). Revenue, profit, the progress bar and the stock on
+  screen move only when the server confirms, and use the server's receipt —
+  counted only when its date is today and its seller this cashier, the same
+  rule as the server's list (a sale rung up yesterday and confirmed today
+  belongs to yesterday). A refusal (not enough stock, a retired item) is shown
+  in red with the reason — Qayta / Savatga / O'chirish — and never resent by
+  itself; a refusal storage cannot take is held in memory for the life of the
+  page, and Savatga refuses when any line's item has left the menu rather than
+  drop that line. **The cost of not
+  waiting:** a refusal now arrives after the customer has usually left with
+  the goods, so the stock needs checking before Qayta. The outbox belongs to
+  the cashier and the device: it is sent only while that cashier is signed in
+  there. A device that cannot keep it (storage full or off) waits for the
+  server as the till always did; that direct attempt's request id is kept
+  with the cart it was minted for (in `sessionStorage` and in memory, so the
+  open page keeps it even when `sessionStorage` is broken too), and the same
+  cart pressed again is sent directly under it (even once storage works
+  again), so a lost answer is never rung up twice. A sale storage took but
+  cannot list back is taken out where possible and sent directly under the id
+  it was stored with, so a copy a later pass finds resolves to the same sale.
+  When another tab of the till confirms a sale, this tab reads its figures
+  again (once, a second after that tab's backlog settles). Close-day is
+  refused while the outbox holds anything.
+- **An Omad web write brings the dashboard back with it.** The entry, edit,
+  cancellation, tenant-paid and bulk forms send `includeDashboard: true`; the
+  server attaches the dashboard (`withOmadDashboard_`, computed after the
+  write) to a *successful* answer, and the screen uses it instead of a second
+  `get_omad_data` — one Apps Script start-up (~2 s) fewer per save. A
+  multi-line edit asks only on its last request. Dashboard answers are
+  numbered — a read when it is sent, a write's figures when they arrive — and
+  an older number never replaces a newer one on screen or in the snapshot, so
+  a read sent before a save but answered after it is dropped. A write
+  overtaken by a newer write, and any answer from an older backend, takes the
+  background refresh as before. A failure to build
+  them never fails the save. Other clients (Mini App, Telegram) do not ask and
+  are answered exactly as before.
+- **The task board paints its last list and ticks at once.** `tasks.html`
+  shows the stored board (12 h, per user) while `get_tasks` runs, labelled as
+  stored, and **refuses every change until the live list has arrived**.
+  "Bajarildi" moves the card to "Bugun bajarilgan" (marked `Saqlanmoqda...`)
+  before the server answers; a refusal or lost connection puts it back with
+  the reason. A live board from a confirmed change also ends the stored one,
+  and a first load overtaken by such a change is not applied. The server still decides: photo-proof work is never offered the
+  button, and its answer replaces the board.
 - **`assets/css/app.css` is generated but not verified in CI.** `npm run
   build:css` regenerates it from the pages; CI does not run it, because making
   the deploy depend on a CSS toolchain is a worse failure mode than the one it
@@ -1154,6 +1225,10 @@ npm run bench            # sheet passes / bytes / ms per screen (see below)
   `scripts/ui-screenshots.js` seeds a demo business and photographs every
   screen at 1440, 1024, 390, 320 and 390×560, listing anything wider than the
   screen — run it before and after a visual change and look at the pictures.
+- **The browser job runs on `ubuntu-24.04`, not `ubuntu-latest`.** When the
+  latest image became Ubuntu 26.04 (2026-11), Playwright 1.56.1 could not
+  install Chromium there and the job — which the deploy waits for — failed
+  before any test ran. Move the pin and the Playwright version together.
 - CI (`.github/workflows/ci.yml`) runs static analysis, secret scans (tree *and*
   full history), unit tests and browser tests on **every branch and PR**. On
   `main` only, a green run then deploys: `clasp pull` (live manifest) → stage →
@@ -1184,7 +1259,8 @@ npm run bench            # sheet passes / bytes / ms per screen (see below)
 
 ## 14. Live state
 
-Operational state snapshot, rechecked read-only on **2026-08-17**:
+Operational state snapshot, rechecked read-only on **2026-08-17**; the store
+and trigger rows on **2026-11-13** (Supabase edge logs and `system_config`):
 
 | | |
 |---|---|
@@ -1193,10 +1269,10 @@ Operational state snapshot, rechecked read-only on **2026-08-17**:
 | Legacy sheet | `Omad_Transactions`, intact, 226 rows |
 | Frontend | Cloudflare Pages, auto-deploying `main` |
 | Anonymous access | closed — `doGet` reads nothing |
-| Telegram | webhook on the active deployment with a URL secret; one 5-minute trigger |
+| Telegram | webhook on the active deployment with a URL secret. The edge logs show **two** scheduler runs every 5 minutes (about :x0:36 and :x2:48), so a second trigger — most likely the retired `processTaskSchedules` — is still installed; only `processPendingTelegramJobs` is needed (the owner removes the other in the editor) |
 | Mini App | menu button installed and verified |
 | Web sign-in | username + password, server-verified, 30-day signed session |
-| Store | **Google Sheets** (`OMAD_STORAGE` unset). Supabase project `mybizmanager` created 2026-11-02, schema applied, empty; the move has not been run |
+| Store | **Supabase** since 2026-11-02 20:34 UTC (`Omad_Storage_Cutover_At`); project `mybizmanager`, region us-east-1. The spreadsheet holds the pre-move copy |
 
 Account records and the session-signing secret are live Script Properties, not
 repository state, so this document does not claim whether a one-time password

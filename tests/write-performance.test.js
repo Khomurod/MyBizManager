@@ -679,23 +679,41 @@ test('the café admin applies the returned stock at once and refreshes in the ba
   assert.match(source, /if \(cafeRefreshQueued\) \{/);
 });
 
-test('the POS locks Sotish while one sale is in flight', () => {
+test('Sotish queues the sale and empties the cart before anything is sent', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'cafe_pos.html'), 'utf8');
   assert.match(source, /id="sellBtn"/);
-  assert.match(source, /let selling = false/);
-  const handler = source.slice(source.indexOf('async function sell()'));
-  assert.match(handler.slice(0, 400), /if \(selling\) return/,
-    'a second tap is refused before anything is sent');
+  const handler = source.slice(source.indexOf('async function sell()'), source.indexOf('function drainPosOutbox()'));
+  assert.match(handler.slice(0, 600), /if \(selling\) return/, 'the explicit guard is kept');
+  // The guard against a second submission is the empty cart: it is emptied in
+  // the same synchronous step that keeps the sale, before any await.
+  const emptied = handler.indexOf('state.cart = []');
+  assert.ok(emptied > 0, 'the cart is emptied');
+  assert.strictEqual(handler.slice(0, emptied).indexOf('await '), -1, 'with nothing awaited before it');
+  assert.match(handler, /writePosOutboxItem\(item\)/, 'the sale is kept on the device first, as its own record');
+  assert.match(handler.slice(0, emptied), /if \(hasUnresolvedDirectSale\(\)\) return sellDirectly\(\)/,
+    'an unanswered direct attempt for this cart is retried under its own id');
+  assert.match(handler, /return sellDirectly\(requestId\)/,
+    'and a device that cannot keep it waits as before, under the id the outbox gave the sale');
+  assert.match(handler, /return drainPosOutbox\(\)/);
+  // Only what was ordered: the server prices it.
+  assert.doesNotMatch(handler, /total:|profit:/);
+  // One sender at a time.
+  assert.match(source, /if \(!posOutboxDrain\) \{/);
+});
+
+test('the direct sale path still locks Sotish while its sale is in flight', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'cafe_pos.html'), 'utf8');
+  const handler = source.slice(source.indexOf('async function sellDirectly('), source.indexOf('async function voidSale('));
   assert.match(handler, /Sotilmoqda\.\.\./);
   assert.match(handler, /button\.disabled = true/);
   assert.match(handler, /finally \{[\s\S]*selling = false;[\s\S]*button\.disabled = false/,
     'and the button comes back on success and on failure alike');
   // The counters run after the round trip, so they must use the captured lines
   // rather than whatever the cart holds by then.
-  assert.match(handler, /soldLines\.forEach/);
+  assert.match(handler, /recordConfirmedSale\(answer, payload, soldLines\)/);
   assert.doesNotMatch(handler, /state\.cart\.forEach/);
   // The request id lifecycle is what the server dedupes on; it must not change.
-  assert.match(handler, /pendingSaleId\(\)/);
+  assert.match(handler, /pendingSaleId\(queuedId\)/);
   assert.match(handler, /clearPendingSaleId\(\)/);
 });
 

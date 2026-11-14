@@ -167,6 +167,43 @@ function settleOmadWriteInBackground_() {
 }
 
 /**
+ * Every write the dashboard sends is numbered, so an answer can tell whether
+ * it is still the newest one. Only the newest write's figures go on screen.
+ */
+let omadWriteSeq_ = 0;
+
+function nextOmadWrite_() {
+    omadWriteSeq_++;
+    return omadWriteSeq_;
+}
+
+/**
+ * Settles a confirmed write with the figures its own answer carried.
+ *
+ * A save used to be followed by a second request for the dashboard: another
+ * Apps Script start-up, about two seconds, before the figures moved. The save
+ * now asks for them (`includeDashboard: true`) and the server sends them back
+ * computed after the write. They are used unless a newer write was sent (its
+ * own answer will carry newer ones); a read already on its way is older than
+ * them and is dropped when it lands. An older backend that sent no figures
+ * takes the background refresh, exactly as before.
+ */
+function settleOmadWrite_(response, writeSeq) {
+    const fresh = response && response.dashboard;
+    if (!fresh || fresh.status !== 'success' || writeSeq !== omadWriteSeq_) {
+        settleOmadWriteInBackground_();
+        return;
+    }
+    // Numbered now, on arrival: every read already on its way is older than
+    // these figures and will be dropped when it lands (see syncData).
+    acceptOmadDashboard(nextOmadDashboardGen());
+    applyOmadDashboard(fresh);
+    confirmOmadDashboard();
+    renderAll();
+    reloadHistoryIfShown();
+}
+
+/**
  * Never make an accounting save wait for Telegram. The queue is written before
  * the response and the existing trigger sends it independently afterwards.
  */
@@ -271,6 +308,8 @@ async function submitNewLedgerEntryLegacyFallback_(requestBase, groupId, common)
  * the overlay being there.
  */
 submitViaLedger = async function() {
+    const writeSeq = nextOmadWrite_();
+    let settled = null;
     const requestBase = nextRequestBase();
     const common = currentEntryCommon();
     const editId = document.getElementById('editId').value;
@@ -283,7 +322,8 @@ submitViaLedger = async function() {
             requestId: requestBase,
             groupId,
             ...common,
-            lines: submittedCartLines()
+            lines: submittedCartLines(),
+            includeDashboard: true
         });
 
         if (response && response.status === 'error' &&
@@ -291,6 +331,8 @@ submitViaLedger = async function() {
             await submitNewLedgerEntryLegacyFallback_(requestBase, groupId, common);
         } else if (!response || response.status !== 'success') {
             throw new Error((response && response.message) || 'save failed');
+        } else {
+            settled = response;
         }
     } else {
         // Frozen before the first round trip, and read from here on.
@@ -309,9 +351,13 @@ submitViaLedger = async function() {
         // into one payload before its single await. Once Save starts, the
         // business action being saved is the one that was submitted.
         const lines = submittedCartLines();
+        // Only the last request of the sequence asks for the figures: they are
+        // only true once every line is in.
+        const lastStep = Math.max(lines.length, existingIds.length) - 1;
 
         for(let i = 0; i < lines.length; i++) {
-            const line = { requestId: `${requestBase}_${i}`, groupId, ...common, ...lines[i] };
+            const line = { requestId: `${requestBase}_${i}`, groupId, ...common, ...lines[i],
+                includeDashboard: i === lastStep };
 
             const response = i < existingIds.length
                 ? await callBackend({ action: 'correct_transaction', transactionId: existingIds[i], ...line })
@@ -320,6 +366,7 @@ submitViaLedger = async function() {
             if(!response || response.status !== 'success') {
                 throw new Error((response && response.message) || 'save failed');
             }
+            settled = response;
         }
 
         for(let i = lines.length; i < existingIds.length; i++) {
@@ -327,15 +374,17 @@ submitViaLedger = async function() {
                 action: 'cancel_transaction',
                 transactionId: existingIds[i],
                 requestId: `${requestBase}_cancel_${i}`,
-                reason: 'entry edited'
+                reason: 'entry edited',
+                includeDashboard: i === lastStep
             });
             if(!response || response.status !== 'success') {
                 throw new Error((response && response.message) || 'save failed');
             }
+            settled = response;
         }
     }
 
-    settleOmadWriteInBackground_();
+    settleOmadWrite_(settled, writeSeq);
 };
 
 /**
@@ -354,9 +403,11 @@ submitTenantPaid = async function() {
     if(btn.disabled) return;
     btn.disabled = true; btn.innerText = "Bajarilmoqda...";
 
+    const writeSeq = nextOmadWrite_();
     try {
         const response = await callBackend({
             action: 'tenant_paid_expense',
+            includeDashboard: true,
             requestId: nextRequestBase(),
             groupId: nextEntryGroupId(),
             replaceGroupId: editingTenantPaidGroupId,
@@ -381,7 +432,7 @@ submitTenantPaid = async function() {
         document.getElementById('entryComment').value = "";
         document.getElementById('cancelEditBtn').classList.add('hidden');
         switchTab('dash');
-        settleOmadWriteInBackground_();
+        settleOmadWrite_(response, writeSeq);
     } catch (error) {
         console.error(error);
         alert((error && error.message) || SAVE_FAILED_MESSAGE);
