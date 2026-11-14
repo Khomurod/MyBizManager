@@ -266,15 +266,16 @@
       return localStorage.getItem("omad_user") || "seller";
     }
 
+    /** Whether a receipt belongs to today's figures on this till: this cashier, today. */
+    function isTodaysSaleForCurrentCashier(sale) {
+      if (!sale || sale.seller !== getCurrentCashier()) return false;
+      const saleDate = sale.date ? new Date(sale.date) : null;
+      if (!saleDate || Number.isNaN(saleDate.getTime())) return false;
+      return getDateKey(saleDate) === getDateKey(new Date());
+    }
+
     function getTodaySalesForCurrentCashier() {
-      const cashier = getCurrentCashier();
-      const todayKey = getDateKey(new Date());
-      return (state.sales || []).filter(sale => {
-        if (!sale || sale.seller !== cashier) return false;
-        const saleDate = sale.date ? new Date(sale.date) : null;
-        if (!saleDate || Number.isNaN(saleDate.getTime())) return false;
-        return getDateKey(saleDate) === todayKey;
-      });
+      return (state.sales || []).filter(isTodaysSaleForCurrentCashier);
     }
 
     function updateProgressBar() {
@@ -676,13 +677,37 @@
      * ringing it up twice.
      */
     function pendingSaleId() {
-      let value = "";
-      try { value = sessionStorage.getItem("cafe_pending_sale") || ""; } catch (e) { value = ""; }
-      if (!value) {
-        value = `pos_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-        try { sessionStorage.setItem("cafe_pending_sale", value); } catch (e) {}
-      }
+      // Kept with the cart it was minted for: the server answers a repeated id
+      // with the first sale whatever the new request holds, so the id is only
+      // the retry's when the cart is the same.
+      const cart = cartSignature();
+      const stored = readPendingSale();
+      if (stored && stored.cart === cart) return stored.id;
+      const value = `pos_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      try { sessionStorage.setItem("cafe_pending_sale", JSON.stringify({ id: value, cart })); } catch (e) {}
       return value;
+    }
+
+    function readPendingSale() {
+      try {
+        const raw = sessionStorage.getItem("cafe_pending_sale") || "";
+        if (!raw) return null;
+        const stored = JSON.parse(raw);
+        return stored && stored.id ? stored : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    /** What the cart holds, as one string: which items, how many of each. */
+    function cartSignature() {
+      return state.cart.map(i => `${i.id}x${i.qty}`).sort().join(",");
+    }
+
+    /** A direct attempt for this very cart whose answer never came. */
+    function hasUnresolvedDirectSale() {
+      const stored = readPendingSale();
+      return !!stored && stored.cart === cartSignature();
     }
 
     function clearPendingSaleId() {
@@ -751,31 +776,54 @@
     /** Bumped by every confirmed sale, so a refresh can tell it raced one. */
     let posConfirmedSeq = 0;
 
-    function posOutboxKey() {
+    /**
+     * Each sale is its own key, `cafe_pos_outbox_<cashier>_<requestId>`.
+     *
+     * One list under one key would be read, changed and written back whole,
+     * so two tabs of the till adding or removing a sale at the same moment
+     * could each write a list without the other's sale -- and a sale lost from
+     * storage is never sent. With a key per sale, adding, settling and
+     * removing one never rewrites another.
+     */
+    function posOutboxPrefix() {
       const user = sessionUser();
-      return user ? `cafe_pos_outbox_${user}` : "";
+      return user ? `cafe_pos_outbox_${user}_` : "";
     }
 
+    /**
+     * Refusals this page could not write down (storage full). Held here so the
+     * sale is shown as refused and not sent again by itself for as long as the
+     * page is open, which is as long as anything can be promised about it.
+     */
+    const posRefusedInMemory = new Map();
+
+    /** The outbox, oldest first. */
     function readPosOutbox() {
-      const key = posOutboxKey();
-      if (!key) return [];
+      const prefix = posOutboxPrefix();
+      if (!prefix) return [];
+      const list = [];
       try {
-        const list = JSON.parse(localStorage.getItem(key) || "[]");
-        return Array.isArray(list)
-          ? list.filter(item => item && item.payload && item.payload.requestId && Array.isArray(item.lines))
-          : [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (!key || key.indexOf(prefix) !== 0) continue;
+          let item = null;
+          try { item = JSON.parse(localStorage.getItem(key) || "null"); } catch (e) { item = null; }
+          if (!item || !item.payload || !item.payload.requestId || !Array.isArray(item.lines)) continue;
+          const refused = posRefusedInMemory.get(item.id);
+          list.push(refused ? Object.assign({}, item, refused) : item);
+        }
       } catch (e) {
         return [];
       }
+      return list.sort((a, b) => (Number(a.at) || 0) - (Number(b.at) || 0));
     }
 
-    /** Whether the list was stored. A full or disabled storage says no. */
-    function writePosOutbox(list) {
-      const key = posOutboxKey();
-      if (!key) return false;
+    /** Whether the sale was stored. A full or disabled storage says no. */
+    function writePosOutboxItem(item) {
+      const prefix = posOutboxPrefix();
+      if (!prefix) return false;
       try {
-        if (list.length) localStorage.setItem(key, JSON.stringify(list));
-        else localStorage.removeItem(key);
+        localStorage.setItem(prefix + item.id, JSON.stringify(item));
         return true;
       } catch (e) {
         return false;
@@ -783,11 +831,14 @@
     }
 
     function updatePosOutboxItem(id, changes) {
-      return writePosOutbox(readPosOutbox().map(item => (item.id === id ? Object.assign({}, item, changes) : item)));
+      const item = readPosOutbox().find(entry => entry.id === id);
+      if (!item) return false;
+      return writePosOutboxItem(Object.assign({}, item, changes));
     }
 
     function removePosOutboxItem(id) {
-      writePosOutbox(readPosOutbox().filter(item => item.id !== id));
+      posRefusedInMemory.delete(id);
+      try { localStorage.removeItem(posOutboxPrefix() + id); } catch (e) { /* nothing more to do */ }
     }
 
     /** No answer, or none the till can read, or a busy minute: worth sending again as it is. */
@@ -815,7 +866,11 @@
     function recordConfirmedSale(answer, payload, soldLines) {
       const sale = (answer && answer.sale) || payload;
       if (answer && Array.isArray(answer.inventory)) state.inventory = answer.inventory;
-      if (!state.sessionSales.some(existing => String(existing.id) === String(sale.id))) {
+      // A sale rung up yesterday and confirmed today keeps yesterday's date,
+      // and belongs to yesterday's figures: the same day-and-cashier rule as
+      // the list the server sends.
+      if (isTodaysSaleForCurrentCashier(sale) &&
+          !state.sessionSales.some(existing => String(existing.id) === String(sale.id))) {
         state.sales.unshift(sale);
         state.sessionSales.unshift(sale);
         soldLines.forEach(i => {
@@ -846,6 +901,10 @@
       // flag covers the direct path, which still waits.
       if (selling) return;
       if (!state.cart.length) return alert("Savat bo'sh");
+      // A direct attempt whose answer never came may already be stored. The
+      // same cart pressed again is that attempt's retry, under its id; only a
+      // different cart is a new sale.
+      if (hasUnresolvedDirectSale()) return sellDirectly();
 
       // Only what was ordered. The price, the cost, the profit and the stock
       // movement are the server's to decide -- it holds the catalogue, and a
@@ -870,11 +929,13 @@
       // For the receipt list until the server's own total arrives. Display only.
       const estimate = state.cart.reduce((sum, i) => sum + (Number(i.price) || 0) * i.qty, 0);
 
-      const list = readPosOutbox();
-      list.push({ id: requestId, payload, lines: soldLines, estimate, status: "pending", error: "", at: Date.now() });
-      if (!writePosOutbox(list) || !readPosOutbox().some(item => item.id === requestId)) {
+      const item = { id: requestId, payload, lines: soldLines, estimate, status: "pending", error: "", at: Date.now() };
+      if (!writePosOutboxItem(item) || !readPosOutbox().some(entry => entry.id === requestId)) {
         return sellDirectly();
       }
+      // A different cart was rung up: whatever the unanswered direct attempt was,
+      // the cashier has moved on from it.
+      clearPendingSaleId();
 
       state.cart = [];
       renderCart();
@@ -918,10 +979,15 @@
             break;
           }
           const reason = (e && e.message) || "Sotuv saqlanmadi.";
-          updatePosOutboxItem(next.id, { status: "failed", error: reason });
+          const refusal = { status: "failed", error: reason };
+          const kept = updatePosOutboxItem(next.id, refusal);
+          // Not written down, it would read as pending and go out again by
+          // itself; held in memory instead, and the cashier is told.
+          if (!kept) posRefusedInMemory.set(next.id, refusal);
           renderSessionSales();
           renderPosOutboxBanner();
-          alert("Sotuv saqlanmadi: " + reason);
+          alert("Sotuv saqlanmadi: " + reason +
+            (kept ? "" : " (Qurilma xotirasi to'la: bu holat sahifa yopilguncha saqlanadi.)"));
         }
       }
 
@@ -938,6 +1004,7 @@
     }
 
     function retryPosSale(id) {
+      posRefusedInMemory.delete(id);
       updatePosOutboxItem(id, { status: "pending", error: "" });
       posOutboxFailures = 0;
       renderSessionSales();
@@ -949,9 +1016,16 @@
     function returnPosSaleToCart(id) {
       const item = readPosOutbox().find(entry => entry.id === id);
       if (!item || item.status !== "failed") return;
+      // All of it or none of it: a line whose item has left the menu would
+      // otherwise vanish with the receipt.
+      const missing = item.lines.filter(line => !state.menu.some(m => m.id === line.id));
+      if (missing.length) {
+        alert("Savatga qaytarib bo'lmaydi — menyuda yo'q: " + missing.map(line => line.name || line.id).join(", ") +
+          ". Chek o'z joyida qoldi: Qayta yoki O'chirish.");
+        return;
+      }
       item.lines.forEach(line => {
         const menuItem = state.menu.find(m => m.id === line.id);
-        if (!menuItem) return;
         const existing = state.cart.find(c => c.id === line.id);
         if (existing) existing.qty += line.qty;
         else state.cart.push({ ...menuItem, qty: line.qty });
@@ -1030,7 +1104,8 @@
     });
     // Another tab of this till changed the outbox.
     window.addEventListener("storage", event => {
-      if (event.key === posOutboxKey()) { renderSessionSales(); renderPosOutboxBanner(); }
+      const prefix = posOutboxPrefix();
+      if (prefix && event.key && event.key.indexOf(prefix) === 0) { renderSessionSales(); renderPosOutboxBanner(); }
     });
 
     /**

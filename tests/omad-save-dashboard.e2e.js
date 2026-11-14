@@ -76,6 +76,9 @@ describe('Omad figures after a save (browser)', () => {
   /** `oldBackend` strips the figures from every answer, as a backend from before this change would. */
   async function openOmad(backend, options = {}) {
     const requests = [];
+    // `holdReads`: a dashboard read is answered from the books as they are when
+    // it arrives, but the answer is only delivered when the test releases it.
+    const held = [];
     const context = await browser.newContext();
     await context.addInitScript(token => {
       localStorage.setItem('omad_role', 'omad_admin');
@@ -89,6 +92,9 @@ describe('Omad figures after a save (browser)', () => {
       requests.push(payload);
       const body = JSON.parse(backend.gas.doPost(postEvent(payload)).__text);
       if (options.oldBackend) delete body.dashboard;
+      if (options.holdReads && options.holdReads() && payload.action === 'get_omad_data') {
+        await new Promise(release => held.push(release));
+      }
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
     });
     const page = await context.newPage();
@@ -98,7 +104,7 @@ describe('Omad figures after a save (browser)', () => {
     await page.waitForFunction(() => typeof app !== 'undefined' && app.summary && app.summary.periods);
     await page.waitForLoadState('networkidle');
     await page.evaluate(() => { window.alert = () => {}; window.confirm = () => true; });
-    return { page, context, requests, errors };
+    return { page, context, requests, errors, held };
   }
 
   async function saveIncome(page, amounts) {
@@ -161,6 +167,35 @@ describe('Omad figures after a save (browser)', () => {
     const writes = requests.filter(r => r.action !== 'get_omad_history');
     assert.deepStrictEqual(writes.map(r => r.action), ['correct_transaction', 'correct_transaction', 'create_transaction']);
     assert.deepStrictEqual(writes.map(r => r.includeDashboard), [false, false, true]);
+    await context.close();
+  });
+
+  test('a read sent before a save but answered after it does not put the old figures back', async () => {
+    const backend = boot();
+    let hold = false;
+    const { page, context, held } = await openOmad(backend, { holdReads: () => hold });
+
+    // A refresh (Qayta urinish) goes out, reads the books before the save...
+    hold = true;
+    await page.evaluate(() => { window.__read = syncData({ background: true }); });
+    await page.waitForFunction(() => true);
+    await sleep(200);
+    hold = false;
+    assert.strictEqual(held.length, 1, 'the read is on its way');
+
+    // ...the save lands with its own fresh figures...
+    await saveIncome(page, [900000]);
+    await page.waitForFunction(() => app.summary.allTime.income === 900000);
+
+    // ...and only then does the old read arrive.
+    held.forEach(release => release());
+    await page.evaluate(() => window.__read);
+    await sleep(200);
+    const after = await page.evaluate(() => ({
+      shown: app.summary.allTime.income,
+      stored: JSON.parse(localStorage.getItem('omad_snapshot_omad_omad_admin')).value.summary.allTime.income
+    }));
+    assert.deepStrictEqual(after, { shown: 900000, stored: 900000 }, 'neither the screen nor the snapshot went back');
     await context.close();
   });
 });

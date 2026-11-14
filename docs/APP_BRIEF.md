@@ -1067,30 +1067,42 @@ composes the message from data it already stored.
   record); a new form always mints new ids. Correcting a refused entry replaces it in one write, so one of the two
   is always kept. The tenant-paid pair, the bulk entry and
   the web form still wait for the server.
-- **A café sale leaves through an outbox on the till** (`cafe_pos.html`,
-  `cafe_pos_outbox_<cashier>` in `localStorage`). Sotish empties the cart at
+- **A café sale leaves through an outbox on the till** (`cafe_pos.html`; one
+  `localStorage` key per sale, `cafe_pos_outbox_<cashier>_<requestId>`, so two
+  tabs adding or settling sales never rewrite each other's). Sotish empties the cart at
   once; the sale is listed in "Bugungi Cheklar" as `Yuborilmoqda...` with the
   till's estimate, and a line on the till says how many are unsent. It is sent
   in order, one at a time, with the request id minted at Sotish, and resent on
   a timer, on `online`, when the till is shown again and after the next load
   (after the list has loaded, so a receipt the server already has is
   recognised by its id). Revenue, profit, the progress bar and the stock on
-  screen move only when the server confirms, and use the server's receipt. A
-  refusal (not enough stock, a retired item) is shown in red with the reason —
-  Qayta / Savatga / O'chirish — and never resent by itself. **The cost of not
+  screen move only when the server confirms, and use the server's receipt —
+  counted only when its date is today and its seller this cashier, the same
+  rule as the server's list (a sale rung up yesterday and confirmed today
+  belongs to yesterday). A refusal (not enough stock, a retired item) is shown
+  in red with the reason — Qayta / Savatga / O'chirish — and never resent by
+  itself; a refusal storage cannot take is held in memory for the life of the
+  page, and Savatga refuses when any line's item has left the menu rather than
+  drop that line. **The cost of not
   waiting:** a refusal now arrives after the customer has usually left with
   the goods, so the stock needs checking before Qayta. The outbox belongs to
   the cashier and the device: it is sent only while that cashier is signed in
   there. A device that cannot keep it (storage full or off) waits for the
-  server as the till always did. Close-day is refused while it holds anything.
+  server as the till always did; that direct attempt's request id is kept
+  with the cart it was minted for, and the same cart pressed again is sent
+  directly under it (even once storage works again), so a lost answer is never
+  rung up twice. Close-day is refused while the outbox holds anything.
 - **An Omad web write brings the dashboard back with it.** The entry, edit,
   cancellation, tenant-paid and bulk forms send `includeDashboard: true`; the
   server attaches the dashboard (`withOmadDashboard_`, computed after the
   write) to a *successful* answer, and the screen uses it instead of a second
   `get_omad_data` — one Apps Script start-up (~2 s) fewer per save. A
-  multi-line edit asks only on its last request. The figures are used only if
-  no newer write was sent and no refresh is in flight; otherwise, and with an
-  older backend, the background refresh runs as before. A failure to build
+  multi-line edit asks only on its last request. Dashboard answers are
+  numbered — a read when it is sent, a write's figures when they arrive — and
+  an older number never replaces a newer one on screen or in the snapshot, so
+  a read sent before a save but answered after it is dropped. A write
+  overtaken by a newer write, and any answer from an older backend, takes the
+  background refresh as before. A failure to build
   them never fails the save. Other clients (Mini App, Telegram) do not ask and
   are answered exactly as before.
 - **The task board paints its last list and ticks at once.** `tasks.html`
@@ -1098,7 +1110,8 @@ composes the message from data it already stored.
   stored, and **refuses every change until the live list has arrived**.
   "Bajarildi" moves the card to "Bugun bajarilgan" (marked `Saqlanmoqda...`)
   before the server answers; a refusal or lost connection puts it back with
-  the reason. The server still decides: photo-proof work is never offered the
+  the reason. A live board from a confirmed change also ends the stored one,
+  and a first load overtaken by such a change is not applied. The server still decides: photo-proof work is never offered the
   button, and its answer replaces the board.
 - **`assets/css/app.css` is generated but not verified in CI.** `npm run
   build:css` regenerates it from the pages; CI does not run it, because making

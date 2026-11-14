@@ -183,19 +183,20 @@ function nextOmadWrite_() {
  * A save used to be followed by a second request for the dashboard: another
  * Apps Script start-up, about two seconds, before the figures moved. The save
  * now asks for them (`includeDashboard: true`) and the server sends them back
- * computed after the write. They are used only when nothing could have
- * overtaken them -- no newer write was sent, and no refresh is on its way
- * that might land after them with an older reading. Anything else, including
- * an older backend that sent no figures, takes the background refresh, exactly
- * as before.
+ * computed after the write. They are used unless a newer write was sent (its
+ * own answer will carry newer ones); a read already on its way is older than
+ * them and is dropped when it lands. An older backend that sent no figures
+ * takes the background refresh, exactly as before.
  */
 function settleOmadWrite_(response, writeSeq) {
     const fresh = response && response.dashboard;
-    if (!fresh || fresh.status !== 'success' || writeSeq !== omadWriteSeq_ ||
-            omadWriteRefreshInFlight_ || omadWriteRefreshPending_) {
+    if (!fresh || fresh.status !== 'success' || writeSeq !== omadWriteSeq_) {
         settleOmadWriteInBackground_();
         return;
     }
+    // Numbered now, on arrival: every read already on its way is older than
+    // these figures and will be dropped when it lands (see syncData).
+    acceptOmadDashboard(nextOmadDashboardGen());
     applyOmadDashboard(fresh);
     confirmOmadDashboard();
     renderAll();

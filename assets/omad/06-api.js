@@ -131,6 +131,31 @@ function hydrateFromSnapshot() {
 }
 
 // --- CLOUD ---
+
+/**
+ * Which dashboard answer is newest, across reads and writes.
+ *
+ * A read is numbered when it is *sent*; a write's figures when its answer
+ * *arrives*, because the server computed them after the write. So any read
+ * sent before a save's answer came back may describe the books before the
+ * save, and carries a lower number: when it lands afterwards it is dropped
+ * instead of putting the old figures back on screen and into the snapshot.
+ */
+let omadDashboardGen = 0;
+let omadDashboardShownGen = 0;
+
+function nextOmadDashboardGen() {
+    omadDashboardGen++;
+    return omadDashboardGen;
+}
+
+/** Whether an answer numbered `gen` may go on screen; if so, it is now the newest shown. */
+function acceptOmadDashboard(gen) {
+    if (gen < omadDashboardShownGen) return false;
+    omadDashboardShownGen = gen;
+    return true;
+}
+
 async function syncData(options = {}) {
     // A post-save refresh starts from a live, server-confirmed screen. Re-hydrating
     // the stored snapshot here would temporarily mark that live screen stale and
@@ -149,6 +174,7 @@ async function syncData(options = {}) {
         // once the ledger is live, and with the whole list before that, because
         // the legacy save path submits the list back and a screen that may have
         // to write it must be holding all of it.
+        const sentGen = nextOmadDashboardGen();
         const data = await callBackend({ action: 'get_omad_data', scope: 'dashboard' });
         // Only an expired or refused session sends anybody back to the login
         // page. A rate limit or a server fault leaves the screen exactly as it
@@ -160,7 +186,8 @@ async function syncData(options = {}) {
         if (data && data.status === 'error') {
             throw new Error(data.message || SAVE_FAILED_MESSAGE);
         }
-        if (data) {
+        // Overtaken: a save's figures, or a later read, are already on screen.
+        if (data && acceptOmadDashboard(sentGen)) {
             const remote = data.data || data.payload || data;
             applyOmadDashboard(remote);
             // The migration status used to be a second request fired the

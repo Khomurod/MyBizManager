@@ -689,7 +689,9 @@ test('Sotish queues the sale and empties the cart before anything is sent', () =
   const emptied = handler.indexOf('state.cart = []');
   assert.ok(emptied > 0, 'the cart is emptied');
   assert.strictEqual(handler.slice(0, emptied).indexOf('await '), -1, 'with nothing awaited before it');
-  assert.match(handler, /writePosOutbox\(list\)/, 'the sale is kept on the device first');
+  assert.match(handler, /writePosOutboxItem\(item\)/, 'the sale is kept on the device first, as its own record');
+  assert.match(handler.slice(0, emptied), /if \(hasUnresolvedDirectSale\(\)\) return sellDirectly\(\)/,
+    'an unanswered direct attempt for this cart is retried under its own id');
   assert.match(handler, /return sellDirectly\(\)/, 'and a device that cannot keep it waits as before');
   assert.match(handler, /return drainPosOutbox\(\)/);
   // Only what was ordered: the server prices it.

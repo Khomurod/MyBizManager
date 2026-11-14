@@ -36,6 +36,21 @@ function hydrateTasksFromSnapshot() {
     return true;
 }
 
+/**
+ * Puts a board the server just sent on screen. A live answer is live, whatever
+ * was showing before it -- including a stored list whose own refresh failed.
+ */
+/** Bumped by every live board put on screen, so an older answer can tell it was overtaken. */
+let tasksLiveViewGen = 0;
+
+function applyLiveTaskView(data) {
+    tasksLiveViewGen++;
+    TASKS_STATE.view = data.view;
+    TASKS_STATE.config = data.config;
+    TASKS_STATE.snapshotAt = 0;
+    storeTasksSnapshot();
+}
+
 function storeTasksSnapshot() {
     if (TASKS_STATE.view) writeSnapshot('tasks', { view: TASKS_STATE.view, config: TASKS_STATE.config });
 }
@@ -69,15 +84,14 @@ function tasksAuthExpired(data) {
 async function loadTasks() {
     // The full-screen loader only when there is nothing at all to show.
     taskLoader(!hydrateTasksFromSnapshot());
+    // A change confirmed while this read was on its way brought a newer board.
+    const sentAtGen = tasksLiveViewGen;
     try {
         const data = await tasksApiCall({ action: 'get_tasks' });
         if (tasksAuthExpired(data)) { signOut(); return; }
         if (data && data.status === 'success') {
-            TASKS_STATE.view = data.view;
-            TASKS_STATE.config = data.config;
             TASKS_STATE.loadError = '';
-            TASKS_STATE.snapshotAt = 0;
-            storeTasksSnapshot();
+            if (tasksLiveViewGen === sentAtGen) applyLiveTaskView(data);
         } else {
             // A throttle or a server fault leaves the board exactly as it was.
             // Emptying it would read as "nothing to do" rather than "not shown".
@@ -158,7 +172,7 @@ async function taskMutation(payload, okMessage) {
             taskToast((data && data.message) || 'Xatolik yuz berdi', true);
             return null;
         }
-        if (data.view) { TASKS_STATE.view = data.view; TASKS_STATE.config = data.config; storeTasksSnapshot(); }
+        if (data.view) { applyLiveTaskView(data); }
         taskToast(okMessage || 'Bajarildi');
         renderAllTasks();
         settleTasksInBackground();
@@ -224,7 +238,7 @@ async function runTaskCompletions() {
                 taskToast((data && data.message) || 'Xatolik yuz berdi', true);
             } else {
                 confirmed++;
-                if (data.view) { TASKS_STATE.view = data.view; TASKS_STATE.config = data.config; storeTasksSnapshot(); }
+                if (data.view) applyLiveTaskView(data);
             }
         } catch (e) {
             taskToast("Server bilan bog'lanib bo'lmadi", true);

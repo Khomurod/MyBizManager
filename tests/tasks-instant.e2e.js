@@ -85,6 +85,13 @@ describe('Task board, instant (browser)', () => {
       let payload = {};
       try { payload = JSON.parse(route.request().postData() || '{}'); } catch (e) { payload = {}; }
       if (payload.action === 'get_tasks' && control.load === 'never') return;   // left hanging
+      if (payload.action === 'get_tasks' && control.load === 'late') {
+        // Read now, delivered only when the test says so.
+        const early = backend.gas.doPost(postEvent(payload)).__text;
+        await new Promise(release => { control.release = release; });
+        await route.fulfill({ status: 200, contentType: 'application/json', body: early });
+        return;
+      }
       if (payload.action === 'complete_occurrence') {
         control.sent.push(payload.occurrenceId);
         await sleep(300);
@@ -184,6 +191,28 @@ describe('Task board, instant (browser)', () => {
     await doneButtons(page).first().click();
     assert.match(await page.textContent('#toast'), /yangilanmadi/, 'a press waits for the live list');
     assert.deepStrictEqual(control.sent, [], 'and nothing was sent');
+    await context.close();
+  });
+
+  test('a first load overtaken by a confirmed change does not put the older board back', async () => {
+    const backend = boot();
+    const context = await newContext(backend);
+    const { page, control } = await openBoard(backend, context, { load: 'late' });
+    await page.waitForFunction(() => typeof tasksSave === 'function');
+    while (!control.release) await sleep(20);
+
+    // A task saved from the form while the first list is still on its way.
+    const today = new Date(Date.now() + 5 * 3600e3).toISOString().slice(0, 10);
+    await page.evaluate(day => tasksSave({ type: 'once', title: 'Yangi ish', deadlineKey: day, deadlineTime: '22:00' }), today);
+    control.release();
+    await page.waitForFunction(() => document.getElementById('loader').style.display === 'none');
+    await sleep(200);
+    const board = await page.evaluate(() => ({
+      titles: TASKS_STATE.view.tasks.map(t => t.title),
+      stale: TASKS_STATE.snapshotAt
+    }));
+    assert.ok(board.titles.includes('Yangi ish'), 'the saved task is still on the board');
+    assert.strictEqual(board.stale, 0, 'and the board counts as live');
     await context.close();
   });
 });
