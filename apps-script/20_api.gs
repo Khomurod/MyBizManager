@@ -53,6 +53,16 @@ function doPost(e) {
       return jsonOutput_(storageAction_(payload.action, payload));
     }
 
+    // ---- The daily database copy (27_database_backup.gs): omad_admin, or
+    //      the nightly run with the cron secret ---------------------------------
+    if (isDatabaseBackupAction_(payload.action)) {
+      if (!isDatabaseBackupCron_(payload)) {
+        var backupAccess = authorizeWebRequest_(payload, AUTH_ROLES_OMAD_ADMIN);
+        if (!backupAccess.ok) return authRefusal_(backupAccess);
+      }
+      return jsonOutput_(runDatabaseBackup_(new Date()));
+    }
+
     // Inside the try: a store that cannot be opened (Supabase selected but not
     // configured) must still answer as JSON -- and as a 200 to Telegram.
     doc = appDoc_();

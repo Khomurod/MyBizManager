@@ -401,7 +401,7 @@ test('close day totals the sales the server recorded', () => {
   sell(gas, [{ kind: 'product', inventoryId: 'i1', qty: 1 }], { date: '2026-08-12T11:00:00.000Z' });
 
   const closed = post(gas, {
-    action: 'close_day', date: '2026-08-12T20:00:00.000Z', seller: 'kassir', summary: [],
+    action: 'close_day', date: '2026-08-12T17:00:00.000Z', seller: 'kassir', summary: [],
     // A till reporting figures of its own. Ignored.
     totalRevenue: 5, totalProfit: 5
   });
@@ -422,7 +422,7 @@ test('close day counts only the day it is closing', () => {
   sell(gas, [{ kind: 'product', inventoryId: 'i1', qty: 2 }], { date: '2026-08-12T10:00:00.000Z' });
 
   const closed = post(gas, {
-    action: 'close_day', date: '2026-08-12T20:00:00.000Z', seller: 'kassir', summary: []
+    action: 'close_day', date: '2026-08-12T17:00:00.000Z', seller: 'kassir', summary: []
   });
   assert.strictEqual(closed.totalRevenue, 45000, "yesterday's receipt is not in today's total");
 });
@@ -434,7 +434,7 @@ test('close day accepts a counted stock level, because only a person can supply 
 
   // Somebody looked in the fridge and found one had been broken.
   post(gas, {
-    action: 'close_day', date: '2026-08-12T20:00:00.000Z', seller: 'kassir', summary: [],
+    action: 'close_day', date: '2026-08-12T17:00:00.000Z', seller: 'kassir', summary: [],
     countedInventory: [{ id: 'i1', name: 'Kola', type: 'product', qty: 7, unit: 'dona', sellPrice: 22500, unitCost: 16500, totalCost: 115500 }]
   });
 
@@ -531,7 +531,7 @@ test('a void and a close-day both move the revision on', () => {
   assert.ok(afterVoid > afterSale, 'the void bumped it');
 
   post(gas, {
-    action: 'close_day', date: '2026-08-12T20:00:00.000Z', seller: 'k', summary: [],
+    action: 'close_day', date: '2026-08-12T17:00:00.000Z', seller: 'k', summary: [],
     // The only sale of the day was voided a moment ago, so this close has
     // nothing on it and is refused once. Answering the question is the point
     // here; the refusal itself is covered by tests/cafe-close-day.test.js.

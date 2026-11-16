@@ -33,7 +33,7 @@ const OMAD_WRITE_ACTIONS = new Set([
     'save_omad', 'migrate_omad', 'tenant_paid_expense',
     'create_transaction', 'correct_transaction', 'cancel_transaction',
     'save_telegram_settings', 'configure_telegram_webhook', 'configure_mini_app',
-    'create_backup', 'process_jobs', 'retry_failed_jobs', 'set_user_password',
+    'create_backup', 'run_database_backup', 'process_jobs', 'retry_failed_jobs', 'set_user_password',
     'change_password', 'audit_transaction_dates', 'fix_transaction_dates',
     'backfill_entry_group_ids', 'purge_telegram_debug_secrets',
     'rotate_telegram_webhook_secret', 'apply_omad_migration',

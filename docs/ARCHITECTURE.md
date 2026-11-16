@@ -86,6 +86,8 @@ file for file. See [DEPLOYMENT.md](DEPLOYMENT.md).
 | `23_health.gs` | Mini App Bot API configuration and system health check |
 | `24_supabase_store.gs` | `appDoc_()` and the `OMAD_STORAGE` switch; the Supabase stand-in for the spreadsheet |
 | `25_supabase_import.gs` | The move from Sheets to Supabase: preview, copy + verify + switch, verify, rollback |
+| `26_property_store.gs` | Moves the shared settings between Script Properties and the `app_properties` table (both directions, verified; the Edge function's ready marker is written last and deleted first; its `EDGE_*` rows never move); `edgeServesGroup_` |
+| `27_database_backup.gs` | The nightly copy of the business tables into Google spreadsheets in Drive, in the original sheet layout; rotation and health check |
 
 The task-management feature (`/tasks`) is documented separately in
 **[TASKS.md](TASKS.md)**. It is an isolated module: dedicated `Tasks` and
@@ -362,7 +364,7 @@ Café actions additionally accept the café roles described in the permissions s
 | `preview_supabase_import` | **yes** | Converts every sheet row in memory, counts, checks the database is empty. Writes nothing |
 | `apply_supabase_import` | **yes** | Copy + verify + switch, under the script lock; switches only if verification passes |
 | `verify_supabase_import` | **yes** | Compares the two stores again. Writes nothing |
-| `rollback_supabase_storage` | **yes** | Back to the spreadsheet. Routed before the store is opened, so it works when Supabase cannot be reached |
+| `rollback_supabase_storage` | **yes** | Back to the spreadsheet. Routed before the store is opened, so before the settings move it works when Supabase cannot be reached; after it, it must delete `__PROPERTIES_READY` first and changes nothing while the database is down |
 
 **Any action name starting with `mini_` is Mini-App-gated** — never name a new
 admin action `mini_…`.
@@ -997,6 +999,187 @@ name and recorded in `OMAD_STORAGE_IMPORT.failure`.
 The switch writes `Omad_Storage_Cutover_At` into the database, sets
 `OMAD_STORAGE=supabase` and bumps every cache revision. `supabase/reset_before_cutover.sql`
 empties the tables for a second attempt and refuses once that key exists.
+
+### State both runtimes share
+
+`20261116120000_edge_shared_state.sql` adds what the Edge function must see
+exactly as Apps Script does:
+
+| Table | Holds | Written by |
+|---|---|---|
+| `app_properties` | every setting that was a Script Property, except the four that locate the database; plus the Edge function's own rows (`__PROPERTIES_READY`, `EDGE_NATIVE_ACTIONS`, `EDGE_APPS_SCRIPT_URL`, `EDGE_CRON_SECRET`, `EDGE_FUNCTION_URL`) | `mbm_apply` ops `upsert_property` / `delete_property`, batched with the request's other writes |
+| `app_lease` | the script lock: one `script` row with an owner and an expiry (90 s, so a lease an execution died holding frees itself) | `mbm_lock(owner, ttl, wait)` (re-entrant, waits up to 6 s per call), `mbm_unlock(owner)`, or the `unlock` op inside the same `mbm_apply` that carries the locked writes |
+| `app_cache` | CacheService entries both runtimes must agree on: the `/yangi` conversation, rate-limit buckets | the Edge shim; Apps Script keeps its own CacheService (the two only share what is not a display summary) |
+
+An expiry alone does not keep out a writer that outlived its lease (an
+execution stalled past 90 s while another took the lease over). What does is
+the `fence` op of `20261116150000_lease_fencing.sql`: every batch written
+under the lease carries `{ op: "fence", owner }` after its writes and before
+the `unlock`, and `mbm_apply` refuses the whole batch unless that owner still
+holds an unexpired lease, keeping the row share-locked until it commits. The
+late writer gets an error and nothing of it is stored. The same migration
+makes `mbm_lock` look before it tries: while somebody else holds the lease it
+only reads and sleeps, so it never holds the row the holder needs to release
+it; a try that loses a race answers at once and the caller asks again until
+its own deadline. Its answer also carries `ready` (whether
+`__PROPERTIES_READY` is still there), which the Edge runtime checks as it
+takes the lease (`assertEdgeStillServes_`): it read its switches up to 15 s
+earlier and may have waited behind a move back, after which it must write
+nothing. Apps Script needs no such check; its own script lock queues it
+behind the move, and `assertStoreUnchanged_` catches the switch.
+
+While the settings are in the database, a request that cannot read them
+falls back to the copy Apps Script keeps in Script Properties (in the Edge
+runtime there is none) — except for `OMAD_USERS`, `OMAD_SESSION_SECRET` and
+`TELEGRAM_WEBHOOK_SECRET` (`AUTH_PROPERTY_KEYS`, read through `authSetting_`),
+which fail the request instead. The copy can be older than the database (a
+password the Edge function changed is not in it), and an empty answer would
+read as "not set yet": the first-run session would open, or a new session or
+webhook secret would be made and everybody signed out. For the same reason
+no setting is written while they cannot be read. `OMAD_ADMIN_KEY` keeps its
+fallback: nothing in the application changes it, so the copy is current.
+
+The settings move in and out through `move_properties_to_database` and
+`move_properties_to_script` (`26_property_store.gs`, omad_admin, under the
+script lock), the Supabase card's "Sozlamalarni bazaga" / "Sozlamalarni
+qaytarish" buttons in Tizim; `get_storage_status` reports where they are
+(`properties.store`: `script` or `database`). The move back, and the
+rollback to the spreadsheet, delete `__PROPERTIES_READY` first and change
+nothing at all if that fails: switching Apps Script while the marker stands
+would leave the Edge function serving on other settings. So neither runs
+while the database cannot be reached. With the database down the function
+cannot read its switches either: once its cached copy expires
+(`MBM_CONFIG_TTL_MS`, 15 s by default) it forwards every POST to Apps Script,
+answers a job call `503` without running it, and still answers GET (the
+banner) and OPTIONS itself.
+
+Cache revisions became opaque tokens (`"<n>.<base36>"`): a counter both
+runtimes bump through the same row, with a random tail so two writers that
+read the same `n` can never mint the same key.
+
+## The Edge function
+
+`supabase/functions/api/index.ts`, deployed with `verify_jwt` off (the
+backend authenticates every request itself) and called as
+`/functions/v1/api?forceFunctionRegion=us-east-1`, so it runs next to the
+database however far away the caller is.
+
+### Who answers
+
+`lib/routing.js`, from three `app_properties` rows read at most every 15 s:
+
+1. no `__PROPERTIES_READY` → everything is forwarded to Apps Script (the
+   settings, users and secrets are still only there);
+2. an action in `APPS_SCRIPT_ONLY` (the store moves, the property moves, the
+   ledger migration, `get_health`, `run_database_backup`) → forwarded, always;
+3. an action named in `EDGE_NATIVE_ACTIONS` (or `*`, every web action), a
+   Telegram update when the list has `telegram` → answered here; anything
+   else → forwarded. `*` never covers `telegram` or `jobs`, so each of those
+   is switched, and given back, by its own name.
+
+Forwarding is the body, unchanged, POSTed to `EDGE_APPS_SCRIPT_URL` (or the
+`APPS_SCRIPT_URL` secret) with the query string minus the region pin, and
+Apps Script's answer returned unchanged with `X-MBM-Runtime: apps-script`.
+No Apps Script address configured → `503` with `X-MBM-Runtime: unconfigured`,
+which tells the browser nothing was done.
+
+### How the backend runs here
+
+`runtime.js` (generated by `npm run build` from `script.gs`, not committed) is
+a factory: `script.gs` inside a strict-mode function whose parameters are the
+Apps Script services, returning `doPost`, `doGet`, `processPendingTelegramJobs`,
+`processTaskSchedules` and `runTimedJobs_`. Each request calls it afresh, so no
+global survives from one request to the next.
+
+The backend is synchronous; the platform's I/O is not. `lib/executor.js`
+bridges them by replay: the request runs; at its first outside call the
+executor stops it, performs the call for real, records the answer and runs
+the request again from the beginning, this time answering that call from the
+record — until a run finishes without asking for anything new. A call is
+therefore made once. Each recorded call is matched by its full request (URL,
+method, headers, body); a run that asks for something else at the same point
+is a divergence and fails the request rather than guessing. The clock,
+`Math.random` and generated UUIDs are recorded the same way. Calls that do
+not affect the answer (`deferred`: the inline Telegram drain after a save)
+are performed after the answer is built. A lease a failed run still held is
+released (`leasesLeftHeld` → `mbm_unlock`).
+
+`lib/gas-shims.js` provides the services: `UrlFetchApp` (`fetch`, `fetchAll`
+in parallel, `muteHttpExceptions`, Apps Script's exception texts),
+`CacheService` over `app_cache` (display summaries always miss),
+`PropertiesService` (only the four store keys, fixed; every other setting
+the backend reads from `app_properties` itself), a `LockService` that is
+always free (the lock that matters is the `app_lease` row the backend takes),
+`Utilities` (Tashkent `formatDate`, synchronous HMAC/SHA from `lib/sha256.js`,
+UUIDs), `Date` fixed to Tashkent (`lib/zoned-date.js`), and stand-ins for
+`ContentService`, `HtmlService` and `ScriptApp`. `SpreadsheetApp` refuses:
+the Edge runtime only ever runs on the Supabase store.
+
+### Endpoints
+
+| Request | Answer |
+|---|---|
+| `POST` (any action, or a Telegram update with `?wh=<secret>`) | the backend's answer, from here or from Apps Script; `X-MBM-Runtime` says which |
+| `POST ?job=telegram-jobs` + `x-mbm-cron` | one cycle of the timed jobs (`runTimedJobs_`) if `jobs` is switched over, else `skipped` |
+| `POST ?job=db-backup` + `x-mbm-cron` | passed on to Apps Script as `run_database_backup` with the cron secret |
+| either job while `app_properties` cannot be read | `503` `settings unreadable`; nothing runs, the next tick tries again (a wrong or missing secret is `403`) |
+| `GET` | the inert banner (`doGet`); `?probe=1` reports region, the switches it sees and where it forwards |
+| `OPTIONS` | CORS (`*`, `X-MBM-Runtime` exposed) |
+
+A fault of the runtime itself (a divergence, too many replays) is answered
+as a refusal (`200`, `status: "error"`, message starting `Edge:`), never a
+5xx: part of the request may have been done here, so the browser must not
+repeat it on Apps Script. Telegram always gets `OK`.
+
+### The browser's side
+
+`assets/backend.js` (`backendPost`) is the only way a page reaches the
+backend. Edge first; Apps Script directly when the function could not be
+reached or the platform answered instead of it (an error status without
+`X-MBM-Runtime`, or `unconfigured`), and then for five minutes on that
+device (`mbm_edge_down_until`). Repeated on Apps Script only when repeating
+cannot do anything twice: `get_*`, `list_*`, `login`, `verify_access`,
+`mini_home`/`mini_omad`/`mini_cafe`/`mini_tasks`, and any request with a
+`requestId`. Another write is sent to the Edge function only when it has
+answered on this tab in the last ten minutes (`mbm_edge_seen_at`), so the
+first write after an outage goes straight to Apps Script; one that fails in
+transit is not repeated, and the person's retry goes to Apps Script.
+
+### Timed calls
+
+`20261116130000_edge_cron.sql` enables `pg_cron` and `pg_net` and schedules
+`mbm_call_edge('telegram-jobs')` every 5 minutes and
+`mbm_call_edge('db-backup')` at 22:00 UTC. `mbm_call_edge` reads
+`EDGE_FUNCTION_URL` and `EDGE_CRON_SECRET` from `app_properties` and does
+nothing until both exist. Apps Script's own `processPendingTelegramJobs`
+trigger asks `edgeServesGroup_("jobs")` and stands down once the jobs are
+switched over — `jobs` named, and both of those rows present, so it never
+stands down for a cron that would do nothing — and exactly one runtime runs
+them.
+
+### The nightly copy
+
+`27_database_backup.gs` reads each business table through `appDoc_()` — the
+same sheet-shaped values the import reads — under the script lock and the
+lease, all tables in one round, so no write lands between two of them
+(`claimDatabaseBackupRun_`). Under the same lock it refuses to start while
+another run's `DB_BACKUP_RUNNING` mark is less than 15 minutes old, and marks
+itself after a good read; the mark is cleared when the run ends. It then
+writes each table to a tab of the same name in a Google spreadsheet it
+created, one call per tab, every string cell formatted as plain text first
+(`setNumberFormats`) so `2026-08` and `05/08/2026` stay text, and text that
+starts with `=` or `'` given a leading `'` so Sheets keeps it as text rather
+than a formula. Files: `MyBizManager zaxira — kun <n-weekday>` and,
+on the 1st, `— oy <MM>`; ids in `DB_BACKUP_FILES`, outcome in
+`DB_BACKUP_STATUS`. A tab not written this time (the new file's own first
+tab, a table no longer copied) is deleted. A tab that fails is named in the
+answer and turns the health check red.
+
+The nightly call is let in by its cron secret (`isDatabaseBackupCron_`,
+constant-time, at least 16 characters); anything else needs an omad_admin
+session. `edgeCronSecret_` reads `EDGE_CRON_SECRET` like any setting once the
+settings are in the database, and straight from `app_properties` before that,
+so the copy does not wait for the settings move.
 
 ## Migration and cutover
 

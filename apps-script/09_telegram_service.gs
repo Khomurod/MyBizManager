@@ -173,7 +173,13 @@ function extractTelegramMessageId_(response) {
 }
 
 function isVerifiedTelegramWebhookRequest_(e) {
-  var expected = getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_SECRET);
+  var expected;
+  try {
+    expected = authSetting_(TELEGRAM_PROP_WEBHOOK_SECRET);
+  } catch (error) {
+    // The settings cannot be read: not knowing the secret is not "no secret".
+    return false;
+  }
   // No secret configured yet: accept, so an existing deployment keeps working
   // until the operator re-runs "Webhook" in Sozlamalar. buildTelegramSettingsView_
   // surfaces this as an unverified webhook.

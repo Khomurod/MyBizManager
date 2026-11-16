@@ -152,10 +152,7 @@ async function api(action, payload = {}) {
 
     let response;
     try {
-        response = await fetch(GOOGLE_APP_URL, {
-            method: 'POST',
-            body: JSON.stringify(Object.assign({ action, initData }, payload))
-        });
+        response = await backendPost(GOOGLE_APP_URL, JSON.stringify(Object.assign({ action, initData }, payload)));
     } catch (transportError) {
         throw new Error(NETWORK_MESSAGE);
     }

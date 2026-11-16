@@ -246,6 +246,29 @@ async function createBackup() {
     }
 }
 
+/**
+ * Copies the database into today's spreadsheet in Google Drive now, and makes
+ * sure the daily trigger that does it every night exists (27_database_backup.gs).
+ */
+async function runDatabaseBackup() {
+    showLoader(true);
+    try {
+        const data = await callBackend(Object.assign({ action: 'run_database_backup' }, adminCredentials()));
+        if (data && data.status === 'success') {
+            const backup = data.backup || {};
+            alert(`Google Diskka saqlandi: ${backup.tables || 0} jadval, ${backup.rows || 0} qator.`);
+        } else if (data && data.status === 'skipped') {
+            alert(data.message || "Zaxira shart emas.");
+        } else {
+            alert((data && data.message) || "Xatolik yuz berdi.");
+        }
+    } catch (e) {
+        alert("Server bilan bog'lanib bo'lmadi.");
+    } finally {
+        showLoader(false);
+    }
+}
+
 async function processPendingJobs() {
     showLoader(true);
     try {
@@ -596,8 +619,20 @@ async function configureMiniApp() {
  * verification failed -- the screen only says what happened.
  */
 const STORAGE_MODE_LABELS = { sheets: 'Google Sheets', supabase: 'Supabase', moving: "Ko'chirilmoqda…" };
+const PROPERTY_STORE_LABELS = { script: 'Script Properties', database: 'Baza (app_properties)' };
 
-function renderStorageStatus(storage, importStatus) {
+/** The last status each answer carried; a move answers with its own part only. */
+let storageView = {};
+
+function renderStorageStatus(storage, importStatus, properties) {
+    storageView = {
+        storage: storage || storageView.storage,
+        importStatus: importStatus || storageView.importStatus,
+        properties: properties || storageView.properties
+    };
+    storage = storageView.storage;
+    importStatus = storageView.importStatus;
+    properties = storageView.properties;
     const box = document.getElementById('storageStatus');
     if (!box || !storage) return;
     const reach = storage.reachable === true
@@ -611,7 +646,8 @@ function renderStorageStatus(storage, importStatus) {
         statusRow("Supabase", reach),
         status.importedAt ? statusRow("Ko'chirilgan", formatStamp(status.importedAt)) : '',
         status.cutoverAt ? statusRow("O'tilgan", formatStamp(status.cutoverAt)) : '',
-        status.rolledBackAt ? statusRow("Qaytarilgan", formatStamp(status.rolledBackAt)) : ''
+        status.rolledBackAt ? statusRow("Qaytarilgan", formatStamp(status.rolledBackAt)) : '',
+        properties ? statusRow("Sozlamalar", escapeHTML(PROPERTY_STORE_LABELS[properties.store] || properties.store)) : ''
     ].join('');
 }
 
@@ -649,7 +685,7 @@ function renderStorageResult(data) {
     }
     if (data.note) lines.push(`<p class="text-amber-600 mt-2">${escapeHTML(data.note)}</p>`);
     box.innerHTML = lines.join('');
-    box.classList.remove('hidden');
+    box.classList.toggle('hidden', !lines.length);
 }
 
 async function storageCall(action, confirmText) {
@@ -657,7 +693,9 @@ async function storageCall(action, confirmText) {
     showLoader(true);
     try {
         const data = await callBackend(Object.assign({ action }, adminCredentials()));
-        if (data && (data.storage || data.importStatus)) renderStorageStatus(data.storage, data.importStatus);
+        if (data && (data.storage || data.importStatus || data.properties)) {
+            renderStorageStatus(data.storage, data.importStatus, data.properties);
+        }
         renderStorageResult(data);
         return data;
     } catch (e) {
@@ -671,7 +709,7 @@ async function storageCall(action, confirmText) {
 async function loadStorageStatus() {
     try {
         const data = await callBackend(Object.assign({ action: 'get_storage_status' }, adminCredentials()));
-        if (data && data.status === 'success') renderStorageStatus(data.storage, data.importStatus);
+        if (data && data.status === 'success') renderStorageStatus(data.storage, data.importStatus, data.properties);
     } catch (e) {
         // The rest of the panel still works; this card says nothing rather than something wrong.
     }
@@ -710,6 +748,30 @@ async function rollbackSupabaseStorage() {
     } else {
         alert(data.message || "Xatolik yuz berdi.");
     }
+}
+
+/**
+ * The settings (users, the session secret, the bot) into app_properties, so
+ * the Edge function sees them as Apps Script does -- and back. Apps Script
+ * runs both; the Edge function serves nothing itself until the first has.
+ */
+async function movePropertiesToDatabase() {
+    const data = await storageCall('move_properties_to_database',
+        "Sozlamalar (foydalanuvchilar, parollar, bot) Supabase bazasiga ko'chiriladi va tekshiriladi. " +
+        "Apps Script o'z nusxasini saqlab qoladi. Davom etilsinmi?");
+    if (!data) return;
+    alert(data.status === 'success'
+        ? `✅ ${data.moved} ta sozlama bazaga ko'chirildi.`
+        : (data.message || "Xatolik yuz berdi."));
+}
+
+async function movePropertiesToScript() {
+    const data = await storageCall('move_properties_to_script',
+        "Edge funksiyasi o'zi javob berishni to'xtatadi, sozlamalar Script Properties'ga qaytariladi. Davom etilsinmi?");
+    if (!data) return;
+    alert(data.status === 'success'
+        ? "Sozlamalar Script Properties'ga qaytarildi."
+        : (data.message || "Xatolik yuz berdi."));
 }
 
 /**

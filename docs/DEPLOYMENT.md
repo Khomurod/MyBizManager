@@ -1,9 +1,9 @@
 # Deployment
 
 **GitHub `main` is the source of truth.** Merging to `main` updates the live
-Apps Script project automatically, once every CI check has passed, and
-Cloudflare Pages publishes the frontend from the same branch. Nobody pastes
-`script.gs` into the editor any more.
+Apps Script project and the Supabase Edge function automatically, once every
+CI check has passed, and Cloudflare Pages publishes the frontend from the same
+branch. Nobody pastes `script.gs` into the editor any more.
 
 For what the application *is* and the rules it must not break, read
 [APP_BRIEF.md](APP_BRIEF.md). This page is the deployment detail behind it.
@@ -21,6 +21,10 @@ For what the application *is* and the rules it must not break, read
 | Executes as | the owner; access: Anyone |
 | Database | Google Sheet `1Q9_v2PrusZimoAjqbOUmHkW_NzDiV0z_8Wtr-v963CA` while `OMAD_STORAGE` is `sheets` |
 | Database (after the move) | Supabase project `mybizmanager`, ref `ksdqoftlxrkpyylbbyoi`, us-east-1, organisation "Khomurod's Org", free plan. Schema: `supabase/migrations/` |
+| Edge function | `api` in the same project: `https://ksdqoftlxrkpyylbbyoi.supabase.co/functions/v1/api?forceFunctionRegion=us-east-1`, deployed by CI on every merge to `main`. Answers itself only what `app_properties` allows and forwards the rest to Apps Script — see [The Edge function](#the-edge-function) |
+| Test project | Supabase project `mybizmanager-staging`, ref `uzpfgnjxvmrzwvocuiaf`, us-east-1, same organisation, free plan. Synthetic data only; the Edge function is deployed there on request |
+| Timed jobs | the Apps Script trigger `processPendingTelegramJobs`, every 5 minutes, until the jobs are switched to the Edge function; then `pg_cron` in the database (`mbm-telegram-jobs`) |
+| Daily copy of the database | the script owner's Google Drive: spreadsheets "MyBizManager zaxira — kun …" (one per weekday) and "— oy MM" (one per month), written at 03:00 Tashkent (`pg_cron` job `mbm-db-backup`) |
 | Bot / Mini App | Telegram `@mybizmanagerbot` |
 
 The Script ID is masked here because clasp guidance keeps `.clasp.json` out of
@@ -82,10 +86,42 @@ push to main
                  5. clasp push -f                   replace the project's code
                  6. clasp create-version            immutable version for this SHA
                  7. clasp update-deployment         move the EXISTING deployment
+           └── edge-production job                  (alongside, same gate)
+                 1. npm run build                   script.gs → runtime.js
+                 2. supabase functions deploy api   to ksdqoftlxrkpyylbbyoi
+                 3. probe                           GET ?probe=1 answers from the
+                                                    Edge runtime; CORS preflight ok
 ```
 
 The deploy job is `.github/workflows/ci.yml → deploy`, and the orchestration is
-`scripts/clasp-deploy.js`.
+`scripts/clasp-deploy.js`. The Edge function's job is `edge-production`, run
+by `scripts/edge-deploy.js` (Supabase CLI pinned, `--no-verify-jwt`). Deploying
+the function flips no switch: what it answers itself is decided by rows in
+`app_properties`, which only an operator changes.
+
+A branch deploys the function to the **test project** only when asked: a
+commit whose message contains `[edge-staging]`, or **Run workflow** on that
+branch (`edge-staging` job). It never runs from `main`. After the deploy,
+`scripts/edge-staging.js` (test project only, its ref is fixed in the script):
+
+1. applies every migration the test project has not recorded, by name, each
+   with its record in one transaction (through the Management API, with the
+   same access token);
+2. if the project is empty, inserts the synthetic data set of
+   `scripts/staging-seed.js` — invented tenants and amounts, built by the
+   real import code, so the rows have the live tables' exact shape;
+3. sets the switches so the function answers everything itself (there is no
+   Apps Script behind the test project), a fresh admin key for the run, and
+   the cron and webhook secrets once — all masked in the log;
+4. exercises it: dashboard and ledger reads, the tasks and café reads, a
+   write and the same write again (stored once, no lease left held), an
+   account, sign-in and a refused wrong password, a Telegram update, the
+   timed jobs and a refused wrong cron secret, `get_health` answered
+   `unconfigured`, both `pg_cron` jobs present. Each call's time goes to the
+   run's summary page.
+
+The live project's migrations are never applied this way: they stay a
+deliberate step of [Switching production over](#switching-production-over).
 
 ### What it never does
 
@@ -104,6 +140,11 @@ The deploy job is `.github/workflows/ci.yml → deploy`, and the orchestration i
   same project leaves them exactly where they are.
 - **Never re-registers the webhook**, recreates the spreadsheet, or deletes the
   `processPendingTelegramJobs` trigger.
+- **Never writes to the database.** Neither job applies a migration or
+  changes a row; the Edge function's switches stay as the operator left them.
+  The one CI job that does write there, `migrate-production`, runs only when
+  somebody starts the workflow by hand on `main` with **migrate_production**
+  ticked (see [Switching production over](#switching-production-over)).
 - **Never runs from a pull request or a feature branch.** The job accepts only
   a push or a manual dispatch, and only on `github.ref == 'refs/heads/main'`.
   `tests/static-analysis.test.js` fails the build if those conditions are ever
@@ -120,21 +161,23 @@ runs the tests but not the deploy.
 
 ## One-time operator setup
 
-Three **secrets**, and nothing else
-(Settings → Secrets and variables → Actions → the *Secrets* tab):
+Four **secrets**, and nothing else
+(Settings → Secrets and variables → Actions → the *Secrets* tab) — three for
+Apps Script, one for the Edge function:
 
 | Secret | What to put in it |
 |---|---|
 | `CLASPRC_JSON` | The entire contents of `~/.clasprc.json` after running `clasp login` as the account that owns the script. Contains an OAuth refresh token. |
 | `CLASP_JSON` | `{"scriptId":"<the existing project's script id>"}` — the `.clasp.json` of the live project. |
 | `APPS_SCRIPT_DEPLOYMENT_ID` | The id of the deployment already serving production (the one ending `…DtCA2W`). |
+| `SUPABASE_ACCESS_TOKEN` | A Supabase personal access token (supabase.com → Account → Access Tokens) of an account in the organisation that owns both projects. It deploys functions; it is not a database key. Set 2026-11-16. |
 
 There is **no enable switch**. With the secrets in place a push to `main`
 deploys; without them the job fails and names what is missing.
 
 > ### Secrets and variables are different tabs, and the difference bites
 >
-> The workflow reads these three through `${{ secrets.* }}`, so they must be on
+> The workflow reads these four through `${{ secrets.* }}`, so they must be on
 > the **Secrets** tab. It reads `APPS_SCRIPT_ALLOW_REMOTE_DRIFT` (optional,
 > below) through `${{ vars.* }}`, so that one must be on the **Variables** tab.
 > A value on the wrong tab is not an error — it is simply invisible, and the
@@ -252,10 +295,12 @@ be removed again afterwards.
 
 ## The Supabase database
 
-The schema is not deployed by CI. Each file in `supabase/migrations/` is
-applied once, through the Supabase migrations API (the dashboard's SQL editor
-or the MCP `apply_migration`), with the file named by the version Supabase
-records. Never edit an applied file; add a new one, and the matching entry in
+The schema is not deployed by a merge. Each file in `supabase/migrations/` is
+applied once, with the file named by the version Supabase records: by
+`scripts/supabase-migrate.js` (the `migrate-production` job, started by hand;
+it matches files to the project's record by name and applies each with its
+record in one transaction), or through the dashboard's SQL editor or the MCP
+`apply_migration`. Never edit an applied file; add a new one, and the matching entry in
 `SUPABASE_SHEETS`. The tests build their database from these files, so a
 column the code needs and the schema lacks fails CI.
 
@@ -263,6 +308,18 @@ Apply a migration **before** deploying code that needs it. The one exception
 is built in: without `20261102160523_batched_writes_and_counts.sql` (the
 functions `mbm_apply` and `mbm_counts`) the backend still works, one REST call
 per write, just slower and not atomic. It is applied to `mybizmanager`.
+
+The Edge function adds four, applied as the first step of
+[switching it on](#switching-production-over):
+
+| Migration | Adds | Before it is applied |
+|---|---|---|
+| `20261116120000_edge_shared_state.sql` | `app_properties`, `app_lease`, `app_cache`; `mbm_lock` / `mbm_unlock`; the property ops in `mbm_apply` | the settings cannot be moved to the database (the move says which migration is missing); everything else works as before |
+| `20261116130000_edge_cron.sql` | `pg_cron`, `pg_net` (in `extensions`); `mbm_call_edge(job)`; the jobs `mbm-telegram-jobs` (every 5 min) and `mbm-db-backup` (22:00 UTC) | no nightly copy; the jobs run on the Apps Script trigger as before |
+| `20261116140000_pg_net_schema.sql` | moves `pg_net` out of `public` where the first version of the file above put it (the test project); a no-op anywhere else | — |
+| `20261116150000_lease_fencing.sql` | `mbm_lock` that never holds the lease row while it waits, and says whether `__PROPERTIES_READY` is still there; the `fence` op in `mbm_apply` (a batch written under a lease its writer no longer holds is refused whole) | needed before the settings move: once they are in the database every locked write sends `fence`, which the earlier `mbm_apply` does not know |
+
+They are inert until rows in `app_properties` give them something to do.
 
 ### Moving the data from Sheets (once)
 
@@ -292,8 +349,169 @@ per write, just slower and not atomic. It is applied to `mybizmanager`.
 ### Going back
 
 **Supabase card → Google Sheets'ga Qaytish** (`rollback_supabase_storage`)
-sets `OMAD_STORAGE=sheets`. It works even if the database cannot be reached.
+sets `OMAD_STORAGE=sheets`. While the settings are still in Script Properties it
+works even if the database cannot be reached. Once they are in the database it
+first deletes `__PROPERTIES_READY` (so the Edge function stops serving), and if
+the database does not answer it changes nothing and says so: wait and retry.
 Entries made while Supabase was live stay only in Supabase.
+
+---
+
+## The Edge function
+
+How it decides who answers, and how it runs the backend, is in
+[ARCHITECTURE.md → The Edge function](ARCHITECTURE.md#the-edge-function).
+This is the operator's side.
+
+### Its switches
+
+Rows of `app_properties` in the live project, changed in the Supabase SQL
+editor (or through the Supabase connector, with the owner's ok). The function
+reads them again every 15 seconds; nothing is redeployed.
+
+| Row | What it does |
+|---|---|
+| `EDGE_APPS_SCRIPT_URL` | Where the function forwards: the live `/exec` URL, the same one as `GOOGLE_APP_URL` in `assets/omad/00-config.js`. Absent: the function answers `503 unconfigured` and the browser goes straight to Apps Script |
+| `__PROPERTIES_READY` | Written by **Sozlamalarni bazaga**, deleted by **Sozlamalarni qaytarish** (Tizim → Supabase card). Absent: the function answers nothing itself |
+| `EDGE_NATIVE_ACTIONS` | What it answers itself: a comma list of actions; `*` for every web action, `telegram` for the bot's updates, `jobs` for the timed jobs. `*` never includes `telegram` or `jobs`: each is switched by its own name. Empty or absent: nothing |
+| `EDGE_FUNCTION_URL` | Where `pg_cron` calls: the function URL with `?forceFunctionRegion=us-east-1` |
+| `EDGE_CRON_SECRET` | What `pg_cron` sends, and what the function and Apps Script check, on the timed calls. Made by the database; never typed, shown or pasted |
+
+`jobs` takes effect only once `EDGE_FUNCTION_URL` and `EDGE_CRON_SECRET` are
+both there: without them nothing would call the function, so Apps Script's
+trigger keeps running the jobs (and the health check says so).
+
+A move of the settings in either direction leaves every `EDGE_*` row where it
+is.
+
+### Switching production over
+
+Not before the owner has said **ok** to the merge and to the switch, in so
+many words. Each step is undone by the matching row of
+[Going back](#going-back-from-the-edge-function).
+
+1. **Merge.** CI deploys Apps Script and the function. Until step 2 the
+   function has no table to read its switches from and answers
+   `unconfigured`, so each browser goes straight to Apps Script (and tries
+   the function again five minutes later): the app behaves exactly as before.
+2. **Migrations and rows.** Actions → CI → **Run workflow**, branch `main`,
+   tick **migrate_production**. After the usual checks, the
+   `migrate-production` job applies `20261116120000_edge_shared_state.sql`,
+   `20261116130000_edge_cron.sql`, `20261116140000_pg_net_schema.sql` and
+   `20261116150000_lease_fencing.sql` (the test project took the same four
+   from its own runs) and writes
+   `EDGE_APPS_SCRIPT_URL`, `EDGE_FUNCTION_URL` and `EDGE_CRON_SECRET` — the
+   secret made by the database, never shown. From then on browsers call the
+   function, which forwards everything to Apps Script: the app behaves as
+   before, one hop longer. The nightly copy starts that night.
+
+   Without Actions, the same by hand in the SQL editor: the four files in
+   order, then
+   ```sql
+   insert into public.app_properties (key, value) values
+     ('EDGE_APPS_SCRIPT_URL', '<the /exec URL from assets/omad/00-config.js>'),
+     ('EDGE_FUNCTION_URL', 'https://ksdqoftlxrkpyylbbyoi.supabase.co/functions/v1/api?forceFunctionRegion=us-east-1')
+   on conflict (key) do update set value = excluded.value, updated_at = now();
+   insert into public.app_properties (key, value) values
+     ('EDGE_CRON_SECRET', replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', ''))
+   on conflict (key) do nothing;
+   ```
+3. **Tizim → Supabase → Sozlamalarni bazaga.** Copies the settings, verifies
+   them, switches Apps Script over and writes `__PROPERTIES_READY`. Then
+   **Tizim salomatligi**: every row green.
+4. **Reads.**
+   ```sql
+   insert into public.app_properties (key, value) values ('EDGE_NATIVE_ACTIONS',
+     'get_omad_data,get_omad_history,list_transactions,get_cafe_data,get_tasks,mini_home,mini_omad,mini_cafe,mini_tasks')
+   on conflict (key) do update set value = excluded.value, updated_at = now();
+   ```
+   Open the dashboard, the Mini App, the café and the tasks. In the browser's
+   network panel the answers carry `X-MBM-Runtime: edge`.
+5. **Every web action:** `EDGE_NATIVE_ACTIONS` = `*`. Sign-in, entries, café
+   sales, task changes. The bot and the timed jobs stay with Apps Script:
+   `*` does not include them.
+6. **The bot:** `*,telegram`; then Sozlamalar → Telegram, webhook URL =
+   `https://ksdqoftlxrkpyylbbyoi.supabase.co/functions/v1/api?forceFunctionRegion=us-east-1`,
+   and register it. The health check then says "Webhook Edge funksiyasiga
+   ulangan". (Pointing the webhook at the function while `telegram` is not
+   in the list is harmless: the function forwards the update.)
+7. **The timed jobs:** `*,telegram,jobs`. Apps Script's trigger stands down
+   from its next run ("skipped"); `mbm-telegram-jobs` does the work every
+   5 minutes. The health check's trigger row says "Edge funksiyasi bajaradi
+   (pg_cron)".
+8. **Measure** the screens that were timed before the switch, the same way,
+   and keep the figures in the Library.
+
+### Going back from the Edge function
+
+Fastest first. None of them loses an entry: whichever runtime answers, it
+writes to the same database.
+
+| What | How | Effect |
+|---|---|---|
+| One group | remove it from `EDGE_NATIVE_ACTIONS` | within 15 s Apps Script answers it again, through the function |
+| Everything | `EDGE_NATIVE_ACTIONS` = `''` | the function forwards every request |
+| The bot | register the webhook back to the `/exec` URL | Telegram calls Apps Script directly |
+| The timed jobs | remove `jobs` | Apps Script's trigger runs them again from its next run; the cron calls answer "skipped" |
+| The settings | Tizim → Supabase → **Sozlamalarni qaytarish** | the marker goes first, so the function stops answering; then the database copy is written back to Script Properties. If the database cannot delete the marker, nothing changes and the button says so: switching Apps Script alone would leave the function serving on other settings |
+| A broken function deploy | revert the commit on `main` | CI deploys the previous code. Meanwhile each browser that cannot get an answer from the function uses Apps Script directly for 5 minutes at a time |
+| The function altogether | revert the frontend's use of `assets/backend.js`, or roll Cloudflare back to an earlier deployment | browsers call Apps Script directly again |
+
+### Seeing what the timed calls did
+
+```sql
+select jobname, schedule, active from cron.job;
+select jobid, status, return_message, start_time from cron.job_run_details order by start_time desc limit 10;
+select id, status_code, left(content, 200) from net._http_response order by created desc limit 10;
+```
+
+### The daily copy, and restoring from it
+
+Supabase's free plan keeps no backup the owner can download, so Apps Script
+writes one into the owner's Google Drive every night at 03:00 Tashkent:
+`mbm-db-backup` → the function (`?job=db-backup`) → Apps Script
+(`run_database_backup` with the cron secret). **Tizim → Zaxira nusxa → Hozir Google
+Diskka saqlash** writes one at any time. The health check's "Kunlik zaxira"
+row warns after 36 hours without one and turns red after 60, or when the last
+one was not written whole.
+
+It works before the settings have moved: Apps Script reads the cron secret
+from `app_properties` directly. It needs steps 1–2 above (the merge, then
+the migrations and the rows).
+
+One copy is one moment: the tables are read under the script lock and the
+database lease, so no write lands between two of them. One run at a time: the
+button pressed while the nightly run is still writing answers "Zaxira hozir
+yozilmoqda" instead of mixing its tabs into the same file.
+
+Each spreadsheet has a **Zaxira** tab (when, and rows per table) and one tab per
+business table with the original spreadsheet's name, columns and values (text
+that starts with `=` or `'` is written with a leading `'`, so the cell holds
+the text, not a formula). Not in it: `Omad_Backups`, the Telegram debug log,
+and the settings — the bot token and password hashes do not belong in a
+spreadsheet. Apps Script keeps a copy of the settings in Script Properties,
+but once they are in the database that copy is written only by Apps Script:
+a setting the Edge function changed (a password, a Telegram setting) can be
+newer in the database than in the copy. The database holds the current
+values; the copy is a fallback, not a backup.
+
+Restoring has **not been rehearsed** on the live data; rehearse on the test
+project before relying on it. The two routes:
+
+- **Back to Sheets.** In the backup file, each table tab → *Copy to* →
+  *Existing spreadsheet* → the "Budgeting app" spreadsheet; there, delete the
+  old tab and rename the copy to the original name. Then **Tizim → Supabase →
+  Google Sheets'ga Qaytish**: the app runs from the restored spreadsheet.
+- **Into a new Supabase project.** In this order: first restore the tabs
+  into "Budgeting app" and go **back to Sheets** exactly as above (the import
+  only runs while `OMAD_STORAGE` is `sheets`, and the rollback is what brings
+  the settings back into Script Properties). Then create the new project,
+  apply every migration in order, put its URL and secret key into Script
+  Properties (`SUPABASE_URL`, `SUPABASE_SECRET_KEY`), and move the restored
+  spreadsheet into it from step 5 of
+  [Moving the data from Sheets](#moving-the-data-from-sheets-once). The live
+  project's tables are never emptied once a cutover has happened
+  (`reset_before_cutover.sql` refuses).
 
 ## Never "New deployment"
 
@@ -344,6 +562,10 @@ reintroduce it.
 | `clasp pull` fails to authorise | The refresh token was revoked, or the Apps Script API is off for that account. Re-run `clasp login` and update the secret. |
 | Drift or unsupported-file error | Somebody edited the live project by hand; see above. |
 | Two merges at once | The second queues behind the first — the `apps-script-production` concurrency group serialises them, and neither is cancelled. |
+| `edge deploy: the SUPABASE_ACCESS_TOKEN secret is not set` | The secret is missing or on the *Variables* tab. |
+| `edge deploy: supabase functions deploy failed` | The token was revoked or belongs to an account outside the organisation; or the bundle failed — the log above it names the file. |
+| `edge deploy: the deployed function does not answer as expected` | It deployed but does not boot or answer from the Edge runtime: Supabase → Edge Functions → `api` → Logs. Browsers fall back to Apps Script meanwhile. |
+| Every request goes straight to `script.google.com` | The function answered with a platform error or `unconfigured` (no `EDGE_APPS_SCRIPT_URL`), so each device skips it for 5 minutes. `GET …/functions/v1/api?probe=1` says what it sees. |
 
 The first step of the job prints a present/absent table for all three secrets —
 to the log and to the run's summary page — and reports **every** problem at

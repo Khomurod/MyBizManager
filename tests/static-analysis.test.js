@@ -359,6 +359,27 @@ test('every signed-in page loads the shared session module first', () => {
   }
 });
 
+test('every page that calls the backend chooses its server through assets/backend.js', () => {
+  // The Edge function first, Apps Script when it does not answer, and never a
+  // write sent twice: one file decides that for every page, so no page can
+  // call Apps Script around it or repeat a request on its own terms.
+  const pages = WEB_APP_PAGES.concat(['mini.html', 'login.html']);
+  for (const page of pages) {
+    const blocks = pageScripts(path.join(ROOT, page));
+    const at = blocks.findIndex(block => block.name === 'assets/backend.js');
+    assert.ok(at !== -1, `${page} does not load assets/backend.js`);
+    blocks.forEach((block, index) => {
+      if (block.name === 'assets/backend.js' || block.name === 'assets/session.js' || block.name === 'assets/ui.js') return;
+      assert.ok(index > at, `${page} runs ${block.name} before assets/backend.js`);
+      assert.ok(!/\bfetch\(\s*GOOGLE_APP_URL/.test(block.code), `${block.name} calls Apps Script directly`);
+    });
+  }
+  for (const file of ['assets/session.js', 'assets/mini/01-api.js', 'assets/tasks/01-tasks-api.js']) {
+    const source = fs.readFileSync(path.join(ROOT, file), 'utf8');
+    assert.ok(!/\bfetch\(/.test(source.replace(/\/\/.*$/gm, '')), `${file} calls fetch() itself instead of backendPost()`);
+  }
+});
+
 test('no signed-in page decides a permission for itself', () => {
   // The role in localStorage chooses which page renders and nothing else. A
   // page that branched on it for anything beyond that would be inviting the

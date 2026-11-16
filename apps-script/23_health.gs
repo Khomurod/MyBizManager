@@ -174,6 +174,7 @@ function buildHealthReport_(doc) {
   checks.push(ledgerCheck_(doc));
   checks.push(secretLoggingCheck_(doc));
   checks.push(storageCheck_());
+  checks.push(databaseBackupCheck_());
   // The ledger that is live, not the legacy sheet kept for rollback.
   checks.push(dataCheck_(doc, "omad", "Omad ma'lumotlari", activeTransactionSheetName_(doc)));
   checks.push(dataCheck_(doc, "cafe", "Kafe ma'lumotlari", "Cafe_Sales"));
@@ -233,9 +234,26 @@ function anonymousReadCheck_() {
  * deployment" mints a URL nothing calls, so the code looks deployed while the
  * app keeps running the old version. Comparing the two URLs catches it.
  */
+/** The Edge function's address (no query), when the data is in Supabase; "" otherwise. */
+function edgeFunctionUrl_() {
+  if (storageMode_() !== STORAGE_MODE_SUPABASE) return "";
+  var credentials = supabaseCredentials_();
+  return credentials.ok ? credentials.url + "/functions/v1/api" : "";
+}
+
 function deploymentCheck_() {
   var live = currentWebAppUrl_();
   var configured = stripWebhookSecret_(getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_URL) || "");
+  // Telegram may talk to the Edge function instead: it answers, or forwards
+  // to this deployment, so a new Apps Script deployment cannot strand it.
+  var edge = edgeFunctionUrl_();
+  if (configured && edge && configured.split("?")[0] === edge) {
+    if (configured.indexOf("forceFunctionRegion=") === -1) {
+      return check_("deployment", "Deployment", HEALTH_WARN,
+        "Webhook Edge funksiyasiga ulangan, lekin mintaqasiz (forceFunctionRegion=us-east-1 qo'shing)");
+    }
+    return check_("deployment", "Deployment", HEALTH_OK, "Webhook Edge funksiyasiga ulangan");
+  }
   if (!live) return check_("deployment", "Deployment", HEALTH_WARN, "Manzilni aniqlab bo'lmadi");
   if (!configured) return check_("deployment", "Deployment", HEALTH_WARN, "Webhook manzili saqlanmagan");
   if (live === configured) return check_("deployment", "Deployment", HEALTH_OK, "Webhook shu versiyaga ulangan");
@@ -309,6 +327,11 @@ function tasksGroupCheck_() {
  * report queue. Without it reminders never fire and reports never leave.
  */
 function triggerCheck_() {
+  // pg_cron calls the Edge function for them; the Apps Script trigger, if it
+  // is still there, stands down (processPendingTelegramJobs).
+  if (edgeServesGroup_("jobs")) {
+    return check_("trigger", "Trigger", HEALTH_OK, "Edge funksiyasi bajaradi (pg_cron)");
+  }
   var triggers;
   try {
     triggers = ScriptApp.getProjectTriggers() || [];

@@ -10,8 +10,72 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const { createSupabaseMock } = require('./supabase-mock');
+const { createTashkentDate } = require('../supabase/functions/api/lib/zoned-date.js');
+const edgeShims = require('../supabase/functions/api/lib/gas-shims.js');
 
 const SCRIPT_PATH = path.join(__dirname, '..', 'script.gs');
+
+// `MBM_RUNTIME=edge` (with MBM_STORAGE=supabase): every request a test sends
+// through doPost / doGet / the jobs is served the way the Supabase Edge
+// function serves it -- the generated runtime (scripts/edge-runtime.js) over
+// the Edge stand-ins for the Apps Script services, through the replay
+// executor. Everything else a test calls directly still runs in the sandbox,
+// against the same in-memory database.
+const EDGE_RUNTIME = process.env.MBM_RUNTIME === 'edge';
+const edgeExecutor = require('../supabase/functions/api/lib/executor.js');
+const edgeRouting = require('../supabase/functions/api/lib/routing.js');
+const { buildRuntimeSource, ENTRY_POINTS: EDGE_ENTRY_POINTS } = require('../scripts/edge-runtime');
+let edgeFactory = null;
+
+/** The runtime factory, built from the current script.gs once per process. */
+function edgeRuntimeFactory() {
+  if (!edgeFactory) {
+    const source = buildRuntimeSource(fs.readFileSync(SCRIPT_PATH, 'utf8'));
+    const holder = { exports: {} };
+    vm.runInThisContext('(function (module) {\n' + source + '\n})', { filename: 'runtime.js' })(holder);
+    edgeFactory = holder.exports;
+  }
+  return edgeFactory;
+}
+
+/** Script Properties that stay in Apps Script when the settings move to the database. */
+const LOCAL_PROPERTY_KEYS = new Set([
+  'OMAD_STORAGE', 'SUPABASE_URL', 'SUPABASE_SECRET_KEY', 'OMAD_STORAGE_IMPORT', 'OMAD_PROPERTIES_STORE'
+]);
+
+/**
+ * `gas.__properties` when the settings live in app_properties: reads and
+ * writes of a shared setting go to the database, so a test that seeds or
+ * inspects a property sees what the backend sees.
+ */
+function propertiesView(local, supabase) {
+  const shared = key => typeof key === 'string' && !LOCAL_PROPERTY_KEYS.has(key);
+  return new Proxy(local, {
+    get: (target, key) => {
+      if (!shared(key)) return target[key];
+      const map = supabase.properties();
+      return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : undefined;
+    },
+    set: (target, key, value) => {
+      if (shared(key)) supabase.setProperty(key, value);
+      else target[key] = value;
+      return true;
+    },
+    deleteProperty: (target, key) => {
+      if (shared(key)) supabase.setProperty(key, undefined);
+      else delete target[key];
+      return true;
+    },
+    has: (target, key) => (shared(key) ? Object.prototype.hasOwnProperty.call(supabase.properties(), key) : key in target),
+    ownKeys: target => Array.from(new Set(Object.keys(target).filter(k => !shared(k)).concat(Object.keys(supabase.properties())))),
+    getOwnPropertyDescriptor: (target, key) => {
+      if (!shared(key)) return Object.getOwnPropertyDescriptor(target, key);
+      const map = supabase.properties();
+      if (!Object.prototype.hasOwnProperty.call(map, key)) return undefined;
+      return { value: map[key], writable: true, enumerable: true, configurable: true };
+    }
+  });
+}
 
 /**
  * Reproduces how Google Sheets rewrites text as it is written into a cell.
@@ -54,19 +118,29 @@ function coerceLikeSheets(value, format) {
   return value;
 }
 
-function createSheet(name, rows, coerce) {
+function createSheet(name, rows, coerce, strictGrid) {
   const data = rows ? rows.map(r => r.slice()) : [];
   const formats = {};
   const formatKey = (row, col) => `${row},${col}`;
   const apply = (value, row, col) =>
     (coerce ? coerceLikeSheets(value, formats[formatKey(row, col)]) : value);
 
+  // A new tab's grid, as Sheets makes it: with strictGrid (the spreadsheets
+  // the script creates in Drive) a range outside it is an error. The bound
+  // spreadsheet's tabs grew with appendRow long before these tests existed.
+  let maxRows = Math.max(1000, data.length);
+  let maxColumns = Math.max(26, data.reduce((width, row) => Math.max(width, row.length), 0));
   const sheet = {
     name,
     data,
     formats,
     getName: () => name,
     getLastRow: () => data.length,
+    getMaxRows: () => maxRows,
+    getMaxColumns: () => maxColumns,
+    insertRowsAfter(after, howMany) { maxRows += howMany; },
+    insertColumnsAfter(after, howMany) { maxColumns += howMany; },
+    clearContents() { data.length = 0; },
     appendRow(row) {
       const target = data.length + 1;
       data.push(row.map((value, index) => apply(value, target, index + 1)));
@@ -79,6 +153,10 @@ function createSheet(name, rows, coerce) {
     getRange(row, col, numRows, numCols) {
       const rowCount = numRows === undefined ? 1 : numRows;
       const colCount = numCols === undefined ? 1 : numCols;
+      // appendRow grows the grid, as it does in Sheets; a range never does.
+      if (strictGrid && (row - 1 + rowCount > Math.max(maxRows, data.length) || col - 1 + colCount > maxColumns)) {
+        throw new Error('Exception: The coordinates of the range are outside the dimensions of the sheet.');
+      }
       return {
         getValues() {
           const out = [];
@@ -108,6 +186,12 @@ function createSheet(name, rows, coerce) {
           }
           return this;
         },
+        setNumberFormats(grid) {
+          for (let i = 0; i < grid.length; i++) {
+            for (let j = 0; j < grid[i].length; j++) formats[formatKey(row + i, col + j)] = grid[i][j];
+          }
+          return this;
+        },
         clearContent() {
           for (let i = 0; i < rowCount; i++) {
             const target = data[row - 1 + i];
@@ -121,18 +205,26 @@ function createSheet(name, rows, coerce) {
   return sheet;
 }
 
-function createSpreadsheet(initialSheets, coerce) {
+let spreadsheetIds = 0;
+
+function createSpreadsheet(initialSheets, coerce, strictGrid) {
   const sheets = {};
   Object.keys(initialSheets || {}).forEach(name => {
-    sheets[name] = createSheet(name, initialSheets[name], coerce);
+    sheets[name] = createSheet(name, initialSheets[name], coerce, strictGrid);
   });
+  const id = 'sheet-id-' + (++spreadsheetIds);
   return {
     sheets,
+    getId: () => id,
+    deleteSheet(sheet) {
+      if (Object.keys(sheets).length < 2) throw new Error('Exception: You can\'t remove all the sheets in a document.');
+      delete sheets[sheet.getName()];
+    },
     getSheetByName: name => sheets[name] || null,
     // Insertion order, as the real Spreadsheet returns tabs left to right.
     getSheets: () => Object.keys(sheets).map(name => sheets[name]),
     insertSheet(name) {
-      sheets[name] = createSheet(name, [], coerce);
+      sheets[name] = createSheet(name, [], coerce, strictGrid);
       return sheets[name];
     }
   };
@@ -161,7 +253,22 @@ function loadScript(options = {}) {
     if (properties.SUPABASE_URL === undefined) properties.SUPABASE_URL = supabase.url;
     if (properties.SUPABASE_SECRET_KEY === undefined) properties.SUPABASE_SECRET_KEY = supabase.key;
   }
+  // On Supabase the settings live in app_properties (03_settings.gs), as they
+  // do in production once they have been moved there; `propertiesInDatabase:
+  // false` is the state before that move.
+  const sharedInDatabase = !!supabase && storage === 'supabase' && options.propertiesInDatabase !== false;
+  if (sharedInDatabase) {
+    if (properties.OMAD_PROPERTIES_STORE === undefined) properties.OMAD_PROPERTIES_STORE = 'supabase';
+    Object.keys(properties).forEach(key => {
+      if (LOCAL_PROPERTY_KEYS.has(key)) return;
+      supabase.setProperty(key, properties[key]);
+      delete properties[key];
+    });
+    supabase.setProperty('__PROPERTIES_READY', new Date().toISOString());
+  }
   const spreadsheet = createSpreadsheet(options.sheets || {}, options.coerceLikeSheets === true);
+  const drive = {};
+  const triggers = (options.triggers || []).slice();
   const cacheStore = Object.assign({}, options.cache || {});
   const fetchCalls = [];
   const sentMessages = [];
@@ -180,7 +287,11 @@ function loadScript(options = {}) {
   const sandbox = {
     console,
     JSON,
-    Date,
+    // Apps Script's local time zone is the script's own, Asia/Tashkent, not
+    // the host's: `new Date().getDate()` is the day in Tashkent there. The
+    // Edge runtime uses this same class, so the tests run on the clock the
+    // backend actually has, whatever TZ the machine running them is in.
+    Date: createTashkentDate(Date),
     Math,
     Number,
     String,
@@ -202,12 +313,32 @@ function loadScript(options = {}) {
       getScriptProperties: () => ({
         getProperty: key => (Object.prototype.hasOwnProperty.call(properties, key) ? properties[key] : null),
         setProperty: (key, value) => { properties[key] = String(value); },
-        deleteProperty: key => { delete properties[key]; }
+        deleteProperty: key => { delete properties[key]; },
+        getProperties: () => Object.assign({}, properties),
+        setProperties: (values, deleteAllOthers) => {
+          if (deleteAllOthers) Object.keys(properties).forEach(key => { delete properties[key]; });
+          Object.keys(values || {}).forEach(key => { properties[key] = String(values[key]); });
+        }
       })
     },
 
+    // Spreadsheets the script made in Drive (the daily database copy), by id.
+    // They type text the way the live spreadsheet does, so a test sees what a
+    // cell written without a text format would have become.
+    __drive: drive,
+
     SpreadsheetApp: {
-      getActiveSpreadsheet: () => spreadsheet
+      getActiveSpreadsheet: () => spreadsheet,
+      create(title) {
+        const file = createSpreadsheet({ Sheet1: [] }, true, true);
+        file.title = title;
+        drive[file.getId()] = file;
+        return file;
+      },
+      openById(id) {
+        if (!drive[id]) throw new Error('Exception: Unexpected error while getting the method or property openById on object SpreadsheetApp.');
+        return drive[id];
+      }
     },
 
     CacheService: {
@@ -242,25 +373,13 @@ function loadScript(options = {}) {
     },
 
     Utilities: {
-      // Apps Script substitutes the pattern tokens; this used to recognise one
-      // literal pattern and return dd/MM/yyyy for everything else, so code
-      // asking for "yyyy-MM-dd" was tested against a string it can never
-      // receive in production -- and a café month key sliced out of it was
-      // "12/08/2".
-      formatDate: (date, tz, format) => {
-        const value = date instanceof Date ? date : new Date(date);
-        const pad = n => String(n).padStart(2, '0');
-        const tokens = {
-          yyyy: String(value.getFullYear()),
-          MM: pad(value.getMonth() + 1),
-          dd: pad(value.getDate()),
-          HH: pad(value.getHours()),
-          mm: pad(value.getMinutes()),
-          ss: pad(value.getSeconds())
-        };
-        return String(format || 'dd/MM/yyyy')
-          .replace(/yyyy|MM|dd|HH|mm|ss/g, match => tokens[match]);
-      },
+      // Apps Script substitutes the pattern tokens *in the zone it is given*.
+      // This mock once recognised one literal pattern and returned dd/MM/yyyy
+      // for everything else, and later ignored the zone and used the host's
+      // local getters -- so a date the code formatted for Tashkent was tested
+      // as whatever the CI machine's day was. It is now the Edge runtime's own
+      // implementation (supabase/functions/api/lib/gas-shims.js).
+      formatDate: (date, tz, format) => edgeShims.formatDate(date, tz, format || 'dd/MM/yyyy'),
       getUuid: () => {
         uuidCounter += 1;
         return `00000000-0000-4000-8000-${String(uuidCounter).padStart(12, '0')}`;
@@ -292,9 +411,19 @@ function loadScript(options = {}) {
       // The deployment the request is being served by, which is what the
       // health check compares the configured webhook URL against.
       getService: () => ({ getUrl: () => options.webAppUrl || '' }),
-      getProjectTriggers: () => (options.triggers || []).map(name => ({
+      getProjectTriggers: () => triggers.map(name => ({
         getHandlerFunction: () => name
-      }))
+      })),
+      newTrigger: name => {
+        const builder = {
+          timeBased: () => builder,
+          everyDays: () => builder,
+          everyMinutes: () => builder,
+          atHour: () => builder,
+          create: () => { triggers.push(name); return { getHandlerFunction: () => name }; }
+        };
+        return builder;
+      }
     },
 
     ContentService: {
@@ -317,6 +446,8 @@ function loadScript(options = {}) {
 
   if (supabase && storage === 'supabase') seedSupabase(sandbox, spreadsheet, supabase);
   else if (supabase) sandbox.__supabase = supabase;
+  if ((EDGE_RUNTIME || options.edgeRuntime) && sharedInDatabase) installEdgeRuntime(sandbox, supabase, cacheStore, options);
+  if (sharedInDatabase) sandbox.__properties = propertiesView(properties, supabase);
 
   return sandbox;
 }
@@ -341,8 +472,25 @@ function seedSupabase(sandbox, spreadsheet, supabase) {
   // storage layer hands out only strings, numbers and booleans, so a JSON copy
   // is exact.
   const outer = value => JSON.parse(JSON.stringify(value));
+  // A write made here lands through a document of its own, the way a separate
+  // request's would. Whatever document the backend had memoised (a read it did
+  // a moment ago, a revision bump that read the settings) belongs to the
+  // request before it, so it is dropped -- otherwise its cached rows would
+  // hide the write from the next call, which in production is a new request.
+  const WRITES = new Set(['appendRow', 'deleteRow', 'deleteRows', 'setConfigValue',
+    'setValue', 'setValues', 'clear', 'clearContent']);
+  const afterWrite = result => {
+    const lease = sandbox.STORAGE_LEASE_;
+    if (sandbox.APP_DOC_MEMO_ && (!lease || !lease.depth)) sandbox.resetStorageMemos_();
+    return result;
+  };
+  const writing = (target, prop) => (...args) => afterWrite(target[prop](...args));
   const wrapRange = range => new Proxy(range, {
-    get: (target, prop) => (prop === 'getValues' ? () => outer(target.getValues()) : target[prop])
+    get: (target, prop) => {
+      if (prop === 'getValues') return () => outer(target.getValues());
+      if (WRITES.has(prop) && typeof target[prop] === 'function') return writing(target, prop);
+      return target[prop];
+    }
   });
   // A test that patches a method on a sheet it inspects is instrumenting the
   // spreadsheet, which the backend no longer uses; the patch lands on the
@@ -359,6 +507,7 @@ function seedSupabase(sandbox, spreadsheet, supabase) {
         if (Object.prototype.hasOwnProperty.call(patched, prop)) return patched[prop];
         if (Object.prototype.hasOwnProperty.call(own, prop)) return own[prop];
         if (prop === 'data') return outer(target.data);
+        if (WRITES.has(prop) && typeof target[prop] === 'function') return writing(target, prop);
         return target[prop];
       },
       set: (target, prop, value) => { patched[prop] = value; return true; }
@@ -392,6 +541,121 @@ function seedSupabase(sandbox, spreadsheet, supabase) {
 }
 
 /** Parses the JSON body of a jsonOutput_ result. */
+/**
+ * Serves the entry points through the Edge runtime (see EDGE_RUNTIME).
+ *
+ * The database is the same in-memory one; requests to app_cache are answered
+ * from the harness's cache store, so a test that seeds or reads `gas.__cache`
+ * sees what the Edge runtime's CacheService sees. Outbound calls (Telegram)
+ * go through the sandbox's UrlFetchApp, so they are recorded as before.
+ *
+ * A test that replaces a backend function in the sandbox is instrumenting the
+ * sandbox's copy, which the runtime does not have; while any is replaced, the
+ * entry points run in the sandbox as they always did.
+ */
+function installEdgeRuntime(sandbox, supabase, cacheStore, options) {
+  const factory = edgeRuntimeFactory();
+  const snapshot = new Map();
+  for (const name of Object.keys(sandbox)) {
+    if (typeof sandbox[name] === 'function') snapshot.set(name, sandbox[name]);
+  }
+  const instrumented = () => {
+    for (const [name, fn] of snapshot) {
+      if (!EDGE_ENTRY_POINTS.includes(name) && sandbox[name] !== fn) return true;
+    }
+    return false;
+  };
+
+  const answer = response => ({
+    code: response.getResponseCode(),
+    text: String(response.getContentText() || ''),
+    headers: typeof response.getHeaders === 'function' ? (response.getHeaders() || {}) : {}
+  });
+  const cacheAnswer = request => {
+    const parsed = new URL(request.url);
+    const keyFilter = parsed.searchParams.get('key');
+    const key = keyFilter ? decodeURIComponent(keyFilter.replace(/^eq\./, '')) : '';
+    if (request.method === 'get') {
+      const has = Object.prototype.hasOwnProperty.call(cacheStore, key);
+      return { code: 200, headers: {}, text: JSON.stringify(has ? [{ value: cacheStore[key], expires_at: '2999-01-01T00:00:00.000Z' }] : []) };
+    }
+    if (request.method === 'post') {
+      JSON.parse(request.body).forEach(row => { cacheStore[row.key] = row.value; });
+      return { code: 201, headers: {}, text: '' };
+    }
+    if (request.method === 'delete') {
+      delete cacheStore[key];
+      return { code: 204, headers: {}, text: '' };
+    }
+    return { code: 405, headers: {}, text: '' };
+  };
+  const one = request => {
+    if (supabase.owns(request.url) && new URL(request.url).pathname === '/rest/v1/app_cache') return cacheAnswer(request);
+    const params = {
+      method: request.method,
+      headers: request.headers,
+      muteHttpExceptions: true
+    };
+    if (request.body !== null) {
+      params.payload = request.body;
+      if (request.headers['Content-Type']) params.contentType = request.headers['Content-Type'];
+    }
+    try {
+      return answer(sandbox.UrlFetchApp.fetch(request.url, params));
+    } catch (error) {
+      return { transportError: String(error && error.message || error) };
+    }
+  };
+  const perform = work => {
+    if (work.kind === 'fetchAll') {
+      if (work.requests.every(r => supabase.owns(r.url))) return supabase.parallel(() => work.requests.map(one));
+      return work.requests.map(one);
+    }
+    return one(work.request);
+  };
+  const env = {
+    supabaseUrl: supabase.url,
+    supabaseKey: supabase.key,
+    publicUrl: options.webAppUrl || '',
+    console,
+    randomUuid: () => sandbox.Utilities.getUuid()
+  };
+
+  for (const name of EDGE_ENTRY_POINTS) {
+    const inSandbox = sandbox[name];
+    sandbox[name] = function (event) {
+      if (instrumented()) return inSandbox.apply(this, arguments);
+      // What the Edge function always forwards to Apps Script runs where Apps
+      // Script would run it.
+      if (name === 'doPost' && edgeRouting.routePost(event && event.postData && event.postData.contents,
+        { ready: true, allow: '*,telegram,jobs' }) !== 'edge') return inSandbox.apply(this, arguments);
+      // Whatever the sandbox had memoised belongs to the request before.
+      sandbox.resetRequestMemos_();
+      const tape = edgeExecutor.createTape();
+      let step;
+      try {
+        step = edgeExecutor.runSync({
+          tape,
+          makeGlobals: ctx => edgeShims.createEdgeGlobals(ctx, env),
+          invoke: G => factory(G)[name](event),
+          perform,
+          performDeferred: requests => requests.forEach(perform)
+        });
+      } finally {
+        // As index.ts does: a lease a failed run kept is handed back.
+        edgeExecutor.leasesLeftHeld(tape).forEach(owner => supabase.handle(supabase.url + '/rest/v1/rpc/mbm_unlock', {
+          method: 'post', headers: { apikey: supabase.key, 'Content-Type': 'application/json' },
+          payload: JSON.stringify({ p_owner: owner })
+        }));
+      }
+      sandbox.__edgeRuns = (sandbox.__edgeRuns || 0) + 1;
+      if ('error' in step && step.error !== undefined) throw step.error;
+      return step.result;
+    };
+    snapshot.set(name, sandbox[name]);
+  }
+}
+
 function readJsonOutput(output) {
   return JSON.parse(output.__text);
 }
@@ -470,6 +734,7 @@ function supabaseRoundTrips(gas, run) {
 }
 
 module.exports = {
+  EDGE_RUNTIME,
   sheetsOnly, SUPABASE_RUN, supabaseInsertSizes, supabaseRoundTrips,
   loadScript, readJsonOutput, postEvent, createSpreadsheet, todayKey, currentPeriodKey
 };

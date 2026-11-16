@@ -61,7 +61,7 @@ async function tasksApiCall(payload) {
         const token = sessionToken();
         if (token) body.sessionToken = token;
     }
-    const res = await fetch(GOOGLE_APP_URL.trim(), { method: 'POST', body: JSON.stringify(body) });
+    const res = await backendPost(GOOGLE_APP_URL, JSON.stringify(body));
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const text = await res.text();
     try {

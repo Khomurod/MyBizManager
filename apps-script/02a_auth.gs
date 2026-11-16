@@ -110,7 +110,9 @@ var AUTHENTICATED_REQUEST_LIMIT = 120;
 // --------------------------------------------------------------- user records
 
 function readAuthUsers_() {
-  var stored = safeParseJSON_(getTelegramSetting_(OMAD_PROP_USERS), null);
+  // authSetting_: an unreadable database is an error here, never "no users",
+  // which would open the first-run session.
+  var stored = safeParseJSON_(authSetting_(OMAD_PROP_USERS), null);
   return stored && typeof stored === "object" ? stored : {};
 }
 
@@ -221,7 +223,7 @@ function verifyUserPassword_(username, password) {
 // -------------------------------------------------------------- session tokens
 
 function sessionSecret_() {
-  var existing = getTelegramSetting_(OMAD_PROP_SESSION_SECRET);
+  var existing = authSetting_(OMAD_PROP_SESSION_SECRET);
   if (existing) return existing;
   var generated = (Utilities.getUuid() + Utilities.getUuid()).split("-").join("");
   setTelegramSetting_(OMAD_PROP_SESSION_SECRET, generated);

@@ -73,23 +73,50 @@ deliberately small and simple.
 ## 3. Shape of the system
 
 ```
-Cloudflare Pages (static HTML/JS)         Google Apps Script web app        Google Sheets — or — Supabase
-  login.html                                 doPost  (everything)             (OMAD_STORAGE picks one;
-                                             appDoc_() opens the store         same tables either way)
-                                                                              System_Config
-  omad_admin.html + assets/omad/*      ──▶   doGet   (inert banner)     ──▶   Omad_Transactions_V2
-  cafe_admin.html, cafe_pos.html                                              Omad_Transactions (legacy)
-  tasks.html + assets/tasks/*                                                 Cafe_Sales, Cafe_Kun_Yakuni
-  mini.html + assets/mini/*  (Telegram Mini App)                              Tasks, Task_Occurrences
-  assets/session.js  (shared session/transport)  ▲                            Omad_Job_Queue, backups, logs
-  assets/ui.js       (uiIcon helper)             │
-  assets/css/app.css (generated Tailwind build)  │
-  assets/icons/lucide.svg (generated sprite)     │
-                          Telegram Bot API ──────┘  (webhook + outbound sends)
+Cloudflare Pages (static HTML/JS)       Supabase Edge function `api`        Google Sheets — or — Supabase
+  login.html                              (us-east-1, next to the data)       (OMAD_STORAGE picks one;
+  omad_admin.html + assets/omad/*   ──▶   the same backend (script.gs),  ──▶    same tables either way)
+  cafe_admin.html, cafe_pos.html          answering what app_properties          System_Config
+  tasks.html + assets/tasks/*             allows; forwarding the rest            Omad_Transactions_V2
+  mini.html + assets/mini/*                        │                             Omad_Transactions (legacy)
+  assets/backend.js (Edge first,                   ▼                             Cafe_Sales, Cafe_Kun_Yakuni
+    Apps Script when it is not there) ──▶  Google Apps Script web app      ──▶   Tasks, Task_Occurrences
+  assets/session.js  (session/transport)    doPost (everything)                  Omad_Job_Queue, backups, logs
+  assets/ui.js, assets/css/app.css,         doGet  (inert banner)                app_properties, app_lease,
+  assets/icons/lucide.svg                   appDoc_() opens the store            app_cache (shared state)
+                                                   ▲
+                          Telegram Bot API ────────┘  (webhook → Apps Script, or → Edge; outbound sends)
+                          pg_cron (in the database) → Edge: the 5-minute job, the nightly Drive copy
 ```
 
-- **`assets/session.js` is loaded first by every web page.** It owns what being
-  signed in means, what a failed request means, and the per-screen snapshot.
+- **The backend runs in two places, as one program.** The Supabase Edge
+  function `api` (`supabase/functions/api/`) runs `script.gs` itself —
+  generated into `runtime.js` byte for byte, behind stand-ins for the Apps
+  Script services (`lib/gas-shims.js`) and a replay executor that turns the
+  backend's synchronous `UrlFetchApp` calls into real asynchronous ones
+  (`lib/executor.js`). Nothing is translated or rewritten, so every business
+  rule is the same code in both runtimes. **What the Edge function answers
+  itself is decided by rows in `app_properties`** (`lib/routing.js`): nothing
+  until `__PROPERTIES_READY` exists (written last by
+  `move_properties_to_database`), then the actions named in
+  `EDGE_NATIVE_ACTIONS` (`*` for every web action, action names, `telegram`,
+  `jobs` — `*` never includes the last two, each is switched by name); everything
+  else, and always the actions that need Apps Script itself (`APPS_SCRIPT_ONLY`:
+  the store moves, the ledger migration, the health check, the Drive copy), it
+  forwards to Apps Script at `EDGE_APPS_SCRIPT_URL` unchanged. Switching a
+  group of actions over, or back, is editing one row.
+- **The browser asks the Edge function first** (`assets/backend.js`, loaded
+  by every page): it falls back to Apps Script when the function cannot be
+  reached or the platform answers instead of it (an error status without the
+  `X-MBM-Runtime` header), and then uses Apps Script on that device for five
+  minutes. A request is repeated only when repeating it cannot do anything
+  twice — a read, or a write with a `requestId` — and any other write goes to
+  the Edge function only after it has answered on that tab.
+
+- **`assets/session.js` is loaded first by every web page,** then
+  `assets/backend.js` (the transport: which server to ask). The session file
+  owns what being signed in means, what a failed request means, and the
+  per-screen snapshot.
   Four screens behaving differently about any of those is what caused the café
   incident.
 - **`assets/css/app.css` is generated and committed.** The pages used to load
@@ -174,6 +201,16 @@ Cloudflare Pages (static HTML/JS)         Google Apps Script web app        Goog
 | `23_health.gs` | Mini App configuration via Bot API, and the system health check |
 | `24_supabase_store.gs` | `appDoc_()` and the store switch; the Supabase stand-in for the spreadsheet (sheet → table mapping, value conversion, paging) |
 | `25_supabase_import.gs` | The move from Sheets: preview / copy + verify + switch / verify / rollback |
+| `26_property_store.gs` | Where the settings live: move Script Properties into `app_properties` (verified, ready marker last) and back; the Edge function's own `EDGE_*` rows stay in the database; `edgeServesGroup_` |
+| `27_database_backup.gs` | The nightly copy of the business tables into Google Sheets files in Drive (7 weekday + 12 monthly slots), and its health check |
+
+The Edge function (`supabase/functions/api/`, TypeScript/modern JS, not ES5):
+`index.ts` (HTTP, CORS, forwarding, the cron jobs, `?probe=1`),
+`lib/routing.js` (who answers), `lib/executor.js` (the replay executor),
+`lib/gas-shims.js` (the Apps Script services), `lib/zoned-date.js` (Tashkent
+`Date`), `lib/sha256.js` (synchronous HMAC); `runtime.js` is generated by
+`npm run build` and not committed. `scripts/edge-runtime.js` builds it;
+`scripts/edge-deploy.js` deploys it from CI.
 
 ## 4. Main features and workflows
 
@@ -271,6 +308,15 @@ them.
 accepted as `omad_admin` wherever a session would be, so maintenance and
 migration still work against a project whose user store is not set up. No
 normal user needs to know it, no page asks for it, and no browser stores it.
+
+**Sign-in fails closed when the settings cannot be read.** Once the settings
+are in the database, `OMAD_USERS`, `OMAD_SESSION_SECRET` and
+`TELEGRAM_WEBHOOK_SECRET` are never answered from Apps Script's Script
+Properties copy (which can be older than the database) and never read as
+"not set" while the database is unreachable: the sign-in, the session and the
+webhook are refused instead, no first-run session opens, and no secret is
+made anew. `OMAD_ADMIN_KEY` keeps its fallback to the copy, which nothing in
+the application changes (`AUTH_PROPERTY_KEYS`, `03_settings.gs`).
 
 ### The three web roles are enforced on the server
 
@@ -677,8 +723,32 @@ during rotation), `TELEGRAM_WEBHOOK_ROTATED_AT`, `TELEGRAM_AUTHORIZED_USER_ID`,
 `TELEGRAM_GROUP_CHAT_ID`, `TELEGRAM_TASKS_GROUP_CHAT_ID`,
 `TELEGRAM_WEBHOOK_URL`, `TELEGRAM_WEBHOOK_STATUS`, `TELEGRAM_LAST_SUCCESS`,
 `TELEGRAM_LAST_ERROR`, `OMAD_STORAGE`, `SUPABASE_URL`, `SUPABASE_SECRET_KEY`*,
-`OMAD_STORAGE_IMPORT` (the last move's timestamps and result) (`*` = secret).
-They are project state, not code — the deploy never touches them.
+`OMAD_STORAGE_IMPORT` (the last move's timestamps and result),
+`DB_BACKUP_FILES` / `DB_BACKUP_STATUS` (the Drive copy's file ids and last
+run) (`*` = secret). They are project state, not code — the deploy never
+touches them.
+
+**Where the settings live** (`26_property_store.gs`, `03_settings.gs`): in
+Script Properties, or — after `move_properties_to_database` (Tizim → Supabase
+card → "Sozlamalarni bazaga"; "Sozlamalarni qaytarish" is the way back) — in the
+`app_properties` table, where the Edge function reads the same users, session
+secret, bot token and cache revisions. Once moved, the table is authoritative
+and Apps Script keeps writing a copy of every change into its own Script
+Properties (what it falls back to if the database cannot be read — never for
+the sign-in settings, see §5 — and what `move_properties_to_script` starts
+from). That copy can be older than the database: a change the Edge function
+made is only in the table. The move back deletes the marker first and changes
+nothing if it cannot. Four keys never move, because they
+say where the database is: `OMAD_STORAGE`, `SUPABASE_URL`,
+`SUPABASE_SECRET_KEY`, `OMAD_PROPERTIES_STORE`. Rows only the database holds,
+which a move in either direction leaves alone: `__PROPERTIES_READY` (the
+marker) and the Edge function's switches — `EDGE_NATIVE_ACTIONS`,
+`EDGE_APPS_SCRIPT_URL`, `EDGE_CRON_SECRET`*, `EDGE_FUNCTION_URL`. The script
+lock is the `app_lease` row (`mbm_lock` / `mbm_unlock`, released inside the
+same `mbm_apply` as the writes it guarded, which also carries a `fence` op: a
+batch whose writer no longer holds the lease is refused whole), and the CacheService entries both
+runtimes must agree on (the `/yangi` conversation, rate limits) are
+`app_cache` rows; display summaries are never cached by the Edge function.
 
 ## 8. Integrations
 
@@ -689,7 +759,10 @@ They are project state, not code — the deploy never touches them.
 | **Google Apps Script** web app `/exec` | the entire backend; one deployment id, never recreated |
 | **Telegram Bot API** | `/yangi` entry, task cards and reminders, group reports, the Mini App menu button and its `initData` signature |
 | **Cloudflare Pages** (`mybizmanager.pages.dev`) | serves the static frontend from `main`, no build step; serves `/mini` and `/tasks` as clean paths with no config |
-| **GitHub Actions + clasp** | the backend deployment pipeline |
+| **Supabase Edge Functions** (function `api`, same project, pinned to us-east-1 by `?forceFunctionRegion=us-east-1`; test project `mybizmanager-staging`, `uzpfgnjxvmrzwvocuiaf`) | the front door for every request from the pages; answers what `EDGE_NATIVE_ACTIONS` allows and forwards the rest to Apps Script |
+| **pg_cron + pg_net** (in the database, `20261116130000_edge_cron.sql`) | call the Edge function every 5 minutes (the timed jobs) and nightly (the Drive copy) |
+| **Google Drive** (spreadsheets the script creates) | the nightly copy of the database, `MyBizManager zaxira — …` |
+| **GitHub Actions + clasp + Supabase CLI** | the backend deployment pipeline: Apps Script from `main`; the Edge function to the test project from a branch on request, to production from `main` |
 
 **Netlify is not one of them.** The repository carries no Netlify
 configuration and `tests/static-analysis.test.js` keeps it that way. The old
@@ -712,9 +785,31 @@ composes the message from data it already stored.
 
 - **One time-driven trigger: `processPendingTelegramJobs`, every 5 minutes.** It
   runs the task scheduler first (so a reminder coming due now is enqueued and
-  sent in the same tick) and then drains `Omad_Job_Queue`. The scan is wrapped
-  in a `try` because this queue also carries financial reports. **No second
-  trigger is needed**; `processTaskSchedules` remains a safe manual entry point.
+  sent in the same tick) and then drains `Omad_Job_Queue` (`runTimedJobs_`).
+  The scan is wrapped in a `try` because this queue also carries financial
+  reports. **No second trigger is needed**; `processTaskSchedules` remains a
+  safe manual entry point. **Once `EDGE_NATIVE_ACTIONS` names `jobs`** (and the
+  ready marker exists, and so do `EDGE_FUNCTION_URL` and `EDGE_CRON_SECRET`), the trigger stands down and pg_cron's call to the Edge
+  function (`?job=telegram-jobs`) runs the same `runTimedJobs_` there; taking
+  `jobs` out of the list hands them back with the trigger still in place.
+  While `app_properties` cannot be read, either job call answers `503`
+  (`settings unreadable`) and does nothing; the next tick tries again.
+- **The nightly copy into Google Drive** (`27_database_backup.gs`): pg_cron at
+  22:00 UTC (03:00 Tashkent) calls the Edge function (`?job=db-backup`), which
+  passes it to Apps Script as `run_database_backup` with the cron secret
+  (`EDGE_CRON_SECRET`, which Apps Script reads from `app_properties` directly
+  while the other settings are still in Script Properties, so the copy runs
+  from the first night after the migrations and rows are in). Each
+  business table becomes one tab of a Google spreadsheet, in exactly the
+  original sheet layout (text cells written as plain text, so nothing is
+  re-typed as a date, and text starting with `=` kept as text, not a
+  formula), in a rotation of seven weekday files and twelve monthly ones (on
+  the 1st), each overwritten in turn. The tables are read under the script
+  lock, so one copy is one moment, and one run at a time
+  (`DB_BACKUP_RUNNING`). Not copied: the settings (secrets do not belong in a
+  spreadsheet; Script Properties hold a copy that can lag the database),
+  `Omad_Backups` and the Telegram debug logs. The health check
+  shows the last run; the Tizim panel's "Hozir Google Diskka saqlash" runs one.
 - **Every Telegram send is a queued job**, so an outage degrades to "the report
   is late", never "the money is wrong". Jobs are claimed under the script lock,
   retried with exponential backoff from ~30s, and give up after
@@ -834,7 +929,12 @@ composes the message from data it already stored.
 | an icon on any page | run `npm run build:icons` (needs `lucide-static`) and commit `assets/icons/lucide.svg`; `tests/ui-parity.test.js` fails on a name the sprite lacks |
 | an element id or a control's handler on a page | `tests/ui-parity.test.js` holds every id and handler the pages had before the redesign; removing one on purpose means removing it from `tests/fixtures/ui-parity-baseline.json` in the same change |
 | a test selector | select by what a person sees (a label, `aria-label`, an id), not by a styling class; the redesign had to rewrite every test that matched a colour class or an emoji |
-| anything a web page loads | it must come after `assets/session.js`, which owns the session and the transport |
+| anything a web page loads | it must come after `assets/session.js`, which owns the session, and `assets/backend.js`, which chooses the server; no page calls `fetch` on the backend itself (`tests/static-analysis.test.js`) |
+| a new action that needs Apps Script itself (SpreadsheetApp, ScriptApp, its Script Properties) | add it to `APPS_SCRIPT_ONLY` in `supabase/functions/api/lib/routing.js`, or the Edge function will try to run it |
+| a new read action, or a write without a `requestId` | `assets/backend.js` repeats on Apps Script only `get_*`/`list_*`, the named repeatable reads and writes with a `requestId`; a new read named otherwise is simply not repeated |
+| `edgeServesGroup_` (`26_property_store.gs`) or `jobsRunHere` (`lib/routing.js`) | they read the same switches from opposite sides — change both, or both runtimes run the jobs (or neither) |
+| a new Apps Script service, or one used in a new way | `supabase/functions/api/lib/gas-shims.js` must provide it, and `scripts/edge-runtime.js` names the services the runtime receives |
+| a new top-level `var` that a request changes | fine in both runtimes (each Edge request gets a fresh copy of `script.gs`); an undeclared assignment fails in the Edge runtime, which is strict |
 | the Mini App's Tasks tab | `tests/miniapp-tasks-parity.e2e.js` — it drives the real UI, which is the only thing that can catch a capability the API has and the screen does not |
 | a queued Telegram job's send/persist order | `tests/task-telegram-races.test.js` — stale overwrites, duplicate deliveries and obsolete announcements all live in that gap |
 | `assets/omad/12-app.js`'s `submitViaLedger` | it **overrides** the same-named function in `08-entry.js`; editing only `08-entry.js` changes nothing at runtime |
@@ -986,6 +1086,29 @@ composes the message from data it already stored.
     request sends. New styling goes into the `.ui-*` components rather than
     one-off utility piles, and a new screen uses them.
 
+20. **The Edge function runs the Apps Script code, not a port of it.**
+    `runtime.js` is `script.gs` wrapped, byte for byte; the business rules
+    exist once. The replay executor (`lib/executor.js`) runs the backend
+    synchronously, records every outside call (database, Telegram), performs
+    it for real and runs the request again from the start with the answers
+    recorded so far — so a call happens exactly once, and a run that asks for
+    something different the second time (a divergence) is stopped, never
+    guessed. The clock and `Math.random` are recorded too, and the
+    Telegram queue and `UrlFetchApp` errors behave as in Apps Script.
+    `npm run test:edge` runs the whole suite through it.
+21. **Production moves to the Edge function one switch at a time, and every
+    switch is a row.** The order is: settings into the database
+    (`move_properties_to_database`), then `EDGE_NATIVE_ACTIONS` grows —
+    reads, then writes and sign-in, then `telegram` (and the webhook URL),
+    then `jobs` — each step measured before the next. `*` is every web
+    action and never the bot or the jobs, so each of those moves, and moves
+    back, by its own name. Going back is the same row edited, or the marker
+    deleted (`move_properties_to_script`). No
+    switch is flipped without the owner's go-ahead; merging the code changes
+    no behaviour by itself (the function forwards everything until a switch
+    is flipped). The runbook is `docs/DEPLOYMENT.md` → Switching production
+    over.
+
 ## 12. Known limitations and intentional exceptions
 
 - **Rolling back from Supabase copies nothing back.** `rollback_supabase_storage`
@@ -993,8 +1116,23 @@ composes the message from data it already stored.
   of the move; anything entered while Supabase was the store exists only in
   Supabase, and the answer says so.
 - **The Supabase project is on the free plan:** no downloadable automatic
-  backups. The spreadsheet stays as the pre-move copy; a scheduled export is a
-  separate decision.
+  backups. The nightly copy into Google Drive (`27_database_backup.gs`) is the
+  backup: at most a day old, the settings excluded (Apps Script's Script
+  Properties hold a copy of those, which can lag the database). Restoring — its tabs copied into the bound
+  spreadsheet and the app switched back to it, or imported into a new
+  project — is described in `docs/DEPLOYMENT.md` and not yet rehearsed.
+- **The Edge function pays for its replays in CPU, not in round trips.** A
+  request is re-run from the start after each outside call; a save with four
+  database calls runs the backend five times. Each run is milliseconds, the
+  calls are not repeated, and the platform's CPU limit is the ceiling
+  (`maxRuns` 120). Display summaries are not cached there (`sum_*` keys always
+  miss), because the Edge cache is the database and reading it costs what the
+  summary saves.
+- **The ready marker and the switches are read at most every 15 seconds per
+  Edge instance.** Flipping `EDGE_NATIVE_ACTIONS` takes effect within that.
+- **Pages served from `localhost`/`127.0.0.1` never use the Edge function**
+  unless `localStorage.mbm_backend = 'edge'` — so the browser tests (which
+  intercept Apps Script) can never reach the live function.
 - **Speed on Supabase comes from fewer round trips, not from the database.**
   A `UrlFetchApp` call is not obviously cheaper than a Sheets call; what
   changed is how many an action makes. Counted on a realistic fixture
@@ -1161,6 +1299,8 @@ npm test                 # unit/integration tests (node --test)
 npm run test:e2e         # Playwright/Chromium browser flows
 npm run test:supabase    # the unit suite again, against the Supabase store
 npm run test:supabase:e2e  # the browser flows again, against the Supabase store
+npm run test:edge        # the unit suite again, every request through the Edge runtime
+npm run test:edge:e2e    # the browser flows again, through the Edge runtime
 npm run scan:secrets     # working tree
 npm run scan:secrets:history   # every committed blob
 npm run bench            # sheet passes / bytes / ms per screen (see below)
@@ -1229,11 +1369,32 @@ npm run bench            # sheet passes / bytes / ms per screen (see below)
   latest image became Ubuntu 26.04 (2026-11), Playwright 1.56.1 could not
   install Chromium there and the job — which the deploy waits for — failed
   before any test ran. Move the pin and the Playwright version together.
+- **The Edge function is tested three ways.** `npm run test:edge` runs every
+  unit test with `doPost`/`doGet`/the jobs answered by the Edge runtime (the
+  replay executor over the shims, in Node); `tests/edge-runtime.test.js` pins
+  the executor, the shims and the generated runtime;
+  `tests/edge-function.test.js` boots `index.ts` itself in Deno against the
+  in-memory database and a stand-in Apps Script over HTTP (skipped, saying
+  so, without a Deno binary — CI installs `deno@2.9.6`).
+  `tests/backend-routing.e2e.js` holds the browser's fallback rules.
 - CI (`.github/workflows/ci.yml`) runs static analysis, secret scans (tree *and*
-  full history), unit tests and browser tests on **every branch and PR**. On
-  `main` only, a green run then deploys: `clasp pull` (live manifest) → stage →
-  `clasp push -f` → new version tagged with the commit → `update-deployment`
-  against the **existing** deployment id.
+  full history), unit tests (spreadsheet, Supabase and Edge runtime, plus a
+  Deno type-check of the function) and browser tests on **every branch and
+  PR**. On `main` only, a green run then deploys: `clasp pull` (live manifest)
+  → stage → `clasp push -f` → new version tagged with the commit →
+  `update-deployment` against the **existing** deployment id; and, in a
+  separate job, the Edge function to the live project
+  (`scripts/edge-deploy.js`: build, `supabase functions deploy api
+  --no-verify-jwt`, then a probe that it answers from us-east-1). A commit on
+  a branch whose message contains `[edge-staging]` deploys the function to the
+  test project instead, and then `scripts/edge-staging.js` applies any
+  migration that project lacks, seeds it with synthetic data when empty
+  (`scripts/staging-seed.js`, built by the real import code) and exercises
+  the function end to end with timings. It refuses any other project.
+  The live database's migrations are applied by the `migrate-production`
+  job (`scripts/supabase-migrate.js --edge-rows`), which runs only when the
+  workflow is started by hand on `main` with **migrate_production** ticked —
+  never on a merge.
 - The deploy **fails closed**: missing credentials fail the job and name what is
   absent. There is no enable switch.
 - **The drift guard**: the deploy refuses to push when the live project defines a
@@ -1255,7 +1416,12 @@ npm run bench            # sheet passes / bytes / ms per screen (see below)
 | V2 misbehaving | `rollback_omad_migration` — the legacy sheet is intact |
 | Bad backend deploy | Re-run CI on a known-good commit; the deployment id never changes |
 | Bad frontend deploy | Cloudflare Pages keeps every deployment; roll back in the dashboard |
-| Supabase misbehaving | Sozlamalar → Tizim → "Google Sheets'ga Qaytish" (`rollback_supabase_storage`) — works even when the database is unreachable; entries made on Supabase stay there |
+| Supabase misbehaving | Sozlamalar → Tizim → "Google Sheets'ga Qaytish" (`rollback_supabase_storage`); entries made on Supabase stay there. Before the settings move it works even when the database is unreachable; after it, it needs the database to delete `__PROPERTIES_READY` first and changes nothing if it cannot (the Edge function would otherwise keep serving) |
+| One action misbehaving on the Edge function | remove it from `EDGE_NATIVE_ACTIONS` (one `app_properties` row): Apps Script answers it again within 15 s |
+| The Edge function misbehaving | set `EDGE_NATIVE_ACTIONS` to empty (everything forwarded), or delete `__PROPERTIES_READY` (`move_properties_to_script`); the pages fall back to Apps Script by themselves if the function is gone |
+| The bot on the Edge function misbehaving | point the webhook back at `/exec` (Telegram sozlamalari → Webhook) and remove `telegram` from the list |
+| The jobs on the Edge function misbehaving | remove `jobs` from the list: the Apps Script trigger takes them back on its next tick |
+| One device should not use the Edge function | `localStorage.mbm_backend = 'apps-script'` in that browser |
 
 ## 14. Live state
 
@@ -1273,6 +1439,7 @@ and trigger rows on **2026-11-13** (Supabase edge logs and `system_config`):
 | Mini App | menu button installed and verified |
 | Web sign-in | username + password, server-verified, 30-day signed session |
 | Store | **Supabase** since 2026-11-02 20:34 UTC (`Omad_Storage_Cutover_At`); project `mybizmanager`, region us-east-1. The spreadsheet holds the pre-move copy |
+| Edge function | **not live yet** (2026-11-16). Deployed to the test project `mybizmanager-staging` only, and verified there end to end by CI on synthetic data (`scripts/edge-staging.js`): reads 0.15–0.25 s, a write 0.35 s, sign-in 0.45 s as measured from a US runner, cold boot 25 ms, `pg_cron` → function every 5 minutes answering 200; on the live project the migrations `20261116120000_edge_shared_state.sql`, `20261116130000_edge_cron.sql`, `20261116140000_pg_net_schema.sql` and `20261116150000_lease_fencing.sql` are not applied, the settings are still in Script Properties, and every request goes to Apps Script. The rollout runbook is in `docs/DEPLOYMENT.md` |
 
 Account records and the session-signing secret are live Script Properties, not
 repository state, so this document does not claim whether a one-time password

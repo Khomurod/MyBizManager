@@ -5,6 +5,8 @@
     <!-- No maximum-scale / user-scalable: pinch-zoom must stay available. -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="theme-color" content="#ffffff">
+    <!-- The backend (assets/backend.js): the connection is opened while the page loads. -->
+    <link rel="preconnect" href="https://ksdqoftlxrkpyylbbyoi.supabase.co" crossorigin>
     <title>Vazifalar</title>
     <link rel="stylesheet" href="assets/css/app.css">
     <style>
@@ -298,6 +300,7 @@
 <body>
 
     <script src="assets/session.js"></script>
+    <script src="assets/backend.js"></script>
     <script src="assets/ui.js"></script>
     <script src="assets/omad/00-config.js"></script>
 

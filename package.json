@@ -14,6 +14,8 @@
     "test:e2e": "node --test tests/*.e2e.js",
     "test:supabase": "node scripts/test-supabase.js",
     "test:supabase:e2e": "node scripts/test-supabase.js --e2e",
+    "test:edge": "node scripts/test-supabase.js --edge",
+    "test:edge:e2e": "node scripts/test-supabase.js --e2e --edge",
     "test:all": "npm test && npm run test:e2e",
     "lint": "node --test tests/static-analysis.test.js",
     "bench": "node scripts/bench-reads.js",
