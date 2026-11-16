@@ -292,7 +292,11 @@ function supabaseCredentials_() {
   var url = String(getTelegramSetting_(STORAGE_PROP_SUPABASE_URL) || "").trim().replace(/\/+$/, "");
   var key = String(getTelegramSetting_(STORAGE_PROP_SUPABASE_KEY) || "").trim();
   var missing = [];
-  if (!/^https:\/\/[^\s\/]+$/.test(url)) missing.push(STORAGE_PROP_SUPABASE_URL);
+  // https only -- except a database on this machine (the Supabase CLI's local
+  // stack, the Edge function's own tests), which is plain http.
+  if (!/^https:\/\/[^\s\/]+$/.test(url) && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(url)) {
+    missing.push(STORAGE_PROP_SUPABASE_URL);
+  }
   if (!key) missing.push(STORAGE_PROP_SUPABASE_KEY);
   return { url: url, key: key, missing: missing, ok: missing.length === 0 };
 }

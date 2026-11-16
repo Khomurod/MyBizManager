@@ -234,7 +234,41 @@
     try { options.performDeferred(queued.map(function (entry) { return entry.request; })); } catch (error) {}
   }
 
+  /**
+   * Owners of database leases (the script lock, app_lease) a finished request
+   * took and did not give back -- a run that failed between the lock and its
+   * release. The caller releases them, so the next request does not wait out
+   * the lease's expiry. Read from the tape, which holds every call and answer.
+   */
+  function leasesLeftHeld(tape) {
+    var held = [];
+    var ok = function (response) { return !!response && response.code >= 200 && response.code < 300; };
+    tape.io.forEach(function (entry) {
+      var key = String(entry.key);
+      var newline = key.indexOf('\n');
+      var head = newline === -1 ? key : key.slice(0, newline);
+      if (/^POST \S+\/rest\/v1\/rpc\/mbm_lock$/.test(head)) {
+        var body = {};
+        var answer = {};
+        try { body = JSON.parse(key.slice(newline + 1)); } catch (error) { body = {}; }
+        try { answer = JSON.parse(entry.response && entry.response.text || '{}'); } catch (error) { answer = {}; }
+        if (ok(entry.response) && answer && answer.acquired === true && body.p_owner && held.indexOf(body.p_owner) === -1) {
+          held.push(String(body.p_owner));
+        }
+        return;
+      }
+      if (!ok(entry.response)) return;
+      held = held.filter(function (owner) {
+        var inBatch = key.indexOf('"op":"unlock","owner":' + JSON.stringify(owner)) !== -1;
+        var direct = /\/rest\/v1\/rpc\/mbm_unlock$/.test(head) && key.indexOf('"p_owner":' + JSON.stringify(owner)) !== -1;
+        return !(inBatch || direct);
+      });
+    });
+    return held;
+  }
+
   return {
+    leasesLeftHeld: leasesLeftHeld,
     PENDING_MESSAGE: PENDING_MESSAGE,
     ReplayPending: ReplayPending,
     createTape: createTape,

@@ -6,6 +6,8 @@
  *
  *   node scripts/test-supabase.js            unit/integration (tests/*.test.js)
  *   node scripts/test-supabase.js --e2e      browser flows (tests/*.e2e.js)
+ *   ... --edge                               every request served by the Edge
+ *                                            runtime instead (MBM_RUNTIME=edge)
  *
  * Every test's sheets are copied into an in-memory Supabase (tests/supabase-mock.js,
  * built from supabase/migrations) by the application's own import code, and the
@@ -24,6 +26,7 @@ const files = fs.readdirSync(testsDir).filter(f => f.endsWith(suffix)).sort().ma
 const result = spawnSync(process.execPath, ['--test'].concat(files), {
   cwd: path.join(__dirname, '..'),
   stdio: 'inherit',
-  env: Object.assign({}, process.env, { MBM_STORAGE: 'supabase' })
+  env: Object.assign({}, process.env, { MBM_STORAGE: 'supabase' },
+    process.argv.includes('--edge') ? { MBM_RUNTIME: 'edge' } : {})
 });
 process.exit(result.status === null ? 1 : result.status);

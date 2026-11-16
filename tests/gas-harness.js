@@ -15,6 +15,29 @@ const edgeShims = require('../supabase/functions/api/lib/gas-shims.js');
 
 const SCRIPT_PATH = path.join(__dirname, '..', 'script.gs');
 
+// `MBM_RUNTIME=edge` (with MBM_STORAGE=supabase): every request a test sends
+// through doPost / doGet / the jobs is served the way the Supabase Edge
+// function serves it -- the generated runtime (scripts/edge-runtime.js) over
+// the Edge stand-ins for the Apps Script services, through the replay
+// executor. Everything else a test calls directly still runs in the sandbox,
+// against the same in-memory database.
+const EDGE_RUNTIME = process.env.MBM_RUNTIME === 'edge';
+const edgeExecutor = require('../supabase/functions/api/lib/executor.js');
+const edgeRouting = require('../supabase/functions/api/lib/routing.js');
+const { buildRuntimeSource, ENTRY_POINTS: EDGE_ENTRY_POINTS } = require('../scripts/edge-runtime');
+let edgeFactory = null;
+
+/** The runtime factory, built from the current script.gs once per process. */
+function edgeRuntimeFactory() {
+  if (!edgeFactory) {
+    const source = buildRuntimeSource(fs.readFileSync(SCRIPT_PATH, 'utf8'));
+    const holder = { exports: {} };
+    vm.runInThisContext('(function (module) {\n' + source + '\n})', { filename: 'runtime.js' })(holder);
+    edgeFactory = holder.exports;
+  }
+  return edgeFactory;
+}
+
 /** Script Properties that stay in Apps Script when the settings move to the database. */
 const LOCAL_PROPERTY_KEYS = new Set([
   'OMAD_STORAGE', 'SUPABASE_URL', 'SUPABASE_SECRET_KEY', 'OMAD_STORAGE_IMPORT', 'OMAD_PROPERTIES_STORE'
@@ -368,6 +391,7 @@ function loadScript(options = {}) {
 
   if (supabase && storage === 'supabase') seedSupabase(sandbox, spreadsheet, supabase);
   else if (supabase) sandbox.__supabase = supabase;
+  if (EDGE_RUNTIME && sharedInDatabase) installEdgeRuntime(sandbox, supabase, cacheStore, options);
   if (sharedInDatabase) sandbox.__properties = propertiesView(properties, supabase);
 
   return sandbox;
@@ -462,6 +486,121 @@ function seedSupabase(sandbox, spreadsheet, supabase) {
 }
 
 /** Parses the JSON body of a jsonOutput_ result. */
+/**
+ * Serves the entry points through the Edge runtime (see EDGE_RUNTIME).
+ *
+ * The database is the same in-memory one; requests to app_cache are answered
+ * from the harness's cache store, so a test that seeds or reads `gas.__cache`
+ * sees what the Edge runtime's CacheService sees. Outbound calls (Telegram)
+ * go through the sandbox's UrlFetchApp, so they are recorded as before.
+ *
+ * A test that replaces a backend function in the sandbox is instrumenting the
+ * sandbox's copy, which the runtime does not have; while any is replaced, the
+ * entry points run in the sandbox as they always did.
+ */
+function installEdgeRuntime(sandbox, supabase, cacheStore, options) {
+  const factory = edgeRuntimeFactory();
+  const snapshot = new Map();
+  for (const name of Object.keys(sandbox)) {
+    if (typeof sandbox[name] === 'function') snapshot.set(name, sandbox[name]);
+  }
+  const instrumented = () => {
+    for (const [name, fn] of snapshot) {
+      if (!EDGE_ENTRY_POINTS.includes(name) && sandbox[name] !== fn) return true;
+    }
+    return false;
+  };
+
+  const answer = response => ({
+    code: response.getResponseCode(),
+    text: String(response.getContentText() || ''),
+    headers: typeof response.getHeaders === 'function' ? (response.getHeaders() || {}) : {}
+  });
+  const cacheAnswer = request => {
+    const parsed = new URL(request.url);
+    const keyFilter = parsed.searchParams.get('key');
+    const key = keyFilter ? decodeURIComponent(keyFilter.replace(/^eq\./, '')) : '';
+    if (request.method === 'get') {
+      const has = Object.prototype.hasOwnProperty.call(cacheStore, key);
+      return { code: 200, headers: {}, text: JSON.stringify(has ? [{ value: cacheStore[key], expires_at: '2999-01-01T00:00:00.000Z' }] : []) };
+    }
+    if (request.method === 'post') {
+      JSON.parse(request.body).forEach(row => { cacheStore[row.key] = row.value; });
+      return { code: 201, headers: {}, text: '' };
+    }
+    if (request.method === 'delete') {
+      delete cacheStore[key];
+      return { code: 204, headers: {}, text: '' };
+    }
+    return { code: 405, headers: {}, text: '' };
+  };
+  const one = request => {
+    if (supabase.owns(request.url) && new URL(request.url).pathname === '/rest/v1/app_cache') return cacheAnswer(request);
+    const params = {
+      method: request.method,
+      headers: request.headers,
+      muteHttpExceptions: true
+    };
+    if (request.body !== null) {
+      params.payload = request.body;
+      if (request.headers['Content-Type']) params.contentType = request.headers['Content-Type'];
+    }
+    try {
+      return answer(sandbox.UrlFetchApp.fetch(request.url, params));
+    } catch (error) {
+      return { transportError: String(error && error.message || error) };
+    }
+  };
+  const perform = work => {
+    if (work.kind === 'fetchAll') {
+      if (work.requests.every(r => supabase.owns(r.url))) return supabase.parallel(() => work.requests.map(one));
+      return work.requests.map(one);
+    }
+    return one(work.request);
+  };
+  const env = {
+    supabaseUrl: supabase.url,
+    supabaseKey: supabase.key,
+    publicUrl: options.webAppUrl || '',
+    console,
+    randomUuid: () => sandbox.Utilities.getUuid()
+  };
+
+  for (const name of EDGE_ENTRY_POINTS) {
+    const inSandbox = sandbox[name];
+    sandbox[name] = function (event) {
+      if (instrumented()) return inSandbox.apply(this, arguments);
+      // What the Edge function always forwards to Apps Script runs where Apps
+      // Script would run it.
+      if (name === 'doPost' && edgeRouting.routePost(event && event.postData && event.postData.contents,
+        { ready: true, allow: '*' }) !== 'edge') return inSandbox.apply(this, arguments);
+      // Whatever the sandbox had memoised belongs to the request before.
+      sandbox.resetRequestMemos_();
+      const tape = edgeExecutor.createTape();
+      let step;
+      try {
+        step = edgeExecutor.runSync({
+          tape,
+          makeGlobals: ctx => edgeShims.createEdgeGlobals(ctx, env),
+          invoke: G => factory(G)[name](event),
+          perform,
+          performDeferred: requests => requests.forEach(perform)
+        });
+      } finally {
+        // As index.ts does: a lease a failed run kept is handed back.
+        edgeExecutor.leasesLeftHeld(tape).forEach(owner => supabase.handle(supabase.url + '/rest/v1/rpc/mbm_unlock', {
+          method: 'post', headers: { apikey: supabase.key, 'Content-Type': 'application/json' },
+          payload: JSON.stringify({ p_owner: owner })
+        }));
+      }
+      sandbox.__edgeRuns = (sandbox.__edgeRuns || 0) + 1;
+      if ('error' in step && step.error !== undefined) throw step.error;
+      return step.result;
+    };
+    snapshot.set(name, sandbox[name]);
+  }
+}
+
 function readJsonOutput(output) {
   return JSON.parse(output.__text);
 }
@@ -540,6 +679,7 @@ function supabaseRoundTrips(gas, run) {
 }
 
 module.exports = {
+  EDGE_RUNTIME,
   sheetsOnly, SUPABASE_RUN, supabaseInsertSizes, supabaseRoundTrips,
   loadScript, readJsonOutput, postEvent, createSpreadsheet, todayKey, currentPeriodKey
 };

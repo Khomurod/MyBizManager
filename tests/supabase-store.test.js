@@ -798,6 +798,28 @@ test('the settings move back to Script Properties, marker first', () => {
   assert.match(post(gas, { action: 'move_properties_to_script' }).message, /shart emas/);
 });
 
+test('the Edge function\'s own switches stay in the database through both moves', () => {
+  const gas = liveWithTenants({ propertiesInDatabase: false });
+  // Written straight into app_properties before the move: the function
+  // forwards to Apps Script by this address while the settings are still here.
+  gas.__supabase.setProperty('EDGE_APPS_SCRIPT_URL', 'https://script.google.com/macros/s/x/exec');
+  gas.__supabase.setProperty('EDGE_NATIVE_ACTIONS', 'get_omad_data');
+  gas.__supabase.setProperty('EDGE_CRON_SECRET', 'cron-secret');
+
+  const moved = post(gas, { action: 'move_properties_to_database' });
+  assert.strictEqual(moved.status, 'success', moved.message);
+  let stored = gas.__supabase.properties();
+  assert.strictEqual(stored.EDGE_APPS_SCRIPT_URL, 'https://script.google.com/macros/s/x/exec',
+    'not deleted for being absent from Script Properties');
+  assert.strictEqual(stored.EDGE_NATIVE_ACTIONS, 'get_omad_data');
+  assert.strictEqual(stored.EDGE_CRON_SECRET, 'cron-secret');
+
+  assert.strictEqual(post(gas, { action: 'move_properties_to_script' }).status, 'success');
+  stored = gas.__supabase.properties();
+  assert.strictEqual(stored.EDGE_APPS_SCRIPT_URL, 'https://script.google.com/macros/s/x/exec');
+  assert.ok(!('EDGE_CRON_SECRET' in gas.__properties), 'and they are not copied into Script Properties');
+});
+
 test('a rollback to the spreadsheet brings the settings back first', () => {
   const gas = liveWithTenants();
   assert.ok(gas.__supabase.properties().__PROPERTIES_READY);

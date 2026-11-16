@@ -44,6 +44,15 @@ jobs:
         with:
           node-version: "22"
 
+      # Deno runs the Edge function itself in tests/edge-function.test.js
+      # (skipped, saying so, where there is none) and type-checks it below.
+      # Pinned like the other tools, and kept out of the repository's own
+      # node_modules.
+      - name: Install Deno
+        run: |
+          npm install --no-save --prefix "$RUNNER_TEMP/deno" deno@2.9.6
+          echo "DENO_BIN=$RUNNER_TEMP/deno/node_modules/.bin/deno" >> "$GITHUB_ENV"
+
       - name: Automated tests
         run: npm test
 
@@ -51,6 +60,16 @@ jobs:
       # imported into an in-memory database built from supabase/migrations.
       - name: Automated tests (Supabase store)
         run: npm run test:supabase
+
+      # And once more with every request answered by the Edge runtime (the
+      # same backend, run by supabase/functions/api/lib/executor.js).
+      - name: Automated tests (Edge runtime)
+        run: npm run test:edge
+
+      - name: Edge function type-check
+        run: |
+          npm run build
+          DENO_NO_PACKAGE_JSON=1 "$DENO_BIN" check --no-config supabase/functions/api/index.ts
 
   browser:
     name: Browser flows
@@ -74,6 +93,75 @@ jobs:
 
       - name: End-to-end browser tests (Supabase store)
         run: npm run test:supabase:e2e
+
+      - name: End-to-end browser tests (Edge runtime)
+        run: npm run test:edge:e2e
+
+  # ------------------------------------------------------------- edge, test
+  # The Edge function to the TEST Supabase project (mybizmanager-staging),
+  # from a branch, so it can be tried against synthetic data before main.
+  # Only when asked: a commit whose message contains [edge-staging], or a
+  # manual run on a branch. Never from main, which deploys to production.
+  edge-staging:
+    name: Deploy the Edge function (test project)
+    needs: [static, unit]
+    if: >-
+      github.ref != 'refs/heads/main' && (
+        (github.event_name == 'push' && contains(github.event.head_commit.message, '[edge-staging]')) ||
+        github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    concurrency:
+      group: edge-staging
+      cancel-in-progress: false
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_REF: uzpfgnjxvmrzwvocuiaf
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build, deploy and check
+        run: node scripts/edge-deploy.js
+
+  # ------------------------------------------------------- edge, production
+  # The Edge function to the live project, from main, once everything above
+  # has passed -- the same gate as the Apps Script deploy.
+  #
+  # Deploying it changes nothing by itself: the function answers a request
+  # only when app_properties allows it (the ready marker and
+  # EDGE_NATIVE_ACTIONS) and forwards everything else to Apps Script. Those
+  # switches are flipped by hand, one group of actions at a time
+  # (docs/DEPLOYMENT.md).
+  edge-production:
+    name: Deploy the Edge function
+    needs: [static, unit, browser]
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    concurrency:
+      group: edge-production
+      cancel-in-progress: false
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_REF: ksdqoftlxrkpyylbbyoi
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build, deploy and check
+        run: node scripts/edge-deploy.js
 
   # ---------------------------------------------------------------- production
   # Updates the code inside the EXISTING Apps Script project and moves the

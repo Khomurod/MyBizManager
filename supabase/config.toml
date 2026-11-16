@@ -1,0 +1,9 @@
+# Read only by the Supabase CLI when it deploys the Edge function
+# (scripts/edge-deploy.js, from CI). The schema is in migrations/, applied
+# through the migrations API -- never `supabase db push` from here.
+project_id = "mybizmanager"
+
+[functions.api]
+# The backend authenticates every request itself (session tokens, Telegram
+# initData, the webhook secret, the cron secret), as it does on Apps Script.
+verify_jwt = false

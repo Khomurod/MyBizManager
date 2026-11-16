@@ -132,7 +132,7 @@ async function callApi(url, payload) {
 
     let response;
     try {
-        response = await fetch(String(url).trim(), { method: 'POST', body: JSON.stringify(body) });
+        response = await backendPost(url, JSON.stringify(body));
     } catch (transportError) {
         throw apiError(API_ERROR_NETWORK, NETWORK_ERROR_MESSAGE);
     }

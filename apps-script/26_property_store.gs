@@ -17,6 +17,9 @@
 // starts from.
 //
 // The keys that say where the database is (LOCAL_PROPERTY_KEYS) never move.
+// Neither do the Edge function's own switches (EDGE_*, isDatabaseOnlyProperty_):
+// they are written straight into app_properties, before the move as well as
+// after, and a move in either direction leaves them where they are.
 //
 // Order matters, in both directions:
 //   - to the database: copy, verify, switch this script over, copy again
@@ -45,12 +48,23 @@ function propertyStoreAction_(action) {
   }
 }
 
+/**
+ * A row of app_properties that only the database holds: the ready marker and
+ * the Edge function's switches (EDGE_NATIVE_ACTIONS, EDGE_APPS_SCRIPT_URL,
+ * EDGE_CRON_SECRET). The Edge function reads them before the settings have
+ * moved -- it forwards to Apps Script by EDGE_APPS_SCRIPT_URL -- so a move must
+ * not delete them for being absent from Script Properties.
+ */
+function isDatabaseOnlyProperty_(key) {
+  return key === PROPERTY_STORE_READY_KEY || String(key).indexOf("EDGE_") === 0;
+}
+
 /** Every Script Property that is a shared setting, as a plain map. */
 function localSharedProperties_(local) {
   var all = local.getProperties() || {};
   var out = {};
   Object.keys(all).forEach(function (key) {
-    if (LOCAL_PROPERTY_KEYS[key] || key === PROPERTY_STORE_READY_KEY) return;
+    if (LOCAL_PROPERTY_KEYS[key] || isDatabaseOnlyProperty_(key)) return;
     out[key] = String(all[key]);
   });
   return out;
@@ -65,11 +79,11 @@ function databaseProperties_(credentials) {
   return out;
 }
 
-/** The ops that make the database hold exactly `wanted` (the marker aside). */
+/** The ops that make the database hold exactly `wanted` (its own rows aside). */
 function propertySyncOps_(wanted, stored) {
   var ops = [];
   Object.keys(stored).forEach(function (key) {
-    if (key === PROPERTY_STORE_READY_KEY) return;
+    if (isDatabaseOnlyProperty_(key)) return;
     if (!Object.prototype.hasOwnProperty.call(wanted, key)) ops.push({ op: "delete_property", key: key });
   });
   Object.keys(wanted).forEach(function (key) {
@@ -82,7 +96,7 @@ function propertySyncOps_(wanted, stored) {
 function propertyMismatches_(wanted, stored) {
   var keys = {};
   Object.keys(wanted).forEach(function (key) { keys[key] = true; });
-  Object.keys(stored).forEach(function (key) { if (key !== PROPERTY_STORE_READY_KEY) keys[key] = true; });
+  Object.keys(stored).forEach(function (key) { if (!isDatabaseOnlyProperty_(key)) keys[key] = true; });
   return Object.keys(keys).filter(function (key) { return wanted[key] !== stored[key]; }).sort();
 }
 
@@ -191,7 +205,7 @@ function copyPropertiesBackToScript_(local, credentials) {
   try {
     applyPropertyOps_(credentials, [{ op: "delete_property", key: PROPERTY_STORE_READY_KEY }]);
     var stored = databaseProperties_(credentials);
-    delete stored[PROPERTY_STORE_READY_KEY];
+    Object.keys(stored).forEach(function (key) { if (isDatabaseOnlyProperty_(key)) delete stored[key]; });
     var current = localSharedProperties_(local);
     Object.keys(current).forEach(function (key) {
       if (!Object.prototype.hasOwnProperty.call(stored, key)) local.deleteProperty(key);

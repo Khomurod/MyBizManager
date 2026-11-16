@@ -16,9 +16,14 @@
 const fs = require('fs');
 const path = require('path');
 
+const { buildRuntimeSource } = require('./edge-runtime');
+
 const ROOT = path.join(__dirname, '..');
 const SRC_DIR = path.join(ROOT, 'apps-script');
 const OUT_FILE = path.join(ROOT, 'script.gs');
+// The same backend, wrapped for the Supabase Edge function. Generated, not
+// committed (.gitignore): CI builds it before testing and deploying.
+const EDGE_RUNTIME_FILE = path.join(ROOT, 'supabase', 'functions', 'api', 'runtime.js');
 
 const BANNER = [
   '// =============================================================================',
@@ -52,6 +57,8 @@ function build() {
 }
 
 const bundle = build();
+// Throws if an entry point the Edge function calls has gone missing.
+const runtime = buildRuntimeSource(bundle);
 
 if (process.argv.includes('--check')) {
   const current = fs.existsSync(OUT_FILE) ? fs.readFileSync(OUT_FILE, 'utf8') : '';
@@ -62,5 +69,6 @@ if (process.argv.includes('--check')) {
   console.log('script.gs is up to date.');
 } else {
   fs.writeFileSync(OUT_FILE, bundle);
-  console.log(`script.gs rebuilt from ${moduleFiles().length} modules.`);
+  fs.writeFileSync(EDGE_RUNTIME_FILE, runtime);
+  console.log(`script.gs and the Edge runtime rebuilt from ${moduleFiles().length} modules.`);
 }

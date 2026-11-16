@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#f8fafc">
+  <!-- The backend (assets/backend.js): the connection is opened while the page loads. -->
+  <link rel="preconnect" href="https://ksdqoftlxrkpyylbbyoi.supabase.co" crossorigin>
   <title>Tizimga kirish · MyBizManager</title>
   <link rel="stylesheet" href="assets/css/app.css">
 </head>
@@ -45,10 +47,13 @@
     </p>
   </main>
 
+  <!-- Only the transport (which server to ask), no application code. -->
+  <script src="assets/backend.js"></script>
   <script>
     // The backend URL is repeated here deliberately: login.html loads no
     // application script, because nothing of the application may run before
-    // the server has said who this is.
+    // the server has said who this is. assets/backend.js is not application
+    // code: it only chooses between the Edge function and Apps Script.
     const GOOGLE_APP_URL = "https://script.google.com/macros/s/AKfycbzhKyEOGZbVdtpSd7fa6aTDZf1QsqWQeOpWRxrb7bYpzWWDQxUXZID8JNzGMfDtCA2W/exec";
 
     // ------------------------------------------------------------------
@@ -101,10 +106,7 @@
       button.textContent = "Tekshirilmoqda...";
       let body = null;
       try {
-        const res = await fetch(GOOGLE_APP_URL, {
-          method: "POST",
-          body: JSON.stringify({ action: "login", username, password })
-        });
+        const res = await backendPost(GOOGLE_APP_URL, JSON.stringify({ action: "login", username, password }));
         const text = await res.text();
         try {
           body = JSON.parse(text);
