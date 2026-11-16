@@ -1047,8 +1047,10 @@ qaytarish" buttons in Tizim; `get_storage_status` reports where they are
 rollback to the spreadsheet, delete `__PROPERTIES_READY` first and change
 nothing at all if that fails: switching Apps Script while the marker stands
 would leave the Edge function serving on other settings. So neither runs
-while the database cannot be reached; with the database down the function
-cannot read its switches either and forwards everything.
+while the database cannot be reached. With the database down the function
+cannot read its switches either: once its cached copy (at most 15 s old)
+expires it forwards every web request to Apps Script, and a job call answers
+`503` and runs nothing.
 
 Cache revisions became opaque tokens (`"<n>.<base36>"`): a counter both
 runtimes bump through the same row, with a random tail so two writers that
