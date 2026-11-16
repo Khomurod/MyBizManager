@@ -184,11 +184,30 @@ async function exercise({ adminKey, cronSecret, webhookSecret }) {
   check(!!probe, 'the function sees the switches (ready, ' + NATIVE + ')');
   if (probe) console.log('edge staging: probe ' + JSON.stringify({ region: probe.region, allow: probe.allow, forwardsTo: probe.forwardsTo }));
 
-  // Reads: the dashboard as the app loads it, then the whole ledger.
+  // An account, made with the admin key, and everything after as that
+  // account -- the way the app works. The admin key itself is throttled to
+  // ten calls a minute (02a_auth.gs), so it is used only where it must be.
+  const password = mask(crypto.randomBytes(12).toString('hex'));
+  const account = await call('set_user_password (admin key)', {
+    body: { action: 'set_user_password', adminKey, username: 'staging_check', password, role: 'omad_admin' }
+  });
+  check(account.runtime === 'edge' && account.json && account.json.status === 'success',
+    'an account is set with the admin key' + (account.json && account.json.message ? ' (' + account.json.message + ')' : ''));
+  const login = await call('login', { body: { action: 'login', username: 'staging_check', password } });
+  const session = login.json && login.json.status === 'success' ? login.json.token : '';
+  check(login.runtime === 'edge' && !!session, 'login gives a session on the Edge function');
+  if (!session) return;
+  mask(session);
+  const wrong = await call('', { body: { action: 'login', username: 'staging_check', password: 'not-the-password' } });
+  check(wrong.json && wrong.json.status === 'error', 'a wrong password is refused');
+  const anonymous = await call('', { body: { action: 'get_omad_data', scope: 'dashboard' } });
+  check(anonymous.json && anonymous.json.status === 'error', 'no credentials, no data');
+
+  // Reads: the dashboard as the app loads it, then the whole ledger and the rest.
   const reads = [];
   for (let i = 0; i < 6; i++) {
     const read = await call(i === 0 ? 'dashboard (first call)' : '',
-      { body: { action: 'get_omad_data', scope: 'dashboard', adminKey } });
+      { body: { action: 'get_omad_data', scope: 'dashboard', sessionToken: session } });
     if (i > 0) reads.push(read.ms);
     if (i === 0) {
       check(read.runtime === 'edge', 'the dashboard read is answered by the Edge function');
@@ -197,49 +216,36 @@ async function exercise({ adminKey, cronSecret, webhookSecret }) {
     }
   }
   timings.push({ label: 'dashboard (median of the next 5)', ms: median(reads), runtime: 'edge', status: 200 });
-  const full = await call('get_omad_data (whole ledger)', { body: { action: 'get_omad_data', adminKey } });
+  const full = await call('get_omad_data (whole ledger)', { body: { action: 'get_omad_data', sessionToken: session } });
   check(full.json && full.json.status === 'success' && Array.isArray(full.json.transactions),
     'the whole ledger reads (' + (full.json && full.json.transactions ? full.json.transactions.length : '?') + ' rows)');
   for (const action of ['get_tasks', 'get_cafe_data', 'list_transactions']) {
-    const read = await call(action, { body: { action, adminKey } });
-    check(read.runtime === 'edge' && read.json && read.json.status !== 'error', action + ' answers from the Edge function');
+    const read = await call(action, { body: { action, sessionToken: session } });
+    check(read.runtime === 'edge' && read.json && read.json.status !== 'error', action + ' answers from the Edge function' +
+      (read.json && read.json.message ? ' (' + read.json.message + ')' : ''));
   }
+  const byKey = await call('dashboard (admin key)', { body: { action: 'get_omad_data', scope: 'dashboard', adminKey } });
+  check(byKey.json && byKey.json.status === 'success', 'the admin key reads too');
 
   // A write, then the same write again.
   const requestId = 'staging_' + Date.now();
-  const period = new Date().toISOString().slice(0, 7);
   const entry = {
-    action: 'create_transaction', adminKey, requestId, period, tenant: "Do'kon A", type: 'Income',
-    amount: 1, currency: 'USD', method: 'Naqd', comment: 'staging check', deferReports: true
+    action: 'create_transaction', sessionToken: session, requestId, period: new Date().toISOString().slice(0, 7),
+    tenant: "Do'kon A", type: 'Income', amount: 1, currency: 'USD', method: 'Naqd', comment: 'staging check',
+    deferReports: true
   };
   const write = await call('create_transaction', { body: entry });
   check(write.runtime === 'edge' && write.json && write.json.status === 'success',
     'create_transaction succeeds on the Edge function' + (write.json && write.json.message ? ' (' + write.json.message + ')' : ''));
   const again = await call('create_transaction (same requestId)', { body: entry });
-  check(again.json && again.json.status === 'success', 'the same requestId again is accepted');
+  check(again.json && again.json.status === 'success', 'the same requestId again is accepted' +
+    (again.json && again.json.message ? ' (' + again.json.message + ')' : ''));
   const [{ n: copies }] = await sql('select count(*)::int as n from public.omad_transactions_v2 where request_id = ' + literal(requestId));
   check(copies === 1, 'and stored once (' + copies + ')');
   const [{ n: leases }] = await sql('select count(*)::int as n from public.app_lease');
   check(leases === 0, 'no lease is left held (' + leases + ')');
-
-  // Sign-in.
-  const password = mask(crypto.randomBytes(12).toString('hex'));
-  const account = await call('set_user_password', {
-    body: { action: 'set_user_password', adminKey, username: 'staging_check', password, role: 'omad_admin' }
-  });
-  check(account.json && account.json.status === 'success', 'an account can be set');
-  const login = await call('login', { body: { action: 'login', username: 'staging_check', password } });
-  const session = login.json && login.json.status === 'success' && login.json.token;
-  check(login.runtime === 'edge' && !!session, 'login gives a session on the Edge function');
-  if (session) {
-    mask(session);
-    const read = await call('dashboard (signed in)', { body: { action: 'get_omad_data', scope: 'dashboard', sessionToken: session } });
-    check(read.json && read.json.status === 'success', 'the session reads the dashboard');
-  }
-  const wrong = await call('', { body: { action: 'login', username: 'staging_check', password: 'not-the-password' } });
-  check(wrong.json && wrong.json.status === 'error', 'a wrong password is refused');
-  const anonymous = await call('', { body: { action: 'get_omad_data' } });
-  check(anonymous.json && anonymous.json.status === 'error', 'no credentials, no data');
+  const after = await call('dashboard (after the write)', { body: { action: 'get_omad_data', scope: 'dashboard', sessionToken: session } });
+  check(after.json && after.json.status === 'success', 'the dashboard reads after the write');
 
   // Telegram.
   const update = await call('Telegram update', {
@@ -256,11 +262,14 @@ async function exercise({ adminKey, cronSecret, webhookSecret }) {
   check(forbidden.status === 403, 'a wrong cron secret is refused');
 
   // What only Apps Script can do: forwarded, and there is no Apps Script here.
-  const health = await call('', { body: { action: 'get_health', adminKey } });
+  const health = await call('', { body: { action: 'get_health', sessionToken: session } });
   check(health.runtime === 'unconfigured' && health.status === 503, 'get_health is forwarded (no Apps Script here: 503 unconfigured)');
 
   const cron = await sql("select jobname, schedule, active from cron.job where jobname like 'mbm-%' order by jobname");
   check(cron.length === 2 && cron.every(row => row.active), 'pg_cron holds both jobs (' + cron.map(row => row.jobname).join(', ') + ')');
+  const runs = await sql("select d.status, count(*)::int as n from cron.job_run_details d join cron.job j using (jobid) " +
+    "where j.jobname = 'mbm-telegram-jobs' group by d.status");
+  console.log('edge staging: mbm-telegram-jobs runs so far: ' + (runs.map(r => r.status + '=' + r.n).join(', ') || 'none yet'));
 }
 
 function report() {
