@@ -54,10 +54,15 @@ function listen(server) {
   return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
 }
 
-/** The in-memory database over HTTP, as PostgREST. */
-function databaseServer(db) {
+/** The in-memory database over HTTP, as PostgREST. `outage.settings` makes the settings read fail. */
+function databaseServer(db, outage = {}) {
   return http.createServer(async (req, res) => {
     const body = await bodyOf(req);
+    if (outage.settings && req.method === 'GET' && req.url.indexOf('/rest/v1/app_properties') === 0) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end('{"message":"unavailable"}');
+      return;
+    }
     const headers = { apikey: req.headers.apikey, Prefer: req.headers.prefer, 'Content-Type': req.headers['content-type'] };
     const answer = db.handle(db.url + req.url, { method: req.method.toLowerCase(), headers, payload: body || undefined });
     const out = { 'Content-Type': 'application/json' };
@@ -131,7 +136,8 @@ test('the deployed function: forwards until allowed, then answers itself, the sa
   });
   const db = gas.__supabase;
   const forwarded = [];
-  const dbServer = databaseServer(db);
+  const outage = { settings: false };
+  const dbServer = databaseServer(db, outage);
   const gasServer = appsScriptServer(gas, forwarded);
   const dbPort = await listen(dbServer);
   const gasPort = await listen(gasServer);
@@ -267,5 +273,23 @@ test('the deployed function: forwards until allowed, then answers itself, the sa
     assert.strictEqual(probe.ready, true);
     assert.strictEqual(probe.allow, '*,telegram,jobs');
     assert.strictEqual(probe.configRead, true);
+  });
+
+  await t.test('switches that cannot be read: web requests go to Apps Script, a job says why it did nothing', async () => {
+    outage.settings = true;
+    try {
+      const before = forwarded.length;
+      const answer = await post(dashboard);
+      assert.strictEqual(answer.runtime, 'apps-script');
+      assert.strictEqual(forwarded.length, before + 1);
+      const job = await post({}, '?job=telegram-jobs', { 'x-mbm-cron': CRON_SECRET });
+      assert.strictEqual(job.status, 503, job.text);
+      assert.strictEqual(job.json.message, 'settings unreadable');
+      const backup = await post({}, '?job=db-backup', { 'x-mbm-cron': CRON_SECRET });
+      assert.strictEqual(backup.status, 503, backup.text);
+      assert.strictEqual(forwarded.length, before + 1, 'no job is passed on');
+    } finally {
+      outage.settings = false;
+    }
   });
 });

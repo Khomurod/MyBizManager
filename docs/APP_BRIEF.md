@@ -792,6 +792,8 @@ composes the message from data it already stored.
   ready marker exists, and so do `EDGE_FUNCTION_URL` and `EDGE_CRON_SECRET`), the trigger stands down and pg_cron's call to the Edge
   function (`?job=telegram-jobs`) runs the same `runTimedJobs_` there; taking
   `jobs` out of the list hands them back with the trigger still in place.
+  While `app_properties` cannot be read, either job call answers `503`
+  (`settings unreadable`) and does nothing; the next tick tries again.
 - **The nightly copy into Google Drive** (`27_database_backup.gs`): pg_cron at
   22:00 UTC (03:00 Tashkent) calls the Edge function (`?job=db-backup`), which
   passes it to Apps Script as `run_database_backup` with the cron secret

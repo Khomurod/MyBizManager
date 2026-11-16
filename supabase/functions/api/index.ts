@@ -280,6 +280,10 @@ function sameSecret(given: string, expected: string): boolean {
 
 async function handleJob(req: Request, url: URL): Promise<Response> {
   const config = await readConfig();
+  // Without its settings the function cannot check the secret or know where the
+  // jobs run: say so, rather than a 403 that reads like a wrong secret in the
+  // cron log. Nothing runs; the next tick tries again.
+  if (!config.ok) return json({ status: 'error', message: 'settings unreadable' }, 503);
   if (!sameSecret(req.headers.get('x-mbm-cron') || '', config.cronSecret)) {
     return json({ status: 'error', message: 'forbidden' }, 403);
   }

@@ -349,7 +349,10 @@ They are inert until rows in `app_properties` give them something to do.
 ### Going back
 
 **Supabase card → Google Sheets'ga Qaytish** (`rollback_supabase_storage`)
-sets `OMAD_STORAGE=sheets`. It works even if the database cannot be reached.
+sets `OMAD_STORAGE=sheets`. While the settings are still in Script Properties it
+works even if the database cannot be reached. Once they are in the database it
+first deletes `__PROPERTIES_READY` (so the Edge function stops serving), and if
+the database does not answer it changes nothing and says so: wait and retry.
 Entries made while Supabase was live stay only in Supabase.
 
 ---

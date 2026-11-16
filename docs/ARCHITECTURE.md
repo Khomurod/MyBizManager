@@ -364,7 +364,7 @@ Café actions additionally accept the café roles described in the permissions s
 | `preview_supabase_import` | **yes** | Converts every sheet row in memory, counts, checks the database is empty. Writes nothing |
 | `apply_supabase_import` | **yes** | Copy + verify + switch, under the script lock; switches only if verification passes |
 | `verify_supabase_import` | **yes** | Compares the two stores again. Writes nothing |
-| `rollback_supabase_storage` | **yes** | Back to the spreadsheet. Routed before the store is opened, so it works when Supabase cannot be reached |
+| `rollback_supabase_storage` | **yes** | Back to the spreadsheet. Routed before the store is opened, so before the settings move it works when Supabase cannot be reached; after it, it must delete `__PROPERTIES_READY` first and changes nothing while the database is down |
 
 **Any action name starting with `mini_` is Mini-App-gated** — never name a new
 admin action `mini_…`.
@@ -1119,6 +1119,7 @@ the Edge runtime only ever runs on the Supabase store.
 | `POST` (any action, or a Telegram update with `?wh=<secret>`) | the backend's answer, from here or from Apps Script; `X-MBM-Runtime` says which |
 | `POST ?job=telegram-jobs` + `x-mbm-cron` | one cycle of the timed jobs (`runTimedJobs_`) if `jobs` is switched over, else `skipped` |
 | `POST ?job=db-backup` + `x-mbm-cron` | passed on to Apps Script as `run_database_backup` with the cron secret |
+| either job while `app_properties` cannot be read | `503` `settings unreadable`; nothing runs, the next tick tries again (a wrong or missing secret is `403`) |
 | `GET` | the inert banner (`doGet`); `?probe=1` reports region, the switches it sees and where it forwards |
 | `OPTIONS` | CORS (`*`, `X-MBM-Runtime` exposed) |
 
