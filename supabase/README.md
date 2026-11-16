@@ -15,7 +15,8 @@ function that serves the same API next to it. Project `mybizmanager`
   secret key. `20261116120000_edge_shared_state.sql` adds the state both
   runtimes share (`app_properties`, `app_lease`, `app_cache`, `mbm_lock`,
   `mbm_unlock`); `20261116130000_edge_cron.sql` the timed calls
-  (`pg_cron` + `pg_net`, `mbm_call_edge`).
+  (`pg_cron` + `pg_net`, `mbm_call_edge`); `20261116140000_pg_net_schema.sql`
+  moves `pg_net` out of `public` where that file's first version put it.
 - `functions/api/` — the Edge function. `index.ts` is the entry point;
   `lib/` holds the routing, the replay executor and the Apps Script service
   stand-ins; `runtime.js` is generated from `script.gs` by `npm run build` and

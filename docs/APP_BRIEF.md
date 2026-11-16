@@ -1414,7 +1414,7 @@ and trigger rows on **2026-11-13** (Supabase edge logs and `system_config`):
 | Mini App | menu button installed and verified |
 | Web sign-in | username + password, server-verified, 30-day signed session |
 | Store | **Supabase** since 2026-11-02 20:34 UTC (`Omad_Storage_Cutover_At`); project `mybizmanager`, region us-east-1. The spreadsheet holds the pre-move copy |
-| Edge function | **not live yet** (2026-11-16). Deployed to the test project `mybizmanager-staging` only; on the live project the migrations `20261116120000_edge_shared_state.sql` and `20261116130000_edge_cron.sql` are not applied, the settings are still in Script Properties, and every request goes to Apps Script. The rollout runbook is in `docs/DEPLOYMENT.md` |
+| Edge function | **not live yet** (2026-11-16). Deployed to the test project `mybizmanager-staging` only, and verified there end to end by CI on synthetic data (`scripts/edge-staging.js`): reads 0.15–0.25 s, a write 0.35 s, sign-in 0.45 s as measured from a US runner, cold boot 25 ms, `pg_cron` → function every 5 minutes answering 200; on the live project the migrations `20261116120000_edge_shared_state.sql`, `20261116130000_edge_cron.sql` and `20261116140000_pg_net_schema.sql` are not applied, the settings are still in Script Properties, and every request goes to Apps Script. The rollout runbook is in `docs/DEPLOYMENT.md` |
 
 Account records and the session-signing secret are live Script Properties, not
 repository state, so this document does not claim whether a one-time password

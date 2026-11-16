@@ -304,15 +304,16 @@ is built in: without `20261102160523_batched_writes_and_counts.sql` (the
 functions `mbm_apply` and `mbm_counts`) the backend still works, one REST call
 per write, just slower and not atomic. It is applied to `mybizmanager`.
 
-The Edge function adds two, applied as the first step of
+The Edge function adds three, applied as the first step of
 [switching it on](#switching-production-over):
 
 | Migration | Adds | Before it is applied |
 |---|---|---|
 | `20261116120000_edge_shared_state.sql` | `app_properties`, `app_lease`, `app_cache`; `mbm_lock` / `mbm_unlock`; the property ops in `mbm_apply` | the settings cannot be moved to the database (the move says which migration is missing); everything else works as before |
-| `20261116130000_edge_cron.sql` | `pg_cron`, `pg_net`; `mbm_call_edge(job)`; the jobs `mbm-telegram-jobs` (every 5 min) and `mbm-db-backup` (22:00 UTC) | no nightly copy; the jobs run on the Apps Script trigger as before |
+| `20261116130000_edge_cron.sql` | `pg_cron`, `pg_net` (in `extensions`); `mbm_call_edge(job)`; the jobs `mbm-telegram-jobs` (every 5 min) and `mbm-db-backup` (22:00 UTC) | no nightly copy; the jobs run on the Apps Script trigger as before |
+| `20261116140000_pg_net_schema.sql` | moves `pg_net` out of `public` where the first version of the file above put it (the test project); a no-op anywhere else | — |
 
-Both are inert until rows in `app_properties` give them something to do.
+They are inert until rows in `app_properties` give them something to do.
 
 ### Moving the data from Sheets (once)
 
@@ -376,8 +377,10 @@ Not before the owner has said **ok** to the merge and to the switch, in so
 many words. Each step is undone by the matching row of
 [Going back](#going-back-from-the-edge-function).
 
-1. **Migrations.** Apply `20261116120000_edge_shared_state.sql`, then
-   `20261116130000_edge_cron.sql`, to `mybizmanager`.
+1. **Migrations.** Apply `20261116120000_edge_shared_state.sql`,
+   `20261116130000_edge_cron.sql` and `20261116140000_pg_net_schema.sql`, in
+   that order, to `mybizmanager`. (The test project took the same three from
+   CI; see above.)
 2. **The rows.** In the SQL editor; the secret is made by the database and
    never leaves it:
    ```sql

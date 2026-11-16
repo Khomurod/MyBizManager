@@ -16,7 +16,7 @@
 -- (EDGE_FUNCTION_URL, EDGE_CRON_SECRET), so the same migration serves the test
 -- project and the live one, and until both rows exist the jobs do nothing.
 
-create extension if not exists pg_net;
+create extension if not exists pg_net with schema extensions;
 create extension if not exists pg_cron;
 
 create or replace function public.mbm_call_edge(p_job text) returns bigint
