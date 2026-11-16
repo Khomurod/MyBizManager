@@ -82,20 +82,28 @@ function dataRevision_(scope) {
  * because a counter could not be bumped. A missed bump costs at most the TTL.
  */
 function bumpDataRevision_(scope) {
+  var batched = false;
   try {
-    var current = Number(dataRevision_(scope)) || 0;
-    scriptProperties_().setProperty(CACHE_REV_PROP_PREFIX + scope, String(current + 1));
-  } catch (error) {}
+    var current = parseInt(dataRevision_(scope), 10) || 0;
+    batched = sharedPropertyWriteIsBatched_();
+    scriptProperties_().setProperty(CACHE_REV_PROP_PREFIX + scope,
+      String(current + 1) + "." + Math.floor(Math.random() * 2176782336).toString(36));
+  } catch (error) {
+    batched = false;
+  }
   // On Supabase the write this bump announces may still be waiting to be
-  // sent; it is bumped again once it is stored (24_supabase_store.gs).
-  noteRevisionBumpForPendingWrites_(scope);
+  // sent; it is bumped again once it is stored (24_supabase_store.gs) --
+  // unless the bump itself travels in that same transaction (the settings
+  // live in app_properties), in which case they land together anyway.
+  if (!batched) noteRevisionBumpForPendingWrites_(scope);
 }
 
-// The read-modify-write above is deliberately not locked. Two writes landing
-// together can produce the same next value, which leaves one stale summary
-// readable until its TTL. Taking the script lock for a counter would put every
-// write behind the same lock the *financial* writes use, to protect a cache —
-// a much worse trade than a minute of staleness on a display figure.
+// A revision is a counter plus a random suffix: only equality is ever asked
+// of it, and the suffix makes two bumps that read the same counter (the
+// read-modify-write above is deliberately not locked) still produce two
+// different revisions, instead of leaving one stale summary readable.
+// Taking the script lock for a counter would put every write behind the same
+// lock the *financial* writes use, to protect a cache.
 
 /** Bumps whichever scope a System_Config key belongs to, if any. */
 function bumpScopeForConfigKey_(key) {

@@ -542,20 +542,28 @@ function dataRevision_(scope) {
  * because a counter could not be bumped. A missed bump costs at most the TTL.
  */
 function bumpDataRevision_(scope) {
+  var batched = false;
   try {
-    var current = Number(dataRevision_(scope)) || 0;
-    scriptProperties_().setProperty(CACHE_REV_PROP_PREFIX + scope, String(current + 1));
-  } catch (error) {}
+    var current = parseInt(dataRevision_(scope), 10) || 0;
+    batched = sharedPropertyWriteIsBatched_();
+    scriptProperties_().setProperty(CACHE_REV_PROP_PREFIX + scope,
+      String(current + 1) + "." + Math.floor(Math.random() * 2176782336).toString(36));
+  } catch (error) {
+    batched = false;
+  }
   // On Supabase the write this bump announces may still be waiting to be
-  // sent; it is bumped again once it is stored (24_supabase_store.gs).
-  noteRevisionBumpForPendingWrites_(scope);
+  // sent; it is bumped again once it is stored (24_supabase_store.gs) --
+  // unless the bump itself travels in that same transaction (the settings
+  // live in app_properties), in which case they land together anyway.
+  if (!batched) noteRevisionBumpForPendingWrites_(scope);
 }
 
-// The read-modify-write above is deliberately not locked. Two writes landing
-// together can produce the same next value, which leaves one stale summary
-// readable until its TTL. Taking the script lock for a counter would put every
-// write behind the same lock the *financial* writes use, to protect a cache —
-// a much worse trade than a minute of staleness on a display figure.
+// A revision is a counter plus a random suffix: only equality is ever asked
+// of it, and the suffix makes two bumps that read the same counter (the
+// read-modify-write above is deliberately not locked) still produce two
+// different revisions, instead of leaving one stale summary readable.
+// Taking the script lock for a counter would put every write behind the same
+// lock the *financial* writes use, to protect a cache.
 
 /** Bumps whichever scope a System_Config key belongs to, if any. */
 function bumpScopeForConfigKey_(key) {
@@ -1806,8 +1814,129 @@ var TELEGRAM_TOKEN_PATTERN = /^\d{6,16}:[A-Za-z0-9_-]{30,}$/;
 
 var TELEGRAM_TOKEN_LIKE_PATTERN = /\d{6,16}:[A-Za-z0-9_-]{30,}/g;
 
+// 5d. WHERE THE SETTINGS LIVE
+// ------------------------------------------
+// The backend runs in two places: Apps Script and the Supabase Edge Function
+// `api` (supabase/functions/api). Both must see the same users, session
+// secret, bot settings and cache revisions, or one of them acts on an old
+// copy -- a password changed in one still opening the other, a summary keyed
+// by a revision only one of them bumped.
+//
+// So once the move has been made (move_properties_to_database), every setting
+// is read from and written to the app_properties table, and Script Properties
+// keeps only the four that say where that database is. Apps Script still
+// writes each value to its Script Property too: if the database cannot be
+// reached, the request reads that copy instead of failing at the sign-in --
+// which is what keeps "Google Sheets'ga qaytish" usable with the database down.
+//
+// Before the move, and whenever the store is the spreadsheet, nothing changes:
+// Script Properties are the settings.
+// ==========================================
+
+/** "supabase" once the settings live in app_properties. A Script Property itself. */
+var PROPERTY_STORE_PROP = "OMAD_PROPERTIES_STORE";
+var PROPERTY_STORE_DATABASE = "supabase";
+
+/**
+ * The row the move writes last. Its presence is what the Edge function checks
+ * before serving anything itself, and moving back (or rolling back to the
+ * spreadsheet) deletes it first.
+ */
+var PROPERTY_STORE_READY_KEY = "__PROPERTIES_READY";
+
+/** Kept in Script Properties whatever happens: they locate the database itself. */
+var LOCAL_PROPERTY_KEYS = {
+  OMAD_STORAGE: true,
+  SUPABASE_URL: true,
+  SUPABASE_SECRET_KEY: true,
+  OMAD_STORAGE_IMPORT: true,
+  OMAD_PROPERTIES_STORE: true
+};
+
+/** True while the settings are being read from the database (guards re-entry from error paths). */
+var SHARED_PROPERTIES_LOADING_ = false;
+
 function scriptProperties_() {
-  return PropertiesService.getScriptProperties();
+  var local = PropertiesService.getScriptProperties();
+  if (!sharedPropertiesInDatabase_(local)) return local;
+  return sharedPropertiesView_(local);
+}
+
+/** Whether the settings live in app_properties for this request. */
+function sharedPropertiesInDatabase_(local) {
+  try {
+    var store = local || PropertiesService.getScriptProperties();
+    return String(store.getProperty(PROPERTY_STORE_PROP) || "") === PROPERTY_STORE_DATABASE &&
+      String(store.getProperty("OMAD_STORAGE") || "").trim().toLowerCase() === "supabase";
+  } catch (error) {
+    return false;
+  }
+}
+
+/**
+ * Every shared setting, read once per request (and again after the lock is
+ * taken), or null when the database cannot be read right now.
+ */
+function sharedPropertyMap_() {
+  if (SHARED_PROPERTIES_LOADING_) return null;
+  var doc;
+  try {
+    doc = appDoc_();
+  } catch (error) {
+    return null;
+  }
+  if (!doc || !doc.__supabase) return null;
+  SHARED_PROPERTIES_LOADING_ = true;
+  try {
+    return doc.__properties();
+  } catch (error) {
+    return null;
+  } finally {
+    SHARED_PROPERTIES_LOADING_ = false;
+  }
+}
+
+/** Script Properties' surface over app_properties. */
+function sharedPropertiesView_(local) {
+  var view = {
+    getProperty: function (key) {
+      if (LOCAL_PROPERTY_KEYS[key]) return local.getProperty(key);
+      var map = sharedPropertyMap_();
+      if (map) return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : null;
+      // The database could not be read: the copy Apps Script keeps (empty in
+      // the Edge runtime, which has no other source).
+      return local.getProperty(key);
+    },
+    setProperty: function (key, value) {
+      if (LOCAL_PROPERTY_KEYS[key]) {
+        local.setProperty(key, value);
+        return view;
+      }
+      appDoc_().__writeProperty(key, String(value));
+      try { local.setProperty(key, String(value)); } catch (error) {}
+      return view;
+    },
+    deleteProperty: function (key) {
+      if (LOCAL_PROPERTY_KEYS[key]) {
+        local.deleteProperty(key);
+        return view;
+      }
+      appDoc_().__writeProperty(key, null);
+      try { local.deleteProperty(key); } catch (error) {}
+      return view;
+    }
+  };
+  return view;
+}
+
+/**
+ * Whether a setting written now is sent with the batch of writes being kept
+ * (24_supabase_store.gs) -- in the same transaction as the rows it describes.
+ */
+function sharedPropertyWriteIsBatched_() {
+  if (!sharedPropertiesInDatabase_()) return false;
+  var doc = storageRequestDoc_();
+  return !!doc && doc.__ctx.buffering();
 }
 
 function getTelegramSetting_(key) {
@@ -16194,6 +16323,10 @@ function resetStorageMemos_() {
   flushPendingWrites_();
   STORAGE_DEFERRED_BUMPS_ = {};
   APP_DOC_MEMO_ = null;
+  // A lease still held (a lock taken before a mid-request store switch) is
+  // released by the lock that took it; forgetting it here would leave it to
+  // expire instead.
+  if (!STORAGE_LEASE_.depth) STORAGE_LEASE_ = { owner: "", depth: 0 };
 }
 
 // ------------------------------------------------------------- HTTP client
@@ -16498,6 +16631,94 @@ function withBatchedWrites_(fn) {
   }
 }
 
+// ------------------------------------------------------- the shared lease
+//
+// LockService's lock only excludes other Apps Script executions. Once the
+// settings live in app_properties (03_settings.gs), the Edge function writes
+// too, so the lock that matters is one both can see: a lease row in
+// app_lease, taken with mbm_lock and released in the same transaction as the
+// batch it guarded (or with mbm_unlock when there was nothing to send).
+//
+// A lease is re-entrant within one execution (depth), and one left behind by
+// an execution that died expires after STORAGE_LEASE_TTL_MS -- long enough
+// for any locked region this backend has, short enough that a crash does not
+// stop writing for long.
+
+var STORAGE_LEASE_TTL_MS = 90000;
+/** How long one mbm_lock call may wait; the API's statement timeout is 8 s. */
+var STORAGE_LEASE_WAIT_SLICE_MS = 5000;
+var STORAGE_LEASE_ = { owner: "", depth: 0 };
+
+/** The document whose database holds the lease, or null when there is no lease to take. */
+function storageLeaseDoc_() {
+  var doc = storageRequestDoc_();
+  return doc && doc.__ctx.sharedProps ? doc : null;
+}
+
+function storageLeaseOwner_() {
+  if (!STORAGE_LEASE_.owner) STORAGE_LEASE_.owner = "x_" + Utilities.getUuid().split("-").join("");
+  return STORAGE_LEASE_.owner;
+}
+
+/** Takes the lease, waiting up to timeoutMs, or throws as LockService does. */
+function acquireStorageLease_(doc, timeoutMs) {
+  if (STORAGE_LEASE_.depth > 0) {
+    STORAGE_LEASE_.depth++;
+    return;
+  }
+  var owner = storageLeaseOwner_();
+  var waitMs = Math.max(0, Number(timeoutMs) || 0);
+  var deadline = Date.now() + waitMs;
+  var attempts = Math.ceil(waitMs / STORAGE_LEASE_WAIT_SLICE_MS) + 1;
+  for (var i = 0; i < attempts; i++) {
+    var slice = Math.max(0, Math.min(STORAGE_LEASE_WAIT_SLICE_MS, deadline - Date.now()));
+    var answer;
+    try {
+      answer = doc.__rpc("mbm_lock", { p_owner: owner, p_ttl_ms: STORAGE_LEASE_TTL_MS, p_wait_ms: slice });
+    } catch (error) {
+      // A database without the lease (the migration not applied yet) has no
+      // second writer to exclude.
+      if (isMissingSupabaseFunction_(error)) return;
+      throw error;
+    }
+    if (answer && answer.acquired) {
+      STORAGE_LEASE_.depth = 1;
+      doc.__ctx.leaseReleased = false;
+      return;
+    }
+    if (Date.now() >= deadline) break;
+  }
+  throw new Error("Lock timeout: another process was holding the lock for too long.");
+}
+
+/**
+ * Lets go of one level of the lease. The outermost release hands the lease to
+ * the batch being sent (one transaction), or releases it on its own.
+ */
+function releaseStorageLeaseAndFlush_(doc) {
+  if (STORAGE_LEASE_.depth === 0) {
+    flushPendingWrites_();
+    return;
+  }
+  STORAGE_LEASE_.depth--;
+  if (STORAGE_LEASE_.depth > 0) {
+    flushPendingWrites_();
+    return;
+  }
+  var owner = STORAGE_LEASE_.owner;
+  doc.__ctx.leaseReleased = false;
+  doc.__ctx.unlockOwner = owner;
+  try {
+    flushPendingWrites_();
+  } finally {
+    doc.__ctx.unlockOwner = "";
+    if (!doc.__ctx.leaseReleased) {
+      try { doc.__rpc("mbm_unlock", { p_owner: owner }); } catch (error) { /* it expires on its own */ }
+    }
+    doc.__ctx.leaseReleased = false;
+  }
+}
+
 /**
  * LockService's script lock, which also delimits a batch of writes. Every
  * module takes the lock through this, never through LockService directly.
@@ -16506,14 +16727,24 @@ function withBatchedWrites_(fn) {
  * before: another execution may have written while we waited, so counts and
  * cached rows are re-read under the lock. Releasing it sends the batch first,
  * then lets the next execution in.
+ *
+ * When the settings live in app_properties it also holds the shared lease
+ * above, so the Edge function and Apps Script exclude each other too.
  */
 function appScriptLock_() {
   var lock = LockService.getScriptLock();
   var held = false;
-  var acquired = function () {
+  var leaseDoc = null;
+  var acquired = function (timeoutMs) {
     if (held) return;
     try {
       assertStoreUnchanged_();
+      leaseDoc = storageLeaseDoc_();
+      if (leaseDoc) {
+        // Nothing kept may be sent under somebody else's lease.
+        leaseDoc.__flush();
+        acquireStorageLease_(leaseDoc, timeoutMs);
+      }
     } catch (changed) {
       lock.releaseLock();
       throw changed;
@@ -16524,10 +16755,10 @@ function appScriptLock_() {
     beginStorageBatch_();
   };
   return {
-    waitLock: function (timeoutMs) { lock.waitLock(timeoutMs); acquired(); },
+    waitLock: function (timeoutMs) { lock.waitLock(timeoutMs); acquired(timeoutMs); },
     tryLock: function (timeoutMs) {
       var ok = lock.tryLock(timeoutMs);
-      if (ok) acquired();
+      if (ok) acquired(timeoutMs);
       return ok;
     },
     hasLock: function () { return lock.hasLock(); },
@@ -16538,7 +16769,8 @@ function appScriptLock_() {
         STORAGE_BATCH_DEPTH_ = Math.max(0, STORAGE_BATCH_DEPTH_ - 1);
         // Always sent here, even inside an outer batch: once the lock is
         // gone another execution may read these rows.
-        flushPendingWrites_();
+        if (leaseDoc) releaseStorageLeaseAndFlush_(leaseDoc);
+        else flushPendingWrites_();
       } finally {
         lock.releaseLock();
       }
@@ -16568,6 +16800,10 @@ function supabaseDoc_(credentials, options) {
     counts: null,       // the mbm_counts() answer
     countsGen: 0,       // which mbm_counts() answer `counts` is
     config: null,       // every setting, key -> value
+    props: null,        // app_properties, key -> value (the shared settings)
+    sharedProps: !!(options && options.request) && sharedPropertiesInDatabase_(),
+    unlockOwner: "",    // a lease to release in the same mbm_apply as the batch
+    leaseReleased: false,
     noRpc: false,       // the database predates mbm_apply / mbm_counts
     rpcKnown: false     // whether that has been found out yet
   };
@@ -16616,17 +16852,35 @@ function supabaseDoc_(credentials, options) {
           merged = true;
         }
       }
+    } else if (op.op === "upsert_property" || op.op === "delete_property") {
+      // Only the last value of a setting matters inside one transaction.
+      for (var j = pending.length - 1; j >= 0 && !merged; j--) {
+        var keptProp = pending[j];
+        if ((keptProp.op === "upsert_property" || keptProp.op === "delete_property") && keptProp.key === op.key) {
+          pending[j] = op;
+          merged = true;
+        }
+      }
     }
     if (!merged) pending.push(op);
-    ctx.touched[op.op === "upsert_config" ? "system_config" : op.table] = true;
+    ctx.touched[op.op === "upsert_config" ? "system_config"
+      : (op.op === "upsert_property" || op.op === "delete_property") ? "app_properties" : op.table] = true;
   };
 
   /** Rows of one insert grouped by column set, as one statement each wants. */
   var wireOps = function (pending) {
     var wire = [];
     var inserts = [];
+    // Settings go last: a cache revision must not become visible before the
+    // rows it announces, even when a very large batch is split over calls.
+    var properties = [];
     for (var p = 0; p < pending.length; p++) {
       var op = pending[p];
+      if (op.op === "upsert_property" || op.op === "delete_property") {
+        properties.push(op.op === "upsert_property" ? { op: "upsert_property", key: op.key, value: op.value }
+          : { op: "delete_property", key: op.key });
+        continue;
+      }
       if (op.op !== "insert") {
         wire.push(op.op === "update" ? { op: "update", table: op.table, seq: op.seq, values: op.values }
           : op.op === "delete" ? { op: "delete", table: op.table, seqs: op.seqs }
@@ -16647,12 +16901,20 @@ function supabaseDoc_(credentials, options) {
         inserts[inserts.length - 1].refs.push(op.refs[r]);
       }
     }
-    return { wire: wire, inserts: inserts };
+    return { wire: wire.concat(properties), inserts: inserts };
   };
 
   /** The same operations as separate REST calls, for a database without mbm_apply. */
   var applyOneByOne = function (wire) {
     return wire.map(function (op) {
+      if (op.op === "upsert_property" || op.op === "delete_property") {
+        writePropertyNow(op.key, op.op === "delete_property" ? null : op.value);
+        return { ok: true };
+      }
+      if (op.op === "unlock") {
+        supabaseRpc_(credentials, "mbm_unlock", { p_owner: op.owner });
+        return { ok: true };
+      }
       if (op.op === "upsert_config") {
         supabaseRequest_(credentials, "post", "system_config", [["on_conflict", "key"]],
           [{ key: op.key, value: op.value, updated_at: new Date().toISOString() }],
@@ -16730,18 +16992,25 @@ function supabaseDoc_(credentials, options) {
     var plan = wireOps(ctx.pending);
     ctx.pending = [];
     ctx.touched = {};
+    var unlockOwner = ctx.unlockOwner;
+    ctx.unlockOwner = "";
+    // The lock is released in the same transaction as the writes it guarded.
+    if (unlockOwner) plan.wire.push({ op: "unlock", owner: unlockOwner });
     var results;
     try {
       results = applyWire(plan.wire);
+      if (unlockOwner) ctx.leaseReleased = true;
     } catch (error) {
       // Nothing of the batch is stored. Every position and count this
       // request worked out may now be wrong, so all of it is read again.
       ctx.counts = null;
       ctx.config = null;
+      ctx.props = null;
       openSheets().forEach(function (sheet) { sheet.__forget(true); });
       // A batch split over several calls (only past SUPABASE_INSERT_MAX_CHARS)
       // may be partly stored: invalidate regardless.
       rebumpDeferredRevisions_();
+      rewriteRevisionsAfterFailure(plan.wire);
       throw error;
     }
     for (var i = 0; i < plan.inserts.length; i++) {
@@ -16753,6 +17022,21 @@ function supabaseDoc_(credentials, options) {
       for (var k = 0; k < refs.length; k++) refs[k].seq = seqs[k];
     }
     rebumpDeferredRevisions_();
+  };
+
+  /**
+   * The cache revisions a refused batch carried, written on their own. They
+   * are fresh values nobody has cached anything under, so storing them when
+   * nothing else was stored costs a cache miss -- and when part of a split
+   * batch *was* stored, it is what keeps a summary of the old rows from
+   * being served. Best effort: the database may well be the thing failing.
+   */
+  var rewriteRevisionsAfterFailure = function (wire) {
+    for (var i = 0; i < wire.length; i++) {
+      var op = wire[i];
+      if (op.op !== "upsert_property" || String(op.key).indexOf(CACHE_REV_PROP_PREFIX) !== 0) continue;
+      try { writePropertyNow(op.key, op.value); } catch (ignored) { /* the TTL is the backstop */ }
+    }
   };
 
   /** Sends what a read of `table` would otherwise miss. */
@@ -16771,13 +17055,25 @@ function supabaseDoc_(credentials, options) {
     var tables = [];
     var wantCounts = !ctx.counts && !ctx.noRpc;
     var wantConfig = !ctx.config;
+    var wantProps = ctx.sharedProps && !ctx.props;
     // Counts are only true of what is stored.
     if (wantCounts && ctx.pending.length) ctx.flush();
     if (wantConfig) ctx.beforeRead("system_config");
+    if (wantProps) ctx.beforeRead("app_properties");
     if (wantCounts) calls.push({ method: "post", path: "rpc/mbm_counts", body: {} });
     if (wantConfig) {
       calls.push({ method: "get", path: "system_config", params: [
         ["select", "seq,key,value"], ["order", "seq.asc"], ["limit", SUPABASE_PAGE_SIZE]] });
+    }
+    if (wantProps) {
+      calls.push({ method: "get", path: "app_properties", params: [["select", "key,value"], ["limit", SUPABASE_PAGE_SIZE]] });
+    }
+    // A reader outside the lock must see a cache revision no newer than the
+    // rows it reads, so whole tables are only fetched together with the
+    // settings once those are already known (under the lock nobody writes).
+    if (wantProps && (sheetNames || []).length && STORAGE_LEASE_.depth === 0) {
+      ctx.prime([]);
+      return ctx.prime(sheetNames);
     }
     for (var n = 0; n < (sheetNames || []).length; n++) {
       var wanted = doc.getSheetByName(sheetNames[n]);
@@ -16814,6 +17110,11 @@ function supabaseDoc_(credentials, options) {
       for (var i = 0; i < rows.length; i++) config[rows[i].key] = rows[i].value === null ? "" : rows[i].value;
       ctx.config = config;
     }
+    if (wantProps) {
+      var propsAnswer = answers[at++];
+      if (propsAnswer instanceof Error) throw propsAnswer;
+      ctx.props = propertyMap(propsAnswer.json || []);
+    }
     // A table that failed is simply read again when it is needed.
     for (var t = 0; t < tables.length; t++) {
       var answer = answers[at++];
@@ -16826,7 +17127,24 @@ function supabaseDoc_(credentials, options) {
     ctx.flush();
     ctx.counts = null;
     ctx.config = null;
+    ctx.props = null;
     openSheets().forEach(function (sheet) { sheet.__forget(false); });
+  };
+
+  var propertyMap = function (rows) {
+    var map = {};
+    for (var i = 0; i < rows.length; i++) map[rows[i].key] = rows[i].value === null ? "" : String(rows[i].value);
+    return map;
+  };
+
+  /** One setting written straight away (outside a batch). */
+  var writePropertyNow = function (key, value) {
+    if (value === null) {
+      supabaseRequest_(credentials, "delete", "app_properties", [["key", "eq." + key]], null, "return=minimal");
+    } else {
+      supabaseRequest_(credentials, "post", "app_properties", [["on_conflict", "key"]],
+        [{ key: key, value: value, updated_at: new Date().toISOString() }], "resolution=merge-duplicates,return=minimal");
+    }
   };
 
   var doc = {
@@ -16835,6 +17153,35 @@ function supabaseDoc_(credentials, options) {
     credentials: credentials,
     __flush: function () { ctx.flush(); },
     __lockAcquired: function () { ctx.forgetReads(); },
+    /** The shared settings (app_properties), read with the request's other settings. */
+    __properties: function () {
+      if (!ctx.props) {
+        if (ctx.perRequest && ctx.sharedProps) ctx.prime([]);
+        else {
+          ctx.beforeRead("app_properties");
+          ctx.props = propertyMap(supabaseRequest_(credentials, "get", "app_properties",
+            [["select", "key,value"], ["limit", SUPABASE_PAGE_SIZE]]).json || []);
+        }
+      }
+      return ctx.props || {};
+    },
+    /**
+     * Writes one shared setting (null deletes it): kept for the batch while
+     * writes are being kept, so it lands with the rows it describes.
+     */
+    __writeProperty: function (key, value) {
+      if (ctx.props) {
+        if (value === null) delete ctx.props[key];
+        else ctx.props[key] = value;
+      }
+      if (ctx.buffering()) {
+        ctx.queue(value === null ? { op: "delete_property", key: key } : { op: "upsert_property", key: key, value: value });
+        return true;
+      }
+      writePropertyNow(key, value);
+      return false;
+    },
+    __rpc: function (name, args) { return supabaseRpc_(credentials, name, args).json; },
     __prefetch: function (sheetNames) { if (ctx.perRequest) ctx.prime(sheetNames); },
     __pendingCount: function () { return ctx.pending.length; },
     getSheetByName: function (name) {
@@ -17595,7 +17942,8 @@ function isStorageAction_(action) {
     action === 'preview_supabase_import' ||
     action === 'apply_supabase_import' ||
     action === 'verify_supabase_import' ||
-    action === 'rollback_supabase_storage';
+    action === 'rollback_supabase_storage' ||
+    isPropertyStoreAction_(action);
 }
 
 /** Diagnostics: compared and reported, never a reason to refuse the move. */
@@ -17606,11 +17954,16 @@ function isInformationalImportSheet_(name) {
 
 function storageAction_(action, payload) {
   if (action === 'get_storage_status') {
-    var answer = { status: "success", storage: storageStatus_(), importStatus: readStorageImportStatus_() };
+    var answer = {
+      status: "success", storage: storageStatus_(), importStatus: readStorageImportStatus_(),
+      properties: propertyStoreStatus_()
+    };
     // Opt-in: it reads the whole ledger from both stores, three times each.
     if (payload && payload.benchmark === true) answer.benchmark = storageLatencyBenchmark_();
     return answer;
   }
+
+  if (isPropertyStoreAction_(action)) return propertyStoreAction_(action);
 
   if (action === 'rollback_supabase_storage') {
     // Serialised with the move and with every locked writer: a rollback never
@@ -18012,6 +18365,11 @@ function compareOmadMoney_(source, target) {
  */
 function rollbackSupabaseStorage_() {
   var wasSupabase = storageMode_() === STORAGE_MODE_SUPABASE;
+  // The settings come back first: the Edge function must stop serving (the
+  // marker goes), and the spreadsheet mode reads Script Properties only.
+  var local = PropertiesService.getScriptProperties();
+  if (sharedPropertiesInDatabase_(local)) copyPropertiesBackToScript_(local, supabaseCredentials_());
+  else if (String(local.getProperty(PROPERTY_STORE_PROP) || "")) local.deleteProperty(PROPERTY_STORE_PROP);
   setTelegramSetting_(STORAGE_PROP_MODE, STORAGE_MODE_SHEETS);
   resetStorageMemos_();
   bumpAllDataRevisions_();
@@ -18032,5 +18390,215 @@ function bumpAllDataRevisions_() {
   bumpDataRevision_(CACHE_SCOPE_OMAD);
   bumpDataRevision_(CACHE_SCOPE_CAFE);
   bumpDataRevision_(CACHE_SCOPE_TASKS);
+}
+
+// ----- apps-script/26_property_store.gs ----------------------------------------
+
+// ============================================================
+// Where the settings live: Script Properties or app_properties
+// ------------------------------------------------------------
+// Operator actions, all omad_admin, both under the script lock:
+//
+//   move_properties_to_database  copy every shared Script Property into
+//                                app_properties, verify, switch, then write
+//                                the ready marker the Edge function checks
+//   move_properties_to_script    copy them back, delete the marker, switch
+//
+// Why they move at all: the Supabase Edge function serves the same API as
+// this script, and a setting only one runtime can see (a user, the session
+// secret, the bot token, a cache revision) would let the other act on an old
+// copy. Once moved, both read the same table (03_settings.gs), and Apps Script
+// keeps writing a copy of every change to its own Script Properties, which is
+// what it falls back to when the database cannot be read and what moving back
+// starts from.
+//
+// The keys that say where the database is (LOCAL_PROPERTY_KEYS) never move.
+//
+// Order matters, in both directions:
+//   - to the database: copy, verify, switch this script over, copy again
+//     whatever changed in Script Properties meanwhile, and only then the
+//     marker -- the Edge function serves nothing itself before the marker;
+//   - back: delete the marker first, so the Edge function stops serving, then
+//     copy back and switch.
+// Every cache revision is bumped afterwards: a write that landed in the old
+// store while copying must not leave a summary readable under a revision the
+// new store still has.
+// ============================================================
+
+function isPropertyStoreAction_(action) {
+  return action === 'move_properties_to_database' || action === 'move_properties_to_script';
+}
+
+function propertyStoreAction_(action) {
+  var lock = appScriptLock_();
+  lock.waitLock(30000);
+  try {
+    return action === 'move_properties_to_database'
+      ? movePropertiesToDatabase_()
+      : movePropertiesToScript_();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Every Script Property that is a shared setting, as a plain map. */
+function localSharedProperties_(local) {
+  var all = local.getProperties() || {};
+  var out = {};
+  Object.keys(all).forEach(function (key) {
+    if (LOCAL_PROPERTY_KEYS[key] || key === PROPERTY_STORE_READY_KEY) return;
+    out[key] = String(all[key]);
+  });
+  return out;
+}
+
+/** app_properties as a map, read straight from the database. */
+function databaseProperties_(credentials) {
+  var rows = supabaseRequest_(credentials, "get", "app_properties",
+    [["select", "key,value"], ["limit", SUPABASE_PAGE_SIZE]]).json || [];
+  var out = {};
+  for (var i = 0; i < rows.length; i++) out[rows[i].key] = rows[i].value === null ? "" : String(rows[i].value);
+  return out;
+}
+
+/** The ops that make the database hold exactly `wanted` (the marker aside). */
+function propertySyncOps_(wanted, stored) {
+  var ops = [];
+  Object.keys(stored).forEach(function (key) {
+    if (key === PROPERTY_STORE_READY_KEY) return;
+    if (!Object.prototype.hasOwnProperty.call(wanted, key)) ops.push({ op: "delete_property", key: key });
+  });
+  Object.keys(wanted).forEach(function (key) {
+    if (stored[key] !== wanted[key]) ops.push({ op: "upsert_property", key: key, value: wanted[key] });
+  });
+  return ops;
+}
+
+/** Keys whose value differs between two maps, for the answer (never the values). */
+function propertyMismatches_(wanted, stored) {
+  var keys = {};
+  Object.keys(wanted).forEach(function (key) { keys[key] = true; });
+  Object.keys(stored).forEach(function (key) { if (key !== PROPERTY_STORE_READY_KEY) keys[key] = true; });
+  return Object.keys(keys).filter(function (key) { return wanted[key] !== stored[key]; }).sort();
+}
+
+function applyPropertyOps_(credentials, ops) {
+  if (ops.length) supabaseRpc_(credentials, "mbm_apply", { ops: ops });
+}
+
+function propertyStoreStatus_() {
+  var local = PropertiesService.getScriptProperties();
+  return {
+    store: sharedPropertiesInDatabase_(local) ? "database" : "script",
+    configured: String(local.getProperty(PROPERTY_STORE_PROP) || "") || "script"
+  };
+}
+
+function movePropertiesToDatabase_() {
+  var local = PropertiesService.getScriptProperties();
+  if (storageMode_() !== STORAGE_MODE_SUPABASE) {
+    return { status: "error", message: "Avval ma'lumotlar Supabase'ga ko'chirilishi kerak (OMAD_STORAGE=supabase)." };
+  }
+  if (sharedPropertiesInDatabase_(local)) {
+    return { status: "error", message: "Sozlamalar allaqachon bazada (app_properties).", properties: propertyStoreStatus_() };
+  }
+  var credentials = supabaseCredentials_();
+  if (!credentials.ok) {
+    return { status: "error", message: "Script Properties'da yo'q: " + credentials.missing.join(", ") };
+  }
+
+  var stored;
+  try {
+    stored = databaseProperties_(credentials);
+  } catch (error) {
+    return {
+      status: "error",
+      message: "app_properties jadvali o'qilmadi (migratsiya 20261116120000_edge_shared_state.sql qo'llanganmi?): " +
+        redactSecrets_(error).slice(0, 300)
+    };
+  }
+
+  // 1. Copy, and check the database now holds exactly what Script Properties do.
+  var wanted = localSharedProperties_(local);
+  applyPropertyOps_(credentials, propertySyncOps_(wanted, stored));
+  var mismatches = propertyMismatches_(wanted, databaseProperties_(credentials));
+  if (mismatches.length) {
+    return {
+      status: "error",
+      message: "Bazadagi sozlamalar Script Properties bilan mos emas, o'tish bekor qilindi: " + mismatches.slice(0, 20).join(", ")
+    };
+  }
+
+  // 2. Switch this script over. From here every setting it writes goes to the
+  //    database first (and to Script Properties as a copy).
+  local.setProperty(PROPERTY_STORE_PROP, PROPERTY_STORE_DATABASE);
+  resetStorageMemos_();
+
+  // 3. Whatever a lock-free execution wrote to Script Properties between the
+  //    copy and the switch (a delivery stamp, a revision) is copied too.
+  var later = localSharedProperties_(local);
+  var caughtUp = [];
+  Object.keys(later).forEach(function (key) { if (later[key] !== wanted[key]) caughtUp.push(key); });
+  if (caughtUp.length) {
+    applyPropertyOps_(credentials, caughtUp.map(function (key) {
+      return { op: "upsert_property", key: key, value: later[key] };
+    }));
+  }
+
+  // 4. Only now may the Edge function serve anything itself.
+  var readyAt = new Date().toISOString();
+  applyPropertyOps_(credentials, [{ op: "upsert_property", key: PROPERTY_STORE_READY_KEY, value: readyAt }]);
+  resetStorageMemos_();
+  bumpAllDataRevisions_();
+  recordStorageImportStatus_({ propertiesMovedAt: readyAt });
+  appendAuditRow_(appDoc_(), "properties_to_database", Object.keys(wanted).length + " keys");
+  return {
+    status: "success",
+    moved: Object.keys(wanted).length,
+    caughtUp: caughtUp.length,
+    properties: propertyStoreStatus_()
+  };
+}
+
+function movePropertiesToScript_() {
+  var local = PropertiesService.getScriptProperties();
+  if (!sharedPropertiesInDatabase_(local)) {
+    return { status: "error", message: "Sozlamalar Script Properties'da, ko'chirish shart emas.", properties: propertyStoreStatus_() };
+  }
+  var credentials = supabaseCredentials_();
+  if (!credentials.ok) {
+    return { status: "error", message: "Script Properties'da yo'q: " + credentials.missing.join(", ") };
+  }
+  copyPropertiesBackToScript_(local, credentials);
+  bumpAllDataRevisions_();
+  recordStorageImportStatus_({ propertiesMovedBackAt: new Date().toISOString() });
+  appendAuditRow_(appDoc_(), "properties_to_script", "");
+  return { status: "success", properties: propertyStoreStatus_() };
+}
+
+/**
+ * The move back, shared with the rollback to the spreadsheet: marker first
+ * (the Edge function stops serving), then the copy, then the switch. If the
+ * database cannot be read, the copy Apps Script kept is already in Script
+ * Properties, so the switch still happens.
+ */
+function copyPropertiesBackToScript_(local, credentials) {
+  var copied = false;
+  try {
+    applyPropertyOps_(credentials, [{ op: "delete_property", key: PROPERTY_STORE_READY_KEY }]);
+    var stored = databaseProperties_(credentials);
+    delete stored[PROPERTY_STORE_READY_KEY];
+    var current = localSharedProperties_(local);
+    Object.keys(current).forEach(function (key) {
+      if (!Object.prototype.hasOwnProperty.call(stored, key)) local.deleteProperty(key);
+    });
+    local.setProperties(stored, false);
+    copied = true;
+  } catch (error) {
+    copied = false;
+  }
+  local.deleteProperty(PROPERTY_STORE_PROP);
+  resetStorageMemos_();
+  return copied;
 }
 

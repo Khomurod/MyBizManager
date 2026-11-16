@@ -86,6 +86,7 @@ file for file. See [DEPLOYMENT.md](DEPLOYMENT.md).
 | `23_health.gs` | Mini App Bot API configuration and system health check |
 | `24_supabase_store.gs` | `appDoc_()` and the `OMAD_STORAGE` switch; the Supabase stand-in for the spreadsheet |
 | `25_supabase_import.gs` | The move from Sheets to Supabase: preview, copy + verify + switch, verify, rollback |
+| `26_property_store.gs` | Moves the shared settings between Script Properties and the `app_properties` table (both directions, verified; the Edge function's ready marker is written last and deleted first) |
 
 The task-management feature (`/tasks`) is documented separately in
 **[TASKS.md](TASKS.md)**. It is an isolated module: dedicated `Tasks` and

@@ -621,16 +621,16 @@ test('a second close for the same day is refused once, then confirmed', () => {
     items: [{ kind: 'product', inventoryId: 'kola', qty: 1 }]
   });
 
-  const first = post(gas, { action: 'close_day', date: '2026-08-12T20:00:00.000Z', seller: 'k', summary: [] });
+  const first = post(gas, { action: 'close_day', date: '2026-08-12T17:00:00.000Z', seller: 'k', summary: [] });
   assert.strictEqual(first.status, 'success');
 
-  const second = post(gas, { action: 'close_day', date: '2026-08-12T21:00:00.000Z', seller: 'k', summary: [] });
+  const second = post(gas, { action: 'close_day', date: '2026-08-12T18:00:00.000Z', seller: 'k', summary: [] });
   assert.strictEqual(second.status, 'error');
   assert.strictEqual(second.code, 'duplicate_close');
   assert.strictEqual(second.existing.totalRevenue, 9000);
 
   const confirmed = post(gas, {
-    action: 'close_day', date: '2026-08-12T21:00:00.000Z', seller: 'k', summary: [],
+    action: 'close_day', date: '2026-08-12T18:00:00.000Z', seller: 'k', summary: [],
     confirmDuplicate: true
   });
   assert.strictEqual(confirmed.status, 'success', 'a deliberate correction is never blocked');
@@ -639,14 +639,14 @@ test('a second close for the same day is refused once, then confirmed', () => {
 
 test('a close with no sales at all is refused once, then confirmed', () => {
   const gas = boot();
-  const refused = post(gas, { action: 'close_day', date: '2026-08-12T20:00:00.000Z', seller: 'k', summary: [] });
+  const refused = post(gas, { action: 'close_day', date: '2026-08-12T17:00:00.000Z', seller: 'k', summary: [] });
   assert.strictEqual(refused.status, 'error');
   assert.strictEqual(refused.code, 'empty_close');
   assert.strictEqual(gas.__spreadsheet.getSheetByName('Cafe_Kun_Yakuni'), null,
     'and nothing was written');
 
   const confirmed = post(gas, {
-    action: 'close_day', date: '2026-08-12T20:00:00.000Z', seller: 'k', summary: [],
+    action: 'close_day', date: '2026-08-12T17:00:00.000Z', seller: 'k', summary: [],
     confirmEmpty: true
   });
   assert.strictEqual(confirmed.status, 'success');
@@ -659,7 +659,7 @@ test('a normal close of a day with sales asks nothing', () => {
     date: '2026-08-12T09:00:00.000Z',
     items: [{ kind: 'product', inventoryId: 'kola', qty: 3 }]
   });
-  const closed = post(gas, { action: 'close_day', date: '2026-08-12T20:00:00.000Z', seller: 'k', summary: [] });
+  const closed = post(gas, { action: 'close_day', date: '2026-08-12T17:00:00.000Z', seller: 'k', summary: [] });
   assert.strictEqual(closed.status, 'success');
   assert.strictEqual(closed.totalRevenue, 27000);
   assert.strictEqual(closed.salesCount, 1);
@@ -677,7 +677,7 @@ test('a counted stock level leaves a movement behind', () => {
     item.id === 'kola' ? Object.assign({}, item, { qty: 30 }) : item);
 
   const closed = post(gas, {
-    action: 'close_day', date: '2026-08-12T20:00:00.000Z', seller: 'k', summary: [],
+    action: 'close_day', date: '2026-08-12T17:00:00.000Z', seller: 'k', summary: [],
     countedInventory: counted
   });
   assert.strictEqual(closed.status, 'success');
@@ -695,7 +695,7 @@ test('the admin screen says whether today has already been closed', () => {
     date: '2026-08-12T09:00:00.000Z',
     items: [{ kind: 'product', inventoryId: 'kola', qty: 1 }]
   });
-  post(gas, { action: 'close_day', date: '2026-08-12T20:00:00.000Z', seller: 'k', summary: [] });
+  post(gas, { action: 'close_day', date: '2026-08-12T17:00:00.000Z', seller: 'k', summary: [] });
 
   const body = post(gas, {
     action: 'get_cafe_data', scope: 'admin',

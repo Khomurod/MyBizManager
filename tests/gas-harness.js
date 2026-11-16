@@ -10,8 +10,49 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const { createSupabaseMock } = require('./supabase-mock');
+const { createTashkentDate } = require('../supabase/functions/api/lib/zoned-date.js');
+const edgeShims = require('../supabase/functions/api/lib/gas-shims.js');
 
 const SCRIPT_PATH = path.join(__dirname, '..', 'script.gs');
+
+/** Script Properties that stay in Apps Script when the settings move to the database. */
+const LOCAL_PROPERTY_KEYS = new Set([
+  'OMAD_STORAGE', 'SUPABASE_URL', 'SUPABASE_SECRET_KEY', 'OMAD_STORAGE_IMPORT', 'OMAD_PROPERTIES_STORE'
+]);
+
+/**
+ * `gas.__properties` when the settings live in app_properties: reads and
+ * writes of a shared setting go to the database, so a test that seeds or
+ * inspects a property sees what the backend sees.
+ */
+function propertiesView(local, supabase) {
+  const shared = key => typeof key === 'string' && !LOCAL_PROPERTY_KEYS.has(key);
+  return new Proxy(local, {
+    get: (target, key) => {
+      if (!shared(key)) return target[key];
+      const map = supabase.properties();
+      return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : undefined;
+    },
+    set: (target, key, value) => {
+      if (shared(key)) supabase.setProperty(key, value);
+      else target[key] = value;
+      return true;
+    },
+    deleteProperty: (target, key) => {
+      if (shared(key)) supabase.setProperty(key, undefined);
+      else delete target[key];
+      return true;
+    },
+    has: (target, key) => (shared(key) ? Object.prototype.hasOwnProperty.call(supabase.properties(), key) : key in target),
+    ownKeys: target => Array.from(new Set(Object.keys(target).filter(k => !shared(k)).concat(Object.keys(supabase.properties())))),
+    getOwnPropertyDescriptor: (target, key) => {
+      if (!shared(key)) return Object.getOwnPropertyDescriptor(target, key);
+      const map = supabase.properties();
+      if (!Object.prototype.hasOwnProperty.call(map, key)) return undefined;
+      return { value: map[key], writable: true, enumerable: true, configurable: true };
+    }
+  });
+}
 
 /**
  * Reproduces how Google Sheets rewrites text as it is written into a cell.
@@ -161,6 +202,19 @@ function loadScript(options = {}) {
     if (properties.SUPABASE_URL === undefined) properties.SUPABASE_URL = supabase.url;
     if (properties.SUPABASE_SECRET_KEY === undefined) properties.SUPABASE_SECRET_KEY = supabase.key;
   }
+  // On Supabase the settings live in app_properties (03_settings.gs), as they
+  // do in production once they have been moved there; `propertiesInDatabase:
+  // false` is the state before that move.
+  const sharedInDatabase = !!supabase && storage === 'supabase' && options.propertiesInDatabase !== false;
+  if (sharedInDatabase) {
+    if (properties.OMAD_PROPERTIES_STORE === undefined) properties.OMAD_PROPERTIES_STORE = 'supabase';
+    Object.keys(properties).forEach(key => {
+      if (LOCAL_PROPERTY_KEYS.has(key)) return;
+      supabase.setProperty(key, properties[key]);
+      delete properties[key];
+    });
+    supabase.setProperty('__PROPERTIES_READY', new Date().toISOString());
+  }
   const spreadsheet = createSpreadsheet(options.sheets || {}, options.coerceLikeSheets === true);
   const cacheStore = Object.assign({}, options.cache || {});
   const fetchCalls = [];
@@ -180,7 +234,11 @@ function loadScript(options = {}) {
   const sandbox = {
     console,
     JSON,
-    Date,
+    // Apps Script's local time zone is the script's own, Asia/Tashkent, not
+    // the host's: `new Date().getDate()` is the day in Tashkent there. The
+    // Edge runtime uses this same class, so the tests run on the clock the
+    // backend actually has, whatever TZ the machine running them is in.
+    Date: createTashkentDate(Date),
     Math,
     Number,
     String,
@@ -202,7 +260,12 @@ function loadScript(options = {}) {
       getScriptProperties: () => ({
         getProperty: key => (Object.prototype.hasOwnProperty.call(properties, key) ? properties[key] : null),
         setProperty: (key, value) => { properties[key] = String(value); },
-        deleteProperty: key => { delete properties[key]; }
+        deleteProperty: key => { delete properties[key]; },
+        getProperties: () => Object.assign({}, properties),
+        setProperties: (values, deleteAllOthers) => {
+          if (deleteAllOthers) Object.keys(properties).forEach(key => { delete properties[key]; });
+          Object.keys(values || {}).forEach(key => { properties[key] = String(values[key]); });
+        }
       })
     },
 
@@ -242,25 +305,13 @@ function loadScript(options = {}) {
     },
 
     Utilities: {
-      // Apps Script substitutes the pattern tokens; this used to recognise one
-      // literal pattern and return dd/MM/yyyy for everything else, so code
-      // asking for "yyyy-MM-dd" was tested against a string it can never
-      // receive in production -- and a café month key sliced out of it was
-      // "12/08/2".
-      formatDate: (date, tz, format) => {
-        const value = date instanceof Date ? date : new Date(date);
-        const pad = n => String(n).padStart(2, '0');
-        const tokens = {
-          yyyy: String(value.getFullYear()),
-          MM: pad(value.getMonth() + 1),
-          dd: pad(value.getDate()),
-          HH: pad(value.getHours()),
-          mm: pad(value.getMinutes()),
-          ss: pad(value.getSeconds())
-        };
-        return String(format || 'dd/MM/yyyy')
-          .replace(/yyyy|MM|dd|HH|mm|ss/g, match => tokens[match]);
-      },
+      // Apps Script substitutes the pattern tokens *in the zone it is given*.
+      // This mock once recognised one literal pattern and returned dd/MM/yyyy
+      // for everything else, and later ignored the zone and used the host's
+      // local getters -- so a date the code formatted for Tashkent was tested
+      // as whatever the CI machine's day was. It is now the Edge runtime's own
+      // implementation (supabase/functions/api/lib/gas-shims.js).
+      formatDate: (date, tz, format) => edgeShims.formatDate(date, tz, format || 'dd/MM/yyyy'),
       getUuid: () => {
         uuidCounter += 1;
         return `00000000-0000-4000-8000-${String(uuidCounter).padStart(12, '0')}`;
@@ -317,6 +368,7 @@ function loadScript(options = {}) {
 
   if (supabase && storage === 'supabase') seedSupabase(sandbox, spreadsheet, supabase);
   else if (supabase) sandbox.__supabase = supabase;
+  if (sharedInDatabase) sandbox.__properties = propertiesView(properties, supabase);
 
   return sandbox;
 }
@@ -341,8 +393,25 @@ function seedSupabase(sandbox, spreadsheet, supabase) {
   // storage layer hands out only strings, numbers and booleans, so a JSON copy
   // is exact.
   const outer = value => JSON.parse(JSON.stringify(value));
+  // A write made here lands through a document of its own, the way a separate
+  // request's would. Whatever document the backend had memoised (a read it did
+  // a moment ago, a revision bump that read the settings) belongs to the
+  // request before it, so it is dropped -- otherwise its cached rows would
+  // hide the write from the next call, which in production is a new request.
+  const WRITES = new Set(['appendRow', 'deleteRow', 'deleteRows', 'setConfigValue',
+    'setValue', 'setValues', 'clear', 'clearContent']);
+  const afterWrite = result => {
+    const lease = sandbox.STORAGE_LEASE_;
+    if (sandbox.APP_DOC_MEMO_ && (!lease || !lease.depth)) sandbox.resetStorageMemos_();
+    return result;
+  };
+  const writing = (target, prop) => (...args) => afterWrite(target[prop](...args));
   const wrapRange = range => new Proxy(range, {
-    get: (target, prop) => (prop === 'getValues' ? () => outer(target.getValues()) : target[prop])
+    get: (target, prop) => {
+      if (prop === 'getValues') return () => outer(target.getValues());
+      if (WRITES.has(prop) && typeof target[prop] === 'function') return writing(target, prop);
+      return target[prop];
+    }
   });
   // A test that patches a method on a sheet it inspects is instrumenting the
   // spreadsheet, which the backend no longer uses; the patch lands on the
@@ -359,6 +428,7 @@ function seedSupabase(sandbox, spreadsheet, supabase) {
         if (Object.prototype.hasOwnProperty.call(patched, prop)) return patched[prop];
         if (Object.prototype.hasOwnProperty.call(own, prop)) return own[prop];
         if (prop === 'data') return outer(target.data);
+        if (WRITES.has(prop) && typeof target[prop] === 'function') return writing(target, prop);
         return target[prop];
       },
       set: (target, prop, value) => { patched[prop] = value; return true; }

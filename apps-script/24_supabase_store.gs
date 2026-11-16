@@ -334,6 +334,10 @@ function resetStorageMemos_() {
   flushPendingWrites_();
   STORAGE_DEFERRED_BUMPS_ = {};
   APP_DOC_MEMO_ = null;
+  // A lease still held (a lock taken before a mid-request store switch) is
+  // released by the lock that took it; forgetting it here would leave it to
+  // expire instead.
+  if (!STORAGE_LEASE_.depth) STORAGE_LEASE_ = { owner: "", depth: 0 };
 }
 
 // ------------------------------------------------------------- HTTP client
@@ -638,6 +642,94 @@ function withBatchedWrites_(fn) {
   }
 }
 
+// ------------------------------------------------------- the shared lease
+//
+// LockService's lock only excludes other Apps Script executions. Once the
+// settings live in app_properties (03_settings.gs), the Edge function writes
+// too, so the lock that matters is one both can see: a lease row in
+// app_lease, taken with mbm_lock and released in the same transaction as the
+// batch it guarded (or with mbm_unlock when there was nothing to send).
+//
+// A lease is re-entrant within one execution (depth), and one left behind by
+// an execution that died expires after STORAGE_LEASE_TTL_MS -- long enough
+// for any locked region this backend has, short enough that a crash does not
+// stop writing for long.
+
+var STORAGE_LEASE_TTL_MS = 90000;
+/** How long one mbm_lock call may wait; the API's statement timeout is 8 s. */
+var STORAGE_LEASE_WAIT_SLICE_MS = 5000;
+var STORAGE_LEASE_ = { owner: "", depth: 0 };
+
+/** The document whose database holds the lease, or null when there is no lease to take. */
+function storageLeaseDoc_() {
+  var doc = storageRequestDoc_();
+  return doc && doc.__ctx.sharedProps ? doc : null;
+}
+
+function storageLeaseOwner_() {
+  if (!STORAGE_LEASE_.owner) STORAGE_LEASE_.owner = "x_" + Utilities.getUuid().split("-").join("");
+  return STORAGE_LEASE_.owner;
+}
+
+/** Takes the lease, waiting up to timeoutMs, or throws as LockService does. */
+function acquireStorageLease_(doc, timeoutMs) {
+  if (STORAGE_LEASE_.depth > 0) {
+    STORAGE_LEASE_.depth++;
+    return;
+  }
+  var owner = storageLeaseOwner_();
+  var waitMs = Math.max(0, Number(timeoutMs) || 0);
+  var deadline = Date.now() + waitMs;
+  var attempts = Math.ceil(waitMs / STORAGE_LEASE_WAIT_SLICE_MS) + 1;
+  for (var i = 0; i < attempts; i++) {
+    var slice = Math.max(0, Math.min(STORAGE_LEASE_WAIT_SLICE_MS, deadline - Date.now()));
+    var answer;
+    try {
+      answer = doc.__rpc("mbm_lock", { p_owner: owner, p_ttl_ms: STORAGE_LEASE_TTL_MS, p_wait_ms: slice });
+    } catch (error) {
+      // A database without the lease (the migration not applied yet) has no
+      // second writer to exclude.
+      if (isMissingSupabaseFunction_(error)) return;
+      throw error;
+    }
+    if (answer && answer.acquired) {
+      STORAGE_LEASE_.depth = 1;
+      doc.__ctx.leaseReleased = false;
+      return;
+    }
+    if (Date.now() >= deadline) break;
+  }
+  throw new Error("Lock timeout: another process was holding the lock for too long.");
+}
+
+/**
+ * Lets go of one level of the lease. The outermost release hands the lease to
+ * the batch being sent (one transaction), or releases it on its own.
+ */
+function releaseStorageLeaseAndFlush_(doc) {
+  if (STORAGE_LEASE_.depth === 0) {
+    flushPendingWrites_();
+    return;
+  }
+  STORAGE_LEASE_.depth--;
+  if (STORAGE_LEASE_.depth > 0) {
+    flushPendingWrites_();
+    return;
+  }
+  var owner = STORAGE_LEASE_.owner;
+  doc.__ctx.leaseReleased = false;
+  doc.__ctx.unlockOwner = owner;
+  try {
+    flushPendingWrites_();
+  } finally {
+    doc.__ctx.unlockOwner = "";
+    if (!doc.__ctx.leaseReleased) {
+      try { doc.__rpc("mbm_unlock", { p_owner: owner }); } catch (error) { /* it expires on its own */ }
+    }
+    doc.__ctx.leaseReleased = false;
+  }
+}
+
 /**
  * LockService's script lock, which also delimits a batch of writes. Every
  * module takes the lock through this, never through LockService directly.
@@ -646,14 +738,24 @@ function withBatchedWrites_(fn) {
  * before: another execution may have written while we waited, so counts and
  * cached rows are re-read under the lock. Releasing it sends the batch first,
  * then lets the next execution in.
+ *
+ * When the settings live in app_properties it also holds the shared lease
+ * above, so the Edge function and Apps Script exclude each other too.
  */
 function appScriptLock_() {
   var lock = LockService.getScriptLock();
   var held = false;
-  var acquired = function () {
+  var leaseDoc = null;
+  var acquired = function (timeoutMs) {
     if (held) return;
     try {
       assertStoreUnchanged_();
+      leaseDoc = storageLeaseDoc_();
+      if (leaseDoc) {
+        // Nothing kept may be sent under somebody else's lease.
+        leaseDoc.__flush();
+        acquireStorageLease_(leaseDoc, timeoutMs);
+      }
     } catch (changed) {
       lock.releaseLock();
       throw changed;
@@ -664,10 +766,10 @@ function appScriptLock_() {
     beginStorageBatch_();
   };
   return {
-    waitLock: function (timeoutMs) { lock.waitLock(timeoutMs); acquired(); },
+    waitLock: function (timeoutMs) { lock.waitLock(timeoutMs); acquired(timeoutMs); },
     tryLock: function (timeoutMs) {
       var ok = lock.tryLock(timeoutMs);
-      if (ok) acquired();
+      if (ok) acquired(timeoutMs);
       return ok;
     },
     hasLock: function () { return lock.hasLock(); },
@@ -678,7 +780,8 @@ function appScriptLock_() {
         STORAGE_BATCH_DEPTH_ = Math.max(0, STORAGE_BATCH_DEPTH_ - 1);
         // Always sent here, even inside an outer batch: once the lock is
         // gone another execution may read these rows.
-        flushPendingWrites_();
+        if (leaseDoc) releaseStorageLeaseAndFlush_(leaseDoc);
+        else flushPendingWrites_();
       } finally {
         lock.releaseLock();
       }
@@ -708,6 +811,10 @@ function supabaseDoc_(credentials, options) {
     counts: null,       // the mbm_counts() answer
     countsGen: 0,       // which mbm_counts() answer `counts` is
     config: null,       // every setting, key -> value
+    props: null,        // app_properties, key -> value (the shared settings)
+    sharedProps: !!(options && options.request) && sharedPropertiesInDatabase_(),
+    unlockOwner: "",    // a lease to release in the same mbm_apply as the batch
+    leaseReleased: false,
     noRpc: false,       // the database predates mbm_apply / mbm_counts
     rpcKnown: false     // whether that has been found out yet
   };
@@ -756,17 +863,35 @@ function supabaseDoc_(credentials, options) {
           merged = true;
         }
       }
+    } else if (op.op === "upsert_property" || op.op === "delete_property") {
+      // Only the last value of a setting matters inside one transaction.
+      for (var j = pending.length - 1; j >= 0 && !merged; j--) {
+        var keptProp = pending[j];
+        if ((keptProp.op === "upsert_property" || keptProp.op === "delete_property") && keptProp.key === op.key) {
+          pending[j] = op;
+          merged = true;
+        }
+      }
     }
     if (!merged) pending.push(op);
-    ctx.touched[op.op === "upsert_config" ? "system_config" : op.table] = true;
+    ctx.touched[op.op === "upsert_config" ? "system_config"
+      : (op.op === "upsert_property" || op.op === "delete_property") ? "app_properties" : op.table] = true;
   };
 
   /** Rows of one insert grouped by column set, as one statement each wants. */
   var wireOps = function (pending) {
     var wire = [];
     var inserts = [];
+    // Settings go last: a cache revision must not become visible before the
+    // rows it announces, even when a very large batch is split over calls.
+    var properties = [];
     for (var p = 0; p < pending.length; p++) {
       var op = pending[p];
+      if (op.op === "upsert_property" || op.op === "delete_property") {
+        properties.push(op.op === "upsert_property" ? { op: "upsert_property", key: op.key, value: op.value }
+          : { op: "delete_property", key: op.key });
+        continue;
+      }
       if (op.op !== "insert") {
         wire.push(op.op === "update" ? { op: "update", table: op.table, seq: op.seq, values: op.values }
           : op.op === "delete" ? { op: "delete", table: op.table, seqs: op.seqs }
@@ -787,12 +912,20 @@ function supabaseDoc_(credentials, options) {
         inserts[inserts.length - 1].refs.push(op.refs[r]);
       }
     }
-    return { wire: wire, inserts: inserts };
+    return { wire: wire.concat(properties), inserts: inserts };
   };
 
   /** The same operations as separate REST calls, for a database without mbm_apply. */
   var applyOneByOne = function (wire) {
     return wire.map(function (op) {
+      if (op.op === "upsert_property" || op.op === "delete_property") {
+        writePropertyNow(op.key, op.op === "delete_property" ? null : op.value);
+        return { ok: true };
+      }
+      if (op.op === "unlock") {
+        supabaseRpc_(credentials, "mbm_unlock", { p_owner: op.owner });
+        return { ok: true };
+      }
       if (op.op === "upsert_config") {
         supabaseRequest_(credentials, "post", "system_config", [["on_conflict", "key"]],
           [{ key: op.key, value: op.value, updated_at: new Date().toISOString() }],
@@ -870,18 +1003,25 @@ function supabaseDoc_(credentials, options) {
     var plan = wireOps(ctx.pending);
     ctx.pending = [];
     ctx.touched = {};
+    var unlockOwner = ctx.unlockOwner;
+    ctx.unlockOwner = "";
+    // The lock is released in the same transaction as the writes it guarded.
+    if (unlockOwner) plan.wire.push({ op: "unlock", owner: unlockOwner });
     var results;
     try {
       results = applyWire(plan.wire);
+      if (unlockOwner) ctx.leaseReleased = true;
     } catch (error) {
       // Nothing of the batch is stored. Every position and count this
       // request worked out may now be wrong, so all of it is read again.
       ctx.counts = null;
       ctx.config = null;
+      ctx.props = null;
       openSheets().forEach(function (sheet) { sheet.__forget(true); });
       // A batch split over several calls (only past SUPABASE_INSERT_MAX_CHARS)
       // may be partly stored: invalidate regardless.
       rebumpDeferredRevisions_();
+      rewriteRevisionsAfterFailure(plan.wire);
       throw error;
     }
     for (var i = 0; i < plan.inserts.length; i++) {
@@ -893,6 +1033,21 @@ function supabaseDoc_(credentials, options) {
       for (var k = 0; k < refs.length; k++) refs[k].seq = seqs[k];
     }
     rebumpDeferredRevisions_();
+  };
+
+  /**
+   * The cache revisions a refused batch carried, written on their own. They
+   * are fresh values nobody has cached anything under, so storing them when
+   * nothing else was stored costs a cache miss -- and when part of a split
+   * batch *was* stored, it is what keeps a summary of the old rows from
+   * being served. Best effort: the database may well be the thing failing.
+   */
+  var rewriteRevisionsAfterFailure = function (wire) {
+    for (var i = 0; i < wire.length; i++) {
+      var op = wire[i];
+      if (op.op !== "upsert_property" || String(op.key).indexOf(CACHE_REV_PROP_PREFIX) !== 0) continue;
+      try { writePropertyNow(op.key, op.value); } catch (ignored) { /* the TTL is the backstop */ }
+    }
   };
 
   /** Sends what a read of `table` would otherwise miss. */
@@ -911,13 +1066,25 @@ function supabaseDoc_(credentials, options) {
     var tables = [];
     var wantCounts = !ctx.counts && !ctx.noRpc;
     var wantConfig = !ctx.config;
+    var wantProps = ctx.sharedProps && !ctx.props;
     // Counts are only true of what is stored.
     if (wantCounts && ctx.pending.length) ctx.flush();
     if (wantConfig) ctx.beforeRead("system_config");
+    if (wantProps) ctx.beforeRead("app_properties");
     if (wantCounts) calls.push({ method: "post", path: "rpc/mbm_counts", body: {} });
     if (wantConfig) {
       calls.push({ method: "get", path: "system_config", params: [
         ["select", "seq,key,value"], ["order", "seq.asc"], ["limit", SUPABASE_PAGE_SIZE]] });
+    }
+    if (wantProps) {
+      calls.push({ method: "get", path: "app_properties", params: [["select", "key,value"], ["limit", SUPABASE_PAGE_SIZE]] });
+    }
+    // A reader outside the lock must see a cache revision no newer than the
+    // rows it reads, so whole tables are only fetched together with the
+    // settings once those are already known (under the lock nobody writes).
+    if (wantProps && (sheetNames || []).length && STORAGE_LEASE_.depth === 0) {
+      ctx.prime([]);
+      return ctx.prime(sheetNames);
     }
     for (var n = 0; n < (sheetNames || []).length; n++) {
       var wanted = doc.getSheetByName(sheetNames[n]);
@@ -954,6 +1121,11 @@ function supabaseDoc_(credentials, options) {
       for (var i = 0; i < rows.length; i++) config[rows[i].key] = rows[i].value === null ? "" : rows[i].value;
       ctx.config = config;
     }
+    if (wantProps) {
+      var propsAnswer = answers[at++];
+      if (propsAnswer instanceof Error) throw propsAnswer;
+      ctx.props = propertyMap(propsAnswer.json || []);
+    }
     // A table that failed is simply read again when it is needed.
     for (var t = 0; t < tables.length; t++) {
       var answer = answers[at++];
@@ -966,7 +1138,24 @@ function supabaseDoc_(credentials, options) {
     ctx.flush();
     ctx.counts = null;
     ctx.config = null;
+    ctx.props = null;
     openSheets().forEach(function (sheet) { sheet.__forget(false); });
+  };
+
+  var propertyMap = function (rows) {
+    var map = {};
+    for (var i = 0; i < rows.length; i++) map[rows[i].key] = rows[i].value === null ? "" : String(rows[i].value);
+    return map;
+  };
+
+  /** One setting written straight away (outside a batch). */
+  var writePropertyNow = function (key, value) {
+    if (value === null) {
+      supabaseRequest_(credentials, "delete", "app_properties", [["key", "eq." + key]], null, "return=minimal");
+    } else {
+      supabaseRequest_(credentials, "post", "app_properties", [["on_conflict", "key"]],
+        [{ key: key, value: value, updated_at: new Date().toISOString() }], "resolution=merge-duplicates,return=minimal");
+    }
   };
 
   var doc = {
@@ -975,6 +1164,35 @@ function supabaseDoc_(credentials, options) {
     credentials: credentials,
     __flush: function () { ctx.flush(); },
     __lockAcquired: function () { ctx.forgetReads(); },
+    /** The shared settings (app_properties), read with the request's other settings. */
+    __properties: function () {
+      if (!ctx.props) {
+        if (ctx.perRequest && ctx.sharedProps) ctx.prime([]);
+        else {
+          ctx.beforeRead("app_properties");
+          ctx.props = propertyMap(supabaseRequest_(credentials, "get", "app_properties",
+            [["select", "key,value"], ["limit", SUPABASE_PAGE_SIZE]]).json || []);
+        }
+      }
+      return ctx.props || {};
+    },
+    /**
+     * Writes one shared setting (null deletes it): kept for the batch while
+     * writes are being kept, so it lands with the rows it describes.
+     */
+    __writeProperty: function (key, value) {
+      if (ctx.props) {
+        if (value === null) delete ctx.props[key];
+        else ctx.props[key] = value;
+      }
+      if (ctx.buffering()) {
+        ctx.queue(value === null ? { op: "delete_property", key: key } : { op: "upsert_property", key: key, value: value });
+        return true;
+      }
+      writePropertyNow(key, value);
+      return false;
+    },
+    __rpc: function (name, args) { return supabaseRpc_(credentials, name, args).json; },
     __prefetch: function (sheetNames) { if (ctx.perRequest) ctx.prime(sheetNames); },
     __pendingCount: function () { return ctx.pending.length; },
     getSheetByName: function (name) {

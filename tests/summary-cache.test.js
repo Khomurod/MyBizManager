@@ -31,9 +31,10 @@ const LEGACY_HEADER = [
 ];
 
 /** Today and yesterday as the script's timezone sees them. */
+/** A Tashkent day key, `offsetDays` from today -- the backend's "today", whatever the host's zone. */
 function dayKey(offsetDays) {
-  const when = new Date(Date.now() + offsetDays * 24 * 60 * 60 * 1000);
-  return `${when.getFullYear()}-${String(when.getMonth() + 1).padStart(2, '0')}-${String(when.getDate()).padStart(2, '0')}`;
+  const when = new Date(Date.now() + 5 * 60 * 60 * 1000 + offsetDays * 24 * 60 * 60 * 1000);
+  return `${when.getUTCFullYear()}-${String(when.getUTCMonth() + 1).padStart(2, '0')}-${String(when.getUTCDate()).padStart(2, '0')}`;
 }
 
 let receiptSeq = 0;

@@ -174,6 +174,7 @@ Cloudflare Pages (static HTML/JS)         Google Apps Script web app        Goog
 | `23_health.gs` | Mini App configuration via Bot API, and the system health check |
 | `24_supabase_store.gs` | `appDoc_()` and the store switch; the Supabase stand-in for the spreadsheet (sheet → table mapping, value conversion, paging) |
 | `25_supabase_import.gs` | The move from Sheets: preview / copy + verify + switch / verify / rollback |
+| `26_property_store.gs` | Where the settings live: move Script Properties into `app_properties` (verified, ready marker last) and back |
 
 ## 4. Main features and workflows
 

@@ -48,7 +48,8 @@ function isStorageAction_(action) {
     action === 'preview_supabase_import' ||
     action === 'apply_supabase_import' ||
     action === 'verify_supabase_import' ||
-    action === 'rollback_supabase_storage';
+    action === 'rollback_supabase_storage' ||
+    isPropertyStoreAction_(action);
 }
 
 /** Diagnostics: compared and reported, never a reason to refuse the move. */
@@ -59,11 +60,16 @@ function isInformationalImportSheet_(name) {
 
 function storageAction_(action, payload) {
   if (action === 'get_storage_status') {
-    var answer = { status: "success", storage: storageStatus_(), importStatus: readStorageImportStatus_() };
+    var answer = {
+      status: "success", storage: storageStatus_(), importStatus: readStorageImportStatus_(),
+      properties: propertyStoreStatus_()
+    };
     // Opt-in: it reads the whole ledger from both stores, three times each.
     if (payload && payload.benchmark === true) answer.benchmark = storageLatencyBenchmark_();
     return answer;
   }
+
+  if (isPropertyStoreAction_(action)) return propertyStoreAction_(action);
 
   if (action === 'rollback_supabase_storage') {
     // Serialised with the move and with every locked writer: a rollback never
@@ -465,6 +471,11 @@ function compareOmadMoney_(source, target) {
  */
 function rollbackSupabaseStorage_() {
   var wasSupabase = storageMode_() === STORAGE_MODE_SUPABASE;
+  // The settings come back first: the Edge function must stop serving (the
+  // marker goes), and the spreadsheet mode reads Script Properties only.
+  var local = PropertiesService.getScriptProperties();
+  if (sharedPropertiesInDatabase_(local)) copyPropertiesBackToScript_(local, supabaseCredentials_());
+  else if (String(local.getProperty(PROPERTY_STORE_PROP) || "")) local.deleteProperty(PROPERTY_STORE_PROP);
   setTelegramSetting_(STORAGE_PROP_MODE, STORAGE_MODE_SHEETS);
   resetStorageMemos_();
   bumpAllDataRevisions_();

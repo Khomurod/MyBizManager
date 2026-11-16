@@ -47,8 +47,129 @@ var TELEGRAM_TOKEN_PATTERN = /^\d{6,16}:[A-Za-z0-9_-]{30,}$/;
 
 var TELEGRAM_TOKEN_LIKE_PATTERN = /\d{6,16}:[A-Za-z0-9_-]{30,}/g;
 
+// 5d. WHERE THE SETTINGS LIVE
+// ------------------------------------------
+// The backend runs in two places: Apps Script and the Supabase Edge Function
+// `api` (supabase/functions/api). Both must see the same users, session
+// secret, bot settings and cache revisions, or one of them acts on an old
+// copy -- a password changed in one still opening the other, a summary keyed
+// by a revision only one of them bumped.
+//
+// So once the move has been made (move_properties_to_database), every setting
+// is read from and written to the app_properties table, and Script Properties
+// keeps only the four that say where that database is. Apps Script still
+// writes each value to its Script Property too: if the database cannot be
+// reached, the request reads that copy instead of failing at the sign-in --
+// which is what keeps "Google Sheets'ga qaytish" usable with the database down.
+//
+// Before the move, and whenever the store is the spreadsheet, nothing changes:
+// Script Properties are the settings.
+// ==========================================
+
+/** "supabase" once the settings live in app_properties. A Script Property itself. */
+var PROPERTY_STORE_PROP = "OMAD_PROPERTIES_STORE";
+var PROPERTY_STORE_DATABASE = "supabase";
+
+/**
+ * The row the move writes last. Its presence is what the Edge function checks
+ * before serving anything itself, and moving back (or rolling back to the
+ * spreadsheet) deletes it first.
+ */
+var PROPERTY_STORE_READY_KEY = "__PROPERTIES_READY";
+
+/** Kept in Script Properties whatever happens: they locate the database itself. */
+var LOCAL_PROPERTY_KEYS = {
+  OMAD_STORAGE: true,
+  SUPABASE_URL: true,
+  SUPABASE_SECRET_KEY: true,
+  OMAD_STORAGE_IMPORT: true,
+  OMAD_PROPERTIES_STORE: true
+};
+
+/** True while the settings are being read from the database (guards re-entry from error paths). */
+var SHARED_PROPERTIES_LOADING_ = false;
+
 function scriptProperties_() {
-  return PropertiesService.getScriptProperties();
+  var local = PropertiesService.getScriptProperties();
+  if (!sharedPropertiesInDatabase_(local)) return local;
+  return sharedPropertiesView_(local);
+}
+
+/** Whether the settings live in app_properties for this request. */
+function sharedPropertiesInDatabase_(local) {
+  try {
+    var store = local || PropertiesService.getScriptProperties();
+    return String(store.getProperty(PROPERTY_STORE_PROP) || "") === PROPERTY_STORE_DATABASE &&
+      String(store.getProperty("OMAD_STORAGE") || "").trim().toLowerCase() === "supabase";
+  } catch (error) {
+    return false;
+  }
+}
+
+/**
+ * Every shared setting, read once per request (and again after the lock is
+ * taken), or null when the database cannot be read right now.
+ */
+function sharedPropertyMap_() {
+  if (SHARED_PROPERTIES_LOADING_) return null;
+  var doc;
+  try {
+    doc = appDoc_();
+  } catch (error) {
+    return null;
+  }
+  if (!doc || !doc.__supabase) return null;
+  SHARED_PROPERTIES_LOADING_ = true;
+  try {
+    return doc.__properties();
+  } catch (error) {
+    return null;
+  } finally {
+    SHARED_PROPERTIES_LOADING_ = false;
+  }
+}
+
+/** Script Properties' surface over app_properties. */
+function sharedPropertiesView_(local) {
+  var view = {
+    getProperty: function (key) {
+      if (LOCAL_PROPERTY_KEYS[key]) return local.getProperty(key);
+      var map = sharedPropertyMap_();
+      if (map) return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : null;
+      // The database could not be read: the copy Apps Script keeps (empty in
+      // the Edge runtime, which has no other source).
+      return local.getProperty(key);
+    },
+    setProperty: function (key, value) {
+      if (LOCAL_PROPERTY_KEYS[key]) {
+        local.setProperty(key, value);
+        return view;
+      }
+      appDoc_().__writeProperty(key, String(value));
+      try { local.setProperty(key, String(value)); } catch (error) {}
+      return view;
+    },
+    deleteProperty: function (key) {
+      if (LOCAL_PROPERTY_KEYS[key]) {
+        local.deleteProperty(key);
+        return view;
+      }
+      appDoc_().__writeProperty(key, null);
+      try { local.deleteProperty(key); } catch (error) {}
+      return view;
+    }
+  };
+  return view;
+}
+
+/**
+ * Whether a setting written now is sent with the batch of writes being kept
+ * (24_supabase_store.gs) -- in the same transaction as the rows it describes.
+ */
+function sharedPropertyWriteIsBatched_() {
+  if (!sharedPropertiesInDatabase_()) return false;
+  var doc = storageRequestDoc_();
+  return !!doc && doc.__ctx.buffering();
 }
 
 function getTelegramSetting_(key) {

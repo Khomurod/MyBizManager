@@ -585,9 +585,11 @@ test('the common actions stay within their round-trip budget', () => {
 
   // Settings and row counts arrive together, in parallel: one round trip.
   assert.ok(supabaseRoundTrips(gas, () => post(gas, { action: 'get_omad_data', scope: 'dashboard' })) <= 2);
-  // Settings before the lock; settings, counts, ledger and queue together under
-  // it; then the rows, their audit lines, the report job and the stamp as one batch.
-  assert.ok(supabaseRoundTrips(gas, () => post(gas, newIncome('budget'))) <= 3);
+  // Settings before the lock; the lock (a lease the Edge runtime honours too);
+  // settings, counts, ledger and queue together under it; then the rows, their
+  // audit lines, the report job, the stamp, the revision and the release of
+  // the lock as one batch.
+  assert.ok(supabaseRoundTrips(gas, () => post(gas, newIncome('budget'))) <= 4);
   // The task, its occurrences, its audit line and the stamp in one batch; the
   // board read after it fetches both task tables at once.
   assert.ok(supabaseRoundTrips(gas, () => post(gas, {
@@ -641,8 +643,10 @@ test('a copy that stops halfway says how to reset, and the spreadsheet stays the
   assert.strictEqual(post(gas, { action: 'get_omad_data', scope: 'dashboard' }).status, 'success');
 });
 
+// With the settings still in Script Properties, a revision cannot travel in
+// the database's transaction, so it is bumped once more after the batch.
 test('a cache revision is bumped again once the batch it announced is stored', () => {
-  const gas = liveWithTenants();
+  const gas = liveWithTenants({ propertiesInDatabase: false });
   gas.resetRequestMemos_();
   const log = gas.appDoc_().getSheetByName('Omad_Audit_Log');
   const lock = gas.appScriptLock_();
@@ -650,31 +654,162 @@ test('a cache revision is bumped again once the batch it announced is stored', (
   log.appendRow(['2026-08-01T09:00:00.000Z', 'kept', '']);
   gas.bumpDataRevision_('OMAD');
   // A lock-free reader here would see this revision with the row not stored yet.
-  const announced = Number(gas.dataRevision_('OMAD'));
+  const announced = gas.dataRevision_('OMAD');
   lock.releaseLock();
-  assert.ok(Number(gas.dataRevision_('OMAD')) > announced, 'so whatever it cached under it is never used');
+  assert.notStrictEqual(gas.dataRevision_('OMAD'), announced, 'so whatever it cached under it is never used');
+  assert.ok(parseInt(gas.dataRevision_('OMAD'), 10) > parseInt(announced, 10));
 
   // A bump with nothing unsent is not repeated.
-  const settled = Number(gas.dataRevision_('OMAD'));
+  const settled = parseInt(gas.dataRevision_('OMAD'), 10);
   gas.bumpDataRevision_('OMAD');
   gas.flushPendingWrites_();
-  assert.strictEqual(Number(gas.dataRevision_('OMAD')), settled + 1);
+  assert.strictEqual(parseInt(gas.dataRevision_('OMAD'), 10), settled + 1);
 });
 
 test('a batch the database refuses still invalidates the caches it announced', () => {
-  const gas = liveWithTenants();
+  const gas = liveWithTenants({ propertiesInDatabase: false });
   gas.resetRequestMemos_();
   const log = gas.appDoc_().getSheetByName('Omad_Audit_Log');
   const lock = gas.appScriptLock_();
   lock.waitLock(1000);
   log.appendRow(['2026-08-01T09:00:00.000Z', 'refused', '']);
   gas.bumpDataRevision_('OMAD');
-  const announced = Number(gas.dataRevision_('OMAD'));
+  const announced = gas.dataRevision_('OMAD');
   const restore = gas.__supabase.fail(r => r.table === 'rpc/mbm_apply' && 'database restarting');
   assert.throws(() => lock.releaseLock(), /restarting/);
   restore();
   // A split batch can be partly stored, so a refusal is never trusted to have changed nothing.
-  assert.ok(Number(gas.dataRevision_('OMAD')) > announced);
+  assert.notStrictEqual(gas.dataRevision_('OMAD'), announced);
+});
+
+// With the settings in the database, the revision is written in the same
+// transaction as the rows it announces (and the lock's release), so no reader
+// ever sees one without the other and there is nothing to bump twice.
+test('in the database, a cache revision lands in the same write as the rows it announces', () => {
+  const gas = liveWithTenants();
+  gas.resetRequestMemos_();
+  const stored = () => gas.__supabase.properties().OMAD_REV_OMAD;
+  const before = stored();
+  const sentBefore = gas.__supabase.requests.length;
+  const log = gas.appDoc_().getSheetByName('Omad_Audit_Log');
+  const lock = gas.appScriptLock_();
+  lock.waitLock(1000);
+  log.appendRow(['2026-08-01T09:00:00.000Z', 'kept', '']);
+  gas.bumpDataRevision_('OMAD');
+  const announced = gas.dataRevision_('OMAD');
+  assert.notStrictEqual(announced, before, 'this request sees its own bump');
+  assert.strictEqual(stored(), before, 'nobody else sees it before the row is stored');
+  lock.releaseLock();
+  assert.strictEqual(stored(), announced);
+
+  const writes = gas.__supabase.requests.slice(sentBefore)
+    .filter(r => r.method !== 'get' && !['rpc/mbm_counts', 'rpc/mbm_lock'].includes(r.table));
+  assert.strictEqual(writes.length, 1, 'one write: ' + writes.map(r => r.table).join(', '));
+  const ops = writes[0].body.ops.map(op => op.op);
+  assert.deepStrictEqual(ops, ['insert', 'upsert_property', 'unlock'],
+    'the row, then its revision, then the release, in one transaction');
+  assert.deepStrictEqual(gas.__supabase.rows.app_lease || [], [], 'and the lock is free again');
+});
+
+test('in the database, a refused batch still leaves a new revision behind', () => {
+  const gas = liveWithTenants();
+  gas.resetRequestMemos_();
+  const before = gas.__supabase.properties().OMAD_REV_OMAD;
+  const log = gas.appDoc_().getSheetByName('Omad_Audit_Log');
+  const lock = gas.appScriptLock_();
+  lock.waitLock(1000);
+  log.appendRow(['2026-08-01T09:00:00.000Z', 'refused', '']);
+  gas.bumpDataRevision_('OMAD');
+  const restore = gas.__supabase.fail(r => r.table === 'rpc/mbm_apply' && 'database restarting');
+  assert.throws(() => lock.releaseLock(), /restarting/);
+  restore();
+  assert.notStrictEqual(gas.__supabase.properties().OMAD_REV_OMAD, before,
+    'a split batch can be partly stored, so the revision is written on its own');
+  assert.strictEqual(gas.__supabase.count('omad_audit_log'), 0);
+  assert.deepStrictEqual(gas.__supabase.rows.app_lease || [], [], 'and the lock is not left held');
+});
+
+// ------------------------------------------------ where the settings live
+
+test('the settings move into the database, verified, and the marker is written last', () => {
+  const gas = liveWithTenants({ propertiesInDatabase: false });
+  const local = gas.__properties;
+  assert.deepStrictEqual(gas.__supabase.properties(), {}, 'nothing there yet');
+
+  const moved = post(gas, { action: 'move_properties_to_database' });
+  assert.strictEqual(moved.status, 'success', moved.message);
+  assert.strictEqual(moved.properties.store, 'database');
+
+  const stored = gas.__supabase.properties();
+  assert.strictEqual(stored.OMAD_ADMIN_KEY, ADMIN_KEY);
+  assert.strictEqual(stored.TELEGRAM_BOT_TOKEN, BOT_TOKEN);
+  assert.strictEqual(stored.TELEGRAM_GROUP_CHAT_ID, '-100123');
+  assert.ok(stored.__PROPERTIES_READY, 'the Edge function may now serve');
+  for (const key of ['OMAD_STORAGE', 'SUPABASE_URL', 'SUPABASE_SECRET_KEY', 'OMAD_PROPERTIES_STORE']) {
+    assert.ok(!(key in stored), key + ' stays where it locates the database');
+  }
+  assert.strictEqual(local.OMAD_PROPERTIES_STORE, 'supabase');
+  assert.strictEqual(local.OMAD_ADMIN_KEY, ADMIN_KEY, 'and Script Properties keep their copy');
+
+  // The app runs on the moved settings, and a setting written now lands in both.
+  assert.strictEqual(post(gas, { action: 'get_omad_data', scope: 'dashboard' }).status, 'success');
+  gas.__supabase.setProperty('TELEGRAM_GROUP_CHAT_ID', '-100777');
+  gas.resetRequestMemos_();
+  assert.strictEqual(gas.getTelegramSetting_('TELEGRAM_GROUP_CHAT_ID'), '-100777', 'the database is what is read');
+  gas.resetRequestMemos_();
+  gas.setTelegramSetting_('TELEGRAM_TASKS_GROUP_CHAT_ID', '-100555');
+  assert.strictEqual(gas.__supabase.properties().TELEGRAM_TASKS_GROUP_CHAT_ID, '-100555');
+  assert.strictEqual(local.TELEGRAM_TASKS_GROUP_CHAT_ID, '-100555');
+
+  assert.match(post(gas, { action: 'move_properties_to_database' }).message, /allaqachon/, 'twice is refused');
+});
+
+test('moving the settings needs the database store and the migration', () => {
+  const sheets = sheetsWithTarget();
+  assert.match(post(sheets, { action: 'move_properties_to_database' }).message, /OMAD_STORAGE=supabase/);
+
+  const gas = liveWithTenants({ propertiesInDatabase: false });
+  const restore = gas.__supabase.fail(r => r.table === 'app_properties' && r.method === 'get' &&
+    'relation "public.app_properties" does not exist');
+  const refused = post(gas, { action: 'move_properties_to_database' });
+  restore();
+  assert.strictEqual(refused.status, 'error');
+  assert.match(refused.message, /20261116120000/);
+  assert.strictEqual(gas.__properties.OMAD_PROPERTIES_STORE, undefined, 'nothing switched');
+});
+
+test('the settings move back to Script Properties, marker first', () => {
+  const gas = liveWithTenants({ propertiesInDatabase: false });
+  assert.strictEqual(post(gas, { action: 'move_properties_to_database' }).status, 'success');
+  // Changed while the database held them -- by the Edge function, say.
+  gas.__supabase.setProperty('TELEGRAM_GROUP_CHAT_ID', '-100888');
+  gas.__supabase.setProperty('OMAD_SESSION_SECRET', 'rotated-elsewhere');
+
+  const back = post(gas, { action: 'move_properties_to_script' });
+  assert.strictEqual(back.status, 'success', back.message);
+  assert.strictEqual(back.properties.store, 'script');
+  const local = gas.__properties;
+  assert.strictEqual(local.OMAD_PROPERTIES_STORE, undefined);
+  assert.strictEqual(local.TELEGRAM_GROUP_CHAT_ID, '-100888', 'what changed in the database comes back');
+  assert.ok(!('__PROPERTIES_READY' in gas.__supabase.properties()), 'the Edge function stops serving');
+  gas.resetRequestMemos_();
+  assert.strictEqual(gas.getTelegramSetting_('TELEGRAM_GROUP_CHAT_ID'), '-100888');
+  assert.strictEqual(post(gas, { action: 'get_omad_data', scope: 'dashboard' }).status, 'success');
+  assert.match(post(gas, { action: 'move_properties_to_script' }).message, /shart emas/);
+});
+
+test('a rollback to the spreadsheet brings the settings back first', () => {
+  const gas = liveWithTenants();
+  assert.ok(gas.__supabase.properties().__PROPERTIES_READY);
+  gas.__supabase.setProperty('TELEGRAM_GROUP_CHAT_ID', '-100999');
+  const rolled = post(gas, { action: 'rollback_supabase_storage' });
+  assert.strictEqual(rolled.status, 'success', rolled.message);
+  assert.ok(!('__PROPERTIES_READY' in gas.__supabase.properties()));
+  assert.strictEqual(gas.__properties.OMAD_STORAGE, 'sheets');
+  gas.resetRequestMemos_();
+  assert.strictEqual(gas.getTelegramSetting_('TELEGRAM_GROUP_CHAT_ID'), '-100999');
+  assert.strictEqual(gas.getTelegramSetting_('OMAD_ADMIN_KEY'), ADMIN_KEY);
+  assert.deepStrictEqual(gas.__supabase.rows.app_lease, [], 'the lease is released, not left to expire');
 });
 
 test('without mbm_apply writes are immediate, so a failed correction is still caught and voided', () => {
@@ -707,14 +842,18 @@ test('a save sends its rows, audit line, report job and last-operation stamp as 
   assert.ok(saved.reportJobId, 'the report is queued');
 
   const sent = gas.__supabase.requests.slice(before);
-  const writes = sent.filter(r => r.method !== 'get' && r.table !== 'rpc/mbm_counts');
+  // Taking the lock is a call of its own; everything the action changed,
+  // its cache revision and the release of the lock are one write.
+  const writes = sent.filter(r => r.method !== 'get' && !['rpc/mbm_counts', 'rpc/mbm_lock'].includes(r.table));
   assert.strictEqual(writes.length, 1, 'one write: ' + writes.map(r => r.table).join(', '));
   const ops = writes[0].body.ops;
   assert.ok(ops.some(op => op.op === 'insert' && op.table === 'omad_transactions_v2'));
   assert.ok(ops.some(op => op.op === 'insert' && op.table === 'omad_audit_log'));
   assert.ok(ops.some(op => op.op === 'insert' && op.table === 'omad_job_queue'));
   assert.ok(ops.some(op => op.op === 'upsert_config' && op.key === 'Omad_Last_Operation'));
-  assert.ok(new Set(sent.map(r => r.round)).size <= 3, 'and at most three round trips in all');
+  assert.ok(ops.some(op => op.op === 'upsert_property' && op.key === 'OMAD_REV_OMAD'));
+  assert.strictEqual(ops[ops.length - 1].op, 'unlock', 'released in the same transaction');
+  assert.ok(new Set(sent.map(r => r.round)).size <= 4, 'and at most four round trips in all');
 
   // A retry of the same request writes nothing new and queues no second report.
   const jobs = gas.__supabase.count('omad_job_queue');

@@ -343,6 +343,27 @@ function createSupabaseMock(options = {}) {
     const tableRows = t => staged[t] || (staged[t] = rows[t].slice());
     const results = [];
     for (const op of ops) {
+      if (op.op === 'upsert_property') {
+        if (!op.key || op.value === null || op.value === undefined) {
+          throw new PgError(400, 'P0001', 'mbm_apply: upsert_property needs a key and a value');
+        }
+        const list = tableRows('app_properties');
+        const index = list.findIndex(r => r.key === String(op.key));
+        const row = { key: String(op.key), value: String(op.value), updated_at: new Date().toISOString() };
+        if (index >= 0) list[index] = row; else list.push(row);
+        results.push({ ok: true });
+        continue;
+      }
+      if (op.op === 'delete_property') {
+        staged.app_properties = tableRows('app_properties').filter(r => r.key !== String(op.key));
+        results.push({ ok: true });
+        continue;
+      }
+      if (op.op === 'unlock') {
+        staged.app_lease = tableRows('app_lease').filter(r => !(r.name === 'script' && r.owner === String(op.owner)));
+        results.push({ ok: true });
+        continue;
+      }
       if (op.op === 'upsert_config') {
         const list = tableRows('system_config');
         const now = new Date().toISOString();
@@ -415,12 +436,36 @@ function createSupabaseMock(options = {}) {
     return out;
   }
 
+  /**
+   * mbm_lock: the lease is free, expired, or already this owner's. The real
+   * function waits up to p_wait_ms for it; nothing else runs while a test
+   * waits, so this one answers at once.
+   */
+  function lockLease(body) {
+    if (!body || !body.p_owner) throw new PgError(400, 'P0001', 'mbm_lock: an owner is required');
+    const now = Date.now();
+    const held = rows.app_lease.find(r => r.name === 'script');
+    if (held && held.owner !== String(body.p_owner) && new Date(held.expires_at).getTime() >= now) {
+      return { acquired: false };
+    }
+    const ttl = Math.min(Math.max(Number(body.p_ttl_ms) || 120000, 1000), 600000);
+    const lease = { name: 'script', owner: String(body.p_owner), expires_at: new Date(now + ttl).toISOString() };
+    rows.app_lease = rows.app_lease.filter(r => r.name !== 'script').concat([lease]);
+    return { acquired: true };
+  }
+
   function rpc(name, body) {
     // A database whose migrations stop before the batched-writes one.
     if (rpcDisabled) return respond(404, { code: 'PGRST202', message: `Could not find the function public.${name}` });
     try {
       if (name === 'mbm_apply') return respond(200, applyOps(body.ops));
       if (name === 'mbm_counts') return respond(200, counts());
+      if (name === 'mbm_lock') return respond(200, lockLease(body));
+      if (name === 'mbm_unlock') {
+        const before = rows.app_lease.length;
+        rows.app_lease = rows.app_lease.filter(r => !(r.name === 'script' && r.owner === String(body.p_owner)));
+        return respond(200, { released: rows.app_lease.length < before });
+      }
       return respond(404, { code: 'PGRST202', message: `Could not find the function public.${name}` });
     } catch (error) {
       if (error instanceof PgError) return respond(error.status, { code: error.code, message: error.message });
@@ -557,6 +602,19 @@ function createSupabaseMock(options = {}) {
     },
     /** Rows a table holds right now. */
     count: table => rows[table].length,
+    /** The shared settings as a key -> value map, read without counting as a request. */
+    properties() {
+      const out = {};
+      rows.app_properties.forEach(r => { out[r.key] = r.value; });
+      return out;
+    },
+    /** Writes or (value undefined/null) deletes one shared setting, outside any request. */
+    setProperty(key, value) {
+      rows.app_properties = rows.app_properties.filter(r => r.key !== String(key));
+      if (value !== undefined && value !== null) {
+        rows.app_properties.push({ key: String(key), value: String(value), updated_at: new Date().toISOString() });
+      }
+    },
     /** Whether a URL belongs to this mock. */
     owns: requestUrl => String(requestUrl).indexOf(url + '/rest/v1/') === 0,
     /** Behave like a database without mbm_apply / mbm_counts. */
