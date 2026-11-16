@@ -28,9 +28,7 @@
 
 const crypto = require('crypto');
 const fs = require('fs');
-const path = require('path');
 
-const ROOT = path.join(__dirname, '..');
 const STAGING_REF = 'uzpfgnjxvmrzwvocuiaf';
 const FUNCTION_URL = 'https://' + STAGING_REF + '.supabase.co/functions/v1/api?forceFunctionRegion=us-east-1';
 const NATIVE = '*,telegram,jobs';
@@ -58,18 +56,8 @@ const ref = String(process.env.SUPABASE_PROJECT_REF || STAGING_REF).trim();
 if (ref !== STAGING_REF) fail('refusing to touch ' + ref + ': this script is for the test project only.');
 if (!token) fail('the SUPABASE_ACCESS_TOKEN secret is not set for this workflow.');
 
-/** One SQL text through the Management API; the rows of its last statement. */
-async function sql(query) {
-  const res = await fetch('https://api.supabase.com/v1/projects/' + ref + '/database/query', {
-    method: 'POST',
-    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query }),
-    signal: AbortSignal.timeout(90000)
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error('SQL refused (HTTP ' + res.status + '): ' + text.slice(0, 600));
-  try { return JSON.parse(text || '[]'); } catch (error) { return []; }
-}
+const migrations = require('./supabase-migrate');
+const sql = migrations.client(ref, token);
 
 const literal = value => "'" + String(value).replace(/'/g, "''") + "'";
 const quoted = name => '"' + String(name).replace(/"/g, '""') + '"';
@@ -77,22 +65,9 @@ const quoted = name => '"' + String(name).replace(/"/g, '""') + '"';
 // ------------------------------------------------------------- 1. migrations
 
 async function migrate() {
-  await sql('create schema if not exists supabase_migrations; ' +
-    'create table if not exists supabase_migrations.schema_migrations (version text primary key, statements text[], name text);');
-  const applied = new Set((await sql('select name from supabase_migrations.schema_migrations')).map(row => row.name));
-  const dir = path.join(ROOT, 'supabase', 'migrations');
-  const files = fs.readdirSync(dir).filter(name => /^\d{14}_.+\.sql$/.test(name)).sort();
-  for (const file of files) {
-    const [, version, name] = file.match(/^(\d{14})_(.+)\.sql$/);
-    if (applied.has(name)) continue;
-    console.log('edge staging: applying ' + file);
-    const body = fs.readFileSync(path.join(dir, file), 'utf8');
-    await sql('begin;\n' + body + '\n;\ninsert into supabase_migrations.schema_migrations (version, name) values (' +
-      literal(version) + ', ' + literal(name) + ');\ncommit;');
-  }
-  const now = (await sql('select name from supabase_migrations.schema_migrations order by version')).map(row => row.name);
-  console.log('edge staging: migrations recorded: ' + now.join(', '));
-  for (const file of files) check(now.includes(file.replace(/^\d{14}_|\.sql$/g, '')), 'migration ' + file);
+  const result = await migrations.migrate(sql, line => console.log('edge staging: ' + line));
+  console.log('edge staging: migrations recorded: ' + result.recorded.join(', '));
+  migrations.migrationFiles().forEach(m => check(result.recorded.includes(m.name), 'migration ' + m.file));
 }
 
 // ------------------------------------------------------------------ 2. data

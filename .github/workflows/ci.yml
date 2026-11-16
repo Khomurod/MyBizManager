@@ -8,6 +8,11 @@ on:
   # is the normal way to retry after correcting a secret. The deploy job still
   # refuses any ref but main.
   workflow_dispatch:
+    inputs:
+      migrate_production:
+        description: "Also apply the live database's pending migrations and the Edge function's rows (main only)"
+        type: boolean
+        default: false
 
 jobs:
   static:
@@ -169,6 +174,39 @@ jobs:
 
       - name: Build, deploy and check
         run: node scripts/edge-deploy.js
+
+  # ------------------------------------------------- database, production
+  # The live database's pending migrations (supabase/migrations, matched by
+  # name, each with its record in one transaction) and the Edge function's
+  # three fixed rows (scripts/supabase-migrate.js). Never on a push or a
+  # merge: only when somebody starts the workflow by hand on main with
+  # "migrate_production" ticked, after the same checks as a deploy.
+  migrate-production:
+    name: Apply the live database's migrations
+    needs: [static, unit]
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      inputs.migrate_production == true
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    concurrency:
+      group: supabase-production-migrations
+      cancel-in-progress: false
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_REF: ksdqoftlxrkpyylbbyoi
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Apply pending migrations and the Edge rows
+        run: node scripts/supabase-migrate.js --edge-rows
 
   # ---------------------------------------------------------------- production
   # Updates the code inside the EXISTING Apps Script project and moves the

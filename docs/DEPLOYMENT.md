@@ -142,6 +142,9 @@ deliberate step of [Switching production over](#switching-production-over).
   `processPendingTelegramJobs` trigger.
 - **Never writes to the database.** Neither job applies a migration or
   changes a row; the Edge function's switches stay as the operator left them.
+  The one CI job that does write there, `migrate-production`, runs only when
+  somebody starts the workflow by hand on `main` with **migrate_production**
+  ticked (see [Switching production over](#switching-production-over)).
 - **Never runs from a pull request or a feature branch.** The job accepts only
   a push or a manual dispatch, and only on `github.ref == 'refs/heads/main'`.
   `tests/static-analysis.test.js` fails the build if those conditions are ever
@@ -292,10 +295,12 @@ be removed again afterwards.
 
 ## The Supabase database
 
-The schema is not deployed by CI. Each file in `supabase/migrations/` is
-applied once, through the Supabase migrations API (the dashboard's SQL editor
-or the MCP `apply_migration`), with the file named by the version Supabase
-records. Never edit an applied file; add a new one, and the matching entry in
+The schema is not deployed by a merge. Each file in `supabase/migrations/` is
+applied once, with the file named by the version Supabase records: by
+`scripts/supabase-migrate.js` (the `migrate-production` job, started by hand;
+it matches files to the project's record by name and applies each with its
+record in one transaction), or through the dashboard's SQL editor or the MCP
+`apply_migration`. Never edit an applied file; add a new one, and the matching entry in
 `SUPABASE_SHEETS`. The tests build their database from these files, so a
 column the code needs and the schema lacks fails CI.
 
@@ -377,27 +382,35 @@ Not before the owner has said **ok** to the merge and to the switch, in so
 many words. Each step is undone by the matching row of
 [Going back](#going-back-from-the-edge-function).
 
-1. **Migrations.** Apply `20261116120000_edge_shared_state.sql`,
-   `20261116130000_edge_cron.sql` and `20261116140000_pg_net_schema.sql`, in
-   that order, to `mybizmanager`. (The test project took the same three from
-   CI; see above.)
-2. **The rows.** In the SQL editor; the secret is made by the database and
-   never leaves it:
+1. **Merge.** CI deploys Apps Script and the function. Until step 2 the
+   function has no table to read its switches from and answers
+   `unconfigured`, so each browser goes straight to Apps Script (and tries
+   the function again five minutes later): the app behaves exactly as before.
+2. **Migrations and rows.** Actions → CI → **Run workflow**, branch `main`,
+   tick **migrate_production**. After the usual checks, the
+   `migrate-production` job applies `20261116120000_edge_shared_state.sql`,
+   `20261116130000_edge_cron.sql` and `20261116140000_pg_net_schema.sql`
+   (the test project took the same three from its own runs) and writes
+   `EDGE_APPS_SCRIPT_URL`, `EDGE_FUNCTION_URL` and `EDGE_CRON_SECRET` — the
+   secret made by the database, never shown. From then on browsers call the
+   function, which forwards everything to Apps Script: the app behaves as
+   before, one hop longer. The nightly copy starts that night.
+
+   Without Actions, the same by hand in the SQL editor: the three files in
+   order, then
    ```sql
    insert into public.app_properties (key, value) values
      ('EDGE_APPS_SCRIPT_URL', '<the /exec URL from assets/omad/00-config.js>'),
-     ('EDGE_FUNCTION_URL', 'https://ksdqoftlxrkpyylbbyoi.supabase.co/functions/v1/api?forceFunctionRegion=us-east-1'),
-     ('EDGE_CRON_SECRET', replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', ''))
+     ('EDGE_FUNCTION_URL', 'https://ksdqoftlxrkpyylbbyoi.supabase.co/functions/v1/api?forceFunctionRegion=us-east-1')
    on conflict (key) do update set value = excluded.value, updated_at = now();
+   insert into public.app_properties (key, value) values
+     ('EDGE_CRON_SECRET', replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', ''))
+   on conflict (key) do nothing;
    ```
-3. **Merge.** CI deploys Apps Script and the function. From the next page
-   load each browser calls the function first, which forwards everything to
-   Apps Script: the app behaves as before, one hop longer. The nightly copy
-   starts that night.
-4. **Tizim → Supabase → Sozlamalarni bazaga.** Copies the settings, verifies
+3. **Tizim → Supabase → Sozlamalarni bazaga.** Copies the settings, verifies
    them, switches Apps Script over and writes `__PROPERTIES_READY`. Then
    **Tizim salomatligi**: every row green.
-5. **Reads.**
+4. **Reads.**
    ```sql
    insert into public.app_properties (key, value) values ('EDGE_NATIVE_ACTIONS',
      'get_omad_data,get_omad_history,list_transactions,get_cafe_data,get_tasks,mini_home,mini_omad,mini_cafe,mini_tasks')
@@ -405,18 +418,18 @@ many words. Each step is undone by the matching row of
    ```
    Open the dashboard, the Mini App, the café and the tasks. In the browser's
    network panel the answers carry `X-MBM-Runtime: edge`.
-6. **Every web action:** `EDGE_NATIVE_ACTIONS` = `*`. Sign-in, entries, café
+5. **Every web action:** `EDGE_NATIVE_ACTIONS` = `*`. Sign-in, entries, café
    sales, task changes.
-7. **The bot:** `*,telegram`; then Sozlamalar → Telegram, webhook URL =
+6. **The bot:** `*,telegram`; then Sozlamalar → Telegram, webhook URL =
    `https://ksdqoftlxrkpyylbbyoi.supabase.co/functions/v1/api?forceFunctionRegion=us-east-1`,
    and register it. The health check then says "Webhook Edge funksiyasiga
    ulangan". (Pointing the webhook at the function while `telegram` is not
    in the list is harmless: the function forwards the update.)
-8. **The timed jobs:** `*,telegram,jobs`. Apps Script's trigger stands down
+7. **The timed jobs:** `*,telegram,jobs`. Apps Script's trigger stands down
    from its next run ("skipped"); `mbm-telegram-jobs` does the work every
    5 minutes. The health check's trigger row says "Edge funksiyasi bajaradi
    (pg_cron)".
-9. **Measure** the screens that were timed before the switch, the same way,
+8. **Measure** the screens that were timed before the switch, the same way,
    and keep the figures in the Library.
 
 ### Going back from the Edge function
@@ -453,8 +466,8 @@ row warns after 36 hours without one and turns red after 60, or when the last
 one was not written whole.
 
 It works before the settings have moved: Apps Script reads the cron secret
-from `app_properties` directly. It needs steps 1–3 above (the migrations, the
-rows, the merge).
+from `app_properties` directly. It needs steps 1–2 above (the merge, then
+the migrations and the rows).
 
 Each spreadsheet has a **Zaxira** tab (when, and rows per table) and one tab per
 business table with the original spreadsheet's name, columns and values. Not

@@ -783,7 +783,7 @@ composes the message from data it already stored.
   passes it to Apps Script as `run_database_backup` with the cron secret
   (`EDGE_CRON_SECRET`, which Apps Script reads from `app_properties` directly
   while the other settings are still in Script Properties, so the copy runs
-  from the first night after the merge). Each
+  from the first night after the migrations and rows are in). Each
   business table becomes one tab of a Google spreadsheet, in exactly the
   original sheet layout (text cells written as plain text, so nothing is
   re-typed as a date), in a rotation of seven weekday files and twelve
@@ -1370,6 +1370,10 @@ npm run bench            # sheet passes / bytes / ms per screen (see below)
   migration that project lacks, seeds it with synthetic data when empty
   (`scripts/staging-seed.js`, built by the real import code) and exercises
   the function end to end with timings. It refuses any other project.
+  The live database's migrations are applied by the `migrate-production`
+  job (`scripts/supabase-migrate.js --edge-rows`), which runs only when the
+  workflow is started by hand on `main` with **migrate_production** ticked —
+  never on a merge.
 - The deploy **fails closed**: missing credentials fail the job and name what is
   absent. There is no enable switch.
 - **The drift guard**: the deploy refuses to push when the live project defines a
