@@ -1048,9 +1048,10 @@ rollback to the spreadsheet, delete `__PROPERTIES_READY` first and change
 nothing at all if that fails: switching Apps Script while the marker stands
 would leave the Edge function serving on other settings. So neither runs
 while the database cannot be reached. With the database down the function
-cannot read its switches either: once its cached copy (at most 15 s old)
-expires it forwards every web request to Apps Script, and a job call answers
-`503` and runs nothing.
+cannot read its switches either: once its cached copy expires
+(`MBM_CONFIG_TTL_MS`, 15 s by default) it forwards every POST to Apps Script,
+answers a job call `503` without running it, and still answers GET (the
+banner) and OPTIONS itself.
 
 Cache revisions became opaque tokens (`"<n>.<base36>"`): a counter both
 runtimes bump through the same row, with a random tail so two writers that
