@@ -128,6 +128,13 @@ jobs:
       - name: Build, deploy and check
         run: node scripts/edge-deploy.js
 
+      # Brings the test project's schema up to date, seeds it with synthetic
+      # data when empty, and exercises the deployed function end to end
+      # (reads, a write and its retry, sign-in, Telegram, the timed jobs),
+      # timing each call. Refuses any project but the test one.
+      - name: Migrate, seed and exercise the test project
+        run: node scripts/edge-staging.js
+
   # ------------------------------------------------------- edge, production
   # The Edge function to the live project, from main, once everything above
   # has passed -- the same gate as the Apps Script deploy.

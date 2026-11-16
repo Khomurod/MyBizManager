@@ -1366,7 +1366,10 @@ npm run bench            # sheet passes / bytes / ms per screen (see below)
   (`scripts/edge-deploy.js`: build, `supabase functions deploy api
   --no-verify-jwt`, then a probe that it answers from us-east-1). A commit on
   a branch whose message contains `[edge-staging]` deploys the function to the
-  test project instead.
+  test project instead, and then `scripts/edge-staging.js` applies any
+  migration that project lacks, seeds it with synthetic data when empty
+  (`scripts/staging-seed.js`, built by the real import code) and exercises
+  the function end to end with timings. It refuses any other project.
 - The deploy **fails closed**: missing credentials fail the job and name what is
   absent. There is no enable switch.
 - **The drift guard**: the deploy refuses to push when the live project defines a

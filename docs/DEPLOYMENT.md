@@ -101,7 +101,27 @@ the function flips no switch: what it answers itself is decided by rows in
 
 A branch deploys the function to the **test project** only when asked: a
 commit whose message contains `[edge-staging]`, or **Run workflow** on that
-branch (`edge-staging` job). It never runs from `main`.
+branch (`edge-staging` job). It never runs from `main`. After the deploy,
+`scripts/edge-staging.js` (test project only, its ref is fixed in the script):
+
+1. applies every migration the test project has not recorded, by name, each
+   with its record in one transaction (through the Management API, with the
+   same access token);
+2. if the project is empty, inserts the synthetic data set of
+   `scripts/staging-seed.js` — invented tenants and amounts, built by the
+   real import code, so the rows have the live tables' exact shape;
+3. sets the switches so the function answers everything itself (there is no
+   Apps Script behind the test project), a fresh admin key for the run, and
+   the cron and webhook secrets once — all masked in the log;
+4. exercises it: dashboard and ledger reads, the tasks and café reads, a
+   write and the same write again (stored once, no lease left held), an
+   account, sign-in and a refused wrong password, a Telegram update, the
+   timed jobs and a refused wrong cron secret, `get_health` answered
+   `unconfigured`, both `pg_cron` jobs present. Each call's time goes to the
+   run's summary page.
+
+The live project's migrations are never applied this way: they stay a
+deliberate step of [Switching production over](#switching-production-over).
 
 ### What it never does
 
