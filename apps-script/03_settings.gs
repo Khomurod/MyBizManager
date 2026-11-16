@@ -59,8 +59,9 @@ var TELEGRAM_TOKEN_LIKE_PATTERN = /\d{6,16}:[A-Za-z0-9_-]{30,}/g;
 // is read from and written to the app_properties table, and Script Properties
 // keeps only the four that say where that database is. Apps Script still
 // writes each value to its Script Property too: if the database cannot be
-// reached, the request reads that copy instead of failing at the sign-in --
-// which is what keeps "Google Sheets'ga qaytish" usable with the database down.
+// read, a request reads that copy -- except the settings that decide who gets
+// in (AUTH_PROPERTY_KEYS), which fail the request instead, because the copy
+// can be older than the database (the Edge function writes only the table).
 //
 // Before the move, and whenever the store is the spreadsheet, nothing changes:
 // Script Properties are the settings.
@@ -129,6 +130,29 @@ function sharedPropertyMap_() {
   }
 }
 
+/**
+ * The settings that decide who gets in: the users and their password hashes,
+ * the key sessions are signed with, the bot's webhook secret. While the
+ * database cannot be read they are never answered from anything else:
+ *   - Apps Script's own copy can be older than the database (a password the
+ *     Edge function changed is not in it), so it could let an old password or
+ *     a revoked session in;
+ *   - an empty answer reads as "not set yet", which would open the first-run
+ *     session (omadAdminAccountConfigured_) or mint a new session or webhook
+ *     secret and sign everybody out, or cut the bot off.
+ * So reading one of them fails the request instead. OMAD_ADMIN_KEY is not
+ * among them: nothing in the application changes it, so Apps Script's copy is
+ * current, and it stays the way in for an operator.
+ */
+var AUTH_PROPERTY_KEYS = {
+  OMAD_USERS: true,
+  OMAD_SESSION_SECRET: true,
+  TELEGRAM_WEBHOOK_SECRET: true
+};
+
+var SHARED_PROPERTIES_UNREADABLE_MESSAGE =
+  "Sozlamalar bazasi hozir javob bermayapti. Hech narsa o'zgarmadi — birozdan keyin qayta urinib ko'ring.";
+
 /** Script Properties' surface over app_properties. */
 function sharedPropertiesView_(local) {
   var view = {
@@ -136,6 +160,7 @@ function sharedPropertiesView_(local) {
       if (LOCAL_PROPERTY_KEYS[key]) return local.getProperty(key);
       var map = sharedPropertyMap_();
       if (map) return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : null;
+      if (AUTH_PROPERTY_KEYS[key]) throw new Error(SHARED_PROPERTIES_UNREADABLE_MESSAGE);
       // The database could not be read: the copy Apps Script keeps (empty in
       // the Edge runtime, which has no other source).
       return local.getProperty(key);
@@ -145,6 +170,9 @@ function sharedPropertiesView_(local) {
         local.setProperty(key, value);
         return view;
       }
+      // A value decided while the settings could not be read (a secret made
+      // because the stored one "was missing") must not replace the real one.
+      if (!sharedPropertyMap_()) throw new Error(SHARED_PROPERTIES_UNREADABLE_MESSAGE);
       appDoc_().__writeProperty(key, String(value));
       try { local.setProperty(key, String(value)); } catch (error) {}
       return view;
@@ -154,12 +182,22 @@ function sharedPropertiesView_(local) {
         local.deleteProperty(key);
         return view;
       }
+      if (!sharedPropertyMap_()) throw new Error(SHARED_PROPERTIES_UNREADABLE_MESSAGE);
       appDoc_().__writeProperty(key, null);
       try { local.deleteProperty(key); } catch (error) {}
       return view;
     }
   };
   return view;
+}
+
+/**
+ * One of AUTH_PROPERTY_KEYS, or "" when it is not set. Unlike
+ * getTelegramSetting_ it lets "the settings cannot be read" through as an
+ * error: for these, an empty answer would mean something else.
+ */
+function authSetting_(key) {
+  return scriptProperties_().getProperty(key) || "";
 }
 
 /**
@@ -212,7 +250,7 @@ function getTasksGroupChatId_() {
 }
 
 function getOrCreateWebhookSecret_() {
-  var existing = getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_SECRET);
+  var existing = authSetting_(TELEGRAM_PROP_WEBHOOK_SECRET);
   if (existing) return existing;
   var generated = Utilities.getUuid().split("-").join("") + Utilities.getUuid().split("-").join("");
   setTelegramSetting_(TELEGRAM_PROP_WEBHOOK_SECRET, generated);

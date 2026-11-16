@@ -1011,11 +1011,44 @@ exactly as Apps Script does:
 | `app_lease` | the script lock: one `script` row with an owner and an expiry (90 s, so a lease an execution died holding frees itself) | `mbm_lock(owner, ttl, wait)` (re-entrant, waits up to 6 s per call), `mbm_unlock(owner)`, or the `unlock` op inside the same `mbm_apply` that carries the locked writes |
 | `app_cache` | CacheService entries both runtimes must agree on: the `/yangi` conversation, rate-limit buckets | the Edge shim; Apps Script keeps its own CacheService (the two only share what is not a display summary) |
 
+An expiry alone does not keep out a writer that outlived its lease (an
+execution stalled past 90 s while another took the lease over). What does is
+the `fence` op of `20261116150000_lease_fencing.sql`: every batch written
+under the lease carries `{ op: "fence", owner }` after its writes and before
+the `unlock`, and `mbm_apply` refuses the whole batch unless that owner still
+holds an unexpired lease, keeping the row share-locked until it commits. The
+late writer gets an error and nothing of it is stored. The same migration
+makes `mbm_lock` look before it tries: while somebody else holds the lease it
+only reads and sleeps, so it never holds the row the holder needs to release
+it; a try that loses a race answers at once and the caller asks again until
+its own deadline. Its answer also carries `ready` (whether
+`__PROPERTIES_READY` is still there), which the Edge runtime checks as it
+takes the lease (`assertEdgeStillServes_`): it read its switches up to 15 s
+earlier and may have waited behind a move back, after which it must write
+nothing. Apps Script needs no such check; its own script lock queues it
+behind the move, and `assertStoreUnchanged_` catches the switch.
+
+While the settings are in the database, a request that cannot read them
+falls back to the copy Apps Script keeps in Script Properties (in the Edge
+runtime there is none) — except for `OMAD_USERS`, `OMAD_SESSION_SECRET` and
+`TELEGRAM_WEBHOOK_SECRET` (`AUTH_PROPERTY_KEYS`, read through `authSetting_`),
+which fail the request instead. The copy can be older than the database (a
+password the Edge function changed is not in it), and an empty answer would
+read as "not set yet": the first-run session would open, or a new session or
+webhook secret would be made and everybody signed out. For the same reason
+no setting is written while they cannot be read. `OMAD_ADMIN_KEY` keeps its
+fallback: nothing in the application changes it, so the copy is current.
+
 The settings move in and out through `move_properties_to_database` and
 `move_properties_to_script` (`26_property_store.gs`, omad_admin, under the
 script lock), the Supabase card's "Sozlamalarni bazaga" / "Sozlamalarni
 qaytarish" buttons in Tizim; `get_storage_status` reports where they are
-(`properties.store`: `script` or `database`).
+(`properties.store`: `script` or `database`). The move back, and the
+rollback to the spreadsheet, delete `__PROPERTIES_READY` first and change
+nothing at all if that fails: switching Apps Script while the marker stands
+would leave the Edge function serving on other settings. So neither runs
+while the database cannot be reached; with the database down the function
+cannot read its switches either and forwards everything.
 
 Cache revisions became opaque tokens (`"<n>.<base36>"`): a counter both
 runtimes bump through the same row, with a random tail so two writers that
@@ -1036,8 +1069,10 @@ database however far away the caller is.
    settings, users and secrets are still only there);
 2. an action in `APPS_SCRIPT_ONLY` (the store moves, the property moves, the
    ledger migration, `get_health`, `run_database_backup`) → forwarded, always;
-3. an action named in `EDGE_NATIVE_ACTIONS` (or `*`), a Telegram update when
-   the list has `telegram` → answered here; anything else → forwarded.
+3. an action named in `EDGE_NATIVE_ACTIONS` (or `*`, every web action), a
+   Telegram update when the list has `telegram` → answered here; anything
+   else → forwarded. `*` never covers `telegram` or `jobs`, so each of those
+   is switched, and given back, by its own name.
 
 Forwarding is the body, unchanged, POSTed to `EDGE_APPS_SCRIPT_URL` (or the
 `APPS_SCRIPT_URL` secret) with the query string minus the region pin, and
@@ -1114,15 +1149,23 @@ transit is not repeated, and the person's retry goes to Apps Script.
 `EDGE_FUNCTION_URL` and `EDGE_CRON_SECRET` from `app_properties` and does
 nothing until both exist. Apps Script's own `processPendingTelegramJobs`
 trigger asks `edgeServesGroup_("jobs")` and stands down once the jobs are
-switched over, so exactly one runtime runs them.
+switched over — `jobs` named, and both of those rows present, so it never
+stands down for a cron that would do nothing — and exactly one runtime runs
+them.
 
 ### The nightly copy
 
 `27_database_backup.gs` reads each business table through `appDoc_()` — the
-same sheet-shaped values the import reads — and writes it to a tab of the
-same name in a Google spreadsheet it created, one call per tab, every string
-cell formatted as plain text first (`setNumberFormats`) so `2026-08` and
-`05/08/2026` stay text. Files: `MyBizManager zaxira — kun <n-weekday>` and,
+same sheet-shaped values the import reads — under the script lock and the
+lease, all tables in one round, so no write lands between two of them
+(`claimDatabaseBackupRun_`). Under the same lock it refuses to start while
+another run's `DB_BACKUP_RUNNING` mark is less than 15 minutes old, and marks
+itself after a good read; the mark is cleared when the run ends. It then
+writes each table to a tab of the same name in a Google spreadsheet it
+created, one call per tab, every string cell formatted as plain text first
+(`setNumberFormats`) so `2026-08` and `05/08/2026` stay text, and text that
+starts with `=` or `'` given a leading `'` so Sheets keeps it as text rather
+than a formula. Files: `MyBizManager zaxira — kun <n-weekday>` and,
 on the 1st, `— oy <MM>`; ids in `DB_BACKUP_FILES`, outcome in
 `DB_BACKUP_STATUS`. A tab not written this time (the new file's own first
 tab, a table no longer copied) is deleted. A tab that fails is named in the

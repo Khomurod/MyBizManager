@@ -91,6 +91,14 @@ function dbHeaders(): Record<string, string> {
   return headers;
 }
 
+/**
+ * An error's text, safe to log or to hand back: a failed fetch names its URL,
+ * which can carry the bot token or the webhook secret (Executor.redact).
+ */
+function errorText(error: unknown): string {
+  return Executor.redact(String((error as Error)?.message || error));
+}
+
 // ------------------------------------------------------------- switches
 
 type Config = { ready: boolean; allow: string; appsScriptUrl: string; cronSecret: string; at: number; ok: boolean };
@@ -130,7 +138,7 @@ async function loadConfig(): Promise<Config> {
   } catch (error) {
     // The database cannot say what is allowed: serve nothing here. Apps
     // Script answers -- or fails the same way, since it uses the same database.
-    console.error('config:', String((error as Error)?.message || error));
+    console.error('config:', errorText(error));
     cachedConfig = { ready: false, allow: '', appsScriptUrl: fallbackUrl, cronSecret: '', at: Date.now(), ok: false };
   }
   return cachedConfig;
@@ -157,7 +165,7 @@ async function doFetch(request: Any): Promise<Answer> {
     return { code: res.status, text, headers };
   } catch (error) {
     const host = (() => { try { return new URL(request.url).host; } catch (_e) { return 'the server'; } })();
-    return { transportError: 'Exception: ' + String((error as Error)?.message || error) + ' (' + host + ')' };
+    return { transportError: 'Exception: ' + errorText(error) + ' (' + host + ')' };
   }
 }
 
@@ -176,7 +184,11 @@ async function runNative(entry: string, event: unknown) {
       makeGlobals: (ctx: Any) => Shims.createEdgeGlobals(ctx, env),
       invoke: (globals: Any) => createRuntime(globals)[entry](event),
       perform,
-      performDeferred: (requests: Work[]) => Promise.all(requests.map(perform))
+      // One after another, as Apps Script sent them: a put and a remove of the
+      // same cache key must not land in the other order.
+      performDeferred: async (requests: Work[]) => {
+        for (const request of requests) await perform(request);
+      }
     });
   } finally {
     // A run that failed between taking the lock and releasing it must not
@@ -282,7 +294,7 @@ async function handleJob(req: Request, url: URL): Promise<Response> {
       console.log(JSON.stringify({ job, runtime: 'apps-script', status: res.status, ms: Date.now() - started }));
       return res;
     } catch (error) {
-      console.error(JSON.stringify({ job, ms: Date.now() - started, fatal: String((error as Error)?.message || error) }));
+      console.error(JSON.stringify({ job, ms: Date.now() - started, fatal: errorText(error) }));
       return json({ status: 'error', message: 'Apps Script javob bermadi.' }, 502, 'apps-script');
     }
   }
@@ -290,8 +302,8 @@ async function handleJob(req: Request, url: URL): Promise<Response> {
   if (!Routing.jobsRunHere(config)) return json({ status: 'skipped', reason: 'the jobs run in Apps Script' });
   const started = Date.now();
   const out = await runNative('runTimedJobs_', undefined);
-  console.log(JSON.stringify({ job: 'telegram-jobs', runs: out.runs, ios: out.ios, ms: Date.now() - started, error: out.error ? String(out.error) : undefined }));
-  if (out.error) return json({ status: 'error', message: String(out.error) }, 500);
+  console.log(JSON.stringify({ job: 'telegram-jobs', runs: out.runs, ios: out.ios, ms: Date.now() - started, error: out.error ? errorText(out.error) : undefined }));
+  if (out.error) return json({ status: 'error', message: errorText(out.error) }, 500);
   return json({ status: 'success', result: out.result === undefined ? null : out.result, runs: out.runs, ios: out.ios });
 }
 
@@ -309,7 +321,7 @@ async function handle(req: Request): Promise<Response> {
       });
     }
     const out = await runNative('doGet', eventFor(url, '', ''));
-    return out.error ? json({ status: 'error', message: String(out.error) }, 500) : fromOutput(out.result);
+    return out.error ? json({ status: 'error', message: errorText(out.error) }, 500) : fromOutput(out.result);
   }
 
   if (req.method !== 'POST') return json({ status: 'error', message: 'Method not allowed' }, 405);
@@ -329,7 +341,7 @@ async function handle(req: Request): Promise<Response> {
     } catch (error) {
       // Apps Script may have done the work and only the answer was lost, so
       // this is a refusal the browser shows, not a failure it retries.
-      console.error(JSON.stringify({ action: label, runtime: 'apps-script', ms: Date.now() - started, fatal: String((error as Error)?.message || error) }));
+      console.error(JSON.stringify({ action: label, runtime: 'apps-script', ms: Date.now() - started, fatal: errorText(error) }));
       if (request.telegram) return fromOutput({ __html: 'OK' });
       return json({ status: 'error', message: "Apps Script javob bermadi. Bir ozdan keyin qayta urinib ko'ring." }, 200, 'apps-script');
     }
@@ -337,20 +349,20 @@ async function handle(req: Request): Promise<Response> {
 
   try {
     const out = await runNative('doPost', eventFor(url, bodyText, req.headers.get('content-type') || 'text/plain'));
-    console.log(JSON.stringify({ action: label, runtime: 'edge', runs: out.runs, ios: out.ios, ms: Date.now() - started, error: out.error ? String(out.error) : undefined }));
+    console.log(JSON.stringify({ action: label, runtime: 'edge', runs: out.runs, ios: out.ios, ms: Date.now() - started, error: out.error ? errorText(out.error) : undefined }));
     if (out.error) {
       // doPost answers its own failures; reaching here is a fault of the runtime.
       if (request.telegram) return fromOutput({ __html: 'OK' });
-      return json({ status: 'error', message: 'Edge: ' + String(out.error) });
+      return json({ status: 'error', message: 'Edge: ' + errorText(out.error) });
     }
     return fromOutput(out.result);
   } catch (error) {
     // The executor itself gave up (a divergence, too many runs). Answered as a
     // refusal, not a 5xx, so the browser does not repeat the request on Apps
     // Script after part of it may have been done here.
-    console.error(JSON.stringify({ action: label, runtime: 'edge', ms: Date.now() - started, fatal: String((error as Error)?.message || error) }));
+    console.error(JSON.stringify({ action: label, runtime: 'edge', ms: Date.now() - started, fatal: errorText(error) }));
     if (request.telegram) return fromOutput({ __html: 'OK' });
-    return json({ status: 'error', message: 'Edge: ' + String((error as Error)?.message || error) });
+    return json({ status: 'error', message: 'Edge: ' + errorText(error) });
   }
 }
 
@@ -358,7 +370,7 @@ Deno.serve(async (req: Request) => {
   try {
     return await handle(req);
   } catch (error) {
-    console.error('unhandled:', String((error as Error)?.message || error));
-    return json({ status: 'error', message: 'Edge: ' + String((error as Error)?.message || error) }, 500);
+    console.error('unhandled:', errorText(error));
+    return json({ status: 'error', message: 'Edge: ' + errorText(error) }, 500);
   }
 });

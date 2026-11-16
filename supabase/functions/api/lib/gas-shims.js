@@ -423,6 +423,8 @@
       UrlFetchApp: urlFetch,
       CacheService: { getScriptCache: function () { return cache; } },
       PropertiesService: createLocalProperties({
+        // How the backend tells it runs here (runningOnEdge_ in 26_property_store.gs).
+        MBM_RUNTIME: 'edge',
         OMAD_STORAGE: 'supabase',
         OMAD_PROPERTIES_STORE: 'supabase',
         SUPABASE_URL: env.supabaseUrl,

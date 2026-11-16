@@ -706,9 +706,24 @@ test('in the database, a cache revision lands in the same write as the rows it a
     .filter(r => r.method !== 'get' && !['rpc/mbm_counts', 'rpc/mbm_lock'].includes(r.table));
   assert.strictEqual(writes.length, 1, 'one write: ' + writes.map(r => r.table).join(', '));
   const ops = writes[0].body.ops.map(op => op.op);
-  assert.deepStrictEqual(ops, ['insert', 'upsert_property', 'unlock'],
-    'the row, then its revision, then the release, in one transaction');
+  assert.deepStrictEqual(ops, ['insert', 'upsert_property', 'fence', 'unlock'],
+    'the row, then its revision, the check that the lease is still ours, then the release, in one transaction');
   assert.deepStrictEqual(gas.__supabase.rows.app_lease || [], [], 'and the lock is free again');
+});
+
+test('in the database, a writer that lost the lease to another execution writes nothing', () => {
+  const gas = liveWithTenants();
+  gas.resetRequestMemos_();
+  const db = gas.__supabase;
+  const log = gas.appDoc_().getSheetByName('Omad_Audit_Log');
+  const lock = gas.appScriptLock_();
+  lock.waitLock(1000);
+  log.appendRow(['2026-08-01T09:00:00.000Z', 'late', '']);
+  // This execution stalled past the lease's 90 s; another took it over.
+  db.rows.app_lease = [{ name: 'script', owner: 'x_somebody_else', expires_at: new Date(Date.now() + 60000).toISOString() }];
+  assert.throws(() => lock.releaseLock(), /lease lost/);
+  assert.strictEqual(db.count('omad_audit_log'), 0, 'the late batch is refused as a whole');
+  assert.strictEqual(db.rows.app_lease[0].owner, 'x_somebody_else', 'and the other execution keeps its lease');
 });
 
 test('in the database, a refused batch still leaves a new revision behind', () => {
@@ -829,6 +844,16 @@ test('the Edge function can take over the timed jobs and the webhook, and the he
 
   db.setProperty('EDGE_NATIVE_ACTIONS', 'get_omad_data, jobs');
   gas.resetRequestMemos_();
+  assert.strictEqual(typeof gas.processPendingTelegramJobs(), 'number',
+    'named, but with no cron secret and no function address nothing would call the function: the trigger keeps them');
+  assert.strictEqual(gas.triggerCheck_().status, 'error');
+  db.setProperty('EDGE_CRON_SECRET', 'cron-secret-0123456789abcdef');
+  db.setProperty('EDGE_FUNCTION_URL', db.url + '/functions/v1/api?forceFunctionRegion=us-east-1');
+  db.setProperty('EDGE_NATIVE_ACTIONS', '*');
+  gas.resetRequestMemos_();
+  assert.strictEqual(typeof gas.processPendingTelegramJobs(), 'number', '"*" is the web actions, never the jobs');
+  db.setProperty('EDGE_NATIVE_ACTIONS', 'get_omad_data, jobs');
+  gas.resetRequestMemos_();
   assert.strictEqual(gas.processPendingTelegramJobs().status, 'skipped', 'the Apps Script trigger stands down');
   assert.strictEqual(gas.triggerCheck_().status, 'ok');
   gas.resetRequestMemos_();
@@ -845,6 +870,72 @@ test('the Edge function can take over the timed jobs and the webhook, and the he
   gas.resetRequestMemos_();
   assert.strictEqual(typeof gas.processPendingTelegramJobs(), 'number',
     'without the marker the Edge function serves nothing, so Apps Script runs the jobs again');
+});
+
+test('while the settings cannot be read, nobody signs in on a copy and no secret is made anew', () => {
+  const gas = liveWithTenants();
+  const db = gas.__supabase;
+  gas.setUserPassword('kassir', 'kassir-parol-1', 'cafe_seller');
+  const signIn = () => readJsonOutput(gas.doPost(postEvent({ action: 'login', username: 'kassir', password: 'kassir-parol-1' })));
+  const token = signIn().token;
+  assert.ok(token);
+  const secret = db.properties().OMAD_SESSION_SECRET;
+  assert.ok(secret);
+  const check = () => readJsonOutput(gas.doPost(postEvent({ action: 'verify_access', sessionToken: token })));
+
+  gas.resetRequestMemos_();
+  const restore = db.fail(r => r.table === 'app_properties' && r.method === 'get' && 'database restarting');
+  assert.notStrictEqual(signIn().status, 'success', 'the password is not checked against a copy');
+  assert.notStrictEqual(check().status, 'success', 'nor a session');
+  const bootstrap = readJsonOutput(gas.doPost(postEvent({ action: 'login', username: 'omad_admin', password: ADMIN_KEY })));
+  assert.notStrictEqual(bootstrap.status, 'success', 'unreadable users are not "no users yet"');
+  assert.strictEqual(gas.isVerifiedTelegramWebhookRequest_({ parameter: { wh: 'anything' } }), false,
+    'an unknown webhook secret is not "no secret"');
+  restore();
+
+  assert.strictEqual(db.properties().OMAD_SESSION_SECRET, secret, 'and the session secret was not made anew');
+  gas.resetRequestMemos_();
+  assert.strictEqual(check().status, 'success', 'so the session is good again once the database answers');
+});
+
+test('the settings do not move back, nor the store roll back, while the Edge function cannot be stopped', () => {
+  const gas = liveWithTenants();
+  const db = gas.__supabase;
+  const marker = db.properties().__PROPERTIES_READY;
+  assert.ok(marker);
+  const restore = db.fail(r => r.table === 'rpc/mbm_apply' && r.body && (r.body.ops || []).some(op =>
+    op.op === 'delete_property' && op.key === '__PROPERTIES_READY') && 'database restarting');
+  const back = post(gas, { action: 'move_properties_to_script' });
+  assert.strictEqual(back.status, 'error');
+  assert.match(back.message, /to'xtatib bo'lmadi/);
+  const rolled = post(gas, { action: 'rollback_supabase_storage' });
+  assert.strictEqual(rolled.status, 'error');
+  assert.match(rolled.message, /to'xtatib bo'lmadi/);
+  restore();
+  assert.strictEqual(db.properties().__PROPERTIES_READY, marker, 'the function may still be serving');
+  assert.strictEqual(gas.__properties.OMAD_PROPERTIES_STORE, 'supabase', 'so this script keeps the same settings');
+  assert.strictEqual(gas.__properties.OMAD_STORAGE, 'supabase', 'and the same store');
+  assert.deepStrictEqual(db.rows.app_lease, [], 'and the lock is free');
+  gas.resetRequestMemos_();
+  assert.strictEqual(post(gas, { action: 'move_properties_to_script' }).status, 'success', 'once the database answers, it goes');
+});
+
+test('an Edge request that waited behind a move back writes nothing', () => {
+  const gas = liveWithTenants({ edgeRuntime: true });
+  const db = gas.__supabase;
+  const marker = db.properties().__PROPERTIES_READY;
+  const before = db.count('omad_transactions_v2');
+  // The function read its switches before the move back deleted the marker.
+  db.setProperty('__PROPERTIES_READY', undefined);
+  const refused = post(gas, newIncome('edge-late'));
+  assert.strictEqual(refused.status, 'error');
+  assert.match(refused.message, /hozirgina almashtirildi/);
+  assert.strictEqual(db.count('omad_transactions_v2'), before);
+  assert.deepStrictEqual(db.rows.app_lease, [], 'the lease is handed back');
+  db.setProperty('__PROPERTIES_READY', marker);
+  const written = post(gas, newIncome('edge-late'));
+  assert.strictEqual(written.status, 'success', written.message);
+  assert.strictEqual(db.count('omad_transactions_v2'), before + 2);
 });
 
 test('a rollback to the spreadsheet brings the settings back first', () => {

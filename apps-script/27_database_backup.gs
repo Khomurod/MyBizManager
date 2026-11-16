@@ -12,7 +12,17 @@
 // the import (docs/DEPLOYMENT.md).
 //
 // Every cell keeps its value: text is written as plain text, so "2026-08" or
-// "05/08/2026" stays text instead of becoming a date the way typed text does.
+// "05/08/2026" stays text instead of becoming a date the way typed text does,
+// and text that starts with "=" or "'" gets a leading "'" -- Sheets reads a
+// written "=..." as a formula whatever the cell's format, and drops one
+// leading "'", so the cell then holds the text exactly.
+//
+// One copy is one moment: the tables are read under the script lock (and the
+// database lease the Edge function shares), so no business write lands
+// between two of them. And one run at a time: a run marks itself running
+// (DB_BACKUP_RUNNING) under that same lock, and a second one -- the button
+// pressed during the nightly run -- is turned away rather than interleave its
+// tabs with the other's in the same file.
 //
 // What starts it: pg_cron in the database at 03:00 Tashkent calls the Edge
 // function (`?job=db-backup`, behind its cron secret), which asks this script
@@ -27,9 +37,10 @@
 // deleted is created again.
 //
 // Not copied:
-//   - the settings (app_properties): Apps Script keeps its own copy of every
-//     one in Script Properties, and the bot token, the session secret and the
-//     password hashes do not belong in a spreadsheet;
+//   - the settings (app_properties): the bot token, the session secret and
+//     the password hashes do not belong in a spreadsheet. Apps Script keeps a
+//     copy in Script Properties, but it can lag the database (a change the
+//     Edge function made is only in the table);
 //   - Omad_Backups (snapshots of the other tables, and too large for a cell)
 //     and the Telegram debug logs (diagnostics, not records);
 //   - the lock and cache tables, which hold nothing lasting.
@@ -37,6 +48,9 @@
 
 var DB_BACKUP_FILES_PROP = "DB_BACKUP_FILES";
 var DB_BACKUP_STATUS_PROP = "DB_BACKUP_STATUS";
+var DB_BACKUP_RUNNING_PROP = "DB_BACKUP_RUNNING";
+/** A run marked longer ago than this died (Apps Script stops one at 6 minutes). */
+var DB_BACKUP_RUN_MAX_MS = 15 * 60 * 1000;
 var DB_BACKUP_SKIP = { Omad_Backups: true, Telegram_Debug_Log: true };
 var DB_BACKUP_INFO_SHEET = "Zaxira";
 var DB_BACKUP_TITLE = "MyBizManager zaxira";
@@ -105,8 +119,12 @@ function runDatabaseBackup_(now) {
   if (storageMode_() !== STORAGE_MODE_SUPABASE) {
     return { status: "skipped", message: "Ma'lumotlar hali Google Sheets'da: zaxira shart emas." };
   }
+  var snapshot = null;
   try {
-    var snapshot = databaseBackupSnapshot_();
+    snapshot = claimDatabaseBackupRun_();
+    if (!snapshot) {
+      return { status: "skipped", message: "Zaxira hozir yozilmoqda — u tugagach qayta urinib ko'ring." };
+    }
     var files = safeParseJSON_(getTelegramSetting_(DB_BACKUP_FILES_PROP) || "{}", {}) || {};
     var slots = databaseBackupSlots_(now);
     for (var i = 0; i < slots.length; i++) {
@@ -122,6 +140,10 @@ function runDatabaseBackup_(now) {
     status.error = redactSecrets_(error).slice(0, 300);
   }
   setTelegramSetting_(DB_BACKUP_STATUS_PROP, JSON.stringify(status));
+  // Only a run that marked itself running clears the mark.
+  if (snapshot) {
+    try { setTelegramSetting_(DB_BACKUP_RUNNING_PROP, ""); } catch (ignored) { /* it goes stale on its own */ }
+  }
   if (status.error) return { status: "error", message: "Zaxira yozilmadi: " + status.error, backup: status };
   if (status.failed.length) {
     return { status: "error", message: "Zaxira qisman yozildi, yozilmagan: " + status.failed.join(", "), backup: status };
@@ -129,12 +151,34 @@ function runDatabaseBackup_(now) {
   return { status: "success", backup: status };
 }
 
+/**
+ * Under the script lock: null when another run is still going, otherwise
+ * reads the snapshot and marks this run running -- so no business write lands
+ * between two tables, and no second run starts writing the same file. The
+ * mark comes after the read: a run that could not read never holds it.
+ */
+function claimDatabaseBackupRun_() {
+  var lock = appScriptLock_();
+  lock.waitLock(30000);
+  try {
+    var since = Date.parse(getTelegramSetting_(DB_BACKUP_RUNNING_PROP) || "") || 0;
+    if (since && Date.now() - since < DB_BACKUP_RUN_MAX_MS) return null;
+    var snapshot = databaseBackupSnapshot_();
+    setTelegramSetting_(DB_BACKUP_RUNNING_PROP, new Date().toISOString());
+    return snapshot;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 /** Every table to copy, read once: [{ name, values, rows }]. */
 function databaseBackupSnapshot_() {
   var doc = appDoc_();
+  var names = Object.keys(SUPABASE_SHEETS).filter(function (name) { return !DB_BACKUP_SKIP[name]; });
+  // All of them in one round, rather than one call per table while the lock is held.
+  if (doc.__prefetch) doc.__prefetch(names);
   var out = [];
-  Object.keys(SUPABASE_SHEETS).forEach(function (name) {
-    if (DB_BACKUP_SKIP[name]) return;
+  names.forEach(function (name) {
     var values = doc.getSheetByName(name).getDataRange().getValues();
     var header = SUPABASE_SHEETS[name].noHeader ? 0 : 1;
     out.push({ name: name, values: values, rows: Math.max(values.length - header, 0) });
@@ -196,6 +240,8 @@ function writeBackupSheet_(file, name, values) {
     for (var j = 0; j < width; j++) {
       var value = j < values[i].length ? values[i][j] : "";
       if (value === null || value === undefined) value = "";
+      // Literal text, not a formula: Sheets drops the "'" and keeps the rest.
+      if (typeof value === "string" && /^[=']/.test(value)) value = "'" + value;
       row.push(value);
       rowFormats.push(typeof value === "string" ? "@" : value instanceof Date ? "yyyy-mm-dd hh:mm:ss" : "0.###############");
     }

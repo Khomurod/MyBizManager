@@ -446,7 +446,7 @@ function loadScript(options = {}) {
 
   if (supabase && storage === 'supabase') seedSupabase(sandbox, spreadsheet, supabase);
   else if (supabase) sandbox.__supabase = supabase;
-  if (EDGE_RUNTIME && sharedInDatabase) installEdgeRuntime(sandbox, supabase, cacheStore, options);
+  if ((EDGE_RUNTIME || options.edgeRuntime) && sharedInDatabase) installEdgeRuntime(sandbox, supabase, cacheStore, options);
   if (sharedInDatabase) sandbox.__properties = propertiesView(properties, supabase);
 
   return sandbox;
@@ -628,7 +628,7 @@ function installEdgeRuntime(sandbox, supabase, cacheStore, options) {
       // What the Edge function always forwards to Apps Script runs where Apps
       // Script would run it.
       if (name === 'doPost' && edgeRouting.routePost(event && event.postData && event.postData.contents,
-        { ready: true, allow: '*' }) !== 'edge') return inSandbox.apply(this, arguments);
+        { ready: true, allow: '*,telegram,jobs' }) !== 'edge') return inSandbox.apply(this, arguments);
       // Whatever the sandbox had memoised belongs to the request before.
       sandbox.resetRequestMemos_();
       const tape = edgeExecutor.createTape();

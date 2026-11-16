@@ -120,11 +120,23 @@
     return ctx;
   }
 
+  /**
+   * Text that may hold a URL, without the URL's secret parts: the bot token
+   * (/bot<token>/) and the webhook secret or a key in the query. A failed fetch
+   * names its URL, so every error that is logged or handed back goes through
+   * this first.
+   */
+  function redact(text) {
+    return String(text === null || text === undefined ? '' : text)
+      .replace(/\/bot[^/\s)'"]+/g, '/bot[REDACTED]')
+      .replace(/([?&](?:wh|apikey|key|token|secret|cronSecret)=)[^&\s)'"]*/gi, '$1[REDACTED]');
+  }
+
   /** Enough of a key to debug a divergence, never a URL's secret part. */
   function describeKey(key) {
     var text = String(key || '');
     var line = text.split('\n')[0];
-    return line.replace(/\/bot[^/]+\//, '/bot[REDACTED]/').replace(/([?&](wh|apikey|key)=)[^&]*/g, '$1[REDACTED]').slice(0, 160);
+    return redact(line).slice(0, 160);
   }
 
   /**
@@ -275,6 +287,7 @@
     createRunContext: createRunContext,
     run: run,
     runSync: runSync,
-    describeKey: describeKey
+    describeKey: describeKey,
+    redact: redact
   };
 });

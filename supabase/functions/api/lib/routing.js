@@ -8,9 +8,11 @@
 //     and deleted first by the move back): before that, Apps Script holds the
 //     only copy of the users, the session secret and the bot token;
 //   - then the actions named in the EDGE_NATIVE_ACTIONS setting, a comma list
-//     ("*" for all, "telegram" for the bot's webhook, "jobs" for the timed
-//     jobs), so the switch can be made one group at a time and undone by
-//     editing one row;
+//     ("*" for every web action, "telegram" for the bot's webhook, "jobs" for
+//     the timed jobs), so the switch can be made one group at a time and undone
+//     by editing one row. "*" never includes the bot or the jobs: each is
+//     switched by its own name, so taking "jobs" out always gives the jobs back
+//     to Apps Script;
 //   - never the actions below, which need Apps Script itself: the spreadsheet
 //     (the move between stores, the ledger migration, the daily copy into
 //     Drive), its Script Properties (where the settings live) or its triggers
@@ -82,7 +84,7 @@
     var request = describe(bodyText);
     if (!request.valid) return 'apps-script';
     var allowed = parseAllowList(config.allow);
-    if (request.telegram) return allowed['*'] || allowed.telegram ? 'edge' : 'apps-script';
+    if (request.telegram) return allowed.telegram ? 'edge' : 'apps-script';
     if (!request.action || isAppsScriptOnly(request.action)) return 'apps-script';
     return allowed['*'] || allowed[request.action] ? 'edge' : 'apps-script';
   }
@@ -95,7 +97,7 @@
   function jobsRunHere(config) {
     if (!config || !config.ready) return false;
     var allowed = parseAllowList(config.allow);
-    return !!(allowed['*'] || allowed.jobs);
+    return !!allowed.jobs;
   }
 
   return {

@@ -272,6 +272,9 @@ function storageModeOfDoc_(doc) {
   return doc && doc.__supabase ? STORAGE_MODE_SUPABASE : STORAGE_MODE_SHEETS;
 }
 
+/** What a write refused because the store changed under it answers (also assertEdgeStillServes_). */
+var STORE_CHANGED_MESSAGE = "Ma'lumotlar bazasi hozirgina almashtirildi. Hech narsa saqlanmadi — iltimos, qayta urinib ko'ring.";
+
 /**
  * Refuses to go on if the store changed after this request chose its own.
  *
@@ -284,7 +287,7 @@ function storageModeOfDoc_(doc) {
 function assertStoreUnchanged_() {
   if (!APP_DOC_MEMO_ || STORAGE_MOVE_IN_THIS_EXECUTION_) return;
   if (storageModeOfDoc_(APP_DOC_MEMO_) === storageMode_()) return;
-  throw new Error("Ma'lumotlar bazasi hozirgina almashtirildi. Hech narsa saqlanmadi — iltimos, qayta urinib ko'ring.");
+  throw new Error(STORE_CHANGED_MESSAGE);
 }
 
 /** The Supabase project URL and secret key, or an explanation of what is missing. */
@@ -341,7 +344,7 @@ function resetStorageMemos_() {
   // A lease still held (a lock taken before a mid-request store switch) is
   // released by the lock that took it; forgetting it here would leave it to
   // expire instead.
-  if (!STORAGE_LEASE_.depth) STORAGE_LEASE_ = { owner: "", depth: 0 };
+  if (!STORAGE_LEASE_.depth) STORAGE_LEASE_ = { owner: "", depth: 0, ready: true };
 }
 
 // ------------------------------------------------------------- HTTP client
@@ -662,7 +665,8 @@ function withBatchedWrites_(fn) {
 var STORAGE_LEASE_TTL_MS = 90000;
 /** How long one mbm_lock call may wait; the API's statement timeout is 8 s. */
 var STORAGE_LEASE_WAIT_SLICE_MS = 5000;
-var STORAGE_LEASE_ = { owner: "", depth: 0 };
+/** ready: what mbm_lock said of the settings' ready marker when the lease was taken. */
+var STORAGE_LEASE_ = { owner: "", depth: 0, ready: true };
 
 /** The document whose database holds the lease, or null when there is no lease to take. */
 function storageLeaseDoc_() {
@@ -684,8 +688,10 @@ function acquireStorageLease_(doc, timeoutMs) {
   var owner = storageLeaseOwner_();
   var waitMs = Math.max(0, Number(timeoutMs) || 0);
   var deadline = Date.now() + waitMs;
-  var attempts = Math.ceil(waitMs / STORAGE_LEASE_WAIT_SLICE_MS) + 1;
-  for (var i = 0; i < attempts; i++) {
+  // Until the deadline: a call that lost a race answers at once rather than
+  // waiting its slice out (20261116150000_lease_fencing.sql), so the number
+  // of calls is not the measure. Bounded all the same.
+  for (var i = 0; i < 200; i++) {
     var slice = Math.max(0, Math.min(STORAGE_LEASE_WAIT_SLICE_MS, deadline - Date.now()));
     var answer;
     try {
@@ -698,6 +704,8 @@ function acquireStorageLease_(doc, timeoutMs) {
     }
     if (answer && answer.acquired) {
       STORAGE_LEASE_.depth = 1;
+      // A database before 20261116150000 does not say: taken as still there.
+      STORAGE_LEASE_.ready = answer.ready !== false;
       doc.__ctx.leaseReleased = false;
       return;
     }
@@ -763,6 +771,14 @@ function appScriptLock_() {
     } catch (changed) {
       lock.releaseLock();
       throw changed;
+    }
+    if (leaseDoc && STORAGE_LEASE_.depth === 1) {
+      try {
+        assertEdgeStillServes_(STORAGE_LEASE_.ready);
+      } catch (moved) {
+        try { releaseStorageLeaseAndFlush_(leaseDoc); } finally { lock.releaseLock(); }
+        throw moved;
+      }
     }
     held = true;
     var doc = storageRequestDoc_();
@@ -930,6 +946,8 @@ function supabaseDoc_(credentials, options) {
         supabaseRpc_(credentials, "mbm_unlock", { p_owner: op.owner });
         return { ok: true };
       }
+      // Without mbm_apply there is no lease to check (acquireStorageLease_).
+      if (op.op === "fence") return { ok: true };
       if (op.op === "upsert_config") {
         supabaseRequest_(credentials, "post", "system_config", [["on_conflict", "key"]],
           [{ key: op.key, value: op.value, updated_at: new Date().toISOString() }],
@@ -1009,6 +1027,12 @@ function supabaseDoc_(credentials, options) {
     ctx.touched = {};
     var unlockOwner = ctx.unlockOwner;
     ctx.unlockOwner = "";
+    // Written under the lease: refused as a whole by the database unless this
+    // execution still holds it (an execution that outlived the lease must not
+    // write after another took over). After the writes, so their positions in
+    // the answer stay where wireOps put them; before the release.
+    var fenceOwner = ctx.sharedProps && STORAGE_LEASE_.depth > 0 ? STORAGE_LEASE_.owner : unlockOwner;
+    if (fenceOwner && !ctx.noRpc) plan.wire.push({ op: "fence", owner: fenceOwner });
     // The lock is released in the same transaction as the writes it guarded.
     if (unlockOwner) plan.wire.push({ op: "unlock", owner: unlockOwner });
     var results;

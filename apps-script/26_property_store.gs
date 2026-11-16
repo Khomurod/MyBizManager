@@ -13,7 +13,8 @@
 // secret, the bot token, a cache revision) would let the other act on an old
 // copy. Once moved, both read the same table (03_settings.gs), and Apps Script
 // keeps writing a copy of every change to its own Script Properties, which is
-// what it falls back to when the database cannot be read and what moving back
+// what it falls back to when the database cannot be read (never for the
+// sign-in settings: 03_settings.gs, AUTH_PROPERTY_KEYS) and what moving back
 // starts from.
 //
 // The keys that say where the database is (LOCAL_PROPERTY_KEYS) never move.
@@ -63,17 +64,52 @@ function isDatabaseOnlyProperty_(key) {
  * Whether the Edge function serves `group` ("jobs", "telegram") itself: the
  * ready marker and EDGE_NATIVE_ACTIONS, read the way
  * supabase/functions/api/lib/routing.js reads them (change the two together).
+ * Each group is switched by its own name; "*" (every web action) is not one.
  * Before the settings are in the database the function serves nothing itself.
+ *
+ * The jobs also need what the database's timed call sends: the function's
+ * address and the cron secret (EDGE_FUNCTION_URL, EDGE_CRON_SECRET). Without
+ * either, nothing would run them, so Apps Script's own trigger keeps doing it.
  */
 function edgeServesGroup_(group) {
   if (!sharedPropertiesInDatabase_(PropertiesService.getScriptProperties())) return false;
   if (!getTelegramSetting_(PROPERTY_STORE_READY_KEY)) return false;
+  if (group === "jobs" &&
+      (!getTelegramSetting_("EDGE_FUNCTION_URL") || String(getTelegramSetting_("EDGE_CRON_SECRET") || "").length < 16)) {
+    return false;
+  }
   var names = String(getTelegramSetting_("EDGE_NATIVE_ACTIONS") || "").split(",");
   for (var i = 0; i < names.length; i++) {
-    var name = names[i].replace(/^\s+|\s+$/g, "");
-    if (name === "*" || name === group) return true;
+    if (names[i].replace(/^\s+|\s+$/g, "") === group) return true;
   }
   return false;
+}
+
+/**
+ * True in the Supabase Edge function: its fixed Script Properties say so
+ * (supabase/functions/api/lib/gas-shims.js, createEdgeGlobals).
+ */
+function runningOnEdge_() {
+  try {
+    return PropertiesService.getScriptProperties().getProperty("MBM_RUNTIME") === "edge";
+  } catch (error) {
+    return false;
+  }
+}
+
+/**
+ * In the Edge function, once the lease is held: the settings must still be in
+ * the database. The function read its switches up to 15 s before, and the
+ * request may have waited for the lease behind a move back or a rollback to
+ * the spreadsheet -- after which a write here would land in a store nobody
+ * reads. `ready` is what mbm_lock said of the ready marker as it gave the
+ * lease (20261116150000_lease_fencing.sql), so the check costs no call. Apps
+ * Script itself needs no such check: its own script lock queues it behind the
+ * move, and assertStoreUnchanged_ catches the switch. Throws the same "try
+ * again" as that check; nothing has been written yet.
+ */
+function assertEdgeStillServes_(ready) {
+  if (!ready && runningOnEdge_()) throw new Error(STORE_CHANGED_MESSAGE);
 }
 
 /** Every Script Property that is a shared setting, as a plain map. */
@@ -204,7 +240,11 @@ function movePropertiesToScript_() {
   if (!credentials.ok) {
     return { status: "error", message: "Script Properties'da yo'q: " + credentials.missing.join(", ") };
   }
-  copyPropertiesBackToScript_(local, credentials);
+  try {
+    copyPropertiesBackToScript_(local, credentials);
+  } catch (error) {
+    return { status: "error", message: redactSecrets_(error).slice(0, 400), properties: propertyStoreStatus_() };
+  }
   bumpAllDataRevisions_();
   recordStorageImportStatus_({ propertiesMovedBackAt: new Date().toISOString() });
   appendAuditRow_(appDoc_(), "properties_to_script", "");
@@ -213,14 +253,27 @@ function movePropertiesToScript_() {
 
 /**
  * The move back, shared with the rollback to the spreadsheet: marker first
- * (the Edge function stops serving), then the copy, then the switch. If the
- * database cannot be read, the copy Apps Script kept is already in Script
- * Properties, so the switch still happens.
+ * (the Edge function stops serving), then the copy, then the switch.
+ *
+ * The marker must be gone before anything switches: while it stands the Edge
+ * function may go on serving, from the database's settings and into the
+ * database, while this script would answer from Script Properties (or, after
+ * a rollback, from the spreadsheet). So a database that cannot delete it
+ * refuses the whole move, and nothing changes. The copy after it is best
+ * effort: if the database cannot be read then, the copy Apps Script kept is
+ * already in Script Properties, and the switch still happens.
  */
+var PROPERTY_MARKER_NOT_REMOVED_MESSAGE =
+  "Baza javob bermadi: Edge funksiyasini to'xtatib bo'lmadi, hech narsa o'zgarmadi. Birozdan keyin qayta urinib ko'ring.";
+
 function copyPropertiesBackToScript_(local, credentials) {
-  var copied = false;
   try {
     applyPropertyOps_(credentials, [{ op: "delete_property", key: PROPERTY_STORE_READY_KEY }]);
+  } catch (error) {
+    throw new Error(PROPERTY_MARKER_NOT_REMOVED_MESSAGE + " (" + redactSecrets_(error).slice(0, 200) + ")");
+  }
+  var copied = false;
+  try {
     var stored = databaseProperties_(credentials);
     Object.keys(stored).forEach(function (key) { if (isDatabaseOnlyProperty_(key)) delete stored[key]; });
     var current = localSharedProperties_(local);

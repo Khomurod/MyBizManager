@@ -98,16 +98,22 @@ async function startFunction(env) {
     stdio: ['ignore', 'pipe', 'pipe']
   });
   const logs = [];
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('the function did not start:\n' + logs.join(''))), 30000);
-    const onData = chunk => {
-      logs.push(String(chunk));
-      if (/listening/.test(String(chunk))) { clearTimeout(timer); resolve(); }
-    };
-    child.stdout.on('data', onData);
-    child.stderr.on('data', chunk => logs.push(String(chunk)));
-    child.on('exit', code => { clearTimeout(timer); reject(new Error('deno exited ' + code + ':\n' + logs.join(''))); });
-  });
+  try {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('the function did not start:\n' + logs.join(''))), 30000);
+      const onData = chunk => {
+        logs.push(String(chunk));
+        if (/listening/.test(String(chunk))) { clearTimeout(timer); resolve(); }
+      };
+      child.stdout.on('data', onData);
+      child.stderr.on('data', chunk => logs.push(String(chunk)));
+      child.on('exit', code => { clearTimeout(timer); reject(new Error('deno exited ' + code + ':\n' + logs.join(''))); });
+    });
+  } catch (error) {
+    // A boot that timed out leaves Deno running: stop it, keep the reason.
+    child.kill();
+    throw error;
+  }
   return { url: `http://127.0.0.1:${port}/`, child, logs };
 }
 
@@ -134,13 +140,16 @@ test('the deployed function: forwards until allowed, then answers itself, the sa
   db.setProperty('__PROPERTIES_READY', undefined);
   db.setProperty('EDGE_CRON_SECRET', CRON_SECRET);
 
-  const fn = await startFunction({
+  // Registered before the start, so a function that never comes up still
+  // leaves no server open behind it.
+  let fn = null;
+  t.after(() => { if (fn) fn.child.kill(); dbServer.close(); gasServer.close(); });
+  fn = await startFunction({
     SUPABASE_URL: `http://127.0.0.1:${dbPort}`,
     SUPABASE_SECRET_KEYS: JSON.stringify({ default: db.key }),
     APPS_SCRIPT_URL: `http://127.0.0.1:${gasPort}/exec`,
     MBM_CONFIG_TTL_MS: '0'
   });
-  t.after(() => { fn.child.kill(); dbServer.close(); gasServer.close(); });
 
   const post = async (body, query = '', headers = {}) => {
     const res = await fetch(fn.url + query, { method: 'POST', body: JSON.stringify(body), headers });
@@ -210,6 +219,18 @@ test('the deployed function: forwards until allowed, then answers itself, the sa
     assert.strictEqual(answer.json.status, 'error');
   });
 
+  await t.test('"*" is the web actions: the bot and the timed jobs stay with Apps Script until named', async () => {
+    const before = forwarded.length;
+    const update = await post({ update_id: 8, message: { chat: { id: 1, type: 'private' }, from: { id: 1 }, text: '/yangi' } }, '?wh=nope');
+    assert.strictEqual(update.runtime, 'apps-script');
+    assert.strictEqual(forwarded.length, before + 1);
+    const job = await post({}, '?job=telegram-jobs', { 'x-mbm-cron': CRON_SECRET });
+    assert.strictEqual(job.status, 200, job.text);
+    assert.strictEqual(job.json.status, 'skipped', job.text);
+  });
+
+  db.setProperty('EDGE_NATIVE_ACTIONS', '*,telegram,jobs');
+
   await t.test('a webhook without the secret is acknowledged and ignored', async () => {
     const answer = await post({ update_id: 9, message: { chat: { id: 1, type: 'private' }, from: { id: 1 }, text: '/yangi' } }, '?wh=nope');
     assert.strictEqual(answer.status, 200);
@@ -244,7 +265,7 @@ test('the deployed function: forwards until allowed, then answers itself, the sa
     assert.strictEqual(options.headers.get('access-control-allow-origin'), '*');
     const probe = await (await fetch(fn.url + '?probe=1')).json();
     assert.strictEqual(probe.ready, true);
-    assert.strictEqual(probe.allow, '*');
+    assert.strictEqual(probe.allow, '*,telegram,jobs');
     assert.strictEqual(probe.configRead, true);
   });
 });

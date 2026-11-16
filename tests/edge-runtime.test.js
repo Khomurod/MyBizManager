@@ -45,10 +45,12 @@ test('the webhook and the jobs have switches of their own', () => {
   const update = JSON.stringify({ update_id: 1, message: { text: '/yangi' } });
   assert.strictEqual(routing.routePost(update, { ready: true, allow: 'get_omad_data' }), 'apps-script');
   assert.strictEqual(routing.routePost(update, { ready: true, allow: 'telegram' }), 'edge');
-  assert.strictEqual(routing.routePost(update, { ready: true, allow: '*' }), 'edge');
+  assert.strictEqual(routing.routePost(update, { ready: true, allow: '*,jobs' }), 'apps-script', '"*" is the web actions only');
+  assert.strictEqual(routing.routePost(update, { ready: true, allow: '*,telegram' }), 'edge');
   assert.strictEqual(routing.jobsRunHere({ ready: true, allow: 'telegram' }), false);
+  assert.strictEqual(routing.jobsRunHere({ ready: true, allow: '*,telegram' }), false, 'taking "jobs" out gives them back');
   assert.strictEqual(routing.jobsRunHere({ ready: true, allow: 'jobs' }), true);
-  assert.strictEqual(routing.jobsRunHere({ ready: false, allow: '*' }), false);
+  assert.strictEqual(routing.jobsRunHere({ ready: false, allow: '*,jobs' }), false);
 });
 
 test('a body that is not JSON, or asks for nothing, goes to Apps Script to be refused there', () => {
@@ -199,6 +201,15 @@ test('HMAC-SHA256 and SHA-256 match Node, as signed bytes the way Apps Script re
 });
 
 // ------------------------------------------------------------------ the network
+
+test('error text loses the bot token and the secrets in a URL, whatever produced it', () => {
+  const text = executor.redact('error sending request for url (https://api.telegram.org/bot123:SECRET-x/sendMessage): ' +
+    'client error; then https://script.google.com/macros/s/ID/exec?wh=WEBHOOK&a=1&apikey=KEY&cronSecret=CRON)');
+  for (const secret of ['SECRET-x', 'WEBHOOK', 'KEY', 'CRON']) assert.ok(!text.includes(secret), secret + ' left in: ' + text);
+  assert.match(text, /\/bot\[REDACTED\]\/sendMessage/);
+  assert.match(text, /exec\?wh=\[REDACTED\]&a=1&apikey=\[REDACTED\]/);
+  assert.strictEqual(executor.redact(null), '');
+});
 
 test('a failed call throws the way UrlFetchApp does, without the bot token in the message', () => {
   const answers = { code: 500, text: 'boom' };

@@ -309,7 +309,7 @@ is built in: without `20261102160523_batched_writes_and_counts.sql` (the
 functions `mbm_apply` and `mbm_counts`) the backend still works, one REST call
 per write, just slower and not atomic. It is applied to `mybizmanager`.
 
-The Edge function adds three, applied as the first step of
+The Edge function adds four, applied as the first step of
 [switching it on](#switching-production-over):
 
 | Migration | Adds | Before it is applied |
@@ -317,6 +317,7 @@ The Edge function adds three, applied as the first step of
 | `20261116120000_edge_shared_state.sql` | `app_properties`, `app_lease`, `app_cache`; `mbm_lock` / `mbm_unlock`; the property ops in `mbm_apply` | the settings cannot be moved to the database (the move says which migration is missing); everything else works as before |
 | `20261116130000_edge_cron.sql` | `pg_cron`, `pg_net` (in `extensions`); `mbm_call_edge(job)`; the jobs `mbm-telegram-jobs` (every 5 min) and `mbm-db-backup` (22:00 UTC) | no nightly copy; the jobs run on the Apps Script trigger as before |
 | `20261116140000_pg_net_schema.sql` | moves `pg_net` out of `public` where the first version of the file above put it (the test project); a no-op anywhere else | — |
+| `20261116150000_lease_fencing.sql` | `mbm_lock` that never holds the lease row while it waits, and says whether `__PROPERTIES_READY` is still there; the `fence` op in `mbm_apply` (a batch written under a lease its writer no longer holds is refused whole) | needed before the settings move: once they are in the database every locked write sends `fence`, which the earlier `mbm_apply` does not know |
 
 They are inert until rows in `app_properties` give them something to do.
 
@@ -369,9 +370,13 @@ reads them again every 15 seconds; nothing is redeployed.
 |---|---|
 | `EDGE_APPS_SCRIPT_URL` | Where the function forwards: the live `/exec` URL, the same one as `GOOGLE_APP_URL` in `assets/omad/00-config.js`. Absent: the function answers `503 unconfigured` and the browser goes straight to Apps Script |
 | `__PROPERTIES_READY` | Written by **Sozlamalarni bazaga**, deleted by **Sozlamalarni qaytarish** (Tizim → Supabase card). Absent: the function answers nothing itself |
-| `EDGE_NATIVE_ACTIONS` | What it answers itself: a comma list of actions; `*` for every web action, `telegram` for the bot's updates, `jobs` for the timed jobs. Empty or absent: nothing |
+| `EDGE_NATIVE_ACTIONS` | What it answers itself: a comma list of actions; `*` for every web action, `telegram` for the bot's updates, `jobs` for the timed jobs. `*` never includes `telegram` or `jobs`: each is switched by its own name. Empty or absent: nothing |
 | `EDGE_FUNCTION_URL` | Where `pg_cron` calls: the function URL with `?forceFunctionRegion=us-east-1` |
 | `EDGE_CRON_SECRET` | What `pg_cron` sends, and what the function and Apps Script check, on the timed calls. Made by the database; never typed, shown or pasted |
+
+`jobs` takes effect only once `EDGE_FUNCTION_URL` and `EDGE_CRON_SECRET` are
+both there: without them nothing would call the function, so Apps Script's
+trigger keeps running the jobs (and the health check says so).
 
 A move of the settings in either direction leaves every `EDGE_*` row where it
 is.
@@ -389,14 +394,15 @@ many words. Each step is undone by the matching row of
 2. **Migrations and rows.** Actions → CI → **Run workflow**, branch `main`,
    tick **migrate_production**. After the usual checks, the
    `migrate-production` job applies `20261116120000_edge_shared_state.sql`,
-   `20261116130000_edge_cron.sql` and `20261116140000_pg_net_schema.sql`
-   (the test project took the same three from its own runs) and writes
+   `20261116130000_edge_cron.sql`, `20261116140000_pg_net_schema.sql` and
+   `20261116150000_lease_fencing.sql` (the test project took the same four
+   from its own runs) and writes
    `EDGE_APPS_SCRIPT_URL`, `EDGE_FUNCTION_URL` and `EDGE_CRON_SECRET` — the
    secret made by the database, never shown. From then on browsers call the
    function, which forwards everything to Apps Script: the app behaves as
    before, one hop longer. The nightly copy starts that night.
 
-   Without Actions, the same by hand in the SQL editor: the three files in
+   Without Actions, the same by hand in the SQL editor: the four files in
    order, then
    ```sql
    insert into public.app_properties (key, value) values
@@ -419,7 +425,8 @@ many words. Each step is undone by the matching row of
    Open the dashboard, the Mini App, the café and the tasks. In the browser's
    network panel the answers carry `X-MBM-Runtime: edge`.
 5. **Every web action:** `EDGE_NATIVE_ACTIONS` = `*`. Sign-in, entries, café
-   sales, task changes.
+   sales, task changes. The bot and the timed jobs stay with Apps Script:
+   `*` does not include them.
 6. **The bot:** `*,telegram`; then Sozlamalar → Telegram, webhook URL =
    `https://ksdqoftlxrkpyylbbyoi.supabase.co/functions/v1/api?forceFunctionRegion=us-east-1`,
    and register it. The health check then says "Webhook Edge funksiyasiga
@@ -443,7 +450,7 @@ writes to the same database.
 | Everything | `EDGE_NATIVE_ACTIONS` = `''` | the function forwards every request |
 | The bot | register the webhook back to the `/exec` URL | Telegram calls Apps Script directly |
 | The timed jobs | remove `jobs` | Apps Script's trigger runs them again from its next run; the cron calls answer "skipped" |
-| The settings | Tizim → Supabase → **Sozlamalarni qaytarish** | the marker goes first, so the function stops answering; then the database copy is written back to Script Properties |
+| The settings | Tizim → Supabase → **Sozlamalarni qaytarish** | the marker goes first, so the function stops answering; then the database copy is written back to Script Properties. If the database cannot delete the marker, nothing changes and the button says so: switching Apps Script alone would leave the function serving on other settings |
 | A broken function deploy | revert the commit on `main` | CI deploys the previous code. Meanwhile each browser that cannot get an answer from the function uses Apps Script directly for 5 minutes at a time |
 | The function altogether | revert the frontend's use of `assets/backend.js`, or roll Cloudflare back to an earlier deployment | browsers call Apps Script directly again |
 
@@ -469,11 +476,21 @@ It works before the settings have moved: Apps Script reads the cron secret
 from `app_properties` directly. It needs steps 1–2 above (the merge, then
 the migrations and the rows).
 
+One copy is one moment: the tables are read under the script lock and the
+database lease, so no write lands between two of them. One run at a time: the
+button pressed while the nightly run is still writing answers "Zaxira hozir
+yozilmoqda" instead of mixing its tabs into the same file.
+
 Each spreadsheet has a **Zaxira** tab (when, and rows per table) and one tab per
-business table with the original spreadsheet's name, columns and values. Not
-in it: the settings (Apps Script keeps its own copy in Script Properties; the
-bot token and password hashes do not belong in a spreadsheet),
-`Omad_Backups` and the Telegram debug log.
+business table with the original spreadsheet's name, columns and values (text
+that starts with `=` or `'` is written with a leading `'`, so the cell holds
+the text, not a formula). Not in it: `Omad_Backups`, the Telegram debug log,
+and the settings — the bot token and password hashes do not belong in a
+spreadsheet. Apps Script keeps a copy of the settings in Script Properties,
+but once they are in the database that copy is written only by Apps Script:
+a setting the Edge function changed (a password, a Telegram setting) can be
+newer in the database than in the copy. The database holds the current
+values; the copy is a fallback, not a backup.
 
 Restoring has **not been rehearsed** on the live data; rehearse on the test
 project before relying on it. The two routes:
@@ -482,11 +499,15 @@ project before relying on it. The two routes:
   *Existing spreadsheet* → the "Budgeting app" spreadsheet; there, delete the
   old tab and rename the copy to the original name. Then **Tizim → Supabase →
   Google Sheets'ga Qaytish**: the app runs from the restored spreadsheet.
-- **Into a new Supabase project.** Create it, apply every migration in order,
-  put its URL and secret key into Script Properties (`SUPABASE_URL`,
-  `SUPABASE_SECRET_KEY`), and move the restored spreadsheet into it from step
-  5 of [Moving the data from Sheets](#moving-the-data-from-sheets-once). The
-  live project's tables are never emptied once a cutover has happened
+- **Into a new Supabase project.** In this order: first restore the tabs
+  into "Budgeting app" and go **back to Sheets** exactly as above (the import
+  only runs while `OMAD_STORAGE` is `sheets`, and the rollback is what brings
+  the settings back into Script Properties). Then create the new project,
+  apply every migration in order, put its URL and secret key into Script
+  Properties (`SUPABASE_URL`, `SUPABASE_SECRET_KEY`), and move the restored
+  spreadsheet into it from step 5 of
+  [Moving the data from Sheets](#moving-the-data-from-sheets-once). The live
+  project's tables are never emptied once a cutover has happened
   (`reset_before_cutover.sql` refuses).
 
 ## Never "New deployment"

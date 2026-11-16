@@ -81,6 +81,43 @@ test('one run copies every business table into its own tab, as the storage layer
   assert.strictEqual(ledger[1][9], 100, 'a number is still a number');
 });
 
+test('text that starts like a formula is written as text', () => {
+  const gas = live({
+    sheets: {
+      System_Config: [['Omad_Active_Transactions_Sheet', 'Omad_Transactions_V2']],
+      Omad_Transactions_V2: [LEDGER_HEADER, ledgerRow('1786000000000_0', '=1+1'), ledgerRow('1786000000001_0', "'quoted")]
+    }
+  });
+  assert.strictEqual(gas.runDatabaseBackup_(new Date('2026-08-12T22:00:00.000Z')).status, 'success');
+  const ledger = files(gas)[0].getSheetByName('Omad_Transactions_V2').getDataRange().getValues();
+  // Sheets drops one leading apostrophe and keeps the rest as text.
+  assert.strictEqual(ledger[1][17], "'=1+1");
+  assert.strictEqual(ledger[2][17], "''quoted");
+});
+
+test('one run at a time, read as one moment', () => {
+  const gas = live();
+  gas.setTelegramSetting_('DB_BACKUP_RUNNING', new Date().toISOString());
+  gas.resetRequestMemos_();
+  const second = gas.runDatabaseBackup_(new Date('2026-08-12T22:00:00.000Z'));
+  assert.strictEqual(second.status, 'skipped', 'the button pressed during the nightly run waits for it');
+  assert.strictEqual(files(gas).length, 0);
+  assert.ok(gas.getTelegramSetting_('DB_BACKUP_RUNNING'), 'and leaves the other run its mark');
+
+  gas.setTelegramSetting_('DB_BACKUP_RUNNING', new Date(Date.now() - 20 * 60 * 1000).toISOString());
+  gas.resetRequestMemos_();
+  const sent = gas.__supabase.requests.length;
+  const after = post(gas, { action: 'run_database_backup' });
+  assert.strictEqual(after.status, 'success', 'a mark left by a run that died goes stale: ' + after.message);
+  assert.strictEqual(gas.getTelegramSetting_('DB_BACKUP_RUNNING'), '', 'a finished run clears its mark');
+  const tables = gas.__supabase.requests.slice(sent);
+  const lockAt = tables.findIndex(r => r.table === 'rpc/mbm_lock');
+  const releaseAt = tables.findIndex(r => r.table === 'rpc/mbm_apply' && (r.body.ops || []).some(op => op.op === 'unlock'));
+  assert.ok(lockAt >= 0 && releaseAt > lockAt, 'the tables are read under the lease');
+  const reads = tables.filter((r, i) => r.method === 'get' && i > lockAt && i < releaseAt).map(r => r.table);
+  for (const table of ['omad_transactions_v2', 'omad_audit_log', 'system_config']) assert.ok(reads.includes(table), table);
+});
+
 test('the settings never reach a spreadsheet', () => {
   const gas = live();
   gas.runDatabaseBackup_(new Date('2026-08-12T22:00:00.000Z'));

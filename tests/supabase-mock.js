@@ -333,7 +333,8 @@ function createSupabaseMock(options = {}) {
   // ---------------------------------------------------------------- RPCs
   //
   // The two functions in supabase/migrations/*_batched_writes_and_counts.sql,
-  // reproduced: mbm_apply runs every op against staged copies and commits only
+  // with the ops later migrations added, reproduced: mbm_apply runs every op
+  // against staged copies and commits only
   // if all of them succeed (one transaction), with the same triggers and
   // constraints a single REST call meets.
 
@@ -356,6 +357,16 @@ function createSupabaseMock(options = {}) {
       }
       if (op.op === 'delete_property') {
         staged.app_properties = tableRows('app_properties').filter(r => r.key !== String(op.key));
+        results.push({ ok: true });
+        continue;
+      }
+      if (op.op === 'fence') {
+        // 20261116150000_lease_fencing.sql: the batch stands only while its
+        // writer still holds an unexpired lease.
+        const held = tableRows('app_lease').find(r => r.name === 'script' && r.owner === String(op.owner));
+        if (!held || new Date(held.expires_at).getTime() <= Date.now()) {
+          throw new PgError(400, 'P0001', 'mbm_apply: lease lost, nothing written');
+        }
         results.push({ ok: true });
         continue;
       }
@@ -451,7 +462,8 @@ function createSupabaseMock(options = {}) {
     const ttl = Math.min(Math.max(Number(body.p_ttl_ms) || 120000, 1000), 600000);
     const lease = { name: 'script', owner: String(body.p_owner), expires_at: new Date(now + ttl).toISOString() };
     rows.app_lease = rows.app_lease.filter(r => r.name !== 'script').concat([lease]);
-    return { acquired: true };
+    // 20261116150000_lease_fencing.sql: whether the settings are still here.
+    return { acquired: true, ready: rows.app_properties.some(r => r.key === '__PROPERTIES_READY') };
   }
 
   function rpc(name, body) {

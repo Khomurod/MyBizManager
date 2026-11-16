@@ -1315,7 +1315,9 @@ var AUTHENTICATED_REQUEST_LIMIT = 120;
 // --------------------------------------------------------------- user records
 
 function readAuthUsers_() {
-  var stored = safeParseJSON_(getTelegramSetting_(OMAD_PROP_USERS), null);
+  // authSetting_: an unreadable database is an error here, never "no users",
+  // which would open the first-run session.
+  var stored = safeParseJSON_(authSetting_(OMAD_PROP_USERS), null);
   return stored && typeof stored === "object" ? stored : {};
 }
 
@@ -1426,7 +1428,7 @@ function verifyUserPassword_(username, password) {
 // -------------------------------------------------------------- session tokens
 
 function sessionSecret_() {
-  var existing = getTelegramSetting_(OMAD_PROP_SESSION_SECRET);
+  var existing = authSetting_(OMAD_PROP_SESSION_SECRET);
   if (existing) return existing;
   var generated = (Utilities.getUuid() + Utilities.getUuid()).split("-").join("");
   setTelegramSetting_(OMAD_PROP_SESSION_SECRET, generated);
@@ -1826,8 +1828,9 @@ var TELEGRAM_TOKEN_LIKE_PATTERN = /\d{6,16}:[A-Za-z0-9_-]{30,}/g;
 // is read from and written to the app_properties table, and Script Properties
 // keeps only the four that say where that database is. Apps Script still
 // writes each value to its Script Property too: if the database cannot be
-// reached, the request reads that copy instead of failing at the sign-in --
-// which is what keeps "Google Sheets'ga qaytish" usable with the database down.
+// read, a request reads that copy -- except the settings that decide who gets
+// in (AUTH_PROPERTY_KEYS), which fail the request instead, because the copy
+// can be older than the database (the Edge function writes only the table).
 //
 // Before the move, and whenever the store is the spreadsheet, nothing changes:
 // Script Properties are the settings.
@@ -1896,6 +1899,29 @@ function sharedPropertyMap_() {
   }
 }
 
+/**
+ * The settings that decide who gets in: the users and their password hashes,
+ * the key sessions are signed with, the bot's webhook secret. While the
+ * database cannot be read they are never answered from anything else:
+ *   - Apps Script's own copy can be older than the database (a password the
+ *     Edge function changed is not in it), so it could let an old password or
+ *     a revoked session in;
+ *   - an empty answer reads as "not set yet", which would open the first-run
+ *     session (omadAdminAccountConfigured_) or mint a new session or webhook
+ *     secret and sign everybody out, or cut the bot off.
+ * So reading one of them fails the request instead. OMAD_ADMIN_KEY is not
+ * among them: nothing in the application changes it, so Apps Script's copy is
+ * current, and it stays the way in for an operator.
+ */
+var AUTH_PROPERTY_KEYS = {
+  OMAD_USERS: true,
+  OMAD_SESSION_SECRET: true,
+  TELEGRAM_WEBHOOK_SECRET: true
+};
+
+var SHARED_PROPERTIES_UNREADABLE_MESSAGE =
+  "Sozlamalar bazasi hozir javob bermayapti. Hech narsa o'zgarmadi — birozdan keyin qayta urinib ko'ring.";
+
 /** Script Properties' surface over app_properties. */
 function sharedPropertiesView_(local) {
   var view = {
@@ -1903,6 +1929,7 @@ function sharedPropertiesView_(local) {
       if (LOCAL_PROPERTY_KEYS[key]) return local.getProperty(key);
       var map = sharedPropertyMap_();
       if (map) return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : null;
+      if (AUTH_PROPERTY_KEYS[key]) throw new Error(SHARED_PROPERTIES_UNREADABLE_MESSAGE);
       // The database could not be read: the copy Apps Script keeps (empty in
       // the Edge runtime, which has no other source).
       return local.getProperty(key);
@@ -1912,6 +1939,9 @@ function sharedPropertiesView_(local) {
         local.setProperty(key, value);
         return view;
       }
+      // A value decided while the settings could not be read (a secret made
+      // because the stored one "was missing") must not replace the real one.
+      if (!sharedPropertyMap_()) throw new Error(SHARED_PROPERTIES_UNREADABLE_MESSAGE);
       appDoc_().__writeProperty(key, String(value));
       try { local.setProperty(key, String(value)); } catch (error) {}
       return view;
@@ -1921,12 +1951,22 @@ function sharedPropertiesView_(local) {
         local.deleteProperty(key);
         return view;
       }
+      if (!sharedPropertyMap_()) throw new Error(SHARED_PROPERTIES_UNREADABLE_MESSAGE);
       appDoc_().__writeProperty(key, null);
       try { local.deleteProperty(key); } catch (error) {}
       return view;
     }
   };
   return view;
+}
+
+/**
+ * One of AUTH_PROPERTY_KEYS, or "" when it is not set. Unlike
+ * getTelegramSetting_ it lets "the settings cannot be read" through as an
+ * error: for these, an empty answer would mean something else.
+ */
+function authSetting_(key) {
+  return scriptProperties_().getProperty(key) || "";
 }
 
 /**
@@ -1979,7 +2019,7 @@ function getTasksGroupChatId_() {
 }
 
 function getOrCreateWebhookSecret_() {
-  var existing = getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_SECRET);
+  var existing = authSetting_(TELEGRAM_PROP_WEBHOOK_SECRET);
   if (existing) return existing;
   var generated = Utilities.getUuid().split("-").join("") + Utilities.getUuid().split("-").join("");
   setTelegramSetting_(TELEGRAM_PROP_WEBHOOK_SECRET, generated);
@@ -4211,7 +4251,13 @@ function extractTelegramMessageId_(response) {
 }
 
 function isVerifiedTelegramWebhookRequest_(e) {
-  var expected = getTelegramSetting_(TELEGRAM_PROP_WEBHOOK_SECRET);
+  var expected;
+  try {
+    expected = authSetting_(TELEGRAM_PROP_WEBHOOK_SECRET);
+  } catch (error) {
+    // The settings cannot be read: not knowing the secret is not "no secret".
+    return false;
+  }
   // No secret configured yet: accept, so an existing deployment keeps working
   // until the operator re-runs "Webhook" in Sozlamalar. buildTelegramSettingsView_
   // surfaces this as an unverified webhook.
@@ -16306,6 +16352,9 @@ function storageModeOfDoc_(doc) {
   return doc && doc.__supabase ? STORAGE_MODE_SUPABASE : STORAGE_MODE_SHEETS;
 }
 
+/** What a write refused because the store changed under it answers (also assertEdgeStillServes_). */
+var STORE_CHANGED_MESSAGE = "Ma'lumotlar bazasi hozirgina almashtirildi. Hech narsa saqlanmadi — iltimos, qayta urinib ko'ring.";
+
 /**
  * Refuses to go on if the store changed after this request chose its own.
  *
@@ -16318,7 +16367,7 @@ function storageModeOfDoc_(doc) {
 function assertStoreUnchanged_() {
   if (!APP_DOC_MEMO_ || STORAGE_MOVE_IN_THIS_EXECUTION_) return;
   if (storageModeOfDoc_(APP_DOC_MEMO_) === storageMode_()) return;
-  throw new Error("Ma'lumotlar bazasi hozirgina almashtirildi. Hech narsa saqlanmadi — iltimos, qayta urinib ko'ring.");
+  throw new Error(STORE_CHANGED_MESSAGE);
 }
 
 /** The Supabase project URL and secret key, or an explanation of what is missing. */
@@ -16375,7 +16424,7 @@ function resetStorageMemos_() {
   // A lease still held (a lock taken before a mid-request store switch) is
   // released by the lock that took it; forgetting it here would leave it to
   // expire instead.
-  if (!STORAGE_LEASE_.depth) STORAGE_LEASE_ = { owner: "", depth: 0 };
+  if (!STORAGE_LEASE_.depth) STORAGE_LEASE_ = { owner: "", depth: 0, ready: true };
 }
 
 // ------------------------------------------------------------- HTTP client
@@ -16696,7 +16745,8 @@ function withBatchedWrites_(fn) {
 var STORAGE_LEASE_TTL_MS = 90000;
 /** How long one mbm_lock call may wait; the API's statement timeout is 8 s. */
 var STORAGE_LEASE_WAIT_SLICE_MS = 5000;
-var STORAGE_LEASE_ = { owner: "", depth: 0 };
+/** ready: what mbm_lock said of the settings' ready marker when the lease was taken. */
+var STORAGE_LEASE_ = { owner: "", depth: 0, ready: true };
 
 /** The document whose database holds the lease, or null when there is no lease to take. */
 function storageLeaseDoc_() {
@@ -16718,8 +16768,10 @@ function acquireStorageLease_(doc, timeoutMs) {
   var owner = storageLeaseOwner_();
   var waitMs = Math.max(0, Number(timeoutMs) || 0);
   var deadline = Date.now() + waitMs;
-  var attempts = Math.ceil(waitMs / STORAGE_LEASE_WAIT_SLICE_MS) + 1;
-  for (var i = 0; i < attempts; i++) {
+  // Until the deadline: a call that lost a race answers at once rather than
+  // waiting its slice out (20261116150000_lease_fencing.sql), so the number
+  // of calls is not the measure. Bounded all the same.
+  for (var i = 0; i < 200; i++) {
     var slice = Math.max(0, Math.min(STORAGE_LEASE_WAIT_SLICE_MS, deadline - Date.now()));
     var answer;
     try {
@@ -16732,6 +16784,8 @@ function acquireStorageLease_(doc, timeoutMs) {
     }
     if (answer && answer.acquired) {
       STORAGE_LEASE_.depth = 1;
+      // A database before 20261116150000 does not say: taken as still there.
+      STORAGE_LEASE_.ready = answer.ready !== false;
       doc.__ctx.leaseReleased = false;
       return;
     }
@@ -16797,6 +16851,14 @@ function appScriptLock_() {
     } catch (changed) {
       lock.releaseLock();
       throw changed;
+    }
+    if (leaseDoc && STORAGE_LEASE_.depth === 1) {
+      try {
+        assertEdgeStillServes_(STORAGE_LEASE_.ready);
+      } catch (moved) {
+        try { releaseStorageLeaseAndFlush_(leaseDoc); } finally { lock.releaseLock(); }
+        throw moved;
+      }
     }
     held = true;
     var doc = storageRequestDoc_();
@@ -16964,6 +17026,8 @@ function supabaseDoc_(credentials, options) {
         supabaseRpc_(credentials, "mbm_unlock", { p_owner: op.owner });
         return { ok: true };
       }
+      // Without mbm_apply there is no lease to check (acquireStorageLease_).
+      if (op.op === "fence") return { ok: true };
       if (op.op === "upsert_config") {
         supabaseRequest_(credentials, "post", "system_config", [["on_conflict", "key"]],
           [{ key: op.key, value: op.value, updated_at: new Date().toISOString() }],
@@ -17043,6 +17107,12 @@ function supabaseDoc_(credentials, options) {
     ctx.touched = {};
     var unlockOwner = ctx.unlockOwner;
     ctx.unlockOwner = "";
+    // Written under the lease: refused as a whole by the database unless this
+    // execution still holds it (an execution that outlived the lease must not
+    // write after another took over). After the writes, so their positions in
+    // the answer stay where wireOps put them; before the release.
+    var fenceOwner = ctx.sharedProps && STORAGE_LEASE_.depth > 0 ? STORAGE_LEASE_.owner : unlockOwner;
+    if (fenceOwner && !ctx.noRpc) plan.wire.push({ op: "fence", owner: fenceOwner });
     // The lock is released in the same transaction as the writes it guarded.
     if (unlockOwner) plan.wire.push({ op: "unlock", owner: unlockOwner });
     var results;
@@ -18458,7 +18528,8 @@ function bumpAllDataRevisions_() {
 // secret, the bot token, a cache revision) would let the other act on an old
 // copy. Once moved, both read the same table (03_settings.gs), and Apps Script
 // keeps writing a copy of every change to its own Script Properties, which is
-// what it falls back to when the database cannot be read and what moving back
+// what it falls back to when the database cannot be read (never for the
+// sign-in settings: 03_settings.gs, AUTH_PROPERTY_KEYS) and what moving back
 // starts from.
 //
 // The keys that say where the database is (LOCAL_PROPERTY_KEYS) never move.
@@ -18508,17 +18579,52 @@ function isDatabaseOnlyProperty_(key) {
  * Whether the Edge function serves `group` ("jobs", "telegram") itself: the
  * ready marker and EDGE_NATIVE_ACTIONS, read the way
  * supabase/functions/api/lib/routing.js reads them (change the two together).
+ * Each group is switched by its own name; "*" (every web action) is not one.
  * Before the settings are in the database the function serves nothing itself.
+ *
+ * The jobs also need what the database's timed call sends: the function's
+ * address and the cron secret (EDGE_FUNCTION_URL, EDGE_CRON_SECRET). Without
+ * either, nothing would run them, so Apps Script's own trigger keeps doing it.
  */
 function edgeServesGroup_(group) {
   if (!sharedPropertiesInDatabase_(PropertiesService.getScriptProperties())) return false;
   if (!getTelegramSetting_(PROPERTY_STORE_READY_KEY)) return false;
+  if (group === "jobs" &&
+      (!getTelegramSetting_("EDGE_FUNCTION_URL") || String(getTelegramSetting_("EDGE_CRON_SECRET") || "").length < 16)) {
+    return false;
+  }
   var names = String(getTelegramSetting_("EDGE_NATIVE_ACTIONS") || "").split(",");
   for (var i = 0; i < names.length; i++) {
-    var name = names[i].replace(/^\s+|\s+$/g, "");
-    if (name === "*" || name === group) return true;
+    if (names[i].replace(/^\s+|\s+$/g, "") === group) return true;
   }
   return false;
+}
+
+/**
+ * True in the Supabase Edge function: its fixed Script Properties say so
+ * (supabase/functions/api/lib/gas-shims.js, createEdgeGlobals).
+ */
+function runningOnEdge_() {
+  try {
+    return PropertiesService.getScriptProperties().getProperty("MBM_RUNTIME") === "edge";
+  } catch (error) {
+    return false;
+  }
+}
+
+/**
+ * In the Edge function, once the lease is held: the settings must still be in
+ * the database. The function read its switches up to 15 s before, and the
+ * request may have waited for the lease behind a move back or a rollback to
+ * the spreadsheet -- after which a write here would land in a store nobody
+ * reads. `ready` is what mbm_lock said of the ready marker as it gave the
+ * lease (20261116150000_lease_fencing.sql), so the check costs no call. Apps
+ * Script itself needs no such check: its own script lock queues it behind the
+ * move, and assertStoreUnchanged_ catches the switch. Throws the same "try
+ * again" as that check; nothing has been written yet.
+ */
+function assertEdgeStillServes_(ready) {
+  if (!ready && runningOnEdge_()) throw new Error(STORE_CHANGED_MESSAGE);
 }
 
 /** Every Script Property that is a shared setting, as a plain map. */
@@ -18649,7 +18755,11 @@ function movePropertiesToScript_() {
   if (!credentials.ok) {
     return { status: "error", message: "Script Properties'da yo'q: " + credentials.missing.join(", ") };
   }
-  copyPropertiesBackToScript_(local, credentials);
+  try {
+    copyPropertiesBackToScript_(local, credentials);
+  } catch (error) {
+    return { status: "error", message: redactSecrets_(error).slice(0, 400), properties: propertyStoreStatus_() };
+  }
   bumpAllDataRevisions_();
   recordStorageImportStatus_({ propertiesMovedBackAt: new Date().toISOString() });
   appendAuditRow_(appDoc_(), "properties_to_script", "");
@@ -18658,14 +18768,27 @@ function movePropertiesToScript_() {
 
 /**
  * The move back, shared with the rollback to the spreadsheet: marker first
- * (the Edge function stops serving), then the copy, then the switch. If the
- * database cannot be read, the copy Apps Script kept is already in Script
- * Properties, so the switch still happens.
+ * (the Edge function stops serving), then the copy, then the switch.
+ *
+ * The marker must be gone before anything switches: while it stands the Edge
+ * function may go on serving, from the database's settings and into the
+ * database, while this script would answer from Script Properties (or, after
+ * a rollback, from the spreadsheet). So a database that cannot delete it
+ * refuses the whole move, and nothing changes. The copy after it is best
+ * effort: if the database cannot be read then, the copy Apps Script kept is
+ * already in Script Properties, and the switch still happens.
  */
+var PROPERTY_MARKER_NOT_REMOVED_MESSAGE =
+  "Baza javob bermadi: Edge funksiyasini to'xtatib bo'lmadi, hech narsa o'zgarmadi. Birozdan keyin qayta urinib ko'ring.";
+
 function copyPropertiesBackToScript_(local, credentials) {
-  var copied = false;
   try {
     applyPropertyOps_(credentials, [{ op: "delete_property", key: PROPERTY_STORE_READY_KEY }]);
+  } catch (error) {
+    throw new Error(PROPERTY_MARKER_NOT_REMOVED_MESSAGE + " (" + redactSecrets_(error).slice(0, 200) + ")");
+  }
+  var copied = false;
+  try {
     var stored = databaseProperties_(credentials);
     Object.keys(stored).forEach(function (key) { if (isDatabaseOnlyProperty_(key)) delete stored[key]; });
     var current = localSharedProperties_(local);
@@ -18698,7 +18821,17 @@ function copyPropertiesBackToScript_(local, credentials) {
 // the import (docs/DEPLOYMENT.md).
 //
 // Every cell keeps its value: text is written as plain text, so "2026-08" or
-// "05/08/2026" stays text instead of becoming a date the way typed text does.
+// "05/08/2026" stays text instead of becoming a date the way typed text does,
+// and text that starts with "=" or "'" gets a leading "'" -- Sheets reads a
+// written "=..." as a formula whatever the cell's format, and drops one
+// leading "'", so the cell then holds the text exactly.
+//
+// One copy is one moment: the tables are read under the script lock (and the
+// database lease the Edge function shares), so no business write lands
+// between two of them. And one run at a time: a run marks itself running
+// (DB_BACKUP_RUNNING) under that same lock, and a second one -- the button
+// pressed during the nightly run -- is turned away rather than interleave its
+// tabs with the other's in the same file.
 //
 // What starts it: pg_cron in the database at 03:00 Tashkent calls the Edge
 // function (`?job=db-backup`, behind its cron secret), which asks this script
@@ -18713,9 +18846,10 @@ function copyPropertiesBackToScript_(local, credentials) {
 // deleted is created again.
 //
 // Not copied:
-//   - the settings (app_properties): Apps Script keeps its own copy of every
-//     one in Script Properties, and the bot token, the session secret and the
-//     password hashes do not belong in a spreadsheet;
+//   - the settings (app_properties): the bot token, the session secret and
+//     the password hashes do not belong in a spreadsheet. Apps Script keeps a
+//     copy in Script Properties, but it can lag the database (a change the
+//     Edge function made is only in the table);
 //   - Omad_Backups (snapshots of the other tables, and too large for a cell)
 //     and the Telegram debug logs (diagnostics, not records);
 //   - the lock and cache tables, which hold nothing lasting.
@@ -18723,6 +18857,9 @@ function copyPropertiesBackToScript_(local, credentials) {
 
 var DB_BACKUP_FILES_PROP = "DB_BACKUP_FILES";
 var DB_BACKUP_STATUS_PROP = "DB_BACKUP_STATUS";
+var DB_BACKUP_RUNNING_PROP = "DB_BACKUP_RUNNING";
+/** A run marked longer ago than this died (Apps Script stops one at 6 minutes). */
+var DB_BACKUP_RUN_MAX_MS = 15 * 60 * 1000;
 var DB_BACKUP_SKIP = { Omad_Backups: true, Telegram_Debug_Log: true };
 var DB_BACKUP_INFO_SHEET = "Zaxira";
 var DB_BACKUP_TITLE = "MyBizManager zaxira";
@@ -18791,8 +18928,12 @@ function runDatabaseBackup_(now) {
   if (storageMode_() !== STORAGE_MODE_SUPABASE) {
     return { status: "skipped", message: "Ma'lumotlar hali Google Sheets'da: zaxira shart emas." };
   }
+  var snapshot = null;
   try {
-    var snapshot = databaseBackupSnapshot_();
+    snapshot = claimDatabaseBackupRun_();
+    if (!snapshot) {
+      return { status: "skipped", message: "Zaxira hozir yozilmoqda — u tugagach qayta urinib ko'ring." };
+    }
     var files = safeParseJSON_(getTelegramSetting_(DB_BACKUP_FILES_PROP) || "{}", {}) || {};
     var slots = databaseBackupSlots_(now);
     for (var i = 0; i < slots.length; i++) {
@@ -18808,6 +18949,10 @@ function runDatabaseBackup_(now) {
     status.error = redactSecrets_(error).slice(0, 300);
   }
   setTelegramSetting_(DB_BACKUP_STATUS_PROP, JSON.stringify(status));
+  // Only a run that marked itself running clears the mark.
+  if (snapshot) {
+    try { setTelegramSetting_(DB_BACKUP_RUNNING_PROP, ""); } catch (ignored) { /* it goes stale on its own */ }
+  }
   if (status.error) return { status: "error", message: "Zaxira yozilmadi: " + status.error, backup: status };
   if (status.failed.length) {
     return { status: "error", message: "Zaxira qisman yozildi, yozilmagan: " + status.failed.join(", "), backup: status };
@@ -18815,12 +18960,34 @@ function runDatabaseBackup_(now) {
   return { status: "success", backup: status };
 }
 
+/**
+ * Under the script lock: null when another run is still going, otherwise
+ * reads the snapshot and marks this run running -- so no business write lands
+ * between two tables, and no second run starts writing the same file. The
+ * mark comes after the read: a run that could not read never holds it.
+ */
+function claimDatabaseBackupRun_() {
+  var lock = appScriptLock_();
+  lock.waitLock(30000);
+  try {
+    var since = Date.parse(getTelegramSetting_(DB_BACKUP_RUNNING_PROP) || "") || 0;
+    if (since && Date.now() - since < DB_BACKUP_RUN_MAX_MS) return null;
+    var snapshot = databaseBackupSnapshot_();
+    setTelegramSetting_(DB_BACKUP_RUNNING_PROP, new Date().toISOString());
+    return snapshot;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 /** Every table to copy, read once: [{ name, values, rows }]. */
 function databaseBackupSnapshot_() {
   var doc = appDoc_();
+  var names = Object.keys(SUPABASE_SHEETS).filter(function (name) { return !DB_BACKUP_SKIP[name]; });
+  // All of them in one round, rather than one call per table while the lock is held.
+  if (doc.__prefetch) doc.__prefetch(names);
   var out = [];
-  Object.keys(SUPABASE_SHEETS).forEach(function (name) {
-    if (DB_BACKUP_SKIP[name]) return;
+  names.forEach(function (name) {
     var values = doc.getSheetByName(name).getDataRange().getValues();
     var header = SUPABASE_SHEETS[name].noHeader ? 0 : 1;
     out.push({ name: name, values: values, rows: Math.max(values.length - header, 0) });
@@ -18882,6 +19049,8 @@ function writeBackupSheet_(file, name, values) {
     for (var j = 0; j < width; j++) {
       var value = j < values[i].length ? values[i][j] : "";
       if (value === null || value === undefined) value = "";
+      // Literal text, not a formula: Sheets drops the "'" and keeps the rest.
+      if (typeof value === "string" && /^[=']/.test(value)) value = "'" + value;
       row.push(value);
       rowFormats.push(typeof value === "string" ? "@" : value instanceof Date ? "yyyy-mm-dd hh:mm:ss" : "0.###############");
     }

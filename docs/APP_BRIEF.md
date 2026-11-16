@@ -99,7 +99,8 @@ Cloudflare Pages (static HTML/JS)       Supabase Edge function `api`        Goog
   itself is decided by rows in `app_properties`** (`lib/routing.js`): nothing
   until `__PROPERTIES_READY` exists (written last by
   `move_properties_to_database`), then the actions named in
-  `EDGE_NATIVE_ACTIONS` (`*`, action names, `telegram`, `jobs`); everything
+  `EDGE_NATIVE_ACTIONS` (`*` for every web action, action names, `telegram`,
+  `jobs` — `*` never includes the last two, each is switched by name); everything
   else, and always the actions that need Apps Script itself (`APPS_SCRIPT_ONLY`:
   the store moves, the ledger migration, the health check, the Drive copy), it
   forwards to Apps Script at `EDGE_APPS_SCRIPT_URL` unchanged. Switching a
@@ -307,6 +308,15 @@ them.
 accepted as `omad_admin` wherever a session would be, so maintenance and
 migration still work against a project whose user store is not set up. No
 normal user needs to know it, no page asks for it, and no browser stores it.
+
+**Sign-in fails closed when the settings cannot be read.** Once the settings
+are in the database, `OMAD_USERS`, `OMAD_SESSION_SECRET` and
+`TELEGRAM_WEBHOOK_SECRET` are never answered from Apps Script's Script
+Properties copy (which can be older than the database) and never read as
+"not set" while the database is unreachable: the sign-in, the session and the
+webhook are refused instead, no first-run session opens, and no secret is
+made anew. `OMAD_ADMIN_KEY` keeps its fallback to the copy, which nothing in
+the application changes (`AUTH_PROPERTY_KEYS`, `03_settings.gs`).
 
 ### The three web roles are enforced on the server
 
@@ -724,15 +734,19 @@ card → "Sozlamalarni bazaga"; "Sozlamalarni qaytarish" is the way back) — in
 `app_properties` table, where the Edge function reads the same users, session
 secret, bot token and cache revisions. Once moved, the table is authoritative
 and Apps Script keeps writing a copy of every change into its own Script
-Properties (what it falls back to if the database cannot be read, and what
-`move_properties_to_script` starts from). Four keys never move, because they
+Properties (what it falls back to if the database cannot be read — never for
+the sign-in settings, see §5 — and what `move_properties_to_script` starts
+from). That copy can be older than the database: a change the Edge function
+made is only in the table. The move back deletes the marker first and changes
+nothing if it cannot. Four keys never move, because they
 say where the database is: `OMAD_STORAGE`, `SUPABASE_URL`,
 `SUPABASE_SECRET_KEY`, `OMAD_PROPERTIES_STORE`. Rows only the database holds,
 which a move in either direction leaves alone: `__PROPERTIES_READY` (the
 marker) and the Edge function's switches — `EDGE_NATIVE_ACTIONS`,
 `EDGE_APPS_SCRIPT_URL`, `EDGE_CRON_SECRET`*, `EDGE_FUNCTION_URL`. The script
 lock is the `app_lease` row (`mbm_lock` / `mbm_unlock`, released inside the
-same `mbm_apply` as the writes it guarded), and the CacheService entries both
+same `mbm_apply` as the writes it guarded, which also carries a `fence` op: a
+batch whose writer no longer holds the lease is refused whole), and the CacheService entries both
 runtimes must agree on (the `/yangi` conversation, rate limits) are
 `app_cache` rows; display summaries are never cached by the Edge function.
 
@@ -775,7 +789,7 @@ composes the message from data it already stored.
   The scan is wrapped in a `try` because this queue also carries financial
   reports. **No second trigger is needed**; `processTaskSchedules` remains a
   safe manual entry point. **Once `EDGE_NATIVE_ACTIONS` names `jobs`** (and the
-  ready marker exists), the trigger stands down and pg_cron's call to the Edge
+  ready marker exists, and so do `EDGE_FUNCTION_URL` and `EDGE_CRON_SECRET`), the trigger stands down and pg_cron's call to the Edge
   function (`?job=telegram-jobs`) runs the same `runTimedJobs_` there; taking
   `jobs` out of the list hands them back with the trigger still in place.
 - **The nightly copy into Google Drive** (`27_database_backup.gs`): pg_cron at
@@ -786,10 +800,13 @@ composes the message from data it already stored.
   from the first night after the migrations and rows are in). Each
   business table becomes one tab of a Google spreadsheet, in exactly the
   original sheet layout (text cells written as plain text, so nothing is
-  re-typed as a date), in a rotation of seven weekday files and twelve
-  monthly ones (on the 1st), each overwritten in turn. Not copied: the
-  settings (Script Properties keep their own copy; secrets do not belong in a
-  spreadsheet), `Omad_Backups` and the Telegram debug logs. The health check
+  re-typed as a date, and text starting with `=` kept as text, not a
+  formula), in a rotation of seven weekday files and twelve monthly ones (on
+  the 1st), each overwritten in turn. The tables are read under the script
+  lock, so one copy is one moment, and one run at a time
+  (`DB_BACKUP_RUNNING`). Not copied: the settings (secrets do not belong in a
+  spreadsheet; Script Properties hold a copy that can lag the database),
+  `Omad_Backups` and the Telegram debug logs. The health check
   shows the last run; the Tizim panel's "Hozir Google Diskka saqlash" runs one.
 - **Every Telegram send is a queued job**, so an outage degrades to "the report
   is late", never "the money is wrong". Jobs are claimed under the script lock,
@@ -1081,8 +1098,10 @@ composes the message from data it already stored.
     switch is a row.** The order is: settings into the database
     (`move_properties_to_database`), then `EDGE_NATIVE_ACTIONS` grows —
     reads, then writes and sign-in, then `telegram` (and the webhook URL),
-    then `jobs` — each step measured before the next. Going back is the same
-    row edited, or the marker deleted (`move_properties_to_script`). No
+    then `jobs` — each step measured before the next. `*` is every web
+    action and never the bot or the jobs, so each of those moves, and moves
+    back, by its own name. Going back is the same row edited, or the marker
+    deleted (`move_properties_to_script`). No
     switch is flipped without the owner's go-ahead; merging the code changes
     no behaviour by itself (the function forwards everything until a switch
     is flipped). The runbook is `docs/DEPLOYMENT.md` → Switching production
@@ -1097,7 +1116,7 @@ composes the message from data it already stored.
 - **The Supabase project is on the free plan:** no downloadable automatic
   backups. The nightly copy into Google Drive (`27_database_backup.gs`) is the
   backup: at most a day old, the settings excluded (Apps Script's Script
-  Properties hold those). Restoring — its tabs copied into the bound
+  Properties hold a copy of those, which can lag the database). Restoring — its tabs copied into the bound
   spreadsheet and the app switched back to it, or imported into a new
   project — is described in `docs/DEPLOYMENT.md` and not yet rehearsed.
 - **The Edge function pays for its replays in CPU, not in round trips.** A
@@ -1395,7 +1414,7 @@ npm run bench            # sheet passes / bytes / ms per screen (see below)
 | V2 misbehaving | `rollback_omad_migration` — the legacy sheet is intact |
 | Bad backend deploy | Re-run CI on a known-good commit; the deployment id never changes |
 | Bad frontend deploy | Cloudflare Pages keeps every deployment; roll back in the dashboard |
-| Supabase misbehaving | Sozlamalar → Tizim → "Google Sheets'ga Qaytish" (`rollback_supabase_storage`) — works even when the database is unreachable; entries made on Supabase stay there |
+| Supabase misbehaving | Sozlamalar → Tizim → "Google Sheets'ga Qaytish" (`rollback_supabase_storage`); entries made on Supabase stay there. Before the settings move it works even when the database is unreachable; after it, it needs the database to delete `__PROPERTIES_READY` first and changes nothing if it cannot (the Edge function would otherwise keep serving) |
 | One action misbehaving on the Edge function | remove it from `EDGE_NATIVE_ACTIONS` (one `app_properties` row): Apps Script answers it again within 15 s |
 | The Edge function misbehaving | set `EDGE_NATIVE_ACTIONS` to empty (everything forwarded), or delete `__PROPERTIES_READY` (`move_properties_to_script`); the pages fall back to Apps Script by themselves if the function is gone |
 | The bot on the Edge function misbehaving | point the webhook back at `/exec` (Telegram sozlamalari → Webhook) and remove `telegram` from the list |
@@ -1418,7 +1437,7 @@ and trigger rows on **2026-11-13** (Supabase edge logs and `system_config`):
 | Mini App | menu button installed and verified |
 | Web sign-in | username + password, server-verified, 30-day signed session |
 | Store | **Supabase** since 2026-11-02 20:34 UTC (`Omad_Storage_Cutover_At`); project `mybizmanager`, region us-east-1. The spreadsheet holds the pre-move copy |
-| Edge function | **not live yet** (2026-11-16). Deployed to the test project `mybizmanager-staging` only, and verified there end to end by CI on synthetic data (`scripts/edge-staging.js`): reads 0.15–0.25 s, a write 0.35 s, sign-in 0.45 s as measured from a US runner, cold boot 25 ms, `pg_cron` → function every 5 minutes answering 200; on the live project the migrations `20261116120000_edge_shared_state.sql`, `20261116130000_edge_cron.sql` and `20261116140000_pg_net_schema.sql` are not applied, the settings are still in Script Properties, and every request goes to Apps Script. The rollout runbook is in `docs/DEPLOYMENT.md` |
+| Edge function | **not live yet** (2026-11-16). Deployed to the test project `mybizmanager-staging` only, and verified there end to end by CI on synthetic data (`scripts/edge-staging.js`): reads 0.15–0.25 s, a write 0.35 s, sign-in 0.45 s as measured from a US runner, cold boot 25 ms, `pg_cron` → function every 5 minutes answering 200; on the live project the migrations `20261116120000_edge_shared_state.sql`, `20261116130000_edge_cron.sql`, `20261116140000_pg_net_schema.sql` and `20261116150000_lease_fencing.sql` are not applied, the settings are still in Script Properties, and every request goes to Apps Script. The rollout runbook is in `docs/DEPLOYMENT.md` |
 
 Account records and the session-signing secret are live Script Properties, not
 repository state, so this document does not claim whether a one-time password
