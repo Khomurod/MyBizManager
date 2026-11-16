@@ -21,6 +21,8 @@
 //                   which region and which switches this deployment sees
 //   POST ?job=telegram-jobs   the five-minute job, called by pg_cron with the
 //                   x-mbm-cron header (EDGE_CRON_SECRET in app_properties)
+//   POST ?job=db-backup       the nightly copy into Google Drive: passed on to
+//                   Apps Script (run_database_backup) with the same secret
 //
 // Deployed with verify_jwt off: the backend authenticates every request
 // itself (session tokens, Telegram initData, the webhook secret), exactly as
@@ -269,10 +271,25 @@ async function handleJob(req: Request, url: URL): Promise<Response> {
   if (!sameSecret(req.headers.get('x-mbm-cron') || '', config.cronSecret)) {
     return json({ status: 'error', message: 'forbidden' }, 403);
   }
-  if (url.searchParams.get('job') !== 'telegram-jobs') return json({ status: 'error', message: 'unknown job' }, 404);
+  const job = url.searchParams.get('job');
+  if (job === 'db-backup') {
+    // The nightly copy into Google Drive is Apps Script's to write; this only
+    // passes pg_cron's call on, with the same secret as its proof.
+    const started = Date.now();
+    try {
+      const res = await forward('POST', new URL('http://job.local/'),
+        JSON.stringify({ action: 'run_database_backup', cronSecret: config.cronSecret }), config);
+      console.log(JSON.stringify({ job, runtime: 'apps-script', status: res.status, ms: Date.now() - started }));
+      return res;
+    } catch (error) {
+      console.error(JSON.stringify({ job, ms: Date.now() - started, fatal: String((error as Error)?.message || error) }));
+      return json({ status: 'error', message: 'Apps Script javob bermadi.' }, 502, 'apps-script');
+    }
+  }
+  if (job !== 'telegram-jobs') return json({ status: 'error', message: 'unknown job' }, 404);
   if (!Routing.jobsRunHere(config)) return json({ status: 'skipped', reason: 'the jobs run in Apps Script' });
   const started = Date.now();
-  const out = await runNative('processPendingTelegramJobs', undefined);
+  const out = await runNative('runTimedJobs_', undefined);
   console.log(JSON.stringify({ job: 'telegram-jobs', runs: out.runs, ios: out.ios, ms: Date.now() - started, error: out.error ? String(out.error) : undefined }));
   if (out.error) return json({ status: 'error', message: String(out.error) }, 500);
   return json({ status: 'success', result: out.result === undefined ? null : out.result, runs: out.runs, ios: out.ios });

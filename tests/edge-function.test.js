@@ -225,6 +225,17 @@ test('the deployed function: forwards until allowed, then answers itself, the sa
     assert.strictEqual(ran.json.status, 'success', ran.text);
   });
 
+  await t.test('the nightly copy is passed on to Apps Script with the cron secret, which it checks', async () => {
+    const refused = await post({}, '?job=db-backup');
+    assert.strictEqual(refused.status, 403);
+    const before = forwarded.length;
+    const ran = await post({}, '?job=db-backup', { 'x-mbm-cron': CRON_SECRET });
+    assert.strictEqual(ran.runtime, 'apps-script');
+    assert.strictEqual(ran.json.status, 'success', ran.text);
+    assert.strictEqual(JSON.parse(forwarded[before].body).action, 'run_database_backup');
+    assert.ok(Object.keys(gas.__drive).length >= 1, 'and the copy is in Drive');
+  });
+
   await t.test('GET is the inert banner, OPTIONS answers CORS, the probe says what this deployment sees', async () => {
     const banner = await fetch(fn.url);
     assert.strictEqual(await banner.text(), 'System Database is Active.');

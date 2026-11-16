@@ -118,19 +118,29 @@ function coerceLikeSheets(value, format) {
   return value;
 }
 
-function createSheet(name, rows, coerce) {
+function createSheet(name, rows, coerce, strictGrid) {
   const data = rows ? rows.map(r => r.slice()) : [];
   const formats = {};
   const formatKey = (row, col) => `${row},${col}`;
   const apply = (value, row, col) =>
     (coerce ? coerceLikeSheets(value, formats[formatKey(row, col)]) : value);
 
+  // A new tab's grid, as Sheets makes it: with strictGrid (the spreadsheets
+  // the script creates in Drive) a range outside it is an error. The bound
+  // spreadsheet's tabs grew with appendRow long before these tests existed.
+  let maxRows = Math.max(1000, data.length);
+  let maxColumns = Math.max(26, data.reduce((width, row) => Math.max(width, row.length), 0));
   const sheet = {
     name,
     data,
     formats,
     getName: () => name,
     getLastRow: () => data.length,
+    getMaxRows: () => maxRows,
+    getMaxColumns: () => maxColumns,
+    insertRowsAfter(after, howMany) { maxRows += howMany; },
+    insertColumnsAfter(after, howMany) { maxColumns += howMany; },
+    clearContents() { data.length = 0; },
     appendRow(row) {
       const target = data.length + 1;
       data.push(row.map((value, index) => apply(value, target, index + 1)));
@@ -143,6 +153,10 @@ function createSheet(name, rows, coerce) {
     getRange(row, col, numRows, numCols) {
       const rowCount = numRows === undefined ? 1 : numRows;
       const colCount = numCols === undefined ? 1 : numCols;
+      // appendRow grows the grid, as it does in Sheets; a range never does.
+      if (strictGrid && (row - 1 + rowCount > Math.max(maxRows, data.length) || col - 1 + colCount > maxColumns)) {
+        throw new Error('Exception: The coordinates of the range are outside the dimensions of the sheet.');
+      }
       return {
         getValues() {
           const out = [];
@@ -172,6 +186,12 @@ function createSheet(name, rows, coerce) {
           }
           return this;
         },
+        setNumberFormats(grid) {
+          for (let i = 0; i < grid.length; i++) {
+            for (let j = 0; j < grid[i].length; j++) formats[formatKey(row + i, col + j)] = grid[i][j];
+          }
+          return this;
+        },
         clearContent() {
           for (let i = 0; i < rowCount; i++) {
             const target = data[row - 1 + i];
@@ -185,18 +205,26 @@ function createSheet(name, rows, coerce) {
   return sheet;
 }
 
-function createSpreadsheet(initialSheets, coerce) {
+let spreadsheetIds = 0;
+
+function createSpreadsheet(initialSheets, coerce, strictGrid) {
   const sheets = {};
   Object.keys(initialSheets || {}).forEach(name => {
-    sheets[name] = createSheet(name, initialSheets[name], coerce);
+    sheets[name] = createSheet(name, initialSheets[name], coerce, strictGrid);
   });
+  const id = 'sheet-id-' + (++spreadsheetIds);
   return {
     sheets,
+    getId: () => id,
+    deleteSheet(sheet) {
+      if (Object.keys(sheets).length < 2) throw new Error('Exception: You can\'t remove all the sheets in a document.');
+      delete sheets[sheet.getName()];
+    },
     getSheetByName: name => sheets[name] || null,
     // Insertion order, as the real Spreadsheet returns tabs left to right.
     getSheets: () => Object.keys(sheets).map(name => sheets[name]),
     insertSheet(name) {
-      sheets[name] = createSheet(name, [], coerce);
+      sheets[name] = createSheet(name, [], coerce, strictGrid);
       return sheets[name];
     }
   };
@@ -239,6 +267,8 @@ function loadScript(options = {}) {
     supabase.setProperty('__PROPERTIES_READY', new Date().toISOString());
   }
   const spreadsheet = createSpreadsheet(options.sheets || {}, options.coerceLikeSheets === true);
+  const drive = {};
+  const triggers = (options.triggers || []).slice();
   const cacheStore = Object.assign({}, options.cache || {});
   const fetchCalls = [];
   const sentMessages = [];
@@ -292,8 +322,23 @@ function loadScript(options = {}) {
       })
     },
 
+    // Spreadsheets the script made in Drive (the daily database copy), by id.
+    // They type text the way the live spreadsheet does, so a test sees what a
+    // cell written without a text format would have become.
+    __drive: drive,
+
     SpreadsheetApp: {
-      getActiveSpreadsheet: () => spreadsheet
+      getActiveSpreadsheet: () => spreadsheet,
+      create(title) {
+        const file = createSpreadsheet({ Sheet1: [] }, true, true);
+        file.title = title;
+        drive[file.getId()] = file;
+        return file;
+      },
+      openById(id) {
+        if (!drive[id]) throw new Error('Exception: Unexpected error while getting the method or property openById on object SpreadsheetApp.');
+        return drive[id];
+      }
     },
 
     CacheService: {
@@ -366,9 +411,19 @@ function loadScript(options = {}) {
       // The deployment the request is being served by, which is what the
       // health check compares the configured webhook URL against.
       getService: () => ({ getUrl: () => options.webAppUrl || '' }),
-      getProjectTriggers: () => (options.triggers || []).map(name => ({
+      getProjectTriggers: () => triggers.map(name => ({
         getHandlerFunction: () => name
-      }))
+      })),
+      newTrigger: name => {
+        const builder = {
+          timeBased: () => builder,
+          everyDays: () => builder,
+          everyMinutes: () => builder,
+          atHour: () => builder,
+          create: () => { triggers.push(name); return { getHandlerFunction: () => name }; }
+        };
+        return builder;
+      }
     },
 
     ContentService: {

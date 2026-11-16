@@ -24,8 +24,11 @@ const SERVICES = [
   'PropertiesService', 'LockService', 'ContentService', 'HtmlService', 'ScriptApp', 'SpreadsheetApp'
 ];
 
-/** What Apps Script calls: the web app's two handlers and the time-driven jobs. */
-const ENTRY_POINTS = ['doPost', 'doGet', 'processPendingTelegramJobs', 'processTaskSchedules'];
+/**
+ * What Apps Script calls (the web app's two handlers and the time-driven
+ * jobs), and runTimedJobs_, the cycle the Edge function's own job runs.
+ */
+const ENTRY_POINTS = ['doPost', 'doGet', 'processPendingTelegramJobs', 'processTaskSchedules', 'runTimedJobs_'];
 
 const BANNER = [
   '// =============================================================================',

@@ -12,9 +12,9 @@
 //     jobs), so the switch can be made one group at a time and undone by
 //     editing one row;
 //   - never the actions below, which need Apps Script itself: the spreadsheet
-//     (the move between stores, the ledger migration), its Script Properties
-//     (where the settings live) or its triggers and deployment (the health
-//     check).
+//     (the move between stores, the ledger migration, the daily copy into
+//     Drive), its Script Properties (where the settings live) or its triggers
+//     and deployment (the health check).
 //
 // Everything else is forwarded to Apps Script unchanged, so a request is
 // always answered by one of the two, and by the same code.
@@ -33,7 +33,9 @@
     'get_migration_status', 'preview_omad_migration', 'apply_omad_migration', 'verify_omad_migration',
     'cutover_omad_migration', 'rollback_omad_migration',
     // 23_health.gs: reads the project's triggers and its own deployment URL
-    'get_health'
+    'get_health',
+    // 27_database_backup.gs: writes the copy into spreadsheets in Drive
+    'run_database_backup'
   ];
 
   var READY_KEY = '__PROPERTIES_READY';
@@ -85,7 +87,11 @@
     return allowed['*'] || allowed[request.action] ? 'edge' : 'apps-script';
   }
 
-  /** Whether the timed jobs run here (pg_cron calls the function either way). */
+  /**
+   * Whether the timed jobs run here (pg_cron calls the function either way).
+   * Apps Script's own trigger asks the same question the other way round
+   * (edgeServesGroup_ in apps-script/26_property_store.gs): change both.
+   */
   function jobsRunHere(config) {
     if (!config || !config.ready) return false;
     var allowed = parseAllowList(config.allow);

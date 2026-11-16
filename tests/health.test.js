@@ -91,6 +91,8 @@ test('the access check asks the router rather than reading a flag', () => {
 
 test('a healthy system reports green across the board', () => {
   const gas = boot();
+  // On Supabase, healthy includes last night's copy in Drive.
+  if (gas.storageMode_() === 'supabase') gas.runDatabaseBackup_(new Date());
   const report = health(gas);
   assert.equal(report.status, 'ok');
   assert.equal(find(report, 'bot').status, 'ok');

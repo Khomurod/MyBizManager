@@ -1,7 +1,9 @@
 # Supabase
 
-The database that replaces the "Budgeting app" Google Sheet. Project
-`mybizmanager` (`ksdqoftlxrkpyylbbyoi`, us-east-1).
+The database that replaces the "Budgeting app" Google Sheet, and the Edge
+function that serves the same API next to it. Project `mybizmanager`
+(`ksdqoftlxrkpyylbbyoi`, us-east-1); test project `mybizmanager-staging`
+(`uzpfgnjxvmrzwvocuiaf`, synthetic data only).
 
 - `migrations/` — the schema, in the order it was applied. Each file is
   applied once, through the Supabase migrations API; never edit an applied
@@ -10,9 +12,19 @@ The database that replaces the "Budgeting app" Google Sheet. Project
   The functions `mbm_apply` (a request's writes as one transaction) and
   `mbm_counts` (every row count in one call) are in
   `20261102160523_batched_writes_and_counts.sql`; callable only with the
-  secret key.
+  secret key. `20261116120000_edge_shared_state.sql` adds the state both
+  runtimes share (`app_properties`, `app_lease`, `app_cache`, `mbm_lock`,
+  `mbm_unlock`); `20261116130000_edge_cron.sql` the timed calls
+  (`pg_cron` + `pg_net`, `mbm_call_edge`).
+- `functions/api/` — the Edge function. `index.ts` is the entry point;
+  `lib/` holds the routing, the replay executor and the Apps Script service
+  stand-ins; `runtime.js` is generated from `script.gs` by `npm run build` and
+  not committed. CI deploys it (`scripts/edge-deploy.js`).
+- `config.toml` — `verify_jwt = false` for `api`: the backend authenticates
+  every request itself, and Telegram and the browser send no Supabase JWT.
 - `reset_before_cutover.sql` — empties every table so a failed import can be
   re-run. It refuses to run once a cutover has happened.
 
-How the application uses it, and the move from Sheets, is in
-`docs/ARCHITECTURE.md#supabase-storage` and `docs/DEPLOYMENT.md`.
+How the application uses it is in `docs/ARCHITECTURE.md` (Supabase storage,
+The Edge function); deploying, switching over and going back are in
+`docs/DEPLOYMENT.md`.

@@ -254,7 +254,7 @@ function factoryFrom(bundle) {
   return holder.exports;
 }
 
-const ENTRY_STUBS = 'function processPendingTelegramJobs() {}\nfunction processTaskSchedules() {}\n';
+const ENTRY_STUBS = 'function processPendingTelegramJobs() {}\nfunction processTaskSchedules() {}\nfunction runTimedJobs_() {}\n';
 
 test('every call of the runtime is a fresh backend: nothing one request leaves reaches the next', () => {
   const factory = factoryFrom(ENTRY_STUBS + 'var hits = 0;\nfunction doPost(e) { hits++; return hits; }\nfunction doGet() { return Date.now(); }\n');

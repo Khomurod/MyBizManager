@@ -820,6 +820,33 @@ test('the Edge function\'s own switches stay in the database through both moves'
   assert.ok(!('EDGE_CRON_SECRET' in gas.__properties), 'and they are not copied into Script Properties');
 });
 
+test('the Edge function can take over the timed jobs and the webhook, and the health check follows', () => {
+  const gas = liveWithTenants({ triggers: [] });
+  const db = gas.__supabase;
+  gas.resetRequestMemos_();
+  assert.strictEqual(gas.triggerCheck_().status, 'error', 'no trigger, and nobody else runs the jobs');
+  assert.strictEqual(typeof gas.processPendingTelegramJobs(), 'number', 'the trigger runs the cycle');
+
+  db.setProperty('EDGE_NATIVE_ACTIONS', 'get_omad_data, jobs');
+  gas.resetRequestMemos_();
+  assert.strictEqual(gas.processPendingTelegramJobs().status, 'skipped', 'the Apps Script trigger stands down');
+  assert.strictEqual(gas.triggerCheck_().status, 'ok');
+  gas.resetRequestMemos_();
+  assert.strictEqual(typeof gas.runTimedJobs_(), 'number', 'the cycle the Edge function calls still runs');
+
+  db.setProperty('TELEGRAM_WEBHOOK_URL', db.url + '/functions/v1/api?forceFunctionRegion=us-east-1&wh=secret');
+  gas.resetRequestMemos_();
+  assert.strictEqual(gas.deploymentCheck_().status, 'ok', 'a webhook on the Edge function is not "another deployment"');
+  db.setProperty('TELEGRAM_WEBHOOK_URL', db.url + '/functions/v1/api?wh=secret');
+  gas.resetRequestMemos_();
+  assert.strictEqual(gas.deploymentCheck_().status, 'warning', 'but one without the region pin runs far from the data');
+
+  db.setProperty('__PROPERTIES_READY', undefined);
+  gas.resetRequestMemos_();
+  assert.strictEqual(typeof gas.processPendingTelegramJobs(), 'number',
+    'without the marker the Edge function serves nothing, so Apps Script runs the jobs again');
+});
+
 test('a rollback to the spreadsheet brings the settings back first', () => {
   const gas = liveWithTenants();
   assert.ok(gas.__supabase.properties().__PROPERTIES_READY);

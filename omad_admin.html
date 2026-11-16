@@ -714,6 +714,10 @@
                 <button onclick="createBackup()" class="ui-btn ui-btn-dark ui-btn-block">
                     <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#archive"></use></svg>Zaxira Nusxa Yaratish
                 </button>
+                <p class="ui-card-desc mt-4 mb-3">Ma'lumotlar bazasi har kuni soat 03:00 da Google Diskdagi jadvallarga ko'chiriladi (haftaning har kuni uchun bittadan va har oy uchun bittadan).</p>
+                <button onclick="runDatabaseBackup()" class="ui-btn ui-btn-secondary ui-btn-block">
+                    <svg class="ui-icon" aria-hidden="true"><use href="assets/icons/lucide.svg#database"></use></svg>Hozir Google Diskka saqlash
+                </button>
             </div>
 
             <div class="card ui-card ui-card-body">
@@ -769,6 +773,14 @@
                     <button onclick="measureStorageSpeed()" class="ui-btn ui-btn-secondary">Tezlikni o'lchash</button>
                 </div>
                 <button onclick="rollbackSupabaseStorage()" class="ui-btn ui-btn-ghost-danger ui-btn-block mt-2">Google Sheets'ga Qaytish</button>
+                <p class="ui-card-desc mt-4 mb-2">
+                    Sozlamalar (foydalanuvchilar, kalitlar, bot) ham bazaga ko'chiriladi, shunda tezkor
+                    Edge funksiyasi ularni Apps Script bilan bir xil ko'radi. Apps Script nusxasini saqlab qoladi.
+                </p>
+                <div class="grid grid-cols-2 gap-2">
+                    <button onclick="movePropertiesToDatabase()" class="ui-btn ui-btn-secondary">Sozlamalarni bazaga</button>
+                    <button onclick="movePropertiesToScript()" class="ui-btn ui-btn-ghost-danger">Sozlamalarni qaytarish</button>
+                </div>
             </div>
 
             <div class="card ui-card ui-card-body">

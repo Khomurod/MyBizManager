@@ -367,8 +367,20 @@ function drainJobQueueQuietly_(doc, options, batchSize) {
  * Running it here as well as from `processTaskSchedules` is safe — the pass
  * takes the script lock and marks each reminder slot at enqueue time, so no
  * combination of entry points can produce a duplicate.
+ *
+ * Once the timed jobs have moved to the Supabase Edge function (pg_cron calls
+ * it every five minutes, and EDGE_NATIVE_ACTIONS names "jobs"), this trigger
+ * stands down: one runtime does the Telegram work, and moving the jobs back is
+ * one setting, with this trigger still in place to pick them up.
  */
 function processPendingTelegramJobs() {
+  resetRequestMemos_();
+  if (edgeServesGroup_("jobs")) return { status: "skipped", reason: "the Edge function runs the timed jobs" };
+  return runTimedJobs_();
+}
+
+/** One cycle of the timed jobs, wherever it runs: the Edge function calls this directly. */
+function runTimedJobs_() {
   resetRequestMemos_();
   var doc = appDoc_();
   try {

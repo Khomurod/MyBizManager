@@ -59,6 +59,23 @@ function isDatabaseOnlyProperty_(key) {
   return key === PROPERTY_STORE_READY_KEY || String(key).indexOf("EDGE_") === 0;
 }
 
+/**
+ * Whether the Edge function serves `group` ("jobs", "telegram") itself: the
+ * ready marker and EDGE_NATIVE_ACTIONS, read the way
+ * supabase/functions/api/lib/routing.js reads them (change the two together).
+ * Before the settings are in the database the function serves nothing itself.
+ */
+function edgeServesGroup_(group) {
+  if (!sharedPropertiesInDatabase_(PropertiesService.getScriptProperties())) return false;
+  if (!getTelegramSetting_(PROPERTY_STORE_READY_KEY)) return false;
+  var names = String(getTelegramSetting_("EDGE_NATIVE_ACTIONS") || "").split(",");
+  for (var i = 0; i < names.length; i++) {
+    var name = names[i].replace(/^\s+|\s+$/g, "");
+    if (name === "*" || name === group) return true;
+  }
+  return false;
+}
+
 /** Every Script Property that is a shared setting, as a plain map. */
 function localSharedProperties_(local) {
   var all = local.getProperties() || {};

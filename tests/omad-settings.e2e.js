@@ -289,6 +289,48 @@ describe('Sozlamalar (browser)', () => {
     await context.close();
   });
 
+  test('the settings move buttons call the server and the card says where the settings are', async () => {
+    const storage = { mode: 'supabase', reachable: true };
+    const { page, context, requests, pageErrors } = await openSettings({
+      respond: payload => {
+        if (payload.action === 'get_storage_status') {
+          return { status: 'success', storage, importStatus: {}, properties: { store: 'script', configured: 'script' } };
+        }
+        if (payload.action === 'move_properties_to_database') {
+          return { status: 'success', moved: 14, caughtUp: 0, properties: { store: 'database', configured: 'supabase' } };
+        }
+        if (payload.action === 'move_properties_to_script') {
+          return { status: 'success', properties: { store: 'script', configured: 'script' } };
+        }
+        return null;
+      }
+    });
+    await page.evaluate(() => showSettingsSection('system'));
+    await page.evaluate(() => loadStorageStatus());
+    const before = await page.textContent('#storageStatus');
+    assert.match(before, /Script Properties/);
+
+    await page.evaluate(() => movePropertiesToDatabase());
+    const after = await page.evaluate(() => ({
+      status: document.getElementById('storageStatus').textContent,
+      resultHidden: document.getElementById('storageResult').classList.contains('hidden')
+    }));
+    assert.match(after.status, /Baza \(app_properties\)/);
+    assert.match(after.status, /Supabase/, 'the store row is kept from the earlier answer');
+    assert.ok(after.resultHidden, 'no empty result box');
+
+    await page.evaluate(() => movePropertiesToScript());
+    assert.match(await page.textContent('#storageStatus'), /Script Properties/);
+
+    for (const action of ['move_properties_to_database', 'move_properties_to_script']) {
+      const sent = requests.filter(r => r.action === action);
+      assert.strictEqual(sent.length, 1, action);
+      assert.strictEqual(sent[0].sessionToken, 'e2e-session-token', action);
+    }
+    assert.deepStrictEqual(pageErrors, []);
+    await context.close();
+  });
+
   test('the migration preview reports the per-year breakdown and unresolved rows', async () => {
     const { page, context } = await openSettings({
       respond: payload => (payload.action === 'preview_omad_migration' ? {
